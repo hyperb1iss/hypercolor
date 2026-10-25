@@ -2,6 +2,17 @@ import { test, expect } from "@playwright/test";
 import { openHistory, addStand, dragOutput, FIRST, SECOND } from "./studio-history-fixture.mjs";
 
 const standCard = (page) => page.locator('div.group\\/card').filter({ has: page.getByText("Laptop stand", { exact: true }) });
+const dragTo = async (page, source, target, { toX = 0.5, toY = 0.5 } = {}) => {
+  const from = await source.boundingBox();
+  const to = await target.boundingBox();
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  const x = to.x + to.width * toX;
+  const y = to.y + to.height * toY;
+  await page.mouse.move(from.x + from.width / 2 + 20, from.y + from.height / 2, { steps: 4 });
+  await page.mouse.move(x, y, { steps: 12 });
+  await page.mouse.up();
+};
 const geometry = (element) => ({ left: element.style.left, top: element.style.top });
 
 test("Studio device assignment saves immediately and supports undo and redo", async ({ page }) => {
@@ -313,5 +324,19 @@ test("Studio cancels an undo superseded by another zone selection without lockin
   await expect.poll(() => anchor.evaluate(geometry)).toEqual(original);
   await expect(fixture.undo).toBeDisabled();
   await expect(fixture.redo).toBeEnabled();
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test("Studio drags a device card onto another zone tab and can undo it", async ({ page }) => {
+  const fixture = await openHistory(page, { placedStand: true });
+  const tab = page.locator(`[data-zone-tab="${SECOND}"]`);
+  await dragTo(page, standCard(page).locator("button").first(), tab);
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: SECOND, id: "stand-output" }]);
+  // The move lands without switching tabs.
+  await expect(page.getByRole("tab", { name: "Desk lights", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("status").filter({ hasText: "Moved Laptop stand to Accent lights from Desk lights" })).toHaveCount(1);
+  await fixture.undo.click();
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: FIRST, id: "stand-output" }]);
+  expect(fixture.rejected).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

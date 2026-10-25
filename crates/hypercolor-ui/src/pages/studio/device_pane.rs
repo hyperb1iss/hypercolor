@@ -30,6 +30,9 @@ use crate::toasts;
 use super::StudioContext;
 use super::device_assignment::{DeviceMeta, ZoneDeviceRow, saved_only_device_rows};
 use super::device_card::{CardMode, Elsewhere, StudioDeviceCard, fetch_attachments_if_needed};
+use super::drag::DragController;
+use super::drag_model::DropTarget;
+use super::moves::zone_device_payload;
 use super::offline_device_card::OfflineDeviceCard;
 use super::pane_model::{
     PaneInputs, PaneModel, ZoneSection, build_pane, normalize_search, parse_unassigned_policy,
@@ -43,6 +46,18 @@ use super::surface::{Surface, SurfaceKind, surfaces_from_zones};
 #[must_use]
 pub fn pane_zone_dom_id(zone_id: &str) -> String {
     format!("pane-zone-{zone_id}")
+}
+
+/// Element id of an Other zones row's expand toggle.
+#[must_use]
+pub fn pane_zone_toggle_dom_id(zone_id: &str) -> String {
+    format!("pane-zone-toggle-{zone_id}")
+}
+
+/// Element id of a compact device row in an Other zones row.
+#[must_use]
+pub fn compact_row_dom_id(zone_id: &str, device_id: &str) -> String {
+    format!("compact-row-{zone_id}-{device_id}")
 }
 
 /// Expand an Other zones row and bring it into view.
@@ -197,7 +212,7 @@ pub fn DevicePane() -> impl IntoView {
     view! {
         <div class="flex h-full flex-col border-r border-edge-subtle/70 bg-surface-raised/40">
             <PaneSearch search=search on_screens=on_screens />
-            <div class="scrollbar-none flex-1 overflow-y-auto px-3 pb-3">
+            <div class="scrollbar-none flex-1 overflow-y-auto px-3 pb-3" data-pane-scroll="">
                 {move || {
                     if on_screens.get() {
                         return view! { <ScreenList query=query /> }.into_any();
@@ -233,14 +248,27 @@ fn ActiveZoneSection(
     lights: Memo<Vec<Surface>>,
     registry: Memo<Vec<DeviceSummary>>,
 ) -> impl IntoView {
+    let drag = expect_context::<DragController>();
     let section = Memo::new(move |_| pane.with(|pane| pane.active.clone()));
     let searching = Memo::new(move |_| pane.with(|pane| pane.searching));
     let surface = Memo::new(move |_| {
         let section = section.get()?;
         lights.with(|lights| surface_for(lights, &section.zone_id))
     });
+    let zone_id =
+        Memo::new(move |_| section.with(|section| section.as_ref().map(|s| s.zone_id.clone())));
+    let look = move || {
+        zone_id
+            .get()
+            .map(|id| drag.look(&DropTarget::PaneZone(id)).section_class())
+            .unwrap_or_default()
+    };
     view! {
-        <section class="pb-3" aria-label="Devices in this zone">
+        <section
+            class=move || format!("rounded-lg pb-3 transition-colors {}", look())
+            aria-label="Devices in this zone"
+            data-pane-zone=move || zone_id.get()
+        >
             // The pane is translucent over the page base, so the sticky
             // header layers the same two surfaces to stay opaque.
             <div class="sticky top-0 z-10 -mx-3 bg-surface-base">
@@ -407,7 +435,10 @@ fn OtherZoneRow(
     registry: Memo<Vec<DeviceSummary>>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let zone_id = StoredValue::new(section.zone_id.clone());
+    let target = DropTarget::PaneZone(section.zone_id.clone());
+    let look = move || drag.look(&target).section_class();
     let expanded = Memo::new(move |_| {
         searching
             || studio
@@ -433,11 +464,15 @@ fn OtherZoneRow(
         <div
             id=pane_zone_dom_id(&section.zone_id)
             data-pane-zone=section.zone_id.clone()
-            class="overflow-hidden rounded-lg border border-edge-subtle/60 bg-surface-overlay/30"
+            class=move || format!(
+                "overflow-hidden rounded-lg border border-edge-subtle/60 bg-surface-overlay/30 transition-colors {}",
+                look(),
+            )
             class=("opacity-60", move || dimmed)
         >
             <button
                 type="button"
+                id=pane_zone_toggle_dom_id(&section.zone_id)
                 class="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-surface-hover/30"
                 aria-expanded=move || expanded.get().to_string()
                 aria-controls=list_id.clone()
@@ -506,13 +541,15 @@ fn OtherZoneRow(
 }
 
 /// A one-line device row inside an Other zones row: identity strip, name,
-/// and LED count. Carries its device and zone ids for a drag source.
+/// and LED count. It drags out to move the device.
 #[component]
 fn CompactDeviceRow(
     row: ZoneDeviceRow,
     zone_id: String,
     registry: Memo<Vec<DeviceSummary>>,
 ) -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let device_id = row.device_id.clone();
     let accent = Memo::new(move |_| {
         registry.with(|registry| {
@@ -533,12 +570,20 @@ fn CompactDeviceRow(
         row.name.clone()
     };
     let label_title = label.clone();
+    let dom_id = compact_row_dom_id(&zone_id, &row.device_id);
+    let payload = {
+        let (zone_id, device_id, label) = (zone_id.clone(), row.device_id.clone(), label.clone());
+        move || zone_device_payload(studio, &zone_id, &device_id, &label)
+    };
     view! {
         <div
-            class="flex items-center gap-2 rounded px-1.5 py-1"
+            id=dom_id
+            title="Drag to move"
+            class="flex cursor-grab touch-pan-y select-none items-center gap-2 rounded px-1.5 py-1 transition-colors hover:bg-surface-hover/30 [-webkit-touch-callout:none]"
             class=("opacity-60", move || offline)
             data-device-id=row.device_id.clone()
             data-zone-id=zone_id
+            on:pointerdown=move |ev: web_sys::PointerEvent| drag.press(&ev, payload())
         >
             <span
                 class="h-3.5 w-0.5 shrink-0 rounded-full bg-fg-tertiary/40"
@@ -563,8 +608,10 @@ fn UnassignedSection(
     registry: Memo<Vec<DeviceSummary>>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let section = Memo::new(move |_| pane.with(|pane| pane.unassigned.clone()));
     let searching = Memo::new(move |_| pane.with(|pane| pane.searching));
+    let look = move || drag.look(&DropTarget::Unassigned).section_class();
     let visible = Memo::new(move |_| {
         let total = section.with(|section| section.total);
         let hits = section.with(|section| section.rows.len());
@@ -573,7 +620,10 @@ fn UnassignedSection(
     view! {
         <Show when=move || visible.get()>
             <section
-                class="space-y-1.5 border-t border-edge-subtle/45 py-3"
+                class=move || format!(
+                    "space-y-1.5 rounded-lg border-t border-edge-subtle/45 py-3 transition-colors {}",
+                    look(),
+                )
                 aria-label="Unassigned"
                 data-pane-unassigned="true"
             >

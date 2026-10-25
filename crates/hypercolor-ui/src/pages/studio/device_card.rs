@@ -31,9 +31,33 @@ use crate::vendors::{VendorMark, VendorMarkSize};
 
 use super::device_assignment::ZoneDeviceRow;
 use super::device_pane::reveal_pane_zone;
+use super::drag::{DragController, FocusReturn};
+use super::drag_model::{DropAction, MovePayload, Origin};
+use super::moves::{led_zones, light_segment_count, perform, zone_name};
 use super::pane_model::elsewhere_label;
-use super::surface::surfaces_from_zones;
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
+
+/// Element id of a device card's body, keyed by the zone it speaks for
+/// (`"unassigned"` for an Unassigned card).
+#[must_use]
+pub fn device_card_dom_id(zone_key: &str, device_id: &str) -> String {
+    format!("device-card-{zone_key}-{device_id}")
+}
+
+/// The zone key an Unassigned card's ids use.
+pub const UNASSIGNED_KEY: &str = "unassigned";
+
+/// Element id of a placed device card's kebab.
+#[must_use]
+pub fn device_menu_dom_id(zone_id: &str, device_id: &str) -> String {
+    format!("device-menu-{zone_id}-{device_id}")
+}
+
+/// Element id of a channel row.
+#[must_use]
+pub fn channel_row_dom_id(zone_key: &str, device_id: &str, slot_id: &str) -> String {
+    format!("channel-row-{zone_key}-{device_id}-{slot_id}")
+}
 
 /// How a device card behaves, which decides its trailing actions and
 /// whether it carries an in-zone layout (hidden state, per-output toggles).
@@ -77,6 +101,9 @@ struct ComponentRow {
     slot_id: String,
     zone_name: Option<String>,
     display_name: String,
+    /// What dragging the row moves.
+    payload: MovePayload,
+    dom_id: String,
 }
 
 /// One physical device. `select` names the zone the card speaks for: the
@@ -95,6 +122,7 @@ pub fn StudioDeviceCard(
     elsewhere: Vec<Elsewhere>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let row_device_id = row.device_id.clone();
 
     let Some(device) = device else {
@@ -185,6 +213,11 @@ pub fn StudioDeviceCard(
         .unwrap_or_default();
 
     let total_components = device.segments.len();
+    let zone_key = if placed {
+        select.clone()
+    } else {
+        UNASSIGNED_KEY.to_owned()
+    };
     let claimed_elsewhere = |channel_name: &str| {
         outputs_elsewhere.iter().any(|output| {
             layout_utils::channel_name_matches_slot_alias(
@@ -216,19 +249,56 @@ pub fn StudioDeviceCard(
             if output_id.is_none() && claimed_elsewhere(&channel.name) {
                 return None;
             }
+            // A channel this zone holds moves as its output; one no zone
+            // holds is claimed by its segment.
+            let origin = if output_id.is_some() {
+                Origin::Zone(select.clone())
+            } else {
+                Origin::Unassigned
+            };
+            let payload = MovePayload::channel(
+                &device.layout_device_id,
+                &device.name,
+                &display_name,
+                origin,
+                output_id.clone(),
+                Some(channel.name.clone()),
+            );
             Some(ComponentRow {
                 name: display_name.clone(),
                 shape: topology_shape_kind(&channel.topology),
                 led_count: channel.led_count as usize,
                 output_id,
+                dom_id: channel_row_dom_id(&zone_key, &device.layout_device_id, &channel.id),
                 slot_id: channel.id.clone(),
                 zone_name: Some(channel.name.clone()),
                 display_name,
+                payload,
             })
         })
         .collect();
     let show_components = total_components > 1;
     let channels_open = RwSignal::new(mode == CardMode::Placed);
+
+    // What the card moves as a whole, for its drag and the kebab's moves.
+    let whole = if placed {
+        MovePayload::zone_device(
+            &device.layout_device_id,
+            &device.name,
+            &select,
+            device_output_ids.clone(),
+        )
+    } else {
+        MovePayload::unassigned_device(
+            &device.layout_device_id,
+            &device.name,
+            light_segment_count(&device),
+        )
+    };
+    let menu_whole = whole.clone();
+    // A display with no boxes here has nothing to drag.
+    let draggable = !placed || !device_output_ids.is_empty();
+    let body_dom_id = device_card_dom_id(&zone_key, &device.layout_device_id);
 
     // Live component bindings for this device — fetched once per card
     // mount, shared via the Studio context cache so each row reads it
@@ -271,9 +341,9 @@ pub fn StudioDeviceCard(
         studio.rail_disclosure,
         format!("device-menu::{select}::{row_device_id}"),
     );
-    let menu_select = select.clone();
     let menu_physical_id = device.id.clone();
-    let menu_output_ids = device_output_ids.clone();
+    let kebab_id = device_menu_dom_id(&select, &row_device_id);
+    let menu_kebab_id = kebab_id.clone();
     // An Unassigned card carries the device record so its add action can
     // mint outputs and assign them into the zone.
     let add_device = (mode == CardMode::Unassigned).then(|| device.clone());
@@ -328,7 +398,13 @@ pub fn StudioDeviceCard(
             <div class="flex items-stretch">
                 <button
                     type="button"
-                    class="flex min-w-0 flex-1 items-stretch gap-2.5 px-2.5 py-2 text-left"
+                    id=body_dom_id
+                    class="flex min-w-0 flex-1 touch-pan-y select-none items-stretch gap-2.5 px-2.5 py-2 text-left [-webkit-touch-callout:none]"
+                    on:pointerdown=move |ev: web_sys::PointerEvent| {
+                        if draggable {
+                            drag.press(&ev, whole.clone());
+                        }
+                    }
                     on:click=move |_| {
                         // A display with no boxes in this zone lives on its
                         // Screen surface; one with boxes is selected here like
@@ -410,6 +486,7 @@ pub fn StudioDeviceCard(
                 </button>
                 {card_actions(CardActionsArgs {
                     studio,
+                    drag,
                     mode,
                     select,
                     physical_id: Some(physical_id),
@@ -417,6 +494,7 @@ pub fn StudioDeviceCard(
                     scene_key: scene_key.clone(),
                     add_device,
                     ops_open,
+                    kebab_id,
                 })}
             </div>
             {(mode == CardMode::Placed)
@@ -425,11 +503,11 @@ pub fn StudioDeviceCard(
                         <div class=("hidden", move || !ops_open.get())>
                             {card_ops_menu(
                                 studio,
+                                drag,
                                 ops_open,
                                 menu_physical_id,
-                                menu_select,
-                                row_device_id,
-                                menu_output_ids,
+                                menu_kebab_id,
+                                menu_whole,
                             )}
                         </div>
                     }
@@ -472,6 +550,7 @@ pub fn StudioDeviceCard(
                                 .map(|row| {
                                     component_row_view(
                                         studio,
+                                        drag,
                                         scene_key.clone(),
                                         physical_id_for_rows.clone(),
                                         row,
@@ -514,6 +593,7 @@ pub fn StudioDeviceCard(
 
 struct CardActionsArgs {
     studio: StudioContext,
+    drag: DragController,
     mode: CardMode,
     select: String,
     physical_id: Option<String>,
@@ -521,6 +601,7 @@ struct CardActionsArgs {
     scene_key: Option<String>,
     add_device: Option<DeviceSummary>,
     ops_open: RwSignal<bool>,
+    kebab_id: String,
 }
 
 /// The trailing-edge action cluster, capped at two icons. A placed device
@@ -530,6 +611,7 @@ struct CardActionsArgs {
 fn card_actions(args: CardActionsArgs) -> impl IntoView {
     let CardActionsArgs {
         studio,
+        drag,
         mode,
         select,
         physical_id,
@@ -537,6 +619,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
         scene_key,
         add_device,
         ops_open,
+        kebab_id,
     } = args;
     let (identifying, set_identifying) = signal(false);
     // Only an Unassigned card shows identify, and it carries the device.
@@ -637,8 +720,10 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     view! {
                         <button
                             type="button"
+                            id=kebab_id
                             class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary"
                             class=("text-fg-secondary", move || ops_open.get())
+                            aria-expanded=move || ops_open.get().to_string()
                             title="Device options"
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
@@ -651,7 +736,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     .into_any(),
                 ),
                 CardMode::Unassigned => add_device.map(|device| {
-                    let target = zone_label(studio, &select);
+                    let target = zone_name(studio, &select);
                     view! {
                         <button
                             type="button"
@@ -661,7 +746,16 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                             disabled=move || studio.history.busy.get()
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
-                                assign_device_to_zone(studio, device.clone(), select.clone());
+                                let payload = MovePayload::unassigned_device(
+                                    &device.layout_device_id,
+                                    &device.name,
+                                    light_segment_count(&device),
+                                );
+                                let focus = FocusReturn {
+                                    target: device_card_dom_id(&select, &device.layout_device_id),
+                                    fallback: None,
+                                };
+                                perform(drag, payload, DropAction::MoveTo(select.clone()), Some(focus));
                             }
                         >
                             <Icon icon=LuPlus width="13px" height="13px" />
@@ -674,25 +768,23 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
     }
 }
 
-/// The Placed device card's operations menu — identify, move-to-zone, and
-/// remove — folded behind the card's kebab so the action cluster stays at
-/// two icons. Expands inline below the card body. Every row closes the
-/// menu, then runs its action. The
-/// move rows are one per other LED zone (none in a single-zone scene), so a
-/// move is a single click rather than a nested picker.
+/// The Placed device card's operations menu: identify, move to another
+/// zone, and remove, folded behind the card's kebab so the action cluster
+/// stays at two icons. Expands inline below the card body. The move rows
+/// are one per other LED zone (none in a single-zone scene), so a move is
+/// a single click rather than a nested picker.
 fn card_ops_menu(
     studio: StudioContext,
+    drag: DragController,
     ops_open: RwSignal<bool>,
     physical_id: String,
-    current_zone_id: String,
-    device_id: String,
-    output_ids: Vec<String>,
+    kebab_id: String,
+    whole: MovePayload,
 ) -> impl IntoView {
     let (identifying, set_identifying) = signal(false);
     let identify_id = StoredValue::new(physical_id);
-    let current = StoredValue::new(current_zone_id);
-    let remove_device_id = StoredValue::new(device_id);
-    let ids = StoredValue::new(output_ids);
+    let kebab_id = StoredValue::new(kebab_id);
+    let whole = StoredValue::new(whole);
 
     // Every LED zone except the one this device already sits in.
     let zone_options = Memo::new(move |_| {
@@ -700,16 +792,23 @@ fn card_ops_menu(
             scene
                 .as_ref()
                 .map(|scene| {
-                    surfaces_from_zones(&scene.zones)
+                    led_zones(scene)
                         .into_iter()
-                        .filter(|surface| surface.kind == super::surface::SurfaceKind::Light)
-                        .filter(|surface| surface.id != current.get_value())
-                        .map(|surface| (surface.id, surface.name))
+                        .filter(|(zone_id, _, _)| whole.with_value(|whole| !whole.is_in(zone_id)))
+                        .map(|(zone_id, name, _)| (zone_id, name))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
         })
     });
+    let run = move |action: DropAction| {
+        ops_open.set(false);
+        let focus = FocusReturn {
+            target: kebab_id.get_value(),
+            fallback: None,
+        };
+        perform(drag, whole.get_value(), action, Some(focus));
+    };
 
     let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
                text-[11px] transition-colors";
@@ -740,8 +839,7 @@ fn card_ops_menu(
                                 class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
                                 on:click=move |ev: web_sys::MouseEvent| {
                                     ev.stop_propagation();
-                                    ops_open.set(false);
-                                    move_outputs_to_zone(studio, zone_id.clone(), ids.get_value());
+                                    run(DropAction::MoveTo(zone_id.clone()));
                                 }
                                 disabled=move || studio.history.busy.get()
                                 class=("opacity-40", move || studio.history.busy.get())
@@ -759,8 +857,7 @@ fn card_ops_menu(
                 style="color: rgba(255, 99, 99, 0.85)"
                 on:click=move |ev: web_sys::MouseEvent| {
                     ev.stop_propagation();
-                    ops_open.set(false);
-                    remove_device_from_zone(studio, current.get_value(), remove_device_id.get_value());
+                    run(DropAction::Unassign);
                 }
                 disabled=move || studio.history.busy.get()
                 class=("opacity-40", move || studio.history.busy.get())
@@ -772,36 +869,17 @@ fn card_ops_menu(
     }
 }
 
-/// Move a set of device outputs into `target_zone_id` in one membership
-/// edit. The daemon moves each output out of whatever zone holds it, and
-/// each lands where [`super::placement::move_edits`] places it.
-fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_ids: Vec<String>) {
-    let Some(scene) = studio.history.current_scene() else {
-        return;
-    };
-    let changes = studio.rig_layout.with_untracked(|rig| {
-        super::placement::move_edits(
-            &scene,
-            rig.as_ref(),
-            &target_zone_id,
-            &output_ids,
-            studio.render_canvas_size.get_untracked(),
-        )
-    });
-    studio.history.edit_members(changes);
-}
-
 /// Render one per-channel row beneath the card body.
 ///
 /// Each row shows the channel's topology shape and name, a live
 /// component badge listing what is bound to this channel, the channel's
 /// LED count, and a per-output hide toggle when the channel has an output
 /// in the current zone. Hidden state is per-(scene, zone) client UI state,
-/// not the daemon's `layout_auto_exclusions`. Moving a single channel
-/// between zones is not surfaced here; the card's operations menu moves the
-/// whole device.
+/// not the daemon's `layout_auto_exclusions`. The row drags on its own, so
+/// one channel can move to another zone.
 fn component_row_view(
     studio: StudioContext,
+    drag: DragController,
     scene_key: Option<String>,
     physical_device_id: String,
     row: ComponentRow,
@@ -815,6 +893,8 @@ fn component_row_view(
         slot_id,
         zone_name,
         display_name,
+        payload,
+        dom_id,
     } = row;
 
     // Bindings that target THIS channel, filtered through the alias
@@ -891,7 +971,8 @@ fn component_row_view(
 
     view! {
         <div
-            class="flex items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+            id=dom_id
+            class="flex touch-pan-y select-none items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 [-webkit-touch-callout:none]"
             class=("cursor-pointer", move || interactive)
             class=("bg-accent/12", move || is_row_selected.get())
             class=("bg-surface-hover/30", move || is_row_under_canvas_pointer.get())
@@ -903,6 +984,7 @@ fn component_row_view(
                     select_output_in_zone(studio, row_zone_id.as_deref(), id);
                 }
             }
+            on:pointerdown=move |ev: web_sys::PointerEvent| drag.press(&ev, payload.clone())
             on:keydown=move |ev: web_sys::KeyboardEvent| {
                 if matches!(ev.key().as_str(), "Enter" | " ")
                     && let Some(id) = key_output.clone()
@@ -1037,46 +1119,6 @@ pub(super) fn fetch_attachments_if_needed(studio: StudioContext, physical_device
     });
 }
 
-/// A zone's shown name, read at click time.
-fn zone_label(studio: StudioContext, zone_id: &str) -> String {
-    studio.active_scene.with_untracked(|scene| {
-        scene
-            .as_ref()
-            .and_then(|scene| {
-                surfaces_from_zones(&scene.zones)
-                    .into_iter()
-                    .find(|surface| surface.id == zone_id)
-                    .map(|surface| surface.name)
-            })
-            .unwrap_or_else(|| "this zone".to_owned())
-    })
-}
-
-/// Assign the device through the daemon's canonical hardware-output factory,
-/// seeding each segment's placement per [`super::placement::assignment_hints`].
-/// The response records one reversible operation for the complete device.
-pub(super) fn assign_device_to_zone(
-    studio: StudioContext,
-    device: api::DeviceSummary,
-    zone_id: String,
-) {
-    let Some(scene) = studio.history.current_scene() else {
-        return;
-    };
-    let placements = studio.rig_layout.with_untracked(|rig| {
-        super::placement::assignment_hints(
-            &scene,
-            rig.as_ref(),
-            &device,
-            &zone_id,
-            studio.render_canvas_size.get_untracked(),
-        )
-    });
-    studio
-        .history
-        .assign_device(zone_id, device.layout_device_id, Vec::new(), placements);
-}
-
 /// Flash a device's LEDs so the user can locate it physically.
 fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
     let device_id = device_id.to_owned();
@@ -1088,39 +1130,6 @@ fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
         }
         set_identifying.set(false);
     });
-}
-
-/// Unassign every output this device has in `zone_id`. The removals run in
-/// sequence because each one bumps the scene revision; threading the new
-/// revision into the next call lets a multi-output controller leave the
-/// zone in a single user action.
-pub(super) fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
-    use hypercolor_types::api::scene::{MemberEdit, MemberState};
-    let history = studio.history;
-    let Some(scene) = history.current_scene() else {
-        return;
-    };
-    let Some(zone) = scene
-        .zones
-        .iter()
-        .find(|zone| zone.id.to_string() == zone_id)
-    else {
-        return;
-    };
-    let changes = api::zone_outputs(zone)
-        .into_iter()
-        .enumerate()
-        .filter(|(_, output)| output.device_id == device_id)
-        .map(|(index, output)| MemberEdit {
-            before: Some(MemberState {
-                zone_id: zone.id,
-                output,
-                index,
-            }),
-            after: None,
-        })
-        .collect();
-    history.edit_members(changes);
 }
 
 /// Group a number's digits in threes: `230400` → `"230,400"`.

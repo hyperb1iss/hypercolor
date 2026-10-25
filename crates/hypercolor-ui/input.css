@@ -647,6 +647,13 @@ input[type="range"].slider-silk::-moz-range-track {
     85%      { transform: scaleY(0.55); }
 }
 
+/* Spring-loaded tab hold: a ring that fills while a drag rests on a tab.
+   The SVG circle uses pathLength="1", so the dash runs from 1 to 0. */
+@keyframes spring-fill {
+    from { stroke-dashoffset: 1; }
+    to   { stroke-dashoffset: 0; }
+}
+
 /* ── Animation Utility Classes ───────────────────────────────────────────── */
 
 .animate-enter-up       { animation: enter-up 0.35s var(--ease-silk) both; }
@@ -662,6 +669,7 @@ input[type="range"].slider-silk::-moz-range-track {
 .animate-edge-shimmer   { animation: edgeShimmer 3s ease-in-out infinite; }
 .animate-glow-reveal    { animation: glowReveal 0.5s var(--ease-silk) both; }
 .animate-swap-in        { animation: swapIn 0.22s var(--ease-silk) both; }
+.animate-spring-fill    { animation: spring-fill 0.5s linear both; }
 
 /* Effect-swap stagger — three variants with cascading delays so the
    title lands first, then the description, then the category chip. */
@@ -1376,6 +1384,7 @@ body.resizing * {
     .animate-cabinet-ignite,
     .animate-eq-bar,
     .animate-swap-in,
+    .animate-spring-fill,
     .animate-picker-in,
     .logo-bg-mark,
     .search-glow,

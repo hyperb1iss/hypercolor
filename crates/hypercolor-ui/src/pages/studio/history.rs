@@ -9,10 +9,22 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use super::drag_model::{Footprint as DropFootprint, offset_to_center};
 use super::placement::Footprint;
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
-use hypercolor_types::api::scene::{EditMembersRequest, EditMembersResponse, MemberEdit};
+use hypercolor_types::api::scene::{
+    EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint,
+};
+use hypercolor_types::spatial::NormalizedPosition;
 use leptos::prelude::*;
+use leptos::reactive::owner::LocalStorage;
+
+/// Runs once a membership write settles, with the scene revision it
+/// landed at, or `None` when it did not apply. Every operation that takes
+/// one settles it exactly once: when it lands, fails, stands down, or is
+/// dropped from the queue. Only a Studio torn down mid-write drops it
+/// unsettled, since nothing is left to hear it.
+pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StudioEdit {
@@ -79,19 +91,39 @@ enum Waiting {
         redo: bool,
         recorded: u64,
     },
+    /// An assignment; with a `point`, its arrivals center on it.
     Assign {
         zone_id: String,
         device_id: String,
         segments: Vec<String>,
-        placements: Vec<hypercolor_types::api::scene::MemberPlacementHint>,
+        placements: Vec<MemberPlacementHint>,
+        point: Option<NormalizedPosition>,
+        done: Option<EditDone>,
     },
-    Edit(Vec<MemberEdit>),
+    Edit {
+        changes: Vec<MemberEdit>,
+        done: Option<EditDone>,
+    },
     DeleteZone {
         zone_id: String,
         select_after: Option<String>,
         deleted: Callback<DeletedZone>,
     },
     RestoreZone(DeletedZone),
+}
+
+impl Waiting {
+    /// Whether this operation records a journal entry when it lands.
+    fn records(&self) -> bool {
+        matches!(self, Self::Assign { .. } | Self::Edit { .. })
+    }
+
+    /// Tell whoever waits on this operation that it will not run.
+    fn stand_down(self) {
+        if let Self::Assign { done, .. } | Self::Edit { done, .. } = self {
+            settle(done, None);
+        }
+    }
 }
 
 /// How the history reaches the layout editor: its commit queue, which
@@ -114,7 +146,7 @@ pub(crate) struct StudioHistory {
     pub pending_layout: RwSignal<Option<LayoutReplay>>,
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
-    waiting: StoredValue<VecDeque<Waiting>>,
+    waiting: StoredValue<VecDeque<Waiting>, LocalStorage>,
     editor: StoredValue<Option<EditorHooks>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
@@ -132,7 +164,7 @@ impl StudioHistory {
         let journal = RwSignal::new(StudioJournal::default());
         let busy = RwSignal::new(false);
         let committing = RwSignal::new(false);
-        let waiting = StoredValue::new(VecDeque::new());
+        let waiting = StoredValue::new_local(VecDeque::<Waiting>::new());
         let pending_layout = RwSignal::new(None);
         let latest = RwSignal::new(None);
         let generation = RwSignal::new(0_u64);
@@ -145,7 +177,10 @@ impl StudioHistory {
             generation.update(|g| *g = g.wrapping_add(1));
             busy.set(false);
             committing.set(false);
-            waiting.set_value(VecDeque::new());
+            let dropped = waiting.try_update_value(std::mem::take).unwrap_or_default();
+            for operation in dropped {
+                operation.stand_down();
+            }
         });
         Self {
             journal,
@@ -341,8 +376,18 @@ impl StudioHistory {
                 device_id,
                 segments,
                 placements,
-            } => self.assign_device_now(zone_id, device_id, segments, placements),
-            Waiting::Edit(changes) => self.edit_members_now(changes),
+                point: None,
+                done,
+            } => self.assign_device_now(zone_id, device_id, segments, placements, done),
+            Waiting::Assign {
+                zone_id,
+                device_id,
+                segments,
+                placements,
+                point: Some(point),
+                done,
+            } => self.assign_device_at_now(zone_id, device_id, segments, placements, point, done),
+            Waiting::Edit { changes, done } => self.edit_members_now(changes, done),
             Waiting::DeleteZone {
                 zone_id,
                 select_after,
@@ -390,18 +435,54 @@ impl StudioHistory {
         }
     }
 
+    /// Treat `scene` as the live document when it is newer than the shared
+    /// one, so an edit can follow a zone created a moment ago.
+    pub fn adopt(self, scene: api::SceneDocument) {
+        let newer = self
+            .current_scene()
+            .is_none_or(|current| current.id != scene.id || scene.revision > current.revision);
+        if newer {
+            self.latest.set(Some(scene));
+        }
+    }
+
     pub fn assign_device(
         self,
         zone_id: String,
         device_id: String,
         segments: Vec<String>,
-        placements: Vec<hypercolor_types::api::scene::MemberPlacementHint>,
+        placements: Vec<MemberPlacementHint>,
+        done: Option<EditDone>,
     ) {
         self.when_free(Waiting::Assign {
             zone_id,
             device_id,
             segments,
             placements,
+            point: None,
+            done,
+        });
+    }
+
+    /// Assign a device and center the outputs it gains on `point`, as one
+    /// undo step. The daemon mints the outputs, so the second write moves
+    /// them once their geometry is known.
+    pub fn assign_device_at(
+        self,
+        zone_id: String,
+        device_id: String,
+        segments: Vec<String>,
+        placements: Vec<MemberPlacementHint>,
+        point: NormalizedPosition,
+        done: Option<EditDone>,
+    ) {
+        self.when_free(Waiting::Assign {
+            zone_id,
+            device_id,
+            segments,
+            placements,
+            point: Some(point),
+            done,
         });
     }
 
@@ -410,31 +491,107 @@ impl StudioHistory {
         zone_id: String,
         device_id: String,
         segments: Vec<String>,
-        placements: Vec<hypercolor_types::api::scene::MemberPlacementHint>,
+        placements: Vec<MemberPlacementHint>,
+        done: Option<EditDone>,
     ) {
-        let Some(scene) = self.current_scene() else {
+        let Some((scene, request)) = self.assignment(zone_id, device_id, segments, placements)
+        else {
+            settle(done, None);
             return;
         };
-        let Some(zone) = scene
+        self.submit(request, scene.revision, done);
+    }
+
+    fn assign_device_at_now(
+        self,
+        zone_id: String,
+        device_id: String,
+        segments: Vec<String>,
+        placements: Vec<MemberPlacementHint>,
+        point: NormalizedPosition,
+        done: Option<EditDone>,
+    ) {
+        let Some((scene, request)) = self.assignment(zone_id, device_id, segments, placements)
+        else {
+            settle(done, None);
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            settle(done, None);
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let result = api::zones::edit_members(&request, scene.revision).await;
+            if !self.is_current(generation) {
+                self.settle_superseded(done);
+                return;
+            }
+            let assigned = match result {
+                Ok(api::zones::ZoneOutcome::Applied(response)) => response,
+                outcome => {
+                    report_failure(&outcome);
+                    self.close(generation, done, None);
+                    return;
+                }
+            };
+            let mut applied = assigned.document.revision;
+            let mut changes = assigned.changes.clone();
+            let placed = center_arrivals(&assigned.changes, point);
+            self.accept(assigned);
+            if !placed.is_empty() {
+                let request = EditMembersRequest {
+                    scene_id: scene.id,
+                    changes: placed,
+                    assignment: None,
+                };
+                let result = api::zones::edit_members(&request, applied).await;
+                if !self.is_current(generation) {
+                    self.settle_superseded(done);
+                    return;
+                }
+                match result {
+                    Ok(api::zones::ZoneOutcome::Applied(response)) => {
+                        applied = response.document.revision;
+                        fold_placements(&mut changes, &response.changes);
+                        self.accept(response);
+                    }
+                    _ => toasts::toast_info(
+                        "Assigned, but it could not be placed where you dropped it",
+                    ),
+                }
+            }
+            if !changes.is_empty() {
+                self.journal
+                    .update(|j| j.record(StudioEdit::Members(changes)));
+            }
+            toasts::toast_success("Assignment saved");
+            self.close(generation, done, Some(applied));
+        });
+    }
+
+    fn assignment(
+        self,
+        zone_id: String,
+        device_id: String,
+        segments: Vec<String>,
+        placements: Vec<MemberPlacementHint>,
+    ) -> Option<(api::SceneDocument, EditMembersRequest)> {
+        let scene = self.current_scene()?;
+        let zone = scene
             .zones
             .iter()
-            .find(|zone| zone.id.to_string() == zone_id)
-        else {
-            return;
+            .find(|zone| zone.id.to_string() == zone_id)?;
+        let request = EditMembersRequest {
+            scene_id: scene.id,
+            changes: Vec::new(),
+            assignment: Some(hypercolor_types::api::scene::MemberAssignmentTarget {
+                zone_id: zone.id,
+                device_id,
+                segments,
+                placements,
+            }),
         };
-        self.submit(
-            EditMembersRequest {
-                scene_id: scene.id,
-                changes: Vec::new(),
-                assignment: Some(hypercolor_types::api::scene::MemberAssignmentTarget {
-                    zone_id: zone.id,
-                    device_id,
-                    segments,
-                    placements,
-                }),
-            },
-            scene.revision,
-        );
+        Some((scene, request))
     }
 
     /// Remove outputs from the zone `zone_id` in one membership edit.
@@ -463,24 +620,28 @@ impl StudioHistory {
                 after: None,
             })
             .collect();
-        self.edit_members(changes);
+        self.edit_members(changes, None);
     }
 
-    pub fn edit_members(self, changes: Vec<MemberEdit>) {
-        if !changes.is_empty() {
-            self.when_free(Waiting::Edit(changes));
+    pub fn edit_members(self, changes: Vec<MemberEdit>, done: Option<EditDone>) {
+        if changes.is_empty() {
+            settle(done, None);
+            return;
         }
+        self.when_free(Waiting::Edit { changes, done });
     }
 
     /// Send a membership edit against the scene as it stands now. Its
     /// preconditions are read afresh, since a layout commit may have moved
     /// an output while the edit waited; ownership and binding must hold.
-    fn edit_members_now(self, changes: Vec<MemberEdit>) {
+    fn edit_members_now(self, changes: Vec<MemberEdit>, done: Option<EditDone>) {
         let Some(scene) = self.current_scene() else {
+            settle(done, None);
             return;
         };
         let Ok(changes) = rebase_preconditions(&scene, changes) else {
             toasts::toast_error("Assignment changed elsewhere; nothing was changed");
+            settle(done, None);
             return;
         };
         self.submit(
@@ -490,36 +651,56 @@ impl StudioHistory {
                 assignment: None,
             },
             scene.revision,
+            done,
         );
     }
 
-    fn submit(self, request: EditMembersRequest, revision: u64) {
+    fn submit(self, request: EditMembersRequest, revision: u64, done: Option<EditDone>) {
         let Some(generation) = self.begin() else {
+            settle(done, None);
             return;
         };
         leptos::task::spawn_local(async move {
             let result = api::zones::edit_members(&request, revision).await;
             // Disposed owners and superseded operations cannot consume a reply.
             if !self.is_current(generation) {
+                self.settle_superseded(done);
                 return;
             }
-            match result {
+            let applied = match result {
                 Ok(api::zones::ZoneOutcome::Applied(response)) => {
                     if !response.changes.is_empty() {
                         self.journal
                             .update(|j| j.record(StudioEdit::Members(response.changes.clone())));
                     }
+                    let revision = response.document.revision;
                     self.accept(response);
                     toasts::toast_success("Assignment saved");
+                    Some(revision)
                 }
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => toasts::toast_error(
-                    "Scene changed elsewhere; assignment was not saved. Try again.",
-                ),
-                Err(error) => toasts::toast_error(&format!("Assignment failed: {error}")),
-            }
-            self.refresh.run(());
-            self.finish(generation);
+                outcome => {
+                    report_failure(&outcome);
+                    None
+                }
+            };
+            self.close(generation, done, applied);
         });
+    }
+
+    /// End a membership write: refresh the scene, release the history,
+    /// and tell the caller the revision it landed at, if it applied.
+    fn close(self, generation: u64, done: Option<EditDone>, applied: Option<u64>) {
+        self.refresh.run(());
+        self.finish(generation);
+        settle(done, applied);
+    }
+
+    /// Settle a write a scene switch overtook, while Studio is still
+    /// there to hear it.
+    fn settle_superseded(self, done: Option<EditDone>) {
+        if self.generation.try_get_untracked().is_some() {
+            settle(done, None);
+        }
     }
 
     fn accept(self, response: EditMembersResponse) {
@@ -534,9 +715,7 @@ impl StudioHistory {
             .try_with_value(|waiting| {
                 waiting
                     .iter()
-                    .filter(|operation| {
-                        matches!(operation, Waiting::Assign { .. } | Waiting::Edit(_))
-                    })
+                    .filter(|operation| operation.records())
                     .count()
             })
             .unwrap_or(0);
@@ -673,6 +852,73 @@ impl StudioHistory {
                     self.finish(generation);
                 });
             }
+        }
+    }
+}
+
+fn settle(done: Option<EditDone>, applied: Option<u64>) {
+    if let Some(done) = done {
+        done(applied);
+    }
+}
+
+fn report_failure<T>(outcome: &api::ApiResult<api::zones::ZoneOutcome<T>>) {
+    match outcome {
+        Ok(api::zones::ZoneOutcome::Applied(_)) => {}
+        Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+            toasts::toast_error("Scene changed elsewhere; assignment was not saved. Try again.");
+        }
+        Err(error) => toasts::toast_error(&format!("Assignment failed: {error}")),
+    }
+}
+
+/// The placement edits that center an assignment's arrivals on `point`.
+/// Each arrival keeps its zone, index, and relation to the others.
+fn center_arrivals(changes: &[MemberEdit], point: NormalizedPosition) -> Vec<MemberEdit> {
+    let arrivals: Vec<_> = changes
+        .iter()
+        .filter_map(|change| change.after.clone())
+        .collect();
+    let footprints: Vec<DropFootprint> = arrivals
+        .iter()
+        .map(|state| DropFootprint {
+            center: state.output.position,
+            size: state.output.size,
+        })
+        .collect();
+    let Some((dx, dy)) = offset_to_center(&footprints, point) else {
+        return Vec::new();
+    };
+    if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+        return Vec::new();
+    }
+    arrivals
+        .into_iter()
+        .map(|state| {
+            let mut placed = state.clone();
+            placed.output.position =
+                NormalizedPosition::new(state.output.position.x + dx, state.output.position.y + dy);
+            MemberEdit {
+                before: Some(state),
+                after: Some(placed),
+            }
+        })
+        .collect()
+}
+
+/// Fold a follow-up placement receipt into the assignment it placed, so
+/// one undo takes back both.
+fn fold_placements(changes: &mut [MemberEdit], placed: &[MemberEdit]) {
+    for change in changes {
+        let Some(after) = change.after.as_mut() else {
+            continue;
+        };
+        if let Some(moved) = placed
+            .iter()
+            .filter_map(|edit| edit.after.as_ref())
+            .find(|state| state.output.id == after.output.id)
+        {
+            *after = moved.clone();
         }
     }
 }
@@ -1063,7 +1309,7 @@ mod replay_tests {
             journal: RwSignal::new(StudioJournal::default()),
             busy: RwSignal::new(busy),
             committing: RwSignal::new(false),
-            waiting: StoredValue::new(VecDeque::new()),
+            waiting: StoredValue::new_local(VecDeque::new()),
             editor: StoredValue::new(None),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),
@@ -1207,7 +1453,10 @@ mod replay_tests {
             let history = history(None, true, None, zone);
             record_layout_edit(history, zone);
             history.waiting.update_value(|waiting| {
-                waiting.push_back(Waiting::Edit(Vec::new()));
+                waiting.push_back(Waiting::Edit {
+                    changes: Vec::new(),
+                    done: None,
+                });
             });
             history.replay(false);
             let expected = history.waiting.with_value(|waiting| match waiting.back() {

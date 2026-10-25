@@ -29,6 +29,8 @@ use crate::toasts;
 use crate::ws::messages::zone_has_degraded_layer;
 
 use super::StudioContext;
+use super::drag::{DragController, DropLook};
+use super::drag_model::DropTarget;
 use super::surface::{Surface, SurfaceKind, surfaces_from_zones};
 use super::tab_model::{
     DeletePrompt, TabStatus, ZONE_COLOR_PRESETS, deletable, delete_prompt, drag_target, drop_slot,
@@ -168,6 +170,7 @@ struct StripHandles {
 #[component]
 pub fn ZoneStrip() -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let caps = expect_context::<CapabilitiesContext>();
     let can_create = Memo::new(move |_| caps.zone_crud_ready());
 
@@ -543,7 +546,17 @@ pub fn ZoneStrip() -> impl IntoView {
             <Show when=move || can_create.get()>
                 <button
                     type="button"
-                    class="mb-1 ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-accent disabled:opacity-40"
+                    data-drop-new-zone="true"
+                    class=move || {
+                        let look = match drag.look(&DropTarget::NewZone) {
+                            DropLook::Idle => "",
+                            DropLook::Candidate => "text-accent ring-1 ring-inset ring-accent/40",
+                            DropLook::Over => "text-accent bg-accent/10 ring-2 ring-inset ring-accent",
+                        };
+                        format!(
+                            "mb-1 ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-tertiary transition-colors hover:bg-surface-hover/40 hover:text-accent disabled:opacity-40 {look}",
+                        )
+                    }
                     title="New zone"
                     aria-label="New zone"
                     disabled=move || creating.get()
@@ -571,9 +584,16 @@ pub fn ZoneStrip() -> impl IntoView {
 #[component]
 fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let ws = use_context::<WsContext>();
     let id = StoredValue::new(zone_id.clone());
     let dom_id = zone_tab_dom_id(&zone_id);
+    let drop_target = DropTarget::Tab(zone_id.clone());
+    let drop_look = Memo::new(move |_| drag.look(&drop_target));
+    let springing = Memo::new(move |_| {
+        drag.charging
+            .with(|charging| id.with_value(|id| charging.as_deref() == Some(id.as_str())))
+    });
 
     let surface = Memo::new(move |_| {
         handles.lights.with(|lights| {
@@ -777,11 +797,47 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
             class=("hover:bg-surface-hover/30", move || !is_active.get())
             class=("hover:text-fg-secondary", move || !is_active.get())
             class=("opacity-50", move || is_dragged.get())
+            class=("ring-1", move || drop_look.get() == DropLook::Candidate)
+            class=("ring-2", move || drop_look.get() == DropLook::Over)
+            class=("ring-inset", move || drop_look.get() != DropLook::Idle)
+            class=("ring-accent/40", move || drop_look.get() == DropLook::Candidate)
+            class=("ring-accent", move || drop_look.get() == DropLook::Over)
+            class=("bg-accent/10", move || drop_look.get() == DropLook::Over)
         >
             <Show when=move || is_active.get()>
                 <span class="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent" />
             </Show>
             {tab_view}
+            // Holding a drag here opens the tab when the ring fills.
+            <Show when=move || springing.get()>
+                <svg
+                    class="pointer-events-none mr-2 h-3.5 w-3.5 shrink-0 -rotate-90"
+                    viewBox="0 0 16 16"
+                    aria-hidden="true"
+                >
+                    <circle
+                        cx="8"
+                        cy="8"
+                        r="6"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        class="text-accent-muted"
+                    />
+                    <circle
+                        cx="8"
+                        cy="8"
+                        r="6"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        pathLength="1"
+                        stroke-dasharray="1"
+                        class="animate-spring-fill text-accent"
+                    />
+                </svg>
+            </Show>
             <Show when=move || is_active.get() && !renaming.get()>
                 <button
                     type="button"

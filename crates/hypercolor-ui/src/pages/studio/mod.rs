@@ -10,8 +10,11 @@ mod composition_panel;
 pub mod device_assignment;
 mod device_card;
 mod device_pane;
+mod drag;
+pub mod drag_model;
 mod face_composition;
 pub mod history;
+mod moves;
 mod offline_device_card;
 pub mod pane_model;
 pub mod placement;
@@ -37,11 +40,13 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::scene_picker::ScenePicker;
 use crate::icons::*;
+use crate::pointer_gesture::PointerEnd;
 use crate::storage;
 
 use crate::zones::surface::{selected_screen_device_id, surfaces_from_zones};
 use composition_panel::CompositionPanel;
 use device_pane::DevicePane;
+use drag::{DragController, DragLayer};
 use stage::Stage;
 use undo_notice::{UndoNotice, UndoNoticeHost};
 use zone_strip::{ZONE_PANEL_ID, ZoneStrip, active_tab_dom_id};
@@ -408,7 +413,7 @@ pub fn StudioPage() -> impl IntoView {
     let history = history::StudioHistory::new(active_scene, selected_surface_id, refresh_scene);
     provide_context(history);
 
-    provide_context(StudioContext {
+    let studio = StudioContext {
         history,
         selected_surface_id,
         active_scene,
@@ -429,7 +434,12 @@ pub fn StudioPage() -> impl IntoView {
         pane_drawer: tree_drawer,
         pointer_output_id,
         rig_layout,
-    });
+    };
+    provide_context(studio);
+    let root_ref = NodeRef::<leptos::html::Div>::new();
+    let drag = DragController::new(studio, devices_ctx, root_ref);
+    provide_context(drag);
+    let dragging = Memo::new(move |_| drag.payload.with(Option::is_some));
 
     let on_screens = Memo::new(move |_| {
         let selected = selected_surface_id.get();
@@ -445,8 +455,27 @@ pub fn StudioPage() -> impl IntoView {
     let panel_label =
         move || active_tab_dom_id(selected_surface_id.get().as_deref(), on_screens.get());
 
+    // Drag sources capture their pointer, so every gesture event bubbles up
+    // here, and a live drag captures on this root so it survives the pane
+    // rebuilding beneath it.
     view! {
-        <div class="flex h-full flex-col overflow-hidden">
+        <div
+            node_ref=root_ref
+            class="flex h-full flex-col overflow-hidden"
+            class=("cursor-grabbing", move || dragging.get())
+            class=("select-none", move || dragging.get())
+            on:pointermove=move |ev| drag.on_move(&ev)
+            on:pointerup=move |ev| drag.on_end(&ev, PointerEnd::Up)
+            on:pointercancel=move |ev| drag.on_end(&ev, PointerEnd::Cancel)
+            on:lostpointercapture=move |ev| drag.on_lost_capture(&ev)
+            on:touchmove=move |ev| drag.on_touch_move(&ev)
+            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                if drag.holds_touch() {
+                    ev.prevent_default();
+                }
+            }
+        >
+            <DragLayer />
             <PageHeader
                 icon=LuLayoutTemplate
                 title="Studio"

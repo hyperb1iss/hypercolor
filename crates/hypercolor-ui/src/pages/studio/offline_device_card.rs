@@ -17,6 +17,9 @@ use crate::toasts;
 use super::StudioContext;
 use super::device_assignment::ZoneDeviceRow;
 use super::device_card::friendly_offline_label;
+use super::drag::{DragController, FocusReturn};
+use super::drag_model::DropAction;
+use super::moves::{perform, zone_device_payload};
 
 #[derive(Clone, Copy)]
 pub(super) struct SavedControllersRefresh(pub Callback<()>);
@@ -24,6 +27,7 @@ pub(super) struct SavedControllersRefresh(pub Callback<()>);
 #[component]
 pub(super) fn OfflineDeviceCard(row: ZoneDeviceRow, select: String, placed: bool) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let devices = expect_context::<DevicesContext>();
     let registry_available =
         Memo::new(move |_| matches!(devices.devices_resource.get(), Some(Ok(_))));
@@ -118,11 +122,17 @@ pub(super) fn OfflineDeviceCard(row: ZoneDeviceRow, select: String, placed: bool
                                 disabled=move || studio.history.busy.get()
                                 on:click=move |_| {
                                     menu_open.set(false);
-                                    super::device_card::remove_device_from_zone(
+                                    let payload = zone_device_payload(
                                         studio,
-                                        zone_id.get_value(),
-                                        device_id.get_value(),
+                                        &zone_id.get_value(),
+                                        &device_id.get_value(),
+                                        label,
                                     );
+                                    let focus = FocusReturn {
+                                        target: super::zone_strip::zone_tab_dom_id(&zone_id.get_value()),
+                                        fallback: None,
+                                    };
+                                    perform(drag, payload, DropAction::Unassign, Some(focus));
                                 }
                             >
                                 <Icon icon=LuX width="12px" height="12px" />
