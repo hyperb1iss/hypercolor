@@ -3,9 +3,10 @@
 //! For a Light the Stage *is* the spatial layout editor: the live
 //! effect renders under the device boxes, always on, with no view
 //! toggle. Its header carries the now-playing chip and the zone-canvas
-//! controls — undo / redo and Revert / Save — driven by the
-//! context-provided `LayoutEditorContext` and `ZoneCanvasActions` from a
-//! `ZoneLayoutProvider` mounted on a Studio ancestor.
+//! controls — undo / redo and Fit — driven by the context-provided
+//! `LayoutEditorContext` and `ZoneCanvasActions` from a
+//! `ZoneLayoutProvider` mounted on a Studio ancestor. Layout edits commit
+//! as each gesture ends, so there is nothing to save.
 //!
 //! A Screen shows that device's live face via `DisplayPreviewSurface`.
 
@@ -300,7 +301,7 @@ pub fn Stage() -> impl IntoView {
                             // a flex-1 child with no h-full, so a plain block
                             // here collapses the canvas to zero height.
                             <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                                <div class="contents" inert=move || studio.history.busy.get() aria-busy=move || studio.history.busy.get().to_string()>
+                                <div class="contents" inert=move || studio.history.locked.get() aria-busy=move || studio.history.locked.get().to_string()>
                                     <LayoutWorkspace />
                                 </div>
                             </div>
@@ -313,9 +314,8 @@ pub fn Stage() -> impl IntoView {
     }
 }
 
-/// The Light Stage header's zone-canvas controls — undo / redo, Fit, and
-/// Revert / Save for the selected zone's layout. Save doubles as the
-/// dirty indicator. Reads the [`LayoutEditorContext`] and
+/// The Light Stage header's zone-canvas controls — undo / redo and Fit
+/// for the selected zone's layout. Reads the [`LayoutEditorContext`] and
 /// [`ZoneCanvasActions`] a `ZoneLayoutProvider` mounts on a Studio
 /// ancestor.
 #[component]
@@ -326,10 +326,7 @@ fn ZoneCanvasBar() -> impl IntoView {
     let write = editor.set_layout;
     let can_undo = editor.can_undo;
     let can_redo = editor.can_redo;
-    let is_dirty = actions.is_dirty;
     let has_layout = actions.has_layout;
-    let save = actions.save;
-    let revert = actions.revert;
     let fit = actions.fit;
     let can_fit = actions.can_fit;
 
@@ -359,36 +356,10 @@ fn ZoneCanvasBar() -> impl IntoView {
                     class="flex items-center gap-1 rounded-md border border-edge-subtle px-2 py-1 text-[11px] font-medium text-fg-secondary transition-colors hover:bg-surface-hover disabled:opacity-40 btn-press"
                     title="Fit every output to the canvas"
                     on:click=move |_| fit.run(())
-                    disabled=move || !can_fit.get() || history.busy.get()
+                    disabled=move || !can_fit.get() || history.locked.get()
                 >
                     <Icon icon=LuMaximize width="12px" height="12px" />
                     "Fit"
-                </button>
-
-                <div class="mx-0.5 h-5 w-px bg-edge-subtle/40" />
-
-                <span role="status" class="text-[11px] text-fg-tertiary" title="Device assignments save automatically; layout changes save when you choose Save.">
-                    {move || if history.busy.get() { "Saving…" } else if is_dirty.get() { "Unsaved layout" } else { "Saved" }}
-                </span>
-                <button
-                    type="button"
-                    class="flex items-center gap-1 rounded-md border border-edge-subtle px-2 py-1 text-[11px] font-medium text-fg-secondary transition-colors hover:bg-surface-hover disabled:opacity-40 btn-press"
-                    title="Revert unsaved layout changes"
-                    on:click=move |_| revert.run(())
-                    disabled=move || !is_dirty.get() || history.busy.get()
-                >
-                    <Icon icon=LuUndo2 width="12px" height="12px" />
-                    "Revert"
-                </button>
-                <button
-                    type="button"
-                    class="flex items-center gap-1 rounded-md border border-accent-muted bg-accent-muted px-2 py-1 text-[11px] font-medium text-fg-primary transition-colors hover:bg-surface-hover disabled:opacity-40 btn-press"
-                    title="Save layout changes"
-                    on:click=move |_| save.run(())
-                    disabled=move || !is_dirty.get() || history.busy.get()
-                >
-                    <Icon icon=LuSave width="12px" height="12px" />
-                    "Save"
                 </button>
             </div>
         </Show>

@@ -139,7 +139,6 @@ pub(crate) struct LayoutEditorContext {
     pub set_is_dirty: WriteSignal<bool>,
     pub set_hidden_zones: WriteSignal<HashSet<String>>,
     pub set_keep_aspect_ratio: WriteSignal<bool>,
-    pub set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     /// Push the current in-flight layout to the daemon's preview engine.
     /// Used by the canvas during drag to keep the LED preview live without
     /// committing intermediate state to the layout signal.
@@ -229,6 +228,7 @@ impl LayoutEditorSession {
             selected_surface,
             interaction_start: RwSignal::new(None),
             set_dirty: set_is_dirty,
+            on_commit: StoredValue::new(None),
         };
 
         Self {
@@ -270,7 +270,6 @@ impl LayoutEditorSession {
             set_keep_aspect_ratio: self.set_keep_aspect_ratio,
             compound_depth: Signal::derive(move || self.compound_depth.get()),
             set_compound_depth: self.set_compound_depth,
-            set_removed_zone_cache: self.set_removed_zone_cache,
             push_preview,
             can_undo: self.can_undo,
             can_redo: self.can_redo,

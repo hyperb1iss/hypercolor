@@ -1,8 +1,9 @@
 //! The Studio Stage spatial layout editor.
 //!
-//! [`ZoneLayoutProvider`] owns the selected zone's editor session,
-//! persistence, history, and live preview. [`LayoutWorkspace`] renders
-//! that session inside the Stage.
+//! [`ZoneLayoutProvider`] owns the selected zone's editor session, its
+//! live commits, history, and live preview. [`LayoutWorkspace`] renders
+//! that session inside the Stage. Layout edits commit when their gesture
+//! ends, exactly like membership and layer edits; there is no staged save.
 
 use leptos::ev;
 use leptos::prelude::*;
@@ -79,6 +80,8 @@ pub struct LayoutWriteHandle {
     selected_surface: Signal<Option<String>>,
     interaction_start: RwSignal<Option<LayoutEditorSnapshot>>,
     set_dirty: WriteSignal<bool>,
+    /// Commits a zone's edited layout; the provider installs it.
+    on_commit: StoredValue<Option<Callback<String>>>,
 }
 
 impl LayoutWriteHandle {
@@ -113,8 +116,25 @@ impl LayoutWriteHandle {
         self.interaction_start.with_untracked(Option::is_some)
     }
 
+    /// Record a finished edit in Studio history and commit it.
+    fn record(self, zone_id: String, before: LayoutEditorSnapshot, after: LayoutEditorSnapshot) {
+        if before == after {
+            return;
+        }
+        self.studio_history
+            .record_layout(zone_id.clone(), before, after);
+        self.commit(zone_id);
+    }
+
+    /// Commit the zone's current editor state.
+    pub(crate) fn commit(self, zone_id: String) {
+        if let Some(commit) = self.on_commit.get_value() {
+            commit.run(zone_id);
+        }
+    }
+
     pub fn update(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
-        if self.studio_history.busy.get_untracked() {
+        if self.studio_history.is_locked() {
             return;
         }
         // Skip history bookkeeping while a drag/resize interaction is in flight —
@@ -131,7 +151,7 @@ impl LayoutWriteHandle {
             return;
         };
         if let Some(zone_id) = self.selected_surface.get_untracked() {
-            self.studio_history.record_layout(zone_id, before, after);
+            self.record(zone_id, before, after);
         }
     }
 
@@ -145,12 +165,8 @@ impl LayoutWriteHandle {
         self.set_dirty.set(false);
     }
 
-    pub fn mark_clean(self) {
-        self.set_dirty.set(false);
-    }
-
     pub fn begin_interaction(self) {
-        if self.studio_history.busy.get_untracked() {
+        if self.studio_history.is_locked() {
             return;
         }
         if self.interaction_start.with_untracked(Option::is_none) {
@@ -166,7 +182,7 @@ impl LayoutWriteHandle {
             self.capture_snapshot(),
             self.selected_surface.get_untracked(),
         ) {
-            self.studio_history.record_layout(zone_id, before, after);
+            self.record(zone_id, before, after);
         }
     }
 
@@ -176,7 +192,7 @@ impl LayoutWriteHandle {
     /// touches the layout signal, so this is the *only* moment the reactive
     /// graph sees the change. Returns true if zone state actually changed.
     pub fn commit_zones(self, zones: Vec<Output>) -> bool {
-        if self.studio_history.busy.get_untracked() {
+        if self.studio_history.is_locked() {
             return false;
         }
         let unchanged = self
@@ -194,15 +210,6 @@ impl LayoutWriteHandle {
         true
     }
 
-    pub fn replace_zones_with_history(self, zones: Vec<Output>) {
-        self.update(move |current| {
-            if let Some(layout) = current {
-                layout.zones = zones;
-            }
-        });
-        self.set_dirty.set(true);
-    }
-
     pub fn undo(self) {
         self.studio_history.replay(false);
     }
@@ -212,6 +219,7 @@ impl LayoutWriteHandle {
     }
 }
 
+pub mod commit;
 mod editor_session;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
@@ -431,24 +439,43 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
     }
 }
 
-/// The Studio Stage's zone-canvas actions — Fit, Save, and Revert plus the
-/// dirty and has-layout flags. Provided by [`ZoneLayoutProvider`]; the
-/// Stage header consumes it. Undo / redo and the editor write handle come
-/// from [`LayoutEditorContext`].
+/// The Studio Stage's zone-canvas actions: Fit, plus the flags the header
+/// keys off. Provided by [`ZoneLayoutProvider`]; the Stage header consumes
+/// it. Undo / redo and the editor write handle come from
+/// [`LayoutEditorContext`].
 #[derive(Clone, Copy)]
 pub(crate) struct ZoneCanvasActions {
     /// Scale and center every member of the zone to fill its canvas.
     pub fit: Callback<()>,
     /// Whether the zone has members to fit.
     pub can_fit: Signal<bool>,
-    /// Persist the selected zone's layout through the per-zone API.
-    pub save: Callback<()>,
-    /// Restore the canvas to the last saved state.
-    pub revert: Callback<()>,
-    pub is_dirty: Signal<bool>,
     /// Whether an editable zone layout is loaded. The header hides its
     /// actions when nothing is selected.
     pub has_layout: Signal<bool>,
+}
+
+/// What a queued commit would write against one scene document.
+enum PreparedCommit {
+    Write(SpatialLayout),
+    Unchanged,
+    Missing,
+}
+
+fn prepare_commit(scene: &api::SceneDocument, zone_id: &str, edited: &[Output]) -> PreparedCommit {
+    let Some(zone) = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id.to_string() == zone_id)
+    else {
+        return PreparedCommit::Missing;
+    };
+    match commit::commit_placements(&api::zone_outputs(zone), edited) {
+        Some(placements) => PreparedCommit::Write(SpatialLayout {
+            zones: placements,
+            ..editor_layout_for_zone(zone)
+        }),
+        None => PreparedCommit::Unchanged,
+    }
 }
 
 fn editor_layout_for_zone(zone: &api::ZoneResource) -> SpatialLayout {
@@ -469,8 +496,9 @@ fn editor_layout_for_zone(zone: &api::ZoneResource) -> SpatialLayout {
 /// Studio Stage, scoped to the selected zone's canonical placements.
 ///
 /// This provider adapts the selected zone's normalized placements and
-/// persists them through the per-zone layout API at `PUT
-/// .../zones/{id}/layout`. Switching zones switches the canvas. Mount it
+/// commits each finished edit through the per-zone layout API at `PUT
+/// .../zones/{id}/layout`. Switching zones switches the canvas and never
+/// drops an edit: its commit was queued when its gesture ended. Mount it
 /// once above the Stage; it provides
 /// [`LayoutEditorContext`], [`LayoutZoneDisplayContext`], and
 /// [`ZoneCanvasActions`].
@@ -480,7 +508,7 @@ pub(crate) fn ZoneLayoutProvider(
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
     selected_zone_id: Signal<Option<String>>,
-    /// Re-fetch the active scene after a save so the tree and Stage pick
+    /// Re-fetch the active scene after a commit so the tree and Stage pick
     /// up the new scene revision.
     refresh_scene: Callback<()>,
     children: Children,
@@ -649,6 +677,8 @@ pub(crate) fn ZoneLayoutProvider(
         }
         if let Some(replay) = applied_replay {
             studio_history.complete_layout(replay.redo);
+            // An undo or redo is an edit like any other: it commits.
+            set_layout.commit(zone_id);
         }
     });
 
@@ -686,10 +716,11 @@ pub(crate) fn ZoneLayoutProvider(
         }
     });
 
-    // Every unsaved edit previews on the hardware, not just canvas drags:
-    // a rotation, scale, align, or undo from the properties panel lands on
-    // the LEDs the same way a drag does. Only a dirty layout pushes, so a
-    // load, a revert, or a save never re-arms a preview.
+    // Every edit previews on the hardware the moment it lands, not just
+    // canvas drags: a rotation, scale, align, or undo from the properties
+    // panel reaches the LEDs the same way a drag does, and its commit then
+    // retires the preview. Only a layout that differs from the zone pushes,
+    // so a load or a landed commit never re-arms a preview.
     Effect::new(move |previous: Option<Option<Vec<Output>>>| {
         let snapshot = layout.with(|current| current.as_ref().map(|l| l.zones.clone()));
         let changed = previous.is_some_and(|previous| previous != snapshot);
@@ -702,109 +733,154 @@ pub(crate) fn ZoneLayoutProvider(
         snapshot
     });
 
-    let save = Callback::new(move |()| {
-        let Some(current) = layout.get_untracked() else {
+    let commit_queue = StoredValue::new(commit::CommitQueue::default());
+    // Edits queued against one scene cannot land in the next.
+    let committed_scene = studio_history.scene_id();
+    Effect::new(
+        move |previous: Option<Option<hypercolor_types::scene::SceneId>>| {
+            let current = committed_scene.get();
+            if previous.is_some_and(|previous| previous != current) {
+                commit_queue.set_value(commit::CommitQueue::default());
+            }
+            current
+        },
+    );
+
+    // A landed commit becomes the editor's baseline, and its preview
+    // retires unless newer edits for the zone are still queued.
+    let acknowledge = move |scene_id: hypercolor_types::scene::SceneId,
+                            zone_id: &str,
+                            zone: api::ZoneResource,
+                            revision: u64| {
+        let (width, height) = render_canvas_size.get_untracked();
+        let mut acknowledged = editor_layout_for_zone(&zone);
+        acknowledged.canvas_width = width;
+        acknowledged.canvas_height = height;
+        let acknowledged = layout_geometry::normalize_layout_for_editor(acknowledged);
+        drafts.update_value(|drafts| {
+            if let Some(draft) = drafts.get_mut(&(scene_id, zone_id.to_owned())) {
+                draft.baseline = acknowledged.clone();
+            }
+        });
+        studio_history.record_saved_zone(scene_id, zone, revision);
+        let completion = zone_save_completion(
+            selected_zone_id.get_untracked().as_deref(),
+            active_preview_key.get_value().as_deref(),
+            zone_id,
+            !commit_queue.with_value(|queue| queue.holds(zone_id)),
+        );
+        if completion.update_editor {
+            let clean = layout.with_untracked(|layout| {
+                layout
+                    .as_ref()
+                    .is_some_and(|layout| layout.zones == acknowledged.zones)
+            });
+            set_saved_layout.set(Some(acknowledged));
+            set_layout.set_dirty.set(!clean);
+        }
+        if completion.clear_preview {
+            ws_ctx.clear_zone_layout_preview.run(zone_id.to_owned());
+        }
+        if completion.clear_active_preview {
+            active_preview_key.set_value(None);
+        }
+        refresh_scene.run(());
+    };
+
+    // Write one zone's edited layout. A stale revision means another client
+    // moved the scene on: the edit is rebased on the live scene and written
+    // once more. An edit that still cannot land stays on the canvas, says
+    // so, and rides along with the zone's next commit.
+    let commit_zone = move |zone_id: String, edited: Vec<Output>, generation: u64| async move {
+        let Some(mut scene) = studio_history.current_scene() else {
             return;
         };
-        let Some(zone_id) = selected_zone_id.get_untracked() else {
+        for rebased in [false, true] {
+            let layout = match prepare_commit(&scene, &zone_id, &edited) {
+                PreparedCommit::Write(layout) => layout,
+                PreparedCommit::Unchanged => return,
+                PreparedCommit::Missing => {
+                    toasts::toast_error("Layout change not saved: its zone no longer exists");
+                    return;
+                }
+            };
+            let revision = scene.revision;
+            match api::zones::update_zone_layout(&zone_id, &layout, revision).await {
+                Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
+                    if studio_history.is_current(generation) {
+                        let landed = landed.unwrap_or_else(|| revision.saturating_add(1));
+                        acknowledge(scene.id, &zone_id, zone, landed);
+                    }
+                    return;
+                }
+                Ok(api::zones::ZoneOutcome::Stale { .. }) if !rebased => {
+                    let live = api::fetch_active_scene().await;
+                    if !studio_history.is_current(generation) {
+                        return;
+                    }
+                    match live {
+                        Ok(live) if live.id == scene.id => scene = live,
+                        _ => break,
+                    }
+                }
+                Ok(api::zones::ZoneOutcome::Stale { .. }) => break,
+                Err(error) => {
+                    if studio_history.is_current(generation) {
+                        toasts::toast_error(&format!("Layout change not saved: {error}"));
+                    }
+                    return;
+                }
+            }
+        }
+        if studio_history.is_current(generation) {
+            toasts::toast_error(
+                "Layout change not saved: the scene changed elsewhere. Your next edit retries it.",
+            );
+            refresh_scene.run(());
+        }
+    };
+
+    // Writes are revision-fenced, so the queue drains one zone at a time
+    // while editing carries on.
+    let drain = move || {
+        if commit_queue.with_value(commit::CommitQueue::is_empty) {
             return;
-        };
-        let Some(scene) = studio_history.current_scene() else {
-            return;
-        };
-        let revision = scene.revision;
-        let Some(generation) = studio_history.begin() else {
+        }
+        let Some(generation) = studio_history.begin_commit() else {
             return;
         };
         leptos::task::spawn_local(async move {
-            match api::zones::update_zone_layout(&zone_id, &current, revision).await {
-                Ok(api::zones::ZoneOutcome::Applied((zone, saved_revision))) => {
-                    if !studio_history.is_current(generation) {
-                        return;
-                    }
-                    let mut acknowledged = editor_layout_for_zone(&zone);
-                    acknowledged.canvas_width = current.canvas_width;
-                    acknowledged.canvas_height = current.canvas_height;
-                    let acknowledged = layout_geometry::normalize_layout_for_editor(acknowledged);
-                    drafts.update_value(|drafts| {
-                        if let Some(draft) = drafts.get_mut(&(scene.id, zone_id.clone())) {
-                            draft.baseline = acknowledged.clone();
-                        }
-                    });
-                    studio_history.record_saved_zone(
-                        scene.id,
-                        zone,
-                        saved_revision.unwrap_or_else(|| revision.saturating_add(1)),
-                    );
-                    let completion = zone_save_completion(
-                        selected_zone_id.get_untracked().as_deref(),
-                        active_preview_key.get_value().as_deref(),
-                        &zone_id,
-                        studio_history.is_current(generation),
-                    );
-                    if completion.update_editor {
-                        let clean = layout.with_untracked(|layout| {
-                            layout
-                                .as_ref()
-                                .is_some_and(|layout| layout.zones == acknowledged.zones)
-                        });
-                        set_saved_layout.set(Some(acknowledged));
-                        set_layout.set_dirty.set(!clean);
-                        toasts::toast_success("Zone layout saved");
-                    }
-                    if completion.clear_preview {
-                        ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
-                    }
-                    if completion.clear_active_preview {
-                        active_preview_key.set_value(None);
-                    }
-                    refresh_scene.run(());
-                }
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                    if !studio_history.is_current(generation) {
-                        return;
-                    }
-                    let completion = zone_save_completion(
-                        selected_zone_id.get_untracked().as_deref(),
-                        active_preview_key.get_value().as_deref(),
-                        &zone_id,
-                        studio_history.is_current(generation),
-                    );
-                    if completion.clear_preview {
-                        ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
-                    }
-                    if completion.clear_active_preview {
-                        active_preview_key.set_value(None);
-                    }
-                    if completion.update_editor {
-                        toasts::toast_error("Scene changed elsewhere; reloaded, try again");
-                    }
-                    refresh_scene.run(());
-                }
-                Err(error) => {
-                    if studio_history.is_current(generation) {
-                        toasts::toast_error(&format!("Save failed: {error}"));
-                    }
-                }
+            while studio_history.is_current(generation) {
+                let Some((zone_id, edited)) = commit_queue
+                    .try_update_value(commit::CommitQueue::pop)
+                    .flatten()
+                else {
+                    break;
+                };
+                commit_zone(zone_id, edited, generation).await;
             }
-            studio_history.finish(generation);
+            studio_history.end_commit(generation);
         });
-    });
+    };
 
-    let revert = Callback::new(move |()| {
-        if studio_history.busy.get_untracked() {
-            return;
+    set_layout
+        .on_commit
+        .set_value(Some(Callback::new(move |zone_id: String| {
+            let Some(edited) = layout
+                .with_untracked(|current| current.as_ref().map(|layout| layout.zones.clone()))
+            else {
+                return;
+            };
+            commit_queue.update_value(|queue| queue.push(zone_id, edited));
+            drain();
+        })));
+
+    // A commit queued while a structural operation held the scene goes out
+    // once it finishes.
+    Effect::new(move |_| {
+        if !studio_history.busy.get() {
+            drain();
         }
-        let Some(saved) = saved_layout.get_untracked() else {
-            return;
-        };
-        set_layout.replace_zones_with_history(saved.zones.clone());
-        set_layout.mark_clean();
-        if let Some(key) = active_preview_key.get_value() {
-            ws_ctx.clear_zone_layout_preview.run(key);
-            active_preview_key.set_value(None);
-        }
-        toasts::toast_info("Zone layout reverted");
     });
 
     // One edit: the whole group scales and recenters together, so undo
@@ -831,9 +907,6 @@ pub(crate) fn ZoneLayoutProvider(
                     .is_some_and(|layout| !layout.zones.is_empty())
             })
         }),
-        save,
-        revert,
-        is_dirty,
         has_layout: Signal::derive(move || layout.with(Option::is_some)),
     });
 

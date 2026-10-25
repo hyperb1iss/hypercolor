@@ -123,6 +123,9 @@ test("Studio geometry undo preserves unrelated placement fields changed remotely
   const original = await anchor.evaluate(geometry);
   await dragOutput(page, "anchor-output");
   await expect.poll(() => anchor.evaluate(geometry)).not.toEqual(original);
+  // The drag commits on release; let it land before the remote edit.
+  await expect.poll(() => fixture.writes.length).toBe(1);
+  await page.waitForLoadState("networkidle");
   const oldWidth = await anchor.evaluate((element) => element.style.width);
   fixture.remotePlacement("anchor-output", { size: { x: 0.3, y: 0.15 } });
   await expect.poll(() => anchor.evaluate((element) => element.style.width)).not.toBe(oldWidth);
@@ -136,38 +139,34 @@ test("Studio geometry undo preserves unrelated placement fields changed remotely
   expect(fixture.unexpected).toEqual([]);
 });
 
-test("Studio Save commits geometry and undo redo track the saved baseline", async ({ page }) => {
+test("Studio commits geometry on release and undo redo commit the previous placement", async ({ page }) => {
   const fixture = await openHistory(page);
   const anchor = page.locator('[data-zone-id="anchor-output"]');
   const original = await anchor.evaluate(geometry);
-  const save = page.getByTitle("Save layout changes", { exact: true });
-  const status = page.getByRole("status").filter({ hasText: /^(Saved|Unsaved layout|Saving…)$/ });
+  const layoutWrites = () => fixture.writes.filter((write) => write.method === "PUT");
   await dragOutput(page, "anchor-output");
   await expect.poll(() => anchor.evaluate(geometry)).not.toEqual(original);
   const moved = await anchor.evaluate(geometry);
-  await expect(status).toHaveText("Unsaved layout");
-  await expect(save).toBeEnabled();
-  await save.click();
-  await expect.poll(() => fixture.writes.filter((write) => write.method === "PUT").length).toBe(1);
-  await expect(status).toHaveText("Saved");
-  await expect(save).toBeDisabled();
+  await expect.poll(() => layoutWrites().length).toBe(1);
+  expect(layoutWrites()[0].path).toBe(`/api/v1/scene/zones/${FIRST}/layout`);
   const persisted = structuredClone(fixture.scene.zones[0].layout);
-  expect(fixture.writes[0].path).toBe(`/api/v1/scene/zones/${FIRST}/layout`);
   expect(persisted.placements[0].position.x).not.toBe(0.35);
+  await expect(page.getByTitle("Save layout changes", { exact: true })).toHaveCount(0);
+  await expect(fixture.undo).toBeEnabled();
   await fixture.undo.click();
   await expect.poll(() => anchor.evaluate(geometry)).toEqual(original);
-  await expect(status).toHaveText("Unsaved layout");
-  await expect(save).toBeEnabled();
-  expect(fixture.scene.zones[0].layout).toEqual(persisted);
+  await expect.poll(() => layoutWrites().length).toBe(2);
+  expect(fixture.scene.zones[0].layout.placements[0].position.x).toBe(0.35);
+  await expect(fixture.redo).toBeEnabled();
   await fixture.redo.click();
   await expect.poll(() => anchor.evaluate(geometry)).toEqual(moved);
-  await expect(status).toHaveText("Saved");
-  await expect(save).toBeDisabled();
-  expect(fixture.writes).toHaveLength(1);
+  await expect.poll(() => layoutWrites().length).toBe(3);
+  expect(fixture.scene.zones[0].layout).toEqual(persisted);
+  expect(fixture.writes).toHaveLength(3);
   expect(fixture.unexpected).toEqual([]);
 });
 
-test("Studio removing and restoring a device retains its unsaved placement draft", async ({ page }) => {
+test("Studio removing and restoring a device keeps its committed placement", async ({ page }) => {
   const fixture = await openHistory(page, { placedStand: true });
   const stand = page.locator('[data-zone-id="stand-output"]');
   const original = await stand.evaluate(geometry);
@@ -180,7 +179,6 @@ test("Studio removing and restoring a device retains its unsaved placement draft
   await expect(stand).toHaveCount(0);
   await fixture.undo.click();
   await expect.poll(() => stand.evaluate(geometry)).toEqual(draft);
-  await expect(page.getByTitle("Save layout changes", { exact: true })).toBeEnabled();
   await fixture.undo.click();
   await expect.poll(() => stand.evaluate(geometry)).toEqual(original);
   expect(fixture.unexpected).toEqual([]);
@@ -197,8 +195,8 @@ test("Studio saving assignment blocks canvas edits without changing history orde
   await expect.poll(() => anchor.evaluate(geometry)).not.toEqual(original);
   const moved = await anchor.evaluate(geometry);
   await addStand(page);
-  await expect.poll(() => fixture.writes.length).toBe(1);
-  await expect(page.getByRole("status").filter({ hasText: "Saving…" })).toBeVisible();
+  await expect.poll(() => fixture.writes.filter((write) => write.method === "POST").length).toBe(1);
+  expect(await anchor.evaluate((element) => element.closest("[aria-busy]")?.getAttribute("aria-busy"))).toBe("true");
   await expect(fixture.undo).toBeDisabled();
   await expect(fixture.redo).toBeDisabled();
   expect(await anchor.evaluate((element) => Boolean(element.closest("[inert]")))).toBe(true);
@@ -298,6 +296,10 @@ test("Studio cancels an undo superseded by another zone selection without lockin
   const original = await anchor.evaluate(geometry);
   await dragOutput(page, "anchor-output");
   await expect.poll(() => anchor.evaluate(geometry)).not.toEqual(original);
+  // An undo pressed while the drag's commit is in flight waits for it, so
+  // let the commit land before racing the undo against a tab switch.
+  await expect.poll(() => fixture.writes.length).toBe(1);
+  await page.waitForLoadState("networkidle");
   await expect(fixture.undo).toBeEnabled();
   const otherZone = page.getByRole("tab", { name: "Accent lights", exact: true });
   // Both handlers run before the reactive provider consumes the queued replay.
@@ -305,7 +307,7 @@ test("Studio cancels an undo superseded by another zone selection without lockin
     undo: await fixture.undo.elementHandle(), otherZone: await otherZone.elementHandle(),
   });
   await expect(fixture.undo).toBeEnabled();
-  await expect(page.getByRole("status").filter({ hasText: "Saving…" })).toHaveCount(0);
+  await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
   await expect(anchor).toHaveCount(0);
   await fixture.undo.click();
   await expect.poll(() => anchor.evaluate(geometry)).toEqual(original);

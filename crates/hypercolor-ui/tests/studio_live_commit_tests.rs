@@ -1,0 +1,98 @@
+//! Contract tests for live layout commits: what a commit writes, and how
+//! edits wait while a write is in flight.
+
+use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
+use hypercolor_ui::components::layout_builder::commit::{CommitQueue, commit_placements};
+
+fn output(id: &str, device: &str, x: f32) -> Output {
+    Output {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        device_id: device.to_owned(),
+        zone_name: Some("Main".to_owned()),
+        position: NormalizedPosition::new(x, 0.5),
+        size: NormalizedPosition::new(0.1, 0.1),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 10,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+#[test]
+fn a_commit_writes_the_edited_geometry_in_member_order() {
+    let members = [output("a", "one", 0.1), output("b", "two", 0.2)];
+    let mut moved = output("b", "two", 0.8);
+    moved.rotation = 1.0;
+    let edited = [moved, output("a", "one", 0.1)];
+    let written = commit_placements(&members, &edited).expect("b moved");
+    assert_eq!(written.len(), 2);
+    assert_eq!(written[0].id, "a");
+    assert_eq!(written[1].id, "b");
+    assert_eq!(written[1].position.x, 0.8);
+    assert_eq!(written[1].rotation, 1.0);
+}
+
+#[test]
+fn a_commit_never_adds_drops_or_rebinds_a_member() {
+    let members = [output("a", "one", 0.1), output("b", "two", 0.2)];
+    // The editor lost "a", holds an output the zone does not, and holds
+    // "b" bound to a different device.
+    let edited = [output("stray", "three", 0.9), output("b", "other", 0.7)];
+    assert_eq!(commit_placements(&members, &edited), None);
+
+    let edited = [output("stray", "three", 0.9), output("b", "two", 0.7)];
+    let written = commit_placements(&members, &edited).expect("b moved");
+    assert_eq!(
+        written
+            .iter()
+            .map(|output| output.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(written[0], members[0]);
+}
+
+#[test]
+fn an_edit_that_changes_no_placement_writes_nothing() {
+    let members = [output("a", "one", 0.1)];
+    let mut renamed = members[0].clone();
+    renamed.name = "Desk".to_owned();
+    renamed.brightness = Some(0.5);
+    assert_eq!(commit_placements(&members, &[renamed]), None);
+    assert_eq!(commit_placements(&[], &[]), None);
+}
+
+#[test]
+fn queued_edits_keep_only_the_newest_state_per_zone() {
+    let mut queue = CommitQueue::default();
+    assert!(queue.is_empty());
+    queue.push("main".to_owned(), vec![output("a", "one", 0.1)]);
+    queue.push("keyboard".to_owned(), vec![output("k", "kb", 0.5)]);
+    queue.push("main".to_owned(), vec![output("a", "one", 0.9)]);
+    assert!(queue.holds("main"));
+    assert!(!queue.holds("roli"));
+
+    let (zone, outputs) = queue.pop().expect("main first");
+    assert_eq!(zone, "main");
+    assert_eq!(outputs[0].position.x, 0.9);
+    assert!(!queue.holds("main"));
+    assert_eq!(
+        queue.pop().map(|(zone, _)| zone).as_deref(),
+        Some("keyboard")
+    );
+    assert_eq!(queue.pop(), None);
+    assert!(queue.is_empty());
+}

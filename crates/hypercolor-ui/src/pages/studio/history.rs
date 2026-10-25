@@ -1,5 +1,11 @@
 //! One chronological journal for Studio placements and persisted assignments,
 //! plus the multi-step zone delete and its undo.
+//!
+//! Every write is fenced by the scene revision, so one operation runs at a
+//! time: `busy` is held by a membership or zone operation, a layout replay,
+//! or the layout commit queue. Only the first three lock the canvas; while
+//! layout commits drain, editing continues and an undo or redo waits for
+//! the queue instead of being dropped.
 
 use std::collections::HashSet;
 
@@ -59,9 +65,16 @@ pub(crate) struct LayoutReplay {
 pub(crate) struct StudioHistory {
     pub journal: RwSignal<StudioJournal>,
     pub busy: RwSignal<bool>,
+    /// The layout commit queue holds `busy`. Canvas edits go on.
+    pub committing: RwSignal<bool>,
+    /// A structural operation holds `busy`; the canvas waits for it.
+    pub locked: Signal<bool>,
     pub pending_layout: RwSignal<Option<LayoutReplay>>,
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
+    /// An undo (`false`) or redo (`true`) asked for while layout commits
+    /// drained, run once they land.
+    deferred_replay: RwSignal<Option<bool>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
     generation: RwSignal<u64>,
@@ -77,6 +90,9 @@ impl StudioHistory {
     ) -> Self {
         let journal = RwSignal::new(StudioJournal::default());
         let busy = RwSignal::new(false);
+        let committing = RwSignal::new(false);
+        let deferred_replay = RwSignal::new(None);
+        let locked = Signal::derive(move || busy.get() && !committing.get());
         let pending_layout = RwSignal::new(None);
         let latest = RwSignal::new(None);
         let generation = RwSignal::new(0_u64);
@@ -88,10 +104,15 @@ impl StudioHistory {
             latest.set(None);
             generation.update(|g| *g = g.wrapping_add(1));
             busy.set(false);
+            committing.set(false);
+            deferred_replay.set(None);
         });
         Self {
             journal,
             busy,
+            committing,
+            locked,
+            deferred_replay,
             pending_layout,
             scene,
             latest,
@@ -99,12 +120,18 @@ impl StudioHistory {
             selected,
             refresh,
             can_undo: Signal::derive(move || {
-                !busy.get() && journal.with(|j| j.undo_edit().is_some())
+                !locked.get() && journal.with(|j| j.undo_edit().is_some())
             }),
             can_redo: Signal::derive(move || {
-                !busy.get() && journal.with(|j| j.redo_edit().is_some())
+                !locked.get() && journal.with(|j| j.redo_edit().is_some())
             }),
         }
+    }
+
+    /// The active scene's id, tracked.
+    pub fn scene_id(self) -> Signal<Option<hypercolor_types::scene::SceneId>> {
+        let scene = self.scene;
+        Signal::derive(move || scene.with(|scene| scene.as_ref().map(|scene| scene.id)))
     }
 
     pub fn current_scene(self) -> Option<api::SceneDocument> {
@@ -168,6 +195,32 @@ impl StudioHistory {
     pub fn finish(self, generation: u64) {
         if self.is_current(generation) {
             self.busy.set(false);
+        }
+    }
+
+    /// Whether a structural operation holds the scene, read without
+    /// tracking. Canvas edits wait for it; layout commits do not stop them.
+    pub fn is_locked(self) -> bool {
+        self.busy.get_untracked() && !self.committing.get_untracked()
+    }
+
+    /// Claim the scene for the layout commit queue.
+    pub fn begin_commit(self) -> Option<u64> {
+        let generation = self.begin()?;
+        self.committing.set(true);
+        Some(generation)
+    }
+
+    /// Release the scene once the commit queue drains, then run an undo
+    /// or redo that arrived meanwhile.
+    pub fn end_commit(self, generation: u64) {
+        if !self.is_current(generation) {
+            return;
+        }
+        self.committing.set(false);
+        self.busy.set(false);
+        if let Some(redo) = self.deferred_replay.try_update(Option::take).flatten() {
+            self.replay(redo);
         }
     }
     pub fn complete_layout(self, redo: bool) {
@@ -238,6 +291,35 @@ impl StudioHistory {
         );
     }
 
+    /// Remove outputs from the zone `zone_id` in one membership edit.
+    pub fn remove_outputs(self, zone_id: &str, output_ids: &[String]) {
+        use hypercolor_types::api::scene::MemberState;
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(zone) = scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)
+        else {
+            return;
+        };
+        let changes = api::zone_outputs(zone)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, output)| output_ids.contains(&output.id))
+            .map(|(index, output)| MemberEdit {
+                before: Some(MemberState {
+                    zone_id: zone.id,
+                    output,
+                    index,
+                }),
+                after: None,
+            })
+            .collect();
+        self.edit_members(changes);
+    }
+
     pub fn edit_members(self, changes: Vec<MemberEdit>) {
         if changes.is_empty() {
             return;
@@ -289,6 +371,10 @@ impl StudioHistory {
     }
 
     pub fn replay(self, redo: bool) {
+        if self.committing.get_untracked() {
+            self.deferred_replay.set(Some(redo));
+            return;
+        }
         if self.busy.get_untracked() {
             return;
         }
@@ -749,9 +835,13 @@ mod replay_tests {
                 previous: snapshot,
                 redo: false,
             }));
+            let busy = RwSignal::new(true);
             let history = StudioHistory {
                 journal,
-                busy: RwSignal::new(true),
+                busy,
+                committing: RwSignal::new(false),
+                locked: Signal::derive(move || busy.get()),
+                deferred_replay: RwSignal::new(None),
                 pending_layout,
                 can_undo: Signal::stored(true),
                 can_redo: Signal::stored(false),
@@ -775,6 +865,67 @@ mod replay_tests {
                 history
                     .journal
                     .with_untracked(|journal| journal.redo_edit().is_none())
+            );
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn undo_during_layout_commits_waits_for_the_queue_instead_of_dropping() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let snapshot = LayoutEditorSnapshot {
+                zones: Vec::new(),
+                selected_zone_ids: Default::default(),
+                compound_depth: crate::compound_selection::CompoundDepth::Root,
+                removed_zone_cache: Default::default(),
+            };
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let scene: api::SceneDocument = serde_json::from_value(serde_json::json!({
+                "id": "33333333-3333-4333-8333-333333333333", "name": "Desk", "kind": "named",
+                "is_default": false, "revision": 4,
+                "zones": [{ "id": zone, "name": "Main", "role": "primary", "enabled": true,
+                    "brightness": 1, "members": [], "layers": [] }],
+            }))
+            .expect("valid scene fixture");
+            let busy = RwSignal::new(false);
+            let committing = RwSignal::new(false);
+            let journal = RwSignal::new(StudioJournal::default());
+            let history = StudioHistory {
+                journal,
+                busy,
+                committing,
+                locked: Signal::derive(move || busy.get() && !committing.get()),
+                deferred_replay: RwSignal::new(None),
+                pending_layout: RwSignal::new(None),
+                can_undo: Signal::stored(true),
+                can_redo: Signal::stored(false),
+                scene: Signal::stored(Some(scene)),
+                latest: RwSignal::new(None),
+                generation: RwSignal::new(0),
+                selected: RwSignal::new(Some(zone.to_owned())),
+                refresh: Callback::new(|()| {}),
+            };
+            history.journal.update(|journal| {
+                journal.record(StudioEdit::Layout {
+                    zone_id: zone.into(),
+                    before: Box::new(snapshot.clone()),
+                    after: Box::new(snapshot),
+                })
+            });
+            let generation = history.begin_commit().expect("scene is free");
+            assert!(
+                !history.is_locked(),
+                "a draining commit leaves the canvas editable"
+            );
+            history.replay(false);
+            assert!(history.pending_layout.get_untracked().is_none());
+            history.end_commit(generation);
+            let replay = history.pending_layout.get_untracked().expect("undo ran");
+            assert!(!replay.redo);
+            assert!(
+                history.is_locked(),
+                "the replay holds the scene until it applies"
             );
         });
         owner.cleanup();

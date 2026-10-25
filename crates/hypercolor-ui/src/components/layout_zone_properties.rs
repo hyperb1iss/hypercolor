@@ -30,6 +30,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let compound_depth = editor.compound_depth;
     let zone_display_ctx =
         expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
+    let studio_history = expect_context::<crate::pages::studio::history::StudioHistory>();
 
     // Brightness aggregate for the currently-selected zones — returns
     // `(value_0_to_100, mixed)`. Each `Output` carries its own
@@ -620,23 +621,22 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     <Icon icon=LuRotateCcw width="12px" height="12px" />
                                 </button>
                                 <div class="w-px h-3 bg-edge-subtle mx-1" />
+                                // Membership, not geometry: the output leaves the zone
+                                // through the same undoable edit as the pane's
+                                // "Remove from zone".
                                 <button
                                     class="shrink-0 p-1 rounded-md text-status-error/30 hover:text-status-error hover:bg-status-error/8
-                                           transition-colors btn-press"
-                                    title="Remove output from layout"
+                                           transition-colors btn-press disabled:opacity-40"
+                                    title="Remove from zone"
+                                    disabled=move || studio_history.busy.get()
                                     on:click=move |_| {
                                         let zid = zid_remove.clone();
-                                        set_layout.update(|l| {
-                                            if let Some(layout) = l
-                                                && let Some(pos) = layout.zones.iter().position(|z| z.id == zid) {
-                                                    let removed = layout.zones.remove(pos);
-                                                    let key = (removed.device_id.clone(), removed.zone_name.clone());
-                                                    editor.set_removed_zone_cache.update(|c| { c.insert(key, removed); });
-                                                }
-                                        });
+                                        let Some(zone_id) = layout.with_untracked(|l| l.as_ref().map(|l| l.id.clone())) else {
+                                            return;
+                                        };
+                                        studio_history.remove_outputs(&zone_id, &[zid]);
                                         set_selected_zone_ids.set(std::collections::HashSet::new());
                                         editor.set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
-                                        set_is_dirty.set(true);
                                     }
                                 >
                                     <Icon icon=LuTrash2 width="12px" height="12px" />
