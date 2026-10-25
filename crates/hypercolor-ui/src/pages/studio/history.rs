@@ -73,7 +73,8 @@ pub(crate) struct LayoutReplay {
 /// A scene operation waiting for the one ahead of it to land.
 enum Waiting {
     /// An undo (`false`) or redo (`true`), with the journal's recorded
-    /// count when it was asked for.
+    /// count it expects to find: the count when it was asked for, plus the
+    /// edits queued ahead of it.
     Replay {
         redo: bool,
         recorded: u64,
@@ -526,14 +527,31 @@ impl StudioHistory {
     }
 
     pub fn replay(self, redo: bool) {
-        let recorded = self.journal.with_untracked(StudioJournal::recorded);
+        // Edits already queued count as asked for before this; an undo
+        // pressed after clicking Add means to undo that Add.
+        let ahead = self
+            .waiting
+            .try_with_value(|waiting| {
+                waiting
+                    .iter()
+                    .filter(|operation| {
+                        matches!(operation, Waiting::Assign { .. } | Waiting::Edit(_))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let recorded = self
+            .journal
+            .with_untracked(StudioJournal::recorded)
+            .wrapping_add(u64::try_from(ahead).unwrap_or(u64::MAX));
         self.when_free(Waiting::Replay { redo, recorded });
     }
 
     fn replay_now(self, redo: bool, recorded: u64) {
         // An edit made while this waited is newer than what it was asked
-        // to reverse; undoing that instead would surprise.
-        if self.journal.with_untracked(StudioJournal::recorded) != recorded {
+        // to reverse; undoing that instead would surprise. A queued edit
+        // that failed records nothing, which is no reason to stand down.
+        if self.journal.with_untracked(StudioJournal::recorded) > recorded {
             toasts::toast_info(if redo {
                 "Redo skipped: a newer change came first"
             } else {
@@ -1177,6 +1195,30 @@ mod replay_tests {
                 "the undo found no scene to replay against and stood down"
             );
             assert!(history.waiting.with_value(VecDeque::is_empty));
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn an_undo_pressed_after_a_queued_edit_undoes_that_edit() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let history = history(None, true, None, zone);
+            record_layout_edit(history, zone);
+            history.waiting.update_value(|waiting| {
+                waiting.push_back(Waiting::Edit(Vec::new()));
+            });
+            history.replay(false);
+            let expected = history.waiting.with_value(|waiting| match waiting.back() {
+                Some(Waiting::Replay { recorded, .. }) => Some(*recorded),
+                _ => None,
+            });
+            assert_eq!(
+                expected,
+                Some(history.journal.with_untracked(StudioJournal::recorded) + 1),
+                "the queued edit counts as asked for before the undo"
+            );
         });
         owner.cleanup();
     }

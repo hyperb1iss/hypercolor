@@ -170,6 +170,20 @@ impl LayoutWriteHandle {
     }
 
     pub fn finish_interaction(self) {
+        self.close_interaction();
+        self.studio_history.resume();
+    }
+
+    /// Close a gesture whose surface is being torn down. Studio history
+    /// picks its queue up on the next tick, so a teardown during
+    /// navigation never starts a write.
+    pub fn abandon_interaction(self) {
+        self.close_interaction();
+        let history = self.studio_history;
+        leptos::task::spawn_local(async move { history.resume() });
+    }
+
+    fn close_interaction(self) {
         let before = self.interaction_start.get_untracked();
         self.interaction_start.set(None);
         if let (Some(before), Some(after), Some(zone_id)) = (
@@ -179,7 +193,6 @@ impl LayoutWriteHandle {
         ) {
             self.record(zone_id, before, after);
         }
-        self.studio_history.resume();
     }
 
     /// Commit the in-flight drag/resize result in a single signal write.
