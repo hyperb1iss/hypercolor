@@ -14,6 +14,7 @@ mod drag;
 pub mod drag_model;
 mod face_composition;
 pub mod history;
+pub(crate) mod move_menu;
 mod moves;
 mod offline_device_card;
 pub mod pane_model;

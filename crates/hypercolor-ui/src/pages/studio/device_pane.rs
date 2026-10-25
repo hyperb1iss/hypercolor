@@ -25,13 +25,15 @@ use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
+use crate::pointer_gesture::listener_element;
 use crate::toasts;
 
 use super::StudioContext;
 use super::device_assignment::{DeviceMeta, ZoneDeviceRow, saved_only_device_rows};
 use super::device_card::{CardMode, Elsewhere, StudioDeviceCard, fetch_attachments_if_needed};
-use super::drag::DragController;
+use super::drag::{DragController, FocusReturn};
 use super::drag_model::DropTarget;
+use super::move_menu::{MoveMenuAnchor, is_menu_key};
 use super::moves::zone_device_payload;
 use super::offline_device_card::OfflineDeviceCard;
 use super::pane_model::{
@@ -541,7 +543,8 @@ fn OtherZoneRow(
 }
 
 /// A one-line device row inside an Other zones row: identity strip, name,
-/// and LED count. It drags out to move the device.
+/// and LED count. It drags out to move the device, and a click (or Enter)
+/// opens "Move to" for it.
 #[component]
 fn CompactDeviceRow(
     row: ZoneDeviceRow,
@@ -575,15 +578,46 @@ fn CompactDeviceRow(
         let (zone_id, device_id, label) = (zone_id.clone(), row.device_id.clone(), label.clone());
         move || zone_device_payload(studio, &zone_id, &device_id, &label)
     };
+    let menu_payload = payload.clone();
+    let focus = FocusReturn {
+        target: dom_id.clone(),
+        fallback: Some(pane_zone_toggle_dom_id(&zone_id)),
+    };
+    let open_menu = move |element: &web_sys::Element| {
+        let payload = menu_payload();
+        drag.menu.set(Some(MoveMenuAnchor::below(
+            element,
+            vec![(payload.label.clone(), payload)],
+            0,
+            focus.clone(),
+        )));
+    };
+    let key_menu = open_menu.clone();
     view! {
         <div
             id=dom_id
-            title="Drag to move"
+            role="button"
+            tabindex="0"
+            aria-haspopup="menu"
+            title="Drag to move, or choose where to move it"
             class="flex cursor-grab touch-pan-y select-none items-center gap-2 rounded px-1.5 py-1 transition-colors hover:bg-surface-hover/30 [-webkit-touch-callout:none]"
             class=("opacity-60", move || offline)
             data-device-id=row.device_id.clone()
             data-zone-id=zone_id
             on:pointerdown=move |ev: web_sys::PointerEvent| drag.press(&ev, payload())
+            on:click=move |ev: web_sys::MouseEvent| {
+                if let Some(element) = listener_element(&ev) {
+                    open_menu(&element);
+                }
+            }
+            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                if matches!(ev.key().as_str(), "Enter" | " ") || is_menu_key(&ev) {
+                    ev.prevent_default();
+                    if let Some(element) = listener_element(&ev) {
+                        key_menu(&element);
+                    }
+                }
+            }
         >
             <span
                 class="h-3.5 w-0.5 shrink-0 rounded-full bg-fg-tertiary/40"

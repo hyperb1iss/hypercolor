@@ -2,6 +2,12 @@ import { test, expect } from "@playwright/test";
 import { openHistory, addStand, dragOutput, FIRST, SECOND } from "./studio-history-fixture.mjs";
 
 const standCard = (page) => page.locator('div.group\\/card').filter({ has: page.getByText("Laptop stand", { exact: true }) });
+const anchorCard = (page) => page.locator('div.group\\/card').filter({ has: page.getByText("Anchor light", { exact: true }) });
+const moveTo = async (card, page, destination) => {
+  await card.getByTitle("Device options").click();
+  await card.getByRole("button", { name: "Move to", exact: true }).click();
+  await page.getByRole("menuitem", { name: destination, exact: true }).click();
+};
 const dragTo = async (page, source, target, { toX = 0.5, toY = 0.5 } = {}) => {
   const from = await source.boundingBox();
   const to = await target.boundingBox();
@@ -38,8 +44,7 @@ test("Studio device assignment saves immediately and supports undo and redo", as
 test("Studio moving a device restores its original zone and placement on undo", async ({ page }) => {
   const fixture = await openHistory(page, { placedStand: true });
   const original = structuredClone(fixture.scene.zones[0]);
-  await standCard(page).getByTitle("Device options").click();
-  await page.getByRole("button", { name: "Move to Accent lights", exact: true }).click();
+  await moveTo(standCard(page), page, "Accent lights");
   await expect.poll(() => fixture.assigned()).toEqual([{ zone: SECOND, id: "stand-output" }]);
   await expect(fixture.undo).toBeEnabled();
   await fixture.undo.click();
@@ -184,8 +189,7 @@ test("Studio removing and restoring a device keeps its committed placement", asy
   await dragOutput(page, "stand-output");
   await expect.poll(() => stand.evaluate(geometry)).not.toEqual(original);
   const draft = await stand.evaluate(geometry);
-  await standCard(page).getByTitle("Device options").click();
-  await page.getByRole("button", { name: "Remove from zone", exact: true }).click();
+  await moveTo(standCard(page), page, "Unassigned");
   await expect.poll(() => fixture.assigned()).toEqual([]);
   await expect(stand).toHaveCount(0);
   await fixture.undo.click();
@@ -278,25 +282,19 @@ test("Studio pending assignment disables open device menus and Unassigned adds",
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const fixture = await openHistory(page, { beforeMemberReply: () => gate });
-  await page.getByTitle("Device options", { exact: true }).click();
-  const move = page.getByRole("button", { name: "Move to Accent lights", exact: true });
-  const remove = page.getByRole("button", { name: "Remove from zone", exact: true });
+  await anchorCard(page).getByTitle("Device options", { exact: true }).click();
+  const move = anchorCard(page).getByRole("button", { name: "Move to", exact: true });
   await expect(move).toBeEnabled();
   await addStand(page);
   await expect.poll(() => fixture.writes.length).toBe(1);
-  if (!(await move.isVisible())) await page.getByTitle("Device options", { exact: true }).click();
+  if (!(await move.isVisible())) await anchorCard(page).getByTitle("Device options", { exact: true }).click();
   await expect(move).toBeDisabled();
-  await expect(remove).toBeDisabled();
   await expect(page.getByTitle("Add to Desk lights", { exact: true })).toBeDisabled();
   await expect(page.getByRole("tab", { name: "Accent lights", exact: true })).toBeEnabled();
   release();
   await expect.poll(() => fixture.assigned().length).toBe(1);
-  if (!(await move.isVisible())) {
-    await page.locator('div.group\\/card').filter({ has: page.getByText("Anchor light", { exact: true }) })
-      .getByTitle("Device options", { exact: true }).click();
-  }
+  if (!(await move.isVisible())) await anchorCard(page).getByTitle("Device options", { exact: true }).click();
   await expect(move).toBeEnabled();
-  await expect(remove).toBeEnabled();
   expect(fixture.writes).toHaveLength(1);
   expect(fixture.unexpected).toEqual([]);
 });

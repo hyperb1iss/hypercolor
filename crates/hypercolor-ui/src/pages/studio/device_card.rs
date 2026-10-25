@@ -26,6 +26,7 @@ use crate::components::device_card::{
 };
 use crate::icons::*;
 use crate::layout_utils;
+use crate::pointer_gesture::listener_element;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
@@ -33,7 +34,8 @@ use super::device_assignment::ZoneDeviceRow;
 use super::device_pane::reveal_pane_zone;
 use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
-use super::moves::{led_zones, light_segment_count, perform, zone_name};
+use super::move_menu::{MoveMenuAnchor, is_menu_key};
+use super::moves::{light_segment_count, perform, zone_name};
 use super::pane_model::elsewhere_label;
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
 
@@ -101,7 +103,7 @@ struct ComponentRow {
     slot_id: String,
     zone_name: Option<String>,
     display_name: String,
-    /// What dragging the row moves.
+    /// What dragging the row, or choosing it in "Move to", moves.
     payload: MovePayload,
     dom_id: String,
 }
@@ -280,7 +282,8 @@ pub fn StudioDeviceCard(
     let show_components = total_components > 1;
     let channels_open = RwSignal::new(mode == CardMode::Placed);
 
-    // What the card moves as a whole, for its drag and the kebab's moves.
+    // What the card moves as a whole, then each channel it lists, for the
+    // drag and its "Move to" menu.
     let whole = if placed {
         MovePayload::zone_device(
             &device.layout_device_id,
@@ -295,10 +298,19 @@ pub fn StudioDeviceCard(
             light_segment_count(&device),
         )
     };
-    let menu_whole = whole.clone();
+    let mut scopes = vec![("Whole device".to_owned(), whole.clone())];
+    if show_components {
+        scopes.extend(
+            component_rows
+                .iter()
+                .map(|row| (row.display_name.clone(), row.payload.clone())),
+        );
+    }
+    let scopes = StoredValue::new(scopes);
     // A display with no boxes here has nothing to drag.
     let draggable = !placed || !device_output_ids.is_empty();
     let body_dom_id = device_card_dom_id(&zone_key, &device.layout_device_id);
+    let body_focus = StoredValue::new(body_dom_id.clone());
 
     // Live component bindings for this device — fetched once per card
     // mount, shared via the Studio context cache so each row reads it
@@ -405,6 +417,33 @@ pub fn StudioDeviceCard(
                             drag.press(&ev, whole.clone());
                         }
                     }
+                    on:contextmenu=move |ev: web_sys::MouseEvent| {
+                        if drag.holds_touch() {
+                            return;
+                        }
+                        ev.prevent_default();
+                        drag.menu.set(Some(MoveMenuAnchor::at(
+                            f64::from(ev.client_x()),
+                            f64::from(ev.client_y()),
+                            scopes.get_value(),
+                            0,
+                            FocusReturn { target: body_focus.get_value(), fallback: None },
+                        )));
+                    }
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if !is_menu_key(&ev) {
+                            return;
+                        }
+                        ev.prevent_default();
+                        if let Some(element) = listener_element(&ev) {
+                            drag.menu.set(Some(MoveMenuAnchor::below(
+                                &element,
+                                scopes.get_value(),
+                                0,
+                                FocusReturn { target: body_focus.get_value(), fallback: None },
+                            )));
+                        }
+                    }
                     on:click=move |_| {
                         // A display with no boxes in this zone lives on its
                         // Screen surface; one with boxes is selected here like
@@ -507,7 +546,7 @@ pub fn StudioDeviceCard(
                                 ops_open,
                                 menu_physical_id,
                                 menu_kebab_id,
-                                menu_whole,
+                                scopes,
                             )}
                         </div>
                     }
@@ -555,6 +594,7 @@ pub fn StudioDeviceCard(
                                         physical_id_for_rows.clone(),
                                         row,
                                         shape_style.clone(),
+                                        scopes,
                                     )
                                 })
                                 .collect_view()}
@@ -768,47 +808,21 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
     }
 }
 
-/// The Placed device card's operations menu: identify, move to another
-/// zone, and remove, folded behind the card's kebab so the action cluster
-/// stays at two icons. Expands inline below the card body. The move rows
-/// are one per other LED zone (none in a single-zone scene), so a move is
-/// a single click rather than a nested picker.
+/// The Placed device card's operations menu, folded behind the card's
+/// kebab so the action cluster stays at two icons. Expands inline below
+/// the card body. "Move to" opens the shared menu of what moves and where,
+/// releasing to Unassigned included.
 fn card_ops_menu(
     studio: StudioContext,
     drag: DragController,
     ops_open: RwSignal<bool>,
     physical_id: String,
     kebab_id: String,
-    whole: MovePayload,
+    scopes: StoredValue<Vec<(String, MovePayload)>>,
 ) -> impl IntoView {
     let (identifying, set_identifying) = signal(false);
     let identify_id = StoredValue::new(physical_id);
     let kebab_id = StoredValue::new(kebab_id);
-    let whole = StoredValue::new(whole);
-
-    // Every LED zone except the one this device already sits in.
-    let zone_options = Memo::new(move |_| {
-        studio.active_scene.with(|scene| {
-            scene
-                .as_ref()
-                .map(|scene| {
-                    led_zones(scene)
-                        .into_iter()
-                        .filter(|(zone_id, _, _)| whole.with_value(|whole| !whole.is_in(zone_id)))
-                        .map(|(zone_id, name, _)| (zone_id, name))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        })
-    });
-    let run = move |action: DropAction| {
-        ops_open.set(false);
-        let focus = FocusReturn {
-            target: kebab_id.get_value(),
-            fallback: None,
-        };
-        perform(drag, whole.get_value(), action, Some(focus));
-    };
 
     let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
                text-[11px] transition-colors";
@@ -828,42 +842,29 @@ fn card_ops_menu(
                 <Icon icon=LuZap width="12px" height="12px" />
                 <span>"Identify"</span>
             </button>
-            {move || {
-                zone_options
-                    .get()
-                    .into_iter()
-                    .map(|(zone_id, zone_name)| {
-                        view! {
-                            <button
-                                type="button"
-                                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
-                                on:click=move |ev: web_sys::MouseEvent| {
-                                    ev.stop_propagation();
-                                    run(DropAction::MoveTo(zone_id.clone()));
-                                }
-                                disabled=move || studio.history.busy.get()
-                                class=("opacity-40", move || studio.history.busy.get())
-                            >
-                                <Icon icon=LuArrowRightLeft width="12px" height="12px" />
-                                <span>{format!("Move to {zone_name}")}</span>
-                            </button>
-                        }
-                    })
-                    .collect_view()
-            }}
             <button
                 type="button"
-                class=format!("{row} hover:bg-surface-hover/40")
-                style="color: rgba(255, 99, 99, 0.85)"
+                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40 disabled:opacity-40")
+                aria-haspopup="menu"
+                disabled=move || studio.history.busy.get()
                 on:click=move |ev: web_sys::MouseEvent| {
                     ev.stop_propagation();
-                    run(DropAction::Unassign);
+                    let Some(element) = listener_element(&ev) else {
+                        return;
+                    };
+                    let anchor = MoveMenuAnchor::below(
+                        &element,
+                        scopes.get_value(),
+                        0,
+                        FocusReturn { target: kebab_id.get_value(), fallback: None },
+                    );
+                    ops_open.set(false);
+                    drag.menu.set(Some(anchor));
                 }
-                disabled=move || studio.history.busy.get()
-                class=("opacity-40", move || studio.history.busy.get())
             >
-                <Icon icon=LuTrash2 width="12px" height="12px" />
-                <span>"Remove from zone"</span>
+                <Icon icon=LuArrowRightLeft width="12px" height="12px" />
+                <span class="flex-1">"Move to"</span>
+                <Icon icon=LuChevronRight width="11px" height="11px" />
             </button>
         </div>
     }
@@ -875,8 +876,8 @@ fn card_ops_menu(
 /// component badge listing what is bound to this channel, the channel's
 /// LED count, and a per-output hide toggle when the channel has an output
 /// in the current zone. Hidden state is per-(scene, zone) client UI state,
-/// not the daemon's `layout_auto_exclusions`. The row drags on its own, so
-/// one channel can move to another zone.
+/// not the daemon's `layout_auto_exclusions`. The row drags on its own,
+/// and its context menu (or Shift+F10) opens "Move to" for this channel.
 fn component_row_view(
     studio: StudioContext,
     drag: DragController,
@@ -884,6 +885,7 @@ fn component_row_view(
     physical_device_id: String,
     row: ComponentRow,
     shape_style: String,
+    scopes: StoredValue<Vec<(String, MovePayload)>>,
 ) -> impl IntoView {
     let ComponentRow {
         name,
@@ -896,6 +898,13 @@ fn component_row_view(
         payload,
         dom_id,
     } = row;
+    // The row's own entry in the card's "Move to" scopes.
+    let scope =
+        scopes.with_value(|scopes| scopes.iter().position(|(_, scoped)| *scoped == payload));
+    let focus = StoredValue::new(FocusReturn {
+        target: dom_id.clone(),
+        fallback: None,
+    });
 
     // Bindings that target THIS channel, filtered through the alias
     // helper the palette card uses so slot id, zone name, and display
@@ -985,7 +994,32 @@ fn component_row_view(
                 }
             }
             on:pointerdown=move |ev: web_sys::PointerEvent| drag.press(&ev, payload.clone())
+            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                let Some(index) = scope.filter(|_| !drag.holds_touch()) else {
+                    return;
+                };
+                ev.prevent_default();
+                drag.menu.set(Some(MoveMenuAnchor::at(
+                    f64::from(ev.client_x()),
+                    f64::from(ev.client_y()),
+                    scopes.get_value(),
+                    index,
+                    focus.get_value(),
+                )));
+            }
             on:keydown=move |ev: web_sys::KeyboardEvent| {
+                if is_menu_key(&ev) {
+                    ev.prevent_default();
+                    if let (Some(index), Some(element)) = (scope, listener_element(&ev)) {
+                        drag.menu.set(Some(MoveMenuAnchor::below(
+                            &element,
+                            scopes.get_value(),
+                            index,
+                            focus.get_value(),
+                        )));
+                    }
+                    return;
+                }
                 if matches!(ev.key().as_str(), "Enter" | " ")
                     && let Some(id) = key_output.clone()
                 {

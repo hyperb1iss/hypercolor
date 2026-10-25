@@ -1452,7 +1452,7 @@ fn measure_slot(
 }
 
 /// Inline position for a portaled menu opened at `(x, y)`, kept on screen.
-fn menu_position(x: f64, y: f64, width: f64, height: f64) -> String {
+pub(super) fn menu_position(x: f64, y: f64, width: f64, height: f64) -> String {
     let window = window();
     let viewport = |value: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>, fallback: f64| {
         value
@@ -1482,13 +1482,13 @@ fn menu_items(menu_ref: NodeRef<html::Div>) -> Vec<web_sys::HtmlElement> {
         .collect()
 }
 
-fn focus_first_item(menu_ref: NodeRef<html::Div>) {
+pub(super) fn focus_first_item(menu_ref: NodeRef<html::Div>) {
     if let Some(first) = menu_items(menu_ref).first() {
         let _ = first.focus();
     }
 }
 
-fn move_item_focus(menu_ref: NodeRef<html::Div>, key: &str) {
+pub(super) fn move_item_focus(menu_ref: NodeRef<html::Div>, key: &str) {
     let items = menu_items(menu_ref);
     let active = document().active_element();
     let current = items.iter().position(|item| {
@@ -1508,7 +1508,7 @@ fn move_item_focus(menu_ref: NodeRef<html::Div>, key: &str) {
 }
 
 /// Focus an element by id after the next render, once it exists.
-fn focus_soon(dom_id: String) {
+pub(super) fn focus_soon(dom_id: String) {
     request_animation_frame(move || {
         if let Some(element) = document()
             .get_element_by_id(&dom_id)

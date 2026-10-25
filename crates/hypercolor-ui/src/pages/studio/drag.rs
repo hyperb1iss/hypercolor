@@ -46,6 +46,7 @@ use super::drag_model::{
     CANCELLED_ANNOUNCEMENT, DragSource, DropTarget, MovePayload, SpringLoad, SpringPhase,
     action_hint, opened_announcement, resolve_drop, springs,
 };
+use super::move_menu::{MoveMenuAnchor, MoveMenuHost};
 use super::moves::{canvas_payload, perform, zone_name};
 use super::zone_strip::zone_tab_dom_id;
 
@@ -134,6 +135,8 @@ pub(crate) struct DragController {
     /// Pixels per frame the pane scrolls while a drag rests near its edge,
     /// and whether the frame loop doing it is running.
     autoscroll: StoredValue<(f64, bool)>,
+    /// The open "Move to" menu.
+    pub menu: RwSignal<Option<MoveMenuAnchor>>,
 }
 
 impl DragController {
@@ -155,6 +158,7 @@ impl DragController {
             pending_focus: RwSignal::new(None),
             canvas_escaped: StoredValue::new(false),
             autoscroll: StoredValue::new((0.0, false)),
+            menu: RwSignal::new(None),
         };
 
         // Focus waits for the scene that carries the move, so it lands on
@@ -755,7 +759,7 @@ fn pane_scroller() -> Option<web_sys::Element> {
 }
 
 /// The page-level drag furniture: the ghost under the pointer, the canvas
-/// highlight, and the aria-live region.
+/// highlight, the aria-live region, and the "Move to" menu.
 #[component]
 pub(crate) fn DragLayer() -> impl IntoView {
     let drag = expect_context::<DragController>();
@@ -864,5 +868,6 @@ pub(crate) fn DragLayer() -> impl IntoView {
                     }
                 })
         }}
+        <MoveMenuHost />
     }
 }

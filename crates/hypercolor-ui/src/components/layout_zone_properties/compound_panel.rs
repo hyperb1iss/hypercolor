@@ -9,6 +9,7 @@ use crate::components::layout_builder::LayoutWriteHandle;
 use crate::compound_selection::CompoundDepth;
 use crate::icons::*;
 use crate::layout_geometry;
+use crate::pages::studio::move_menu::OutputMoveButton;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::{compound_op_button, zone_pixel_input};
@@ -30,6 +31,7 @@ pub(super) fn CompoundZoneProperties(
     set_compound_scale_factor: WriteSignal<f32>,
 ) -> impl IntoView {
     let count = ids.len();
+    let move_ids: Vec<String> = ids.iter().cloned().collect();
     let (cw, ch) = canvas_dims.get_untracked();
 
     let centroid = layout
@@ -87,6 +89,7 @@ pub(super) fn CompoundZoneProperties(
                         {format!("{count} outputs")}
                     </span>
                     <span class="text-[10px] text-fg-tertiary/40 font-mono">{depth_label}</span>
+                    <OutputMoveButton output_ids=move_ids />
                 </div>
                 <div class="flex-1" />
                 <DeviceBrightnessSlider
