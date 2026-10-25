@@ -1001,17 +1001,26 @@ async fn a_zone_target_the_scene_lacks_opens_and_waits_without_rendering() {
         .expect("a zone the scene lacks is admitted, like a zone_preview selection");
     let receiver = lane.frame_receiver();
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(
-        receiver.borrow().is_none(),
-        "nothing renders for an absent zone"
-    );
-    let snapshot = lane.snapshot();
-    assert!(snapshot.active);
-    assert_eq!(snapshot.frames_published, 0);
+    let snapshot = timeout(Duration::from_secs(2), async {
+        loop {
+            let snapshot = lane.snapshot();
+            if snapshot.last_error.is_some() {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the lane resolves its absent zone");
     assert_eq!(
         snapshot.last_error.as_deref(),
         Some("preview zone is not in the active scene")
+    );
+    assert!(snapshot.active);
+    assert_eq!(snapshot.frames_published, 0);
+    assert!(
+        receiver.borrow().is_none(),
+        "nothing renders for an absent zone"
     );
 }
 
