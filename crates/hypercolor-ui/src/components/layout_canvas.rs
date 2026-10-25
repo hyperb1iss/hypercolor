@@ -76,22 +76,26 @@ fn paint_order(
     )
 }
 
-/// What a box shows: its geometry style, accent, and identity. `None` for
-/// an output the canvas does not draw: a raw channel of a generic
+/// Whether the canvas draws an output. A raw channel of a generic
 /// controller stays out of the layout until a component is attached to
 /// it, while fixed devices (keyboards, AIOs) always draw because their
 /// LEDs mean something without one.
+pub(crate) fn draws_output(zone: &Output, devices: &[api::DeviceSummary]) -> bool {
+    zone.attachment.is_some()
+        || !devices
+            .iter()
+            .find(|device| device.layout_device_id == zone.device_id)
+            .is_some_and(|device| classify_device(device) == DeviceClass::Controller)
+}
+
+/// What a box shows: its geometry style, accent, and identity. `None` for
+/// an output the canvas does not draw.
 fn zone_render_data(
     zone: &Output,
     devices: &[api::DeviceSummary],
     attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
 ) -> Option<ZoneRenderData> {
-    if zone.attachment.is_none()
-        && devices
-            .iter()
-            .find(|device| device.layout_device_id == zone.device_id)
-            .is_some_and(|device| classify_device(device) == DeviceClass::Controller)
-    {
+    if !draws_output(zone, devices) {
         return None;
     }
     let rotation = zone.rotation.to_degrees();

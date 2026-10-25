@@ -319,7 +319,7 @@ fn fit_scales_uniformly_and_centers_the_group() {
         let b = Footprint::of(&outputs[1]).bounds(ASPECT);
         (b.max_x - a.min_x) / (b.max_y - a.min_y)
     };
-    assert!(fit_outputs(&mut outputs, CANVAS));
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
     let a = Footprint::of(&outputs[0]).bounds(ASPECT);
     let b = Footprint::of(&outputs[1]).bounds(ASPECT);
     let (width, height) = (b.max_x - a.min_x, b.max_y - a.min_y);
@@ -337,7 +337,7 @@ fn fit_scales_uniformly_and_centers_the_group() {
 #[test]
 fn fit_fills_the_canvas_with_a_single_member() {
     let mut outputs = vec![output("keyboard", "kb", "Main", 0.2, 0.2, 0.34, 0.13)];
-    assert!(fit_outputs(&mut outputs, CANVAS));
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
     let fitted = Footprint::of(&outputs[0]);
     assert_position(fitted, 0.5, 0.5);
     assert_close(fitted.size.x, 1.0 - 2.0 * FIT_MARGIN);
@@ -349,7 +349,7 @@ fn fit_measures_rotated_boxes_by_their_drawn_extent() {
     let mut strip = output("strip", "case", "Main", 0.5, 0.5, 0.3, 0.02);
     strip.rotation = std::f32::consts::FRAC_PI_2;
     let mut outputs = vec![strip];
-    assert!(fit_outputs(&mut outputs, CANVAS));
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
     let bounds = Footprint::of(&outputs[0]).bounds(ASPECT);
     // Turned upright, the strip's length runs down the canvas.
     assert_close(bounds.height(), 1.0 - 2.0 * FIT_MARGIN);
@@ -357,8 +357,24 @@ fn fit_measures_rotated_boxes_by_their_drawn_extent() {
 }
 
 #[test]
+fn fit_frames_the_shown_boxes_and_carries_the_rest_along() {
+    let mut outputs = vec![
+        output("shown", "case", "A", 0.2, 0.2, 0.1, 0.1),
+        // A channel the canvas does not draw, far from the shown box.
+        output("raw", "hub", "B", 0.9, 0.9, 0.1, 0.1),
+    ];
+    assert!(fit_outputs(&mut outputs, CANVAS, |output| output.id == "shown"));
+    let shown = Footprint::of(&outputs[0]);
+    assert_position(shown, 0.5, 0.5);
+    assert_close(shown.size.y, 1.0 - 2.0 * FIT_MARGIN);
+    let raw = Footprint::of(&outputs[1]).bounds(ASPECT);
+    assert!(raw.min_x >= -EPSILON && raw.max_x <= ASPECT + EPSILON);
+    assert!(raw.min_y >= -EPSILON && raw.max_y <= 1.0 + EPSILON);
+}
+
+#[test]
 fn fit_on_an_empty_zone_reports_nothing_to_fit() {
-    assert!(!fit_outputs(&mut [], CANVAS));
+    assert!(!fit_outputs(&mut [], CANVAS, |_| true));
 }
 
 // ── Assignment and move adapters ────────────────────────────────────────

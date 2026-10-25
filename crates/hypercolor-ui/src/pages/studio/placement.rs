@@ -421,21 +421,36 @@ pub fn place_arrivals(
         .collect()
 }
 
-/// Scale and center `outputs` as one group so they fill the canvas inside
-/// [`FIT_MARGIN`], keeping their arrangement. Reports whether there was
+/// Scale and center `outputs` as one group so the `framed` ones (the
+/// boxes the canvas shows) fill the canvas inside [`FIT_MARGIN`], keeping
+/// their arrangement; with none framed, every output frames. The rest
+/// move with the group and stay on the canvas. Reports whether there was
 /// anything to fit.
-pub fn fit_outputs(outputs: &mut [Output], canvas: (u32, u32)) -> bool {
+pub fn fit_outputs(
+    outputs: &mut [Output],
+    canvas: (u32, u32),
+    framed: impl Fn(&Output) -> bool,
+) -> bool {
     let aspect = layout_geometry::canvas_pixel_aspect(canvas.0, canvas.1);
+    let bounds_of = |output: &Output| Footprint::of(output).bounds(aspect);
     let Some(bounds) = union_of(
         outputs
             .iter()
-            .map(|output| Footprint::of(output).bounds(aspect)),
-    ) else {
+            .filter(|output| framed(output))
+            .map(bounds_of),
+    )
+    .or_else(|| union_of(outputs.iter().map(bounds_of))) else {
         return false;
     };
     let fit = Similarity::fit(bounds, aspect);
     for output in outputs {
-        fit.apply(Footprint::of(output), aspect).apply(output);
+        let fitted = fit.apply(Footprint::of(output), aspect);
+        let fitted = if framed(output) {
+            fitted
+        } else {
+            keep_on_canvas(fitted, aspect)
+        };
+        fitted.apply(output);
     }
     true
 }

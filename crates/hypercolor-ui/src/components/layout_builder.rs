@@ -896,11 +896,46 @@ pub(crate) fn ZoneLayoutProvider(
     // One edit: the whole group scales and recenters together, so undo
     // steps back over the Fit in one go.
     let fit = Callback::new(move |()| {
+        // Frame the boxes the canvas shows; hidden and undrawn outputs move
+        // with them.
+        let hidden = session.hidden_zones.get_untracked();
+        let framed: std::collections::HashSet<String> =
+            devices_ctx.devices_resource.with_untracked(|devices| {
+                let devices = devices
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map_or(&[][..], Vec::as_slice);
+                layout.with_untracked(|current| {
+                    current
+                        .as_ref()
+                        .map(|layout| {
+                            let suppressed =
+                                crate::layout_utils::suppressed_attachment_source_zone_ids(layout);
+                            layout
+                                .zones
+                                .iter()
+                                .filter(|zone| {
+                                    !suppressed.contains(&zone.id)
+                                        && !hidden.contains(&zone.id)
+                                        && crate::components::layout_canvas::draws_output(
+                                            zone, devices,
+                                        )
+                                })
+                                .map(|zone| zone.id.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+            });
         let mut fitted = false;
         set_layout.update(|current| {
             if let Some(layout) = current.as_mut() {
                 let canvas = (layout.canvas_width, layout.canvas_height);
-                fitted = crate::pages::studio::placement::fit_outputs(&mut layout.zones, canvas);
+                fitted = crate::pages::studio::placement::fit_outputs(
+                    &mut layout.zones,
+                    canvas,
+                    |output| framed.contains(&output.id),
+                );
             }
         });
         if fitted {
