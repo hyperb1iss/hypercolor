@@ -3,7 +3,7 @@
 //! For a Light the Stage *is* the spatial layout editor: the live
 //! effect renders under the device boxes, always on, with no view
 //! toggle. Its header carries the now-playing chip and the zone-canvas
-//! controls — undo / redo and Fit — driven by the context-provided
+//! controls (undo, redo, and Fit), driven by the context-provided
 //! `LayoutEditorContext` and `ZoneCanvasActions` from a
 //! `ZoneLayoutProvider` mounted on a Studio ancestor. Layout edits commit
 //! as each gesture ends, so there is nothing to save.
@@ -301,7 +301,7 @@ pub fn Stage() -> impl IntoView {
                             // a flex-1 child with no h-full, so a plain block
                             // here collapses the canvas to zero height.
                             <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                                <div class="contents" inert=move || studio.history.locked.get() aria-busy=move || studio.history.locked.get().to_string()>
+                                <div class="contents" inert=move || studio.history.busy.get() aria-busy=move || studio.history.busy.get().to_string()>
                                     <LayoutWorkspace />
                                 </div>
                             </div>
@@ -314,8 +314,8 @@ pub fn Stage() -> impl IntoView {
     }
 }
 
-/// The Light Stage header's zone-canvas controls — undo / redo and Fit
-/// for the selected zone's layout. Reads the [`LayoutEditorContext`] and
+/// The Light Stage header's zone-canvas controls: undo, redo, and Fit for
+/// the selected zone's layout. Reads the [`LayoutEditorContext`] and
 /// [`ZoneCanvasActions`] a `ZoneLayoutProvider` mounts on a Studio
 /// ancestor.
 #[component]
@@ -356,7 +356,7 @@ fn ZoneCanvasBar() -> impl IntoView {
                     class="flex items-center gap-1 rounded-md border border-edge-subtle px-2 py-1 text-[11px] font-medium text-fg-secondary transition-colors hover:bg-surface-hover disabled:opacity-40 btn-press"
                     title="Fit every output to the canvas"
                     on:click=move |_| fit.run(())
-                    disabled=move || !can_fit.get() || history.locked.get()
+                    disabled=move || !can_fit.get() || history.busy.get()
                 >
                     <Icon icon=LuMaximize width="12px" height="12px" />
                     "Fit"

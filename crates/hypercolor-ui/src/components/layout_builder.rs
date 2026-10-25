@@ -15,7 +15,7 @@ use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_history::{LayoutEditorSnapshot, RemovedOutputCache};
+use crate::layout_history::LayoutEditorSnapshot;
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
     suppress_press_defaults,
@@ -74,8 +74,6 @@ pub struct LayoutWriteHandle {
     set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
     set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
-    removed_zone_cache: ReadSignal<RemovedOutputCache>,
-    set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     studio_history: crate::pages::studio::history::StudioHistory,
     selected_surface: Signal<Option<String>>,
     interaction_start: RwSignal<Option<LayoutEditorSnapshot>>,
@@ -91,7 +89,6 @@ impl LayoutWriteHandle {
             zones: current.zones,
             selected_zone_ids: self.selected_zone_ids.get_untracked(),
             compound_depth: self.compound_depth.get_untracked(),
-            removed_zone_cache: self.removed_zone_cache.get_untracked(),
         })
     }
 
@@ -100,7 +97,6 @@ impl LayoutWriteHandle {
             zones,
             selected_zone_ids,
             compound_depth,
-            removed_zone_cache,
         } = snapshot;
         self.set_layout.update(move |current| {
             if let Some(layout) = current {
@@ -109,7 +105,6 @@ impl LayoutWriteHandle {
         });
         self.set_selected_zone_ids.set(selected_zone_ids);
         self.set_compound_depth.set(compound_depth);
-        self.set_removed_zone_cache.set(removed_zone_cache);
     }
 
     pub fn in_interaction(self) -> bool {
@@ -134,7 +129,7 @@ impl LayoutWriteHandle {
     }
 
     pub fn update(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
-        if self.studio_history.is_locked() {
+        if self.studio_history.busy.get_untracked() {
             return;
         }
         // Skip history bookkeeping while a drag/resize interaction is in flight —
@@ -166,7 +161,7 @@ impl LayoutWriteHandle {
     }
 
     pub fn begin_interaction(self) {
-        if self.studio_history.is_locked() {
+        if self.studio_history.busy.get_untracked() {
             return;
         }
         if self.interaction_start.with_untracked(Option::is_none) {
@@ -192,7 +187,7 @@ impl LayoutWriteHandle {
     /// touches the layout signal, so this is the *only* moment the reactive
     /// graph sees the change. Returns true if zone state actually changed.
     pub fn commit_zones(self, zones: Vec<Output>) -> bool {
-        if self.studio_history.is_locked() {
+        if self.studio_history.busy.get_untracked() {
             return false;
         }
         let unchanged = self
@@ -461,15 +456,15 @@ enum PreparedCommit {
     Missing,
 }
 
-fn prepare_commit(scene: &api::SceneDocument, zone_id: &str, edited: &[Output]) -> PreparedCommit {
+fn prepare_commit(scene: &api::SceneDocument, pending: &commit::PendingCommit) -> PreparedCommit {
     let Some(zone) = scene
         .zones
         .iter()
-        .find(|zone| zone.id.to_string() == zone_id)
+        .find(|zone| zone.id.to_string() == pending.zone_id)
     else {
         return PreparedCommit::Missing;
     };
-    match commit::commit_placements(&api::zone_outputs(zone), edited) {
+    match commit::commit_placements(&api::zone_outputs(zone), &pending.baseline, &pending.edited) {
         Some(placements) => PreparedCommit::Write(SpatialLayout {
             zones: placements,
             ..editor_layout_for_zone(zone)
@@ -593,6 +588,10 @@ pub(crate) fn ZoneLayoutProvider(
         let next = canonical_zone.get();
         let replay = studio_history
             .layout_replay_for_zone(next.as_ref().map(|(_, zone_id, _)| zone_id.as_str()));
+        // A commit landing mid-gesture reloads the same zone; the gesture
+        // keeps its press-time snapshot so its release still records and
+        // commits.
+        let gesture = set_layout.interaction_start.get_untracked();
         // Capture the outgoing editor before changing the selected surface.
         if let (Some(key), Some(baseline), Some(snapshot)) = (
             loaded_key.get_value(),
@@ -646,9 +645,9 @@ pub(crate) fn ZoneLayoutProvider(
         } else {
             set_selected_zone_ids.set(std::collections::HashSet::new());
             set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
-            session
-                .set_removed_zone_cache
-                .set(RemovedOutputCache::new());
+        }
+        if loaded_key.get_value().as_ref() == Some(&key) && gesture.is_some() {
+            set_layout.interaction_start.set(gesture);
         }
         loaded_key.set_value(Some(key));
         let applied_replay = replay.filter(|replay| replay.zone_id == zone_id);
@@ -671,7 +670,10 @@ pub(crate) fn ZoneLayoutProvider(
                 .is_some_and(|current| current.zones != canonical.zones)
         });
         set_layout.set_dirty.set(dirty);
-        if !dirty && let Some(preview) = active_preview_key.get_value() {
+        if !dirty
+            && !set_layout.in_interaction()
+            && let Some(preview) = active_preview_key.get_value()
+        {
             ws_ctx.clear_zone_layout_preview.run(preview);
             active_preview_key.set_value(None);
         }
@@ -787,20 +789,23 @@ pub(crate) fn ZoneLayoutProvider(
         refresh_scene.run(());
     };
 
-    // Write one zone's edited layout. A stale revision means another client
-    // moved the scene on: the edit is rebased on the live scene and written
-    // once more. An edit that still cannot land stays on the canvas, says
-    // so, and rides along with the zone's next commit.
-    let commit_zone = move |zone_id: String, edited: Vec<Output>, generation: u64| async move {
+    // Write one zone's edit. A stale revision means another client moved
+    // the scene on: the edit is laid over the live scene and written once
+    // more. An edit that still cannot land stays on the canvas, says so,
+    // and rides along with the zone's next commit.
+    let commit_zone = move |pending: commit::PendingCommit, generation: u64| async move {
         let Some(mut scene) = studio_history.current_scene() else {
             return;
         };
+        let zone_id = pending.zone_id.clone();
         for rebased in [false, true] {
-            let layout = match prepare_commit(&scene, &zone_id, &edited) {
+            let layout = match prepare_commit(&scene, &pending) {
                 PreparedCommit::Write(layout) => layout,
                 PreparedCommit::Unchanged => return,
                 PreparedCommit::Missing => {
-                    toasts::toast_error("Layout change not saved: its zone no longer exists");
+                    if studio_history.is_current(generation) {
+                        toasts::toast_error("Layout change not saved: its zone no longer exists");
+                    }
                     return;
                 }
             };
@@ -851,13 +856,13 @@ pub(crate) fn ZoneLayoutProvider(
         };
         leptos::task::spawn_local(async move {
             while studio_history.is_current(generation) {
-                let Some((zone_id, edited)) = commit_queue
+                let Some(pending) = commit_queue
                     .try_update_value(commit::CommitQueue::pop)
                     .flatten()
                 else {
                     break;
                 };
-                commit_zone(zone_id, edited, generation).await;
+                commit_zone(pending, generation).await;
             }
             studio_history.end_commit(generation);
         });
@@ -871,7 +876,12 @@ pub(crate) fn ZoneLayoutProvider(
             else {
                 return;
             };
-            commit_queue.update_value(|queue| queue.push(zone_id, edited));
+            // The zone as the editor last loaded it: the edit is whatever
+            // differs from here.
+            let baseline = saved_layout
+                .with_untracked(|saved| saved.as_ref().map(|saved| saved.zones.clone()))
+                .unwrap_or_default();
+            commit_queue.update_value(|queue| queue.push(zone_id, baseline, edited));
             drain();
         })));
 

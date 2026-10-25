@@ -2,12 +2,12 @@
 //! plus the multi-step zone delete and its undo.
 //!
 //! Every write is fenced by the scene revision, so one operation runs at a
-//! time: `busy` is held by a membership or zone operation, a layout replay,
-//! or the layout commit queue. Only the first three lock the canvas; while
-//! layout commits drain, editing continues and an undo or redo waits for
-//! the queue instead of being dropped.
+//! time. `busy` marks a membership or zone operation or a layout replay in
+//! flight, and locks the canvas; `committing` marks the layout commit queue
+//! draining, which leaves editing alone. An operation asked for while
+//! either runs waits its turn in order instead of being dropped.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use super::placement::Footprint;
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
@@ -62,20 +62,35 @@ pub(crate) struct LayoutReplay {
     pub redo: bool,
 }
 
+/// A scene operation waiting for the one ahead of it to land.
+enum Waiting {
+    Replay(bool),
+    Assign {
+        zone_id: String,
+        device_id: String,
+        segments: Vec<String>,
+        placements: Vec<hypercolor_types::api::scene::MemberPlacementHint>,
+    },
+    Edit(Vec<MemberEdit>),
+    DeleteZone {
+        zone_id: String,
+        select_after: Option<String>,
+        deleted: Callback<DeletedZone>,
+    },
+    RestoreZone(DeletedZone),
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct StudioHistory {
     pub journal: RwSignal<StudioJournal>,
+    /// A structural operation or a layout replay is in flight.
     pub busy: RwSignal<bool>,
-    /// The layout commit queue holds `busy`. Canvas edits go on.
+    /// The layout commit queue is draining. Canvas edits go on.
     pub committing: RwSignal<bool>,
-    /// A structural operation holds `busy`; the canvas waits for it.
-    pub locked: Signal<bool>,
     pub pending_layout: RwSignal<Option<LayoutReplay>>,
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
-    /// An undo (`false`) or redo (`true`) asked for while layout commits
-    /// drained, run once they land.
-    deferred_replay: RwSignal<Option<bool>>,
+    waiting: StoredValue<VecDeque<Waiting>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
     generation: RwSignal<u64>,
@@ -92,8 +107,7 @@ impl StudioHistory {
         let journal = RwSignal::new(StudioJournal::default());
         let busy = RwSignal::new(false);
         let committing = RwSignal::new(false);
-        let deferred_replay = RwSignal::new(None);
-        let locked = Signal::derive(move || busy.get() && !committing.get());
+        let waiting = StoredValue::new(VecDeque::new());
         let pending_layout = RwSignal::new(None);
         let latest = RwSignal::new(None);
         let generation = RwSignal::new(0_u64);
@@ -106,14 +120,13 @@ impl StudioHistory {
             generation.update(|g| *g = g.wrapping_add(1));
             busy.set(false);
             committing.set(false);
-            deferred_replay.set(None);
+            waiting.set_value(VecDeque::new());
         });
         Self {
             journal,
             busy,
             committing,
-            locked,
-            deferred_replay,
+            waiting,
             pending_layout,
             scene,
             latest,
@@ -121,10 +134,10 @@ impl StudioHistory {
             selected,
             refresh,
             can_undo: Signal::derive(move || {
-                !locked.get() && journal.with(|j| j.undo_edit().is_some())
+                !busy.get() && journal.with(|j| j.undo_edit().is_some())
             }),
             can_redo: Signal::derive(move || {
-                !locked.get() && journal.with(|j| j.redo_edit().is_some())
+                !busy.get() && journal.with(|j| j.redo_edit().is_some())
             }),
         }
     }
@@ -181,8 +194,14 @@ impl StudioHistory {
         }
     }
 
+    /// Whether nothing holds the scene.
+    fn is_free(self) -> bool {
+        self.busy.try_get_untracked() == Some(false)
+            && self.committing.try_get_untracked() == Some(false)
+    }
+
     pub fn begin(self) -> Option<u64> {
-        if self.busy.get_untracked() {
+        if !self.is_free() {
             return None;
         }
         self.busy.set(true);
@@ -196,38 +215,78 @@ impl StudioHistory {
     pub fn finish(self, generation: u64) {
         if self.is_current(generation) {
             self.busy.set(false);
+            self.next_waiting();
         }
-    }
-
-    /// Whether a structural operation holds the scene, read without
-    /// tracking. Canvas edits wait for it; layout commits do not stop them.
-    pub fn is_locked(self) -> bool {
-        self.busy.get_untracked() && !self.committing.get_untracked()
     }
 
     /// Claim the scene for the layout commit queue.
     pub fn begin_commit(self) -> Option<u64> {
-        let generation = self.begin()?;
+        if !self.is_free() {
+            return None;
+        }
         self.committing.set(true);
-        Some(generation)
+        self.generation.update(|g| *g = g.wrapping_add(1));
+        Some(self.generation.get_untracked())
     }
 
-    /// Release the scene once the commit queue drains, then run an undo
-    /// or redo that arrived meanwhile.
+    /// Release the scene once the commit queue drains.
     pub fn end_commit(self, generation: u64) {
-        if !self.is_current(generation) {
-            return;
-        }
-        self.committing.set(false);
-        self.busy.set(false);
-        if let Some(redo) = self.deferred_replay.try_update(Option::take).flatten() {
-            self.replay(redo);
+        if self.is_current(generation) {
+            self.committing.set(false);
+            self.next_waiting();
         }
     }
+
+    /// Run `operation` now when nothing holds the scene, otherwise after
+    /// everything already waiting.
+    fn when_free(self, operation: Waiting) {
+        let queued = self
+            .waiting
+            .try_with_value(|waiting| !waiting.is_empty())
+            .unwrap_or(false);
+        if self.is_free() && !queued {
+            self.run(operation);
+        } else {
+            self.waiting
+                .try_update_value(|waiting| waiting.push_back(operation));
+        }
+    }
+
+    /// Start waiting operations, in order, while the scene stays free.
+    fn next_waiting(self) {
+        while self.is_free() {
+            let Some(operation) = self.waiting.try_update_value(VecDeque::pop_front).flatten()
+            else {
+                return;
+            };
+            self.run(operation);
+        }
+    }
+
+    fn run(self, operation: Waiting) {
+        match operation {
+            Waiting::Replay(redo) => self.replay_now(redo),
+            Waiting::Assign {
+                zone_id,
+                device_id,
+                segments,
+                placements,
+            } => self.assign_device_now(zone_id, device_id, segments, placements),
+            Waiting::Edit(changes) => self.edit_members_now(changes),
+            Waiting::DeleteZone {
+                zone_id,
+                select_after,
+                deleted,
+            } => self.delete_zone_now(zone_id, select_after, deleted),
+            Waiting::RestoreZone(record) => self.restore_zone_now(record),
+        }
+    }
+
     pub fn complete_layout(self, redo: bool) {
         self.journal.update(|j| j.complete(redo));
         self.pending_layout.set(None);
         self.busy.set(false);
+        self.next_waiting();
     }
 
     pub fn layout_replay_for_zone(self, zone_id: Option<&str>) -> Option<LayoutReplay> {
@@ -240,6 +299,7 @@ impl StudioHistory {
         self.pending_layout.set(None);
         self.busy.set(false);
         toasts::toast_info("Layout history cancelled after the selected zone changed");
+        self.next_waiting();
         None
     }
 
@@ -261,6 +321,21 @@ impl StudioHistory {
     }
 
     pub fn assign_device(
+        self,
+        zone_id: String,
+        device_id: String,
+        segments: Vec<String>,
+        placements: Vec<hypercolor_types::api::scene::MemberPlacementHint>,
+    ) {
+        self.when_free(Waiting::Assign {
+            zone_id,
+            device_id,
+            segments,
+            placements,
+        });
+    }
+
+    fn assign_device_now(
         self,
         zone_id: String,
         device_id: String,
@@ -322,10 +397,20 @@ impl StudioHistory {
     }
 
     pub fn edit_members(self, changes: Vec<MemberEdit>) {
-        if changes.is_empty() {
-            return;
+        if !changes.is_empty() {
+            self.when_free(Waiting::Edit(changes));
         }
+    }
+
+    /// Send a membership edit against the scene as it stands now. Its
+    /// preconditions are read afresh, since a layout commit may have moved
+    /// an output while the edit waited; ownership and binding must hold.
+    fn edit_members_now(self, changes: Vec<MemberEdit>) {
         let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Ok(changes) = rebase_preconditions(&scene, changes) else {
+            toasts::toast_error("Assignment changed elsewhere; nothing was changed");
             return;
         };
         self.submit(
@@ -372,13 +457,10 @@ impl StudioHistory {
     }
 
     pub fn replay(self, redo: bool) {
-        if self.committing.get_untracked() {
-            self.deferred_replay.set(Some(redo));
-            return;
-        }
-        if self.busy.get_untracked() {
-            return;
-        }
+        self.when_free(Waiting::Replay(redo));
+    }
+
+    fn replay_now(self, redo: bool) {
         let edit = self
             .journal
             .with_untracked(|j| if redo { j.redo_edit() } else { j.undo_edit() }.cloned());
@@ -530,6 +612,19 @@ impl StudioHistory {
         select_after: Option<String>,
         deleted: Callback<DeletedZone>,
     ) {
+        self.when_free(Waiting::DeleteZone {
+            zone_id,
+            select_after,
+            deleted,
+        });
+    }
+
+    fn delete_zone_now(
+        self,
+        zone_id: String,
+        select_after: Option<String>,
+        deleted: Callback<DeletedZone>,
+    ) {
         use hypercolor_types::api::scene::MemberState;
         let Some(scene) = self.current_scene() else {
             return;
@@ -630,6 +725,10 @@ impl StudioHistory {
     /// Rebuild a deleted zone: its name, color, and paused state, its
     /// outputs (those still unclaimed), and, best effort, its position.
     pub fn restore_zone(self, record: DeletedZone) {
+        self.when_free(Waiting::RestoreZone(record));
+    }
+
+    fn restore_zone_now(self, record: DeletedZone) {
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -772,6 +871,48 @@ async fn patch_zone(zone_id: &str, request: api::zones::PatchZoneRequest) -> boo
     )
 }
 
+/// Read each change's preconditions from the live scene: where the output
+/// sits now and at what index. Ownership and binding must still match.
+/// The changes' outcomes are left as asked.
+fn rebase_preconditions(
+    scene: &api::SceneDocument,
+    changes: Vec<MemberEdit>,
+) -> Result<Vec<MemberEdit>, String> {
+    changes
+        .into_iter()
+        .map(|mut change| {
+            if let Some(before) = change.before.as_mut() {
+                let (index, output) = live_member(scene, before)?;
+                before.output = output;
+                before.index = index;
+            }
+            Ok(change)
+        })
+        .collect()
+}
+
+/// An output's live index and state in the zone a precondition names,
+/// provided its binding is unchanged.
+fn live_member(
+    scene: &api::SceneDocument,
+    state: &hypercolor_types::api::scene::MemberState,
+) -> Result<(usize, hypercolor_types::spatial::Output), String> {
+    let zone = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id == state.zone_id)
+        .ok_or("Zone no longer exists")?;
+    let (index, output) = api::zone_outputs(zone)
+        .into_iter()
+        .enumerate()
+        .find(|(_, output)| output.id == state.output.id)
+        .ok_or("Output no longer belongs to the zone")?;
+    if output.device_id != state.output.device_id || output.zone_name != state.output.zone_name {
+        return Err("Output binding changed".into());
+    }
+    Ok((index, output))
+}
+
 /// Resolve live preconditions while retaining unrelated placement edits.
 /// Ownership and binding must still match the operation being reversed.
 /// An output still sitting where the operation left it returns to the
@@ -785,21 +926,7 @@ pub fn prepare_members_replay(
         .into_iter()
         .map(|mut change| {
             if let Some(before) = change.before.as_mut() {
-                let zone = scene
-                    .zones
-                    .iter()
-                    .find(|zone| zone.id == before.zone_id)
-                    .ok_or("Zone no longer exists")?;
-                let (index, output) = api::zone_outputs(zone)
-                    .into_iter()
-                    .enumerate()
-                    .find(|(_, output)| output.id == before.output.id)
-                    .ok_or("Output no longer belongs to the zone")?;
-                if output.device_id != before.output.device_id
-                    || output.zone_name != before.output.zone_name
-                {
-                    return Err("Output binding changed".into());
-                }
+                let (index, output) = live_member(scene, before)?;
                 let untouched = Footprint::of(&output) == Footprint::of(&before.output);
                 before.output = output.clone();
                 before.index = index;
@@ -820,46 +947,58 @@ pub fn prepare_members_replay(
 mod replay_tests {
     use super::*;
 
+    fn snapshot() -> LayoutEditorSnapshot {
+        LayoutEditorSnapshot {
+            zones: Vec::new(),
+            selected_zone_ids: Default::default(),
+            compound_depth: crate::compound_selection::CompoundDepth::Root,
+        }
+    }
+
+    fn history(
+        scene: Option<api::SceneDocument>,
+        busy: bool,
+        pending_layout: Option<LayoutReplay>,
+        selected: &str,
+    ) -> StudioHistory {
+        StudioHistory {
+            journal: RwSignal::new(StudioJournal::default()),
+            busy: RwSignal::new(busy),
+            committing: RwSignal::new(false),
+            waiting: StoredValue::new(VecDeque::new()),
+            pending_layout: RwSignal::new(pending_layout),
+            can_undo: Signal::stored(true),
+            can_redo: Signal::stored(false),
+            scene: Signal::stored(scene),
+            latest: RwSignal::new(None),
+            generation: RwSignal::new(1),
+            selected: RwSignal::new(Some(selected.to_owned())),
+            refresh: Callback::new(|()| {}),
+        }
+    }
+
+    fn record_layout_edit(history: StudioHistory, zone_id: &str) {
+        history.journal.update(|journal| {
+            journal.record(StudioEdit::Layout {
+                zone_id: zone_id.into(),
+                before: Box::new(snapshot()),
+                after: Box::new(snapshot()),
+            })
+        });
+    }
+
     #[test]
     fn changed_selection_cancels_pending_replay_without_consuming_history() {
         let owner = Owner::new();
         owner.with(|| {
-            let snapshot = LayoutEditorSnapshot {
-                zones: Vec::new(),
-                selected_zone_ids: Default::default(),
-                compound_depth: crate::compound_selection::CompoundDepth::Root,
-                removed_zone_cache: Default::default(),
-            };
-            let journal = RwSignal::new(StudioJournal::default());
-            journal.update(|journal| {
-                journal.record(StudioEdit::Layout {
-                    zone_id: "one".into(),
-                    before: Box::new(snapshot.clone()),
-                    after: Box::new(snapshot.clone()),
-                })
-            });
-            let pending_layout = RwSignal::new(Some(LayoutReplay {
+            let pending = LayoutReplay {
                 zone_id: "one".into(),
-                snapshot: snapshot.clone(),
-                previous: snapshot,
+                snapshot: snapshot(),
+                previous: snapshot(),
                 redo: false,
-            }));
-            let busy = RwSignal::new(true);
-            let history = StudioHistory {
-                journal,
-                busy,
-                committing: RwSignal::new(false),
-                locked: Signal::derive(move || busy.get()),
-                deferred_replay: RwSignal::new(None),
-                pending_layout,
-                can_undo: Signal::stored(true),
-                can_redo: Signal::stored(false),
-                scene: Signal::stored(None),
-                latest: RwSignal::new(None),
-                generation: RwSignal::new(1),
-                selected: RwSignal::new(Some("two".into())),
-                refresh: Callback::new(|()| {}),
             };
+            let history = history(None, true, Some(pending), "two");
+            record_layout_edit(history, "one");
             assert!(history.layout_replay_for_zone(Some("one")).is_some());
             assert!(history.busy.get_untracked());
             assert!(history.layout_replay_for_zone(Some("two")).is_none());
@@ -880,15 +1019,9 @@ mod replay_tests {
     }
 
     #[test]
-    fn undo_during_layout_commits_waits_for_the_queue_instead_of_dropping() {
+    fn undo_presses_during_layout_commits_each_wait_their_turn() {
         let owner = Owner::new();
         owner.with(|| {
-            let snapshot = LayoutEditorSnapshot {
-                zones: Vec::new(),
-                selected_zone_ids: Default::default(),
-                compound_depth: crate::compound_selection::CompoundDepth::Root,
-                removed_zone_cache: Default::default(),
-            };
             let zone = "11111111-1111-4111-8111-111111111111";
             let scene: api::SceneDocument = serde_json::from_value(serde_json::json!({
                 "id": "33333333-3333-4333-8333-333333333333", "name": "Desk", "kind": "named",
@@ -897,44 +1030,36 @@ mod replay_tests {
                     "brightness": 1, "members": [], "layers": [] }],
             }))
             .expect("valid scene fixture");
-            let busy = RwSignal::new(false);
-            let committing = RwSignal::new(false);
-            let journal = RwSignal::new(StudioJournal::default());
-            let history = StudioHistory {
-                journal,
-                busy,
-                committing,
-                locked: Signal::derive(move || busy.get() && !committing.get()),
-                deferred_replay: RwSignal::new(None),
-                pending_layout: RwSignal::new(None),
-                can_undo: Signal::stored(true),
-                can_redo: Signal::stored(false),
-                scene: Signal::stored(Some(scene)),
-                latest: RwSignal::new(None),
-                generation: RwSignal::new(0),
-                selected: RwSignal::new(Some(zone.to_owned())),
-                refresh: Callback::new(|()| {}),
-            };
-            history.journal.update(|journal| {
-                journal.record(StudioEdit::Layout {
-                    zone_id: zone.into(),
-                    before: Box::new(snapshot.clone()),
-                    after: Box::new(snapshot),
-                })
-            });
+            let history = history(Some(scene), false, None, zone);
+            record_layout_edit(history, zone);
+            record_layout_edit(history, zone);
+
             let generation = history.begin_commit().expect("scene is free");
             assert!(
-                !history.is_locked(),
+                !history.busy.get_untracked(),
                 "a draining commit leaves the canvas editable"
             );
             history.replay(false);
+            history.replay(false);
             assert!(history.pending_layout.get_untracked().is_none());
+
             history.end_commit(generation);
-            let replay = history.pending_layout.get_untracked().expect("undo ran");
-            assert!(!replay.redo);
+            assert!(history.pending_layout.get_untracked().is_some());
             assert!(
-                history.is_locked(),
-                "the replay holds the scene until it applies"
+                history.busy.get_untracked(),
+                "the first undo holds the scene until it applies"
+            );
+
+            history.complete_layout(false);
+            assert!(
+                history.pending_layout.get_untracked().is_some(),
+                "the second undo runs once the first lands"
+            );
+            history.complete_layout(false);
+            assert!(
+                history
+                    .journal
+                    .with_untracked(|journal| journal.undo_edit().is_none())
             );
         });
         owner.cleanup();

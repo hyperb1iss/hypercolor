@@ -1,6 +1,6 @@
 use super::{ZoneDraft, merge_draft, reconcile_replay};
 use crate::compound_selection::CompoundDepth;
-use crate::layout_history::{LayoutEditorSnapshot, RemovedOutputCache};
+use crate::layout_history::LayoutEditorSnapshot;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -52,7 +52,6 @@ fn snapshot(layout: &SpatialLayout, selected: &[&str]) -> LayoutEditorSnapshot {
         zones: layout.zones.clone(),
         selected_zone_ids: selected.iter().map(|id| (*id).to_owned()).collect(),
         compound_depth: CompoundDepth::Root,
-        removed_zone_cache: RemovedOutputCache::new(),
     }
 }
 

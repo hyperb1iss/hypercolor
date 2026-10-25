@@ -2,14 +2,13 @@ use hypercolor_types::api::scene::{MemberEdit, MemberState, SceneDocument};
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{StudioEdit, StudioJournal, prepare_members_replay};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 fn snapshot() -> LayoutEditorSnapshot {
     LayoutEditorSnapshot {
         zones: Vec::new(),
         selected_zone_ids: HashSet::new(),
         compound_depth: CompoundDepth::Root,
-        removed_zone_cache: HashMap::new(),
     }
 }
 

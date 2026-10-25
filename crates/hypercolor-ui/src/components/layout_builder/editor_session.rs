@@ -4,7 +4,6 @@ use leptos::prelude::*;
 
 use crate::api;
 use crate::compound_selection::CompoundDepth;
-use crate::layout_history::RemovedOutputCache;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::LayoutWriteHandle;
@@ -190,7 +189,6 @@ pub(super) struct LayoutEditorSession {
     pub(super) set_hidden_zones: WriteSignal<HashSet<String>>,
     pub(super) hovered_zone_ids: ReadSignal<HashSet<String>>,
     pub(super) set_hovered_zone_ids: WriteSignal<HashSet<String>>,
-    pub(super) set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     pub(super) write: LayoutWriteHandle,
     pub(super) layout_signal: Signal<Option<SpatialLayout>>,
     pub(super) can_undo: Signal<bool>,
@@ -212,7 +210,6 @@ impl LayoutEditorSession {
         let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(keep_aspect_ratio_initial);
         let (hidden_zones, set_hidden_zones) = signal(HashSet::<String>::new());
         let (hovered_zone_ids, set_hovered_zone_ids) = signal(HashSet::<String>::new());
-        let (removed_zone_cache, set_removed_zone_cache) = signal(RemovedOutputCache::new());
         let (dirty, set_is_dirty) = signal(false);
         let pointer_zone_id = RwSignal::new(None::<String>);
         let write = LayoutWriteHandle {
@@ -222,8 +219,6 @@ impl LayoutEditorSession {
             set_selected_zone_ids,
             compound_depth,
             set_compound_depth,
-            removed_zone_cache,
-            set_removed_zone_cache,
             studio_history,
             selected_surface,
             interaction_start: RwSignal::new(None),
@@ -245,7 +240,6 @@ impl LayoutEditorSession {
             set_hidden_zones,
             hovered_zone_ids,
             set_hovered_zone_ids,
-            set_removed_zone_cache,
             write,
             layout_signal: Signal::derive(move || layout.get()),
             can_undo: studio_history.can_undo,

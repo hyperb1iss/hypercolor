@@ -622,12 +622,11 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 </button>
                                 <div class="w-px h-3 bg-edge-subtle mx-1" />
                                 // Membership, not geometry: the output leaves the zone
-                                // through the same undoable edit as the pane's
-                                // "Remove from zone".
+                                // through the same undoable edit the pane uses.
                                 <button
                                     class="shrink-0 p-1 rounded-md text-status-error/30 hover:text-status-error hover:bg-status-error/8
                                            transition-colors btn-press disabled:opacity-40"
-                                    title="Remove from zone"
+                                    title="Remove output from zone"
                                     disabled=move || studio_history.busy.get()
                                     on:click=move |_| {
                                         let zid = zid_remove.clone();

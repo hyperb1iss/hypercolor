@@ -2,7 +2,9 @@
 //! edits wait while a write is in flight.
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
-use hypercolor_ui::components::layout_builder::commit::{CommitQueue, commit_placements};
+use hypercolor_ui::components::layout_builder::commit::{
+    CommitQueue, PendingCommit, commit_placements,
+};
 
 fn output(id: &str, device: &str, x: f32) -> Output {
     Output {
@@ -37,7 +39,7 @@ fn a_commit_writes_the_edited_geometry_in_member_order() {
     let mut moved = output("b", "two", 0.8);
     moved.rotation = 1.0;
     let edited = [moved, output("a", "one", 0.1)];
-    let written = commit_placements(&members, &edited).expect("b moved");
+    let written = commit_placements(&members, &members, &edited).expect("b moved");
     assert_eq!(written.len(), 2);
     assert_eq!(written[0].id, "a");
     assert_eq!(written[1].id, "b");
@@ -51,10 +53,10 @@ fn a_commit_never_adds_drops_or_rebinds_a_member() {
     // The editor lost "a", holds an output the zone does not, and holds
     // "b" bound to a different device.
     let edited = [output("stray", "three", 0.9), output("b", "other", 0.7)];
-    assert_eq!(commit_placements(&members, &edited), None);
+    assert_eq!(commit_placements(&members, &members, &edited), None);
 
     let edited = [output("stray", "three", 0.9), output("b", "two", 0.7)];
-    let written = commit_placements(&members, &edited).expect("b moved");
+    let written = commit_placements(&members, &members, &edited).expect("b moved");
     assert_eq!(
         written
             .iter()
@@ -66,31 +68,65 @@ fn a_commit_never_adds_drops_or_rebinds_a_member() {
 }
 
 #[test]
+fn a_commit_keeps_what_changed_elsewhere_since_the_editor_loaded() {
+    let baseline = [output("a", "one", 0.1), output("b", "two", 0.2)];
+    // Another client resized "a" and moved "b" since.
+    let mut live = baseline.clone();
+    live[0].size.x = 0.4;
+    live[1].position.x = 0.6;
+    // The user only moved "a".
+    let mut edited = baseline.clone();
+    edited[0].position.x = 0.9;
+    let written = commit_placements(&live, &baseline, &edited).expect("a moved");
+    assert_eq!(written[0].position.x, 0.9);
+    assert_eq!(written[0].size.x, 0.4, "the remote resize survives");
+    assert_eq!(written[1].position.x, 0.6, "the remote move survives");
+}
+
+#[test]
 fn an_edit_that_changes_no_placement_writes_nothing() {
     let members = [output("a", "one", 0.1)];
     let mut renamed = members[0].clone();
     renamed.name = "Desk".to_owned();
     renamed.brightness = Some(0.5);
-    assert_eq!(commit_placements(&members, &[renamed]), None);
-    assert_eq!(commit_placements(&[], &[]), None);
+    assert_eq!(commit_placements(&members, &members, &[renamed]), None);
+    assert_eq!(commit_placements(&[], &[], &[]), None);
 }
 
 #[test]
-fn queued_edits_keep_only_the_newest_state_per_zone() {
+fn queued_edits_keep_the_newest_state_and_the_oldest_baseline() {
     let mut queue = CommitQueue::default();
     assert!(queue.is_empty());
-    queue.push("main".to_owned(), vec![output("a", "one", 0.1)]);
-    queue.push("keyboard".to_owned(), vec![output("k", "kb", 0.5)]);
-    queue.push("main".to_owned(), vec![output("a", "one", 0.9)]);
+    let loaded = vec![output("a", "one", 0.1)];
+    queue.push(
+        "main".to_owned(),
+        loaded.clone(),
+        vec![output("a", "one", 0.5)],
+    );
+    queue.push(
+        "keyboard".to_owned(),
+        Vec::new(),
+        vec![output("k", "kb", 0.5)],
+    );
+    queue.push(
+        "main".to_owned(),
+        vec![output("a", "one", 0.5)],
+        vec![output("a", "one", 0.9)],
+    );
     assert!(queue.holds("main"));
     assert!(!queue.holds("roli"));
 
-    let (zone, outputs) = queue.pop().expect("main first");
-    assert_eq!(zone, "main");
-    assert_eq!(outputs[0].position.x, 0.9);
+    let PendingCommit {
+        zone_id,
+        baseline,
+        edited,
+    } = queue.pop().expect("main first");
+    assert_eq!(zone_id, "main");
+    assert_eq!(baseline, loaded);
+    assert_eq!(edited[0].position.x, 0.9);
     assert!(!queue.holds("main"));
     assert_eq!(
-        queue.pop().map(|(zone, _)| zone).as_deref(),
+        queue.pop().map(|pending| pending.zone_id).as_deref(),
         Some("keyboard")
     );
     assert_eq!(queue.pop(), None);
