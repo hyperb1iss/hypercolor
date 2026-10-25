@@ -517,7 +517,7 @@ impl StudioHistory {
                         if self.selected.get_untracked().as_deref() == Some(zone_id.as_str()) {
                             self.selected.set(select_after);
                         }
-                        deleted.run(record);
+                        let _ = deleted.try_run(record);
                     }
                 }
                 outcome => {

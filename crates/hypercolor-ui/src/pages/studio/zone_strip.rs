@@ -287,6 +287,16 @@ pub fn ZoneStrip() -> impl IntoView {
     let creating = RwSignal::new(false);
     let notice_seq = StoredValue::new(0_u64);
 
+    // Created once here, in the strip's own scope. A callback minted at
+    // delete time would belong to the menu or the confirmation, which are
+    // gone by the time the delete completes.
+    let on_deleted = Callback::new(move |record| {
+        let id = notice_seq.get_value().wrapping_add(1);
+        notice_seq.set_value(id);
+        studio
+            .undo_notice
+            .set(Some(UndoNotice::zone_deleted(id, record)));
+    });
     let run_delete = move |zone_id: String| {
         let ids = light_ids.get_untracked();
         let neighbor = ids.iter().position(|id| *id == zone_id).and_then(|index| {
@@ -296,17 +306,7 @@ pub fn ZoneStrip() -> impl IntoView {
                 .or_else(|| ids.get(index + 1))
                 .cloned()
         });
-        studio.history.delete_zone(
-            zone_id,
-            neighbor,
-            Callback::new(move |record| {
-                let id = notice_seq.get_value().wrapping_add(1);
-                notice_seq.set_value(id);
-                studio
-                    .undo_notice
-                    .set(Some(UndoNotice::zone_deleted(id, record)));
-            }),
-        );
+        studio.history.delete_zone(zone_id, neighbor, on_deleted);
     };
     let request_delete = Callback::new(move |zone_id: String| {
         let Some(scene) = studio.active_scene.get_untracked() else {
