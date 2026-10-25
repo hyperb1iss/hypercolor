@@ -447,9 +447,9 @@ impl GpuSparkleFlinger {
                     GpuDisplayFinalizeFrame::Rgba(surface)
                 })
             }
-            GpuDisplayFinalizeFormat::Yuv420 => Ok(GpuDisplayFinalizeFrame::Yuv420(
-                finish_yuv420_display_readback(pending),
-            )),
+            GpuDisplayFinalizeFormat::Yuv420 => {
+                finish_yuv420_display_readback(pending).map(GpuDisplayFinalizeFrame::Yuv420)
+            }
         }
     }
 

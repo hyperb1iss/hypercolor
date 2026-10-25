@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool};
 
 pub(super) use super::source::CachedReadbackKey;
@@ -27,9 +27,13 @@ pub(super) fn copy_mapped_readback_buffer_into_surface(
         *last_readback_bytes = used_bytes;
     }
     let slice = buffer.slice(..used_bytes);
-    let mapped = slice
-        .get_mapped_range()
-        .expect("readback range should be mapped after the map callback");
+    let mapped = match slice.get_mapped_range() {
+        Ok(mapped) => mapped,
+        Err(error) => {
+            buffer.unmap();
+            return Err(unmapped_readback_error(error));
+        }
+    };
     let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
     let Some(mut lease) = surfaces.dequeue() else {
         drop(mapped);
@@ -62,4 +66,16 @@ pub(super) fn copy_mapped_readback_buffer_into_surface(
     buffer.unmap();
 
     Ok(lease.submit(0, 0))
+}
+
+/// The error a readback reports when its buffer is not mapped even though
+/// the map callback succeeded.
+///
+/// A successful map callback does not guarantee a readable range: losing
+/// the device destroys every buffer it owns, including ones whose map
+/// already completed, and the callback for a map that finished in the same
+/// poll still reports success. Readbacks surface this as an error so the
+/// render loop's failure handling, not a panic, decides what happens next.
+pub(super) fn unmapped_readback_error(error: wgpu::MapRangeError) -> anyhow::Error {
+    anyhow!("GPU readback buffer was not mapped after its map callback: {error}")
 }

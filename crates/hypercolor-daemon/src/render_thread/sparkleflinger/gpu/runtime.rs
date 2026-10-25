@@ -303,4 +303,20 @@ impl GpuSparkleFlinger {
     pub(in crate::render_thread::sparkleflinger) fn backend_name(&self) -> &str {
         &self.probe.backend
     }
+
+    /// Block until every submission has finished on the GPU, so the maps
+    /// it carried have completed and their callbacks are queued.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn wait_for_gpu_idle(&self) {
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    /// Lose this compositor's device the way a driver device loss does:
+    /// every buffer and texture it owns is destroyed, including readback
+    /// buffers whose map already completed.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn lose_device(&self) {
+        self.device.destroy();
+        let _ = self.device.poll(wgpu::PollType::Poll);
+    }
 }

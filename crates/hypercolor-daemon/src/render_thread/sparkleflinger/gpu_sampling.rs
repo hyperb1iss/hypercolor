@@ -1467,8 +1467,9 @@ impl GpuSpatialSampler {
                 self.release_readback_slot(pending_readback.lease);
                 return Err(error);
             }
-            finish_zone_color_readback(&pending_readback, zones);
+            let finished = finish_zone_color_readback(&pending_readback, zones);
             self.release_readback_slot(pending_readback.lease);
+            finished?;
         }
 
         Ok(())
@@ -1488,9 +1489,9 @@ impl GpuSpatialSampler {
         if !pending_readback.map_ready {
             return Ok(false);
         }
-        finish_zone_color_readback(pending_readback, zones);
+        let finished = finish_zone_color_readback(pending_readback, zones);
         self.release_readback_slot(pending_readback.lease);
-        Ok(true)
+        finished.map(|()| true)
     }
 
     pub(super) fn take_last_readback_wait_blocked(&mut self) -> bool {
@@ -1956,14 +1957,25 @@ fn wait_for_zone_color_readback(
     Ok(())
 }
 
+/// Copy a mapped LED sample readback into `zones` and unmap its buffer.
+///
+/// A completed map callback does not guarantee a readable range: device
+/// loss destroys buffers whose map already finished, so a missing range is
+/// an error for the caller's GPU failure handling rather than a panic.
 fn finish_zone_color_readback(
     pending_readback: &PendingGpuSampleReadback,
     zones: &mut Vec<ZoneColors>,
-) {
+) -> Result<()> {
     let slice = pending_readback.buffer.slice(..pending_readback.used_bytes);
-    let mapped = slice
-        .get_mapped_range()
-        .expect("zone readback range should be mapped after the map callback");
+    let mapped = match slice.get_mapped_range() {
+        Ok(mapped) => mapped,
+        Err(error) => {
+            pending_readback.buffer.unmap();
+            anyhow::bail!(
+                "GPU sample readback buffer was not mapped after its map callback: {error}"
+            );
+        }
+    };
     rebuild_zone_colors_from_mapped_bytes(&pending_readback.zones, &mapped, zones);
     drop(mapped);
     pending_readback.buffer.unmap();
@@ -1971,6 +1983,7 @@ fn finish_zone_color_readback(
         super::gpu::GpuReadbackKind::Led,
         pending_readback.used_bytes,
     );
+    Ok(())
 }
 
 fn rebuild_zone_colors_from_mapped_bytes(
@@ -2017,7 +2030,59 @@ mod tests {
         StripDirection,
     };
 
-    use super::{GpuSampleGeometry, GpuSampleMethod, GpuSamplingPlan, SAMPLE_WORKGROUP_SIZE};
+    use std::sync::Arc;
+
+    use super::{
+        GpuSampleGeometry, GpuSampleMethod, GpuSamplingPlan, GpuZoneRange, ReadbackLease,
+        SAMPLE_WORKGROUP_SIZE, begin_zone_color_readback, finish_zone_color_readback,
+        take_zone_color_readback_ready,
+    };
+    use crate::render_thread::gpu_device::GpuRenderDevice;
+
+    /// Device loss destroys readback buffers whose map already completed,
+    /// so finishing one must report an error rather than panic.
+    #[test]
+    fn led_readback_reports_a_buffer_lost_after_its_map_completed() {
+        let Ok(render_device) = GpuRenderDevice::new_required_for_test("LED readback loss test")
+        else {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "required real-GPU test environment is unavailable"
+            );
+            return;
+        };
+        let device = render_device.device();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("LED readback loss test"),
+            size: 16,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let submission_index = render_device.queue().submit(None);
+        let zones: Arc<[GpuZoneRange]> = Arc::from([GpuZoneRange {
+            zone_id: "zone".into(),
+            start: 0,
+            len: 4,
+        }]);
+        let lease = ReadbackLease {
+            generation: 0,
+            slot: 0,
+        };
+        let mut pending = begin_zone_color_readback(&buffer, 16, submission_index, zones, lease);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        assert_eq!(
+            take_zone_color_readback_ready(&mut pending).expect("the map should complete"),
+            Some(true)
+        );
+
+        device.destroy();
+        let _ = device.poll(wgpu::PollType::Poll);
+
+        let mut colors = Vec::new();
+        let error = finish_zone_color_readback(&pending, &mut colors)
+            .expect_err("a readback destroyed after its map must report an error");
+        assert!(error.to_string().contains("not mapped"), "{error:#}");
+    }
 
     fn synthetic_sample_limits(max_dispatch: u32) -> wgpu::Limits {
         wgpu::Limits {

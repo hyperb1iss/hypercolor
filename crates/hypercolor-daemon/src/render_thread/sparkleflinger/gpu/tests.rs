@@ -3234,6 +3234,7 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
     );
 }
 
+mod device_loss;
 mod display_finalize;
 mod media_upload;
 mod preview;
