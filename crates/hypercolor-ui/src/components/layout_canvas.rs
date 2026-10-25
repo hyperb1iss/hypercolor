@@ -1154,8 +1154,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                     <Show when=move || !has_zones.get()>
                         <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
                             <div class="text-center space-y-1.5 px-4 py-3 rounded-xl bg-black/50 backdrop-blur-sm">
-                                <div class="text-white/40 text-sm font-medium">"Add devices from the palette"</div>
-                                <div class="text-white/25 text-xs">"Drag zones to position them on the canvas"</div>
+                                <div class="text-white/40 text-sm font-medium">"Add devices from Unassigned"</div>
+                                <div class="text-white/25 text-xs">"Use + on a device in the pane"</div>
                             </div>
                         </div>
                     </Show>

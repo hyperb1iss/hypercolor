@@ -8,71 +8,40 @@
 //! `ZoneLayoutProvider` mounted on a Studio ancestor.
 //!
 //! A Screen shows that device's live face via `DisplayPreviewSurface`.
-//! The synthetic Unassigned entry (§9.4) is not a surface, so it shows
-//! the scene-level unassigned-lights policy instead.
 
 use std::collections::HashSet;
 
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::{UnassignedBehavior, ZoneId};
-
 use crate::api;
-use crate::api::zones::ZoneOutcome;
-use crate::app::{CapabilitiesContext, DisplaysContext, WsContext};
+use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::layout_builder::{LayoutEditorContext, LayoutWorkspace, ZoneCanvasActions};
 use crate::components::mounting_select::MountingSelect;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
-use crate::components::silk_select::SilkSelect;
 use crate::display_preview_state::use_display_preview_subscription;
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
-use crate::toasts;
 use crate::ws::messages::zone_has_degraded_layer;
 
-use super::surface::{
-    Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, now_playing, surfaces_from_zones,
-};
-use super::zone_controls::unassigned_behavior_label;
+use super::surface::{Surface, SurfaceKind, now_playing, surfaces_from_zones};
 use super::{StudioContext, hidden_outputs_storage_key};
 
 /// Preview FPS ceiling for a Light Stage — the canvas is always live, so
 /// it reserves the same headroom the retired `/layout` page did.
 const LAYOUT_PREVIEW_FPS_CAP: u32 = 60;
 
-/// The center Stage. Dispatches on the current selection: a real surface
-/// renders its editor or preview, the synthetic Unassigned entry (§9.4)
-/// renders the unassigned-lights panel instead.
+/// The center Stage for the selected surface. A Light renders the
+/// always-on layout editor; a Screen renders its live face preview.
 #[component]
 pub fn Stage() -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let is_unassigned = Memo::new(move |_| {
-        studio.selected_surface_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID)
-    });
-    view! {
-        {move || {
-            if is_unassigned.get() {
-                view! { <UnassignedStage /> }.into_any()
-            } else {
-                view! { <SurfaceStage /> }.into_any()
-            }
-        }}
-    }
-}
-
-/// The Stage for a real surface. A Light renders the always-on layout
-/// editor; a Screen renders its live face preview.
-#[component]
-fn SurfaceStage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let studio = expect_context::<StudioContext>();
     let displays = expect_context::<DisplaysContext>().displays_resource;
     let editor = expect_context::<LayoutEditorContext>();
 
-    // The rail (ZoneTree) lives outside the ZoneLayoutProvider, so these
+    // The device pane lives outside the ZoneLayoutProvider, so these
     // one-way effects push its highlight, hover, and hide state into the
     // editor context the canvas reads. Clicking a device or channel lights
     // the matching boxes; the eye toggle dims them (it used to write a
@@ -319,8 +288,8 @@ fn SurfaceStage() -> impl IntoView {
                         .into_any()
                 } else {
                     // Light surface — the always-on spatial layout editor.
-                    // Devices move between zones from the zone tree's per-card
-                    // controls, so no assignment panel docks here.
+                    // Devices move between zones from the device pane's
+                    // per-card controls, so no assignment panel docks here.
                     view! {
                         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                             {move || {
@@ -491,158 +460,5 @@ fn DegradedBanner() -> impl IntoView {
                 </div>
             </div>
         </div>
-    }
-}
-
-/// The Stage shown while the synthetic Unassigned entry is selected. It is
-/// not a surface (§9.4) — it has no composited output and no layer stack —
-/// so the Stage shows the scene-level policy for device outputs claimed by
-/// no zone. The policy is editable when the daemon advertises
-/// `scene-unassigned-behavior-write`, and read-only otherwise.
-#[component]
-fn UnassignedStage() -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let caps = expect_context::<CapabilitiesContext>();
-    let writable = Memo::new(move |_| caps.has("scene-unassigned-behavior-write"));
-
-    // The current behavior, encoded as a `SilkSelect` value: `off`,
-    // `hold`, or `fallback:<zone id>`.
-    let current_value = Memo::new(move |_| {
-        studio
-            .active_scene
-            .get()
-            .map(|scene| unassigned_behavior_value(&scene.unassigned_behavior))
-            .unwrap_or_default()
-    });
-    let behavior_label = Memo::new(move |_| {
-        studio
-            .active_scene
-            .get()
-            .map(|scene| unassigned_behavior_label(&scene.unassigned_behavior))
-            .unwrap_or_else(|| "—".to_owned())
-    });
-
-    // "Follow <zone>" needs one option per LED zone; the fallback target
-    // cannot be the Unassigned entry itself, so only real zones list.
-    let options = Memo::new(move |_| {
-        let mut options = vec![
-            ("off".to_owned(), "Turn off".to_owned()),
-            ("hold".to_owned(), "Hold last colors".to_owned()),
-        ];
-        if let Some(scene) = studio.active_scene.get() {
-            for surface in surfaces_from_zones(&scene.zones)
-                .into_iter()
-                .filter(|surface| surface.kind == SurfaceKind::Light)
-            {
-                options.push((
-                    format!("fallback:{}", surface.id),
-                    format!("Follow {}", surface.name),
-                ));
-            }
-        }
-        options
-    });
-
-    let on_change = Callback::new(move |value: String| {
-        let Some(behavior) = parse_unassigned_behavior(&value) else {
-            toasts::toast_error("Unrecognized unassigned-lights option");
-            return;
-        };
-        let Some(scene) = studio.active_scene.get_untracked() else {
-            toasts::toast_error("No active scene is available");
-            return;
-        };
-        spawn_local(async move {
-            match api::zones::update_unassigned_behavior(&behavior, scene.revision).await {
-                Ok(ZoneOutcome::Applied(_)) => {
-                    toasts::toast_success("Unassigned-lights policy updated");
-                    studio.refresh_scene.run(());
-                }
-                Ok(ZoneOutcome::Stale { .. }) => {
-                    toasts::toast_error("Scene changed elsewhere — reloaded, try again");
-                    studio.refresh_scene.run(());
-                }
-                Err(error) => {
-                    toasts::toast_error(&format!("Policy update failed: {error}"));
-                }
-            }
-        });
-    });
-
-    view! {
-        <div class="flex h-full flex-col bg-surface-sunken/20">
-            <div class="flex items-center gap-2 border-b border-edge-subtle/60 px-5 py-3">
-                <span class="text-sm font-semibold text-fg-primary">"Unassigned lights"</span>
-            </div>
-            <div class="flex flex-1 items-center justify-center overflow-hidden p-6">
-                <div class="w-full max-w-[28rem] text-center">
-                    <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-surface-sunken/70">
-                        <Icon
-                            icon=LuBan
-                            width="22px"
-                            height="22px"
-                            style="color: rgba(241, 250, 140, 0.75)"
-                        />
-                    </div>
-                    <div class="text-sm leading-5 text-fg-secondary">
-                        "Device outputs in no zone follow the scene's unassigned-lights
-                         policy."
-                    </div>
-                    <div class="mt-4">
-                        <span class=label_class(LabelSize::Micro, LabelTone::Default)>
-                            "Unassigned lights"
-                        </span>
-                        <div class="mt-1.5">
-                            {move || {
-                                if writable.get() {
-                                    view! {
-                                        <SilkSelect
-                                            value=Signal::derive(move || current_value.get())
-                                            options=Signal::derive(move || options.get())
-                                            on_change=on_change
-                                            class="border border-edge-subtle/70 bg-surface-overlay/40 px-3 py-2 text-sm"
-                                        />
-                                    }
-                                        .into_any()
-                                } else {
-                                    view! {
-                                        <span class="inline-flex items-center rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-3 py-2 text-sm font-medium text-fg-primary">
-                                            {move || behavior_label.get()}
-                                        </span>
-                                    }
-                                        .into_any()
-                                }
-                            }}
-                        </div>
-                    </div>
-                    <div class="mt-3 text-[12px] leading-5 text-fg-tertiary/65">
-                        "Use the + on each device card in the rail to add it to a zone."
-                    </div>
-                </div>
-            </div>
-        </div>
-    }
-}
-
-/// Encode an `UnassignedBehavior` as a `SilkSelect` option value.
-#[must_use]
-fn unassigned_behavior_value(behavior: &UnassignedBehavior) -> String {
-    match behavior {
-        UnassignedBehavior::Off => "off".to_owned(),
-        UnassignedBehavior::Hold => "hold".to_owned(),
-        UnassignedBehavior::Fallback(zone_id) => format!("fallback:{zone_id}"),
-    }
-}
-
-/// Decode a `SilkSelect` option value back into an `UnassignedBehavior`.
-#[must_use]
-fn parse_unassigned_behavior(value: &str) -> Option<UnassignedBehavior> {
-    match value {
-        "off" => Some(UnassignedBehavior::Off),
-        "hold" => Some(UnassignedBehavior::Hold),
-        other => other
-            .strip_prefix("fallback:")
-            .and_then(|raw| raw.parse::<uuid::Uuid>().ok())
-            .map(|uuid| UnassignedBehavior::Fallback(ZoneId(uuid))),
     }
 }

@@ -1,10 +1,13 @@
-//! The device card for the Studio zone tree.
+//! The device card for the Studio device pane.
 //!
-//! Each physical device under a zone renders as a card carrying its
-//! brand identity: a duotone accent strip, the vendor mark, the LED
-//! count, and a per-channel breakdown with live component data. The
-//! card body selects the parent zone; trailing actions hide every
-//! output, identify the hardware, and remove it from the zone.
+//! Each physical device renders as a card carrying its brand identity: a
+//! duotone accent strip, the vendor mark, the LED count, and a
+//! per-channel breakdown with live component data. In the active zone
+//! the card body lights the device's outputs on the canvas, and two
+//! trailing icons hide every output and open the operations menu. A
+//! device split across zones lists only this zone's channels, plus a
+//! quiet line naming where the rest live. An Unassigned card offers
+//! identify and a one-tap add into the active zone instead.
 
 use std::collections::HashSet;
 
@@ -13,6 +16,7 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
 use hypercolor_types::scene::ZoneRole;
+use hypercolor_types::spatial::Output;
 
 use crate::api::{self, DeviceSummary, SegmentTopologySummary};
 use crate::channel_names;
@@ -26,23 +30,31 @@ use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
 use super::device_assignment::ZoneDeviceRow;
-use super::zone_add_device::{assign_device_to_zone, zone_display_name};
+use super::device_pane::reveal_pane_zone;
+use super::pane_model::elsewhere_label;
+use super::surface::surfaces_from_zones;
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
 
 /// How a device card behaves, which decides its trailing actions and
 /// whether it carries an in-zone layout (hidden state, per-output toggles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CardMode {
-    /// The device is placed in this zone: hide-all, identify, remove.
+    /// The device has outputs in the zone named by `select`: hide-all and
+    /// the operations kebab (identify, move, remove).
     #[default]
     Placed,
-    /// The device is connected but in no zone — the single-zone fold
-    /// (§3.3). Identify, plus a one-tap add into the zone named by
-    /// `select`.
-    Available,
-    /// The multi-zone Unassigned bucket: identify only. Assignment happens
-    /// in the Stage layout view.
+    /// The device is in no zone: identify, plus a one-tap add into the
+    /// zone named by `select`, the active tab.
     Unassigned,
+}
+
+/// Outputs of a split device that another zone claims, as the card's
+/// "more outputs" line names them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Elsewhere {
+    pub zone_id: String,
+    pub zone_name: String,
+    pub outputs: usize,
 }
 
 /// One row in the per-channel breakdown beneath the card body.
@@ -58,7 +70,7 @@ struct ComponentRow {
     shape: TopologyShapeKind,
     led_count: usize,
     /// `Output.id` (`Output.id`) when this channel has an output
-    /// in the current zone — `None` for the Unassigned bucket or a
+    /// in the current zone — `None` for an Unassigned card or a
     /// channel with no placed output, in which case the row offers no
     /// hide toggle.
     output_id: Option<String>,
@@ -67,18 +79,20 @@ struct ComponentRow {
     display_name: String,
 }
 
-/// One physical device under a zone. The card body selects the parent zone
-/// (or the Unassigned entry) named by `select`; trailing actions identify
-/// the hardware and, inside a real zone, remove it.
+/// One physical device. `select` names the zone the card speaks for: the
+/// zone holding its outputs, or, for an Unassigned card, the active tab
+/// its "+" adds into.
 #[component]
 pub fn StudioDeviceCard(
     row: ZoneDeviceRow,
     device: Option<DeviceSummary>,
     select: String,
-    /// Placed by default; the single-zone fold passes `Available`, the
-    /// multi-zone Unassigned bucket passes `Unassigned`.
+    /// Placed by default; the Unassigned section passes `Unassigned`.
     #[prop(optional)]
     mode: CardMode,
+    /// Other zones holding the rest of a split device's outputs.
+    #[prop(optional)]
+    elsewhere: Vec<Elsewhere>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let row_device_id = row.device_id.clone();
@@ -123,20 +137,31 @@ pub fn StudioDeviceCard(
     };
 
     // Project the current zone's placements once to resolve channel ids and
-    // gather the bulk-hide id set. The Unassigned bucket has no placements.
+    // gather the bulk-hide id set, plus the outputs other zones hold so a
+    // split device lists only this zone's channels. An Unassigned card has
+    // no placements.
     let placed = mode == CardMode::Placed;
-    let zone_outputs = if placed {
+    let (zone_outputs, outputs_elsewhere): (Option<Vec<Output>>, Vec<Output>) = if placed {
         studio.active_scene.with_untracked(|scene| {
-            scene.as_ref().and_then(|scene| {
-                scene
-                    .zones
-                    .iter()
-                    .find(|zone| zone.id.to_string() == select)
-                    .map(api::zone_outputs)
-            })
+            let Some(scene) = scene.as_ref() else {
+                return (None, Vec::new());
+            };
+            let here = scene
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == select)
+                .map(api::zone_outputs);
+            let elsewhere = scene
+                .zones
+                .iter()
+                .filter(|zone| zone.id.to_string() != select && zone.role != ZoneRole::Display)
+                .flat_map(api::zone_outputs)
+                .filter(|output| output.device_id == device.layout_device_id)
+                .collect();
+            (here, elsewhere)
         })
     } else {
-        None
+        (None, Vec::new())
     };
     let scene_key: Option<String> = placed
         .then(|| {
@@ -159,10 +184,18 @@ pub fn StudioDeviceCard(
         .unwrap_or_default();
 
     let total_components = device.segments.len();
+    let claimed_elsewhere = |channel_name: &str| {
+        outputs_elsewhere.iter().any(|output| {
+            layout_utils::channel_name_matches_slot_alias(
+                output.zone_name.as_deref(),
+                Some(channel_name),
+            )
+        })
+    };
     let component_rows: Vec<ComponentRow> = device
         .segments
         .iter()
-        .map(|channel| {
+        .filter_map(|channel| {
             let display_name =
                 channel_names::effective_channel_name(&device.id, &channel.id, &channel.name);
             let output_id = zone_outputs.as_ref().and_then(|outputs| {
@@ -177,7 +210,12 @@ pub fn StudioDeviceCard(
                     })
                     .map(|output| output.id.clone())
             });
-            ComponentRow {
+            // A channel another zone holds belongs to that zone's card; one
+            // no zone holds still shows, as it always has.
+            if output_id.is_none() && claimed_elsewhere(&channel.name) {
+                return None;
+            }
+            Some(ComponentRow {
                 name: display_name.clone(),
                 shape: topology_shape_kind(&channel.topology),
                 led_count: channel.led_count as usize,
@@ -185,7 +223,7 @@ pub fn StudioDeviceCard(
                 slot_id: channel.id.clone(),
                 zone_name: Some(channel.name.clone()),
                 display_name,
-            }
+            })
         })
         .collect();
     let show_components = total_components > 1;
@@ -212,6 +250,7 @@ pub fn StudioDeviceCard(
         format!("background: linear-gradient(180deg, rgb({primary}), rgb({secondary}))");
     let icon_style = format!("color: rgba({primary}, 0.9)");
     let list_style = format!("border-color: rgba({primary}, 0.12)");
+    let hint_style = list_style.clone();
     let shape_style = format!("color: rgba({primary}, 0.7)");
 
     let select_body = select.clone();
@@ -233,15 +272,13 @@ pub fn StudioDeviceCard(
     let menu_select = select.clone();
     let menu_physical_id = device.id.clone();
     let menu_output_ids = device_output_ids.clone();
-    // An Available card carries the device record so its add action can
+    // An Unassigned card carries the device record so its add action can
     // mint outputs and assign them into the zone.
-    let add_device =
-        matches!(mode, CardMode::Available | CardMode::Unassigned).then(|| device.clone());
-    let unassigned_add_device = matches!(mode, CardMode::Unassigned).then(|| device.clone());
+    let add_device = (mode == CardMode::Unassigned).then(|| device.clone());
 
     // The device's outputs in this zone drive the canvas highlight: clicking
-    // selects them, hovering previews them. Empty for an unplaced (Available)
-    // device, which owns no box on the spatial canvas.
+    // selects them, hovering previews them. Empty for an Unassigned device,
+    // which owns no box on the spatial canvas.
     let click_outputs = device_output_ids.clone();
     let enter_outputs = device_output_ids.clone();
     let sel_check_ids = device_output_ids.clone();
@@ -388,14 +425,6 @@ pub fn StudioDeviceCard(
                         </div>
                     }
                 })}
-            {unassigned_add_device
-                .map(move |device| {
-                    view! {
-                        <div class=("hidden", move || !ops_open.get())>
-                            {unassigned_add_menu(studio, ops_open, device)}
-                        </div>
-                    }
-                })}
             {show_components
                 .then(move || {
                     let scene_key = scene_key.clone();
@@ -411,6 +440,31 @@ pub fn StudioDeviceCard(
                                         row,
                                         shape_style.clone(),
                                     )
+                                })
+                                .collect_view()}
+                        </div>
+                    }
+                })}
+            {(!elsewhere.is_empty())
+                .then(move || {
+                    view! {
+                        <div class="space-y-0.5 border-t px-2.5 py-1" style=hint_style>
+                            {elsewhere
+                                .into_iter()
+                                .map(|hint| {
+                                    let zone_id = hint.zone_id.clone();
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="flex w-full items-center gap-1 text-left text-[10px] text-fg-tertiary/80 transition-colors hover:text-fg-secondary"
+                                            on:click=move |_| reveal_pane_zone(studio, &zone_id)
+                                        >
+                                            <span class="min-w-0 truncate">
+                                                {elsewhere_label(hint.outputs, &hint.zone_name)}
+                                            </span>
+                                            <Icon icon=LuChevronRight width="10px" height="10px" />
+                                        </button>
+                                    }
                                 })
                                 .collect_view()}
                         </div>
@@ -432,12 +486,10 @@ struct CardActionsArgs {
     ops_open: RwSignal<bool>,
 }
 
-/// The trailing-edge action cluster, capped at two icons. Hide-all toggles
-/// every output of a placed device in unison. The second slot depends on
-/// `mode`: a placed device gets a kebab that opens the inline operations
-/// menu (identify / move / remove), an available device gets identify plus
-/// a one-tap add into the zone, and an Unassigned-bucket row gets identify
-/// plus a zone picker, since a multi-zone scene has to be told where.
+/// The trailing-edge action cluster, capped at two icons. A placed device
+/// gets hide-all, which toggles every output in unison, and a kebab that
+/// opens the inline operations menu (identify / move / remove). An
+/// Unassigned device gets identify and a one-tap add into the active tab.
 fn card_actions(args: CardActionsArgs) -> impl IntoView {
     let CardActionsArgs {
         studio,
@@ -555,44 +607,17 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     }
                     .into_any(),
                 ),
-                CardMode::Available => {
-                    add_device
-                        .map(|device| {
-                            let select = select.clone();
-                            view! {
-                                <button
-                                    type="button"
-                                    class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
-                                    style="color: rgba(80, 250, 123, 0.78)"
-                                    title="Add to this zone"
-                                    disabled=move || studio.history.busy.get()
-                                    class=("opacity-40", move || studio.history.busy.get())
-                                    on:click=move |ev: web_sys::MouseEvent| {
-                                        ev.stop_propagation();
-                                        assign_device_to_zone(studio, device.clone(), select.clone());
-                                    }
-                                >
-                                    <Icon icon=LuPlus width="13px" height="13px" />
-                                </button>
-                            }
-                            .into_any()
-                        })
-                }
-                // An Unassigned-bucket row opens a zone picker: the scene is
-                // multi-zone here, so "add" has to say where.
-                CardMode::Unassigned => add_device.map(|_| {
+                CardMode::Unassigned => add_device.map(|device| {
+                    let target = zone_label(studio, &select);
                     view! {
                         <button
                             type="button"
-                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
-                            class=("bg-surface-hover/40", move || ops_open.get())
-                            style="color: rgba(80, 250, 123, 0.78)"
-                            title="Add to a zone"
+                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-accent transition-colors hover:bg-accent-subtle disabled:opacity-40"
+                            title=format!("Add to {target}")
                             disabled=move || studio.history.busy.get()
-                            class=("opacity-40", move || studio.history.busy.get())
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
-                                ops_open.update(|open| *open = !*open);
+                                assign_device_to_zone(studio, device.clone(), select.clone());
                             }
                         >
                             <Icon icon=LuPlus width="13px" height="13px" />
@@ -605,65 +630,10 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
     }
 }
 
-/// The Unassigned-bucket card's picker: one row per LED zone, each a
-/// single click that mints the device's outputs into that zone.
-fn unassigned_add_menu(
-    studio: StudioContext,
-    ops_open: RwSignal<bool>,
-    device: DeviceSummary,
-) -> impl IntoView {
-    let device = StoredValue::new(device);
-    let zone_options = Memo::new(move |_| {
-        studio.active_scene.with(|scene| {
-            scene
-                .as_ref()
-                .map(|scene| {
-                    scene
-                        .zones
-                        .iter()
-                        .filter(|group| group.role != ZoneRole::Display)
-                        .map(|group| (group.id.to_string(), zone_display_name(group)))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        })
-    });
-    let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
-               text-[11px] transition-colors";
-    view! {
-        <div class="space-y-0.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-1.5">
-            {move || {
-                zone_options
-                    .get()
-                    .into_iter()
-                    .map(|(zone_id, zone_name)| {
-                        view! {
-                            <button
-                                type="button"
-                                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
-                                on:click=move |ev: web_sys::MouseEvent| {
-                                    ev.stop_propagation();
-                                    ops_open.set(false);
-                                    assign_device_to_zone(studio, device.get_value(), zone_id.clone());
-                                }
-                                disabled=move || studio.history.busy.get()
-                                class=("opacity-40", move || studio.history.busy.get())
-                            >
-                                <Icon icon=LuPlus width="12px" height="12px" />
-                                <span>{format!("Add to {zone_name}")}</span>
-                            </button>
-                        }
-                    })
-                    .collect_view()
-            }}
-        </div>
-    }
-}
-
 /// The Placed device card's operations menu — identify, move-to-zone, and
 /// remove — folded behind the card's kebab so the action cluster stays at
-/// two icons. Expands inline below the card body, mirroring the zone node's
-/// settings kebab. Every row closes the menu, then runs its action. The
+/// two icons. Expands inline below the card body. Every row closes the
+/// menu, then runs its action. The
 /// move rows are one per other LED zone (none in a single-zone scene), so a
 /// move is a single click rather than a nested picker.
 fn card_ops_menu(
@@ -680,18 +650,17 @@ fn card_ops_menu(
     let remove_device_id = StoredValue::new(device_id);
     let ids = StoredValue::new(output_ids);
 
-    // Every non-display zone except the one this device already sits in.
+    // Every LED zone except the one this device already sits in.
     let zone_options = Memo::new(move |_| {
         studio.active_scene.with(|scene| {
             scene
                 .as_ref()
                 .map(|scene| {
-                    scene
-                        .zones
-                        .iter()
-                        .filter(|zone| zone.role != ZoneRole::Display)
-                        .filter(|zone| zone.id.to_string() != current.get_value())
-                        .map(|zone| (zone.id.to_string(), zone_display_name(zone)))
+                    surfaces_from_zones(&scene.zones)
+                        .into_iter()
+                        .filter(|surface| surface.kind == super::surface::SurfaceKind::Light)
+                        .filter(|surface| surface.id != current.get_value())
+                        .map(|surface| (surface.id, surface.name))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -873,7 +842,7 @@ fn component_row_view(
 
     // A channel with a placed output is interactive: click highlights it on
     // the canvas, hover previews it. A channel with no output in this zone
-    // (Unassigned bucket, unplaced segment) just reads as a label.
+    // (an Unassigned card, an unplaced segment) just reads as a label.
     let interactive = output_id.is_some();
     let click_output = output_id.clone();
     let key_output = output_id.clone();
@@ -1022,11 +991,11 @@ fn component_row_view(
 
 /// Lazily populate the Studio-wide attachment cache for one device.
 ///
-/// Cards trigger this once on mount. The check on the cache lets the
-/// same device's card unmount and remount (zone collapsed and reopened)
-/// without re-fetching, and lets every card across the tree share one
+/// Cards trigger this once on mount, and the pane's search for every
+/// device once. The check on the cache lets the same device's card
+/// unmount and remount without re-fetching, and lets every card share one
 /// cache entry per physical device.
-fn fetch_attachments_if_needed(studio: StudioContext, physical_device_id: &str) {
+pub(super) fn fetch_attachments_if_needed(studio: StudioContext, physical_device_id: &str) {
     if physical_device_id.is_empty() {
         return;
     }
@@ -1044,6 +1013,70 @@ fn fetch_attachments_if_needed(studio: StudioContext, physical_device_id: &str) 
             });
         }
     });
+}
+
+/// A zone's shown name, read at click time.
+fn zone_label(studio: StudioContext, zone_id: &str) -> String {
+    studio.active_scene.with_untracked(|scene| {
+        scene
+            .as_ref()
+            .and_then(|scene| {
+                surfaces_from_zones(&scene.zones)
+                    .into_iter()
+                    .find(|surface| surface.id == zone_id)
+                    .map(|surface| surface.name)
+            })
+            .unwrap_or_else(|| "this zone".to_owned())
+    })
+}
+
+/// Assign the device through the daemon's canonical hardware-output factory.
+/// The response records one reversible operation for the complete device.
+pub(super) fn assign_device_to_zone(
+    studio: StudioContext,
+    device: api::DeviceSummary,
+    zone_id: String,
+) {
+    let (width, height) = studio.render_canvas_size.get_untracked();
+    let light_segments = device
+        .segments
+        .iter()
+        .filter(|segment| {
+            segment.led_count > 0
+                && !matches!(
+                    segment.topology_hint,
+                    Some(api::SegmentTopologySummary::Display { .. })
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    // Seeded footprints describe editor geometry only. The daemon keeps
+    // ownership of output identity, hardware topology, and binding metadata.
+    let placements = crate::layout_geometry::seeded_device_layout(
+        &device.layout_device_id,
+        &device.name,
+        &light_segments,
+        width,
+        height,
+        0,
+    )
+    .map(|seed| {
+        seed.zones
+            .into_iter()
+            .map(|output| hypercolor_types::api::scene::MemberPlacementHint {
+                segment: output.zone_name,
+                position: output.position,
+                size: output.size,
+                rotation: output.rotation,
+                scale: output.scale,
+                orientation: output.orientation,
+            })
+            .collect()
+    })
+    .unwrap_or_default();
+    studio
+        .history
+        .assign_device(zone_id, device.layout_device_id, Vec::new(), placements);
 }
 
 /// Flash a device's LEDs so the user can locate it physically.

@@ -153,9 +153,8 @@ export async function openHistory(page, { placedStand = false, offline = false, 
   };
 }
 
-export async function addStand(page) {
-  await page.getByTitle("Add to a zone", { exact: true }).click();
-  await page.getByRole("button", { name: "Add to Desk lights", exact: true }).click();
+export async function addStand(page, zone = "Desk lights") {
+  await page.getByTitle(`Add to ${zone}`, { exact: true }).click();
 }
 
 export async function dragOutput(page, id) {

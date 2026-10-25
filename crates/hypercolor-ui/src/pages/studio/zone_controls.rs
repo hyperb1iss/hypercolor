@@ -11,24 +11,13 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use hypercolor_types::scene::UnassignedBehavior;
-
 use crate::api;
 use crate::api::zones::ZoneOutcome;
 use crate::toasts;
 
 use super::StudioContext;
+use super::device_pane::other_led_zone_ids;
 use super::tab_model::{ReorderTarget, next_zone_name, zone_move_index};
-
-/// Plain-words rendering of a scene's `unassigned_behavior` (§9.4).
-#[must_use]
-pub fn unassigned_behavior_label(behavior: &UnassignedBehavior) -> String {
-    match behavior {
-        UnassignedBehavior::Off => "Turn off".to_owned(),
-        UnassignedBehavior::Hold => "Hold last colors".to_owned(),
-        UnassignedBehavior::Fallback(_) => "Follow a zone".to_owned(),
-    }
-}
 
 fn scene_revision(studio: StudioContext) -> Option<u64> {
     studio
@@ -37,8 +26,9 @@ fn scene_revision(studio: StudioContext) -> Option<u64> {
 }
 
 /// Create a zone under a fresh default name, open its tab, and put its
-/// name into rename mode so the user can type over it. `pending` holds
-/// true while the request is in flight.
+/// name into rename mode so the user can type over it. The pane opens
+/// every other zone so the next move, bringing devices in, is in view.
+/// `pending` holds true while the request is in flight.
 pub fn create_zone(studio: StudioContext, pending: RwSignal<bool>) {
     let Some(scene) = studio.active_scene.get_untracked() else {
         toasts::toast_error("No active scene is available");
@@ -46,6 +36,7 @@ pub fn create_zone(studio: StudioContext, pending: RwSignal<bool>) {
     };
     let names: Vec<&str> = scene.zones.iter().map(|zone| zone.name.as_str()).collect();
     let name = next_zone_name(&names);
+    let others = other_led_zone_ids(&scene.zones);
     let revision = scene.revision;
     pending.set(true);
     spawn_local(async move {
@@ -54,6 +45,7 @@ pub fn create_zone(studio: StudioContext, pending: RwSignal<bool>) {
         match outcome {
             Ok(ZoneOutcome::Applied(zone)) => {
                 let id = zone.id.to_string();
+                studio.pane_expanded.set(others);
                 studio
                     .zone_rename_draft
                     .set(Some((id.clone(), zone.name.clone())));

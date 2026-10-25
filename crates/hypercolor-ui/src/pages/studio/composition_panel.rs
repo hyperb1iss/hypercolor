@@ -16,12 +16,12 @@ use crate::icons::*;
 
 use super::StudioContext;
 use super::face_composition::{DefaultFaceCard, ScreenCompositionSection};
-use super::surface::{UNASSIGNED_SURFACE_ID, selected_screen_device_id};
+use super::surface::selected_screen_device_id;
 
 /// The right-edge composition slide-over. Stays mounted and animates via
 /// a transform; `inert` while closed keeps its controls out of the tab
 /// order. Positioned `absolute` inside the Stage pane so it overlays the
-/// Stage only, never the zone tree.
+/// Stage only, never the device pane.
 #[component]
 pub fn CompositionPanel(
     #[prop(into)] active_scene: Signal<Option<api::SceneDocument>>,
@@ -33,14 +33,6 @@ pub fn CompositionPanel(
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let open = studio.composition_open;
-    // The synthetic Unassigned entry has no layer stack (§9.4). A `Memo`,
-    // not a plain derived signal: the body below swaps the mounted panel
-    // on this value, and a non-memoized derive re-runs that swap on every
-    // selection change — disposing a `LayerPanel` whose resources are
-    // still in flight, which panics the reactive runtime when the stale
-    // Suspense closure re-polls.
-    let is_unassigned =
-        Memo::new(move |_| selected_zone_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
 
     // A Screen surface's backing display device — present only while the
     // selection is a display-role zone with a bound target. Drives the
@@ -88,55 +80,20 @@ pub fn CompositionPanel(
                 </button>
             </div>
             <div class="scrollbar-none min-h-0 flex-1 overflow-y-auto px-4 pb-6">
-                {move || {
-                    if is_unassigned.get() {
-                        view! { <UnassignedNote /> }.into_any()
-                    } else {
-                        view! {
-                            <DefaultFaceCard
-                                display_device_id=screen_device_id
-                                on_layers_mutated=on_layers_mutated
-                            />
-                            <ScreenCompositionSection display_device_id=screen_device_id />
-                            <LayerPanel
-                                active_scene=active_scene
-                                selected_zone_id=selected_zone_id
-                                set_selected_zone_id=set_selected_zone_id
-                                surface_label=surface_label
-                                layers_resource=layers_resource
-                                on_layers_mutated=on_layers_mutated
-                            />
-                        }
-                            .into_any()
-                    }
-                }}
+                <DefaultFaceCard
+                    display_device_id=screen_device_id
+                    on_layers_mutated=on_layers_mutated
+                />
+                <ScreenCompositionSection display_device_id=screen_device_id />
+                <LayerPanel
+                    active_scene=active_scene
+                    selected_zone_id=selected_zone_id
+                    set_selected_zone_id=set_selected_zone_id
+                    surface_label=surface_label
+                    layers_resource=layers_resource
+                    on_layers_mutated=on_layers_mutated
+                />
             </div>
         </aside>
-    }
-}
-
-/// Shown when the Unassigned entry is selected: unassigned lights belong
-/// to no zone, so there is no layer stack to compose.
-#[component]
-fn UnassignedNote() -> impl IntoView {
-    view! {
-        <div class="pt-4">
-            <div class="rounded-xl border border-dashed border-edge-subtle/55 bg-surface-overlay/30 px-4 py-6 text-center">
-                <div class="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-surface-sunken/70">
-                    <Icon
-                        icon=LuBan
-                        width="16px"
-                        height="16px"
-                        style="color: rgba(241, 250, 140, 0.75)"
-                    />
-                </div>
-                <div class="text-sm font-medium text-fg-secondary">"No layer stack"</div>
-                <div class="mt-1.5 text-[12px] leading-5 text-fg-tertiary/70">
-                    "Unassigned lights belong to no zone, so there is nothing to
-                     compose here. Use the + on a device card in the rail to add it
-                     to a zone, and it follows that zone's layers."
-                </div>
-            </div>
-        </div>
     }
 }

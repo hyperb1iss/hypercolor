@@ -259,11 +259,6 @@ impl StudioHistory {
         let Some(generation) = self.begin() else {
             return;
         };
-        let selected = self.selected.get_untracked();
-        let destination = request.assignment.as_ref().and_then(|assignment| {
-            (selected.as_deref() == Some(super::surface::UNASSIGNED_SURFACE_ID))
-                .then(|| assignment.zone_id.to_string())
-        });
         leptos::task::spawn_local(async move {
             let result = api::zones::edit_members(&request, revision).await;
             // Disposed owners and superseded operations cannot consume a reply.
@@ -277,13 +272,6 @@ impl StudioHistory {
                             .update(|j| j.record(StudioEdit::Members(response.changes.clone())));
                     }
                     self.accept(response);
-                    // Keep the successful assignment and its Undo action visible,
-                    // unless the user selected another surface while it saved.
-                    if let Some(destination) = destination
-                        && self.selected.get_untracked() == selected
-                    {
-                        self.selected.set(Some(destination));
-                    }
                     toasts::toast_success("Assignment saved");
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => toasts::toast_error(

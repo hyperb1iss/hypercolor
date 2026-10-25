@@ -1,14 +1,13 @@
 //! Leptos-free assignment of a zone's members to their physical devices.
 //!
 //! A multi-segment controller contributes several members. The Studio
-//! zone tree shows each physical device once under its zone, so this
-//! module collapses those members by `device_id` and resolves display
-//! names against the device registry. It also derives the Unassigned
-//! group: devices the scene assigns to no zone at all.
+//! device pane shows each physical device once per zone, so this module
+//! collapses those members by `device_id` and resolves display names
+//! against the device registry. It also derives the Unassigned group:
+//! devices the scene assigns to no zone at all.
 //!
-//! Deliberately free of `leptos` and `crate::` paths so the contract is
-//! exercisable from `tests/studio_device_assignment_tests.rs` via a
-//! `#[path]` include, mirroring `surface.rs`.
+//! Deliberately free of `leptos` so the contract is exercisable from
+//! `tests/studio_device_assignment_tests.rs`.
 
 use std::collections::HashSet;
 
@@ -29,7 +28,7 @@ pub struct DeviceMeta {
 }
 
 /// One physical device's presence within a single zone — the unit the
-/// zone tree renders under a zone node.
+/// device pane renders as a card or a compact row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneDeviceRow {
     /// Backend device id (`"<backend>:<id>"`) shared by these outputs.
@@ -77,9 +76,8 @@ pub fn device_rows_for_zone(zone: &ZoneResource, devices: &[DeviceMeta]) -> Vec<
 
 /// Order a zone's device rows for display: connected devices first, then
 /// case-insensitively by name, with offline (unresolved) rows sunk to the
-/// bottom. A stable sort so the rail reads in a predictable, repeatable
-/// order rather than raw layout sequence. Manual reordering layers on top
-/// of this at the call site.
+/// bottom. A stable sort so the pane reads in a predictable, repeatable
+/// order rather than raw layout sequence.
 pub fn sort_device_rows(rows: &mut [ZoneDeviceRow]) {
     rows.sort_by(|a, b| {
         b.resolved

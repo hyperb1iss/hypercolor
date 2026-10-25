@@ -44,13 +44,14 @@ test("Studio moving a device restores its original zone and placement on undo", 
 test("Studio can undo removing an offline device without requiring its registry entry", async ({ page }) => {
   const fixture = await openHistory(page, { placedStand: true, offline: true });
   const original = structuredClone(fixture.scene.zones[0]);
+  await page.getByTitle("Offline device options", { exact: true }).click();
   await page.getByRole("button", { name: "Remove from this zone", exact: true }).click();
   await expect.poll(() => fixture.assigned()).toEqual([]);
   await expect(fixture.undo).toBeEnabled();
   await fixture.undo.click();
   await expect.poll(() => fixture.scene.zones[0].members).toEqual(original.members);
   expect(fixture.scene.zones[0].layout).toEqual(original.layout);
-  await expect(page.getByRole("button", { name: "Remove from this zone", exact: true })).toBeVisible();
+  await expect(page.getByTitle("Offline device options", { exact: true })).toBeVisible();
   expect(fixture.rejected).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -221,12 +222,13 @@ test("Studio saving assignment blocks canvas edits without changing history orde
   expect(fixture.unexpected).toEqual([]);
 });
 
-test("Studio assignment from the selected Unassigned bucket opens the destination undo toolbar", async ({ page }) => {
+test("Studio adds an Unassigned device to the active tab and can undo it", async ({ page }) => {
   const fixture = await openHistory(page);
-  await page.getByRole("button", { name: /^Unassigned Hardware in no zone/ }).click();
-  await expect(fixture.undo).toHaveCount(0);
-  await addStand(page);
-  await expect.poll(() => fixture.assigned().length).toBe(1);
+  await page.getByRole("tab", { name: "Accent lights", exact: true }).click();
+  await expect(page.locator('[data-zone-id="anchor-output"]')).toHaveCount(0);
+  await addStand(page, "Accent lights");
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: SECOND, id: "stand-output" }]);
+  await expect(page.getByRole("tab", { name: "Accent lights", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(fixture.undo).toBeVisible();
   await expect(fixture.undo).toBeEnabled();
   await fixture.undo.click();
@@ -239,31 +241,31 @@ test("Studio assignment completion respects a surface selected while saving", as
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const fixture = await openHistory(page, { beforeMemberReply: () => gate });
-  await page.getByRole("button", { name: /^Unassigned Hardware in no zone/ }).click();
   await addStand(page);
   await expect.poll(() => fixture.writes.length).toBe(1);
   await page.getByRole("tab", { name: "Accent lights", exact: true }).click();
   release();
-  await expect.poll(() => fixture.assigned().length).toBe(1);
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: FIRST, id: "stand-output" }]);
+  await expect(page.getByRole("tab", { name: "Accent lights", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(fixture.undo).toBeEnabled();
   await expect(page.locator('[data-zone-id="stand-output"]')).toHaveCount(0);
   await expect(page.locator('[data-zone-id="anchor-output"]')).toHaveCount(0);
   expect(fixture.unexpected).toEqual([]);
 });
 
-test("Studio rejected assignment keeps the Unassigned bucket selected", async ({ page }) => {
+test("Studio rejected assignment leaves the device in Unassigned", async ({ page }) => {
   const fixture = await openHistory(page);
-  await page.getByRole("button", { name: /^Unassigned Hardware in no zone/ }).click();
   fixture.rejectNext();
   await addStand(page);
   await expect.poll(() => fixture.rejected.length).toBe(1);
   await page.waitForLoadState("networkidle");
-  await expect(fixture.undo).toHaveCount(0);
+  await expect(fixture.undo).toBeDisabled();
   expect(fixture.assigned()).toEqual([]);
+  await expect(page.getByTitle("Add to Desk lights", { exact: true })).toBeEnabled();
   expect(fixture.unexpected).toEqual([]);
 });
 
-test("Studio pending assignment disables open device menus and the add picker", async ({ page }) => {
+test("Studio pending assignment disables open device menus and Unassigned adds", async ({ page }) => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const fixture = await openHistory(page, { beforeMemberReply: () => gate });
@@ -271,27 +273,15 @@ test("Studio pending assignment disables open device menus and the add picker", 
   const move = page.getByRole("button", { name: "Move to Accent lights", exact: true });
   const remove = page.getByRole("button", { name: "Remove from zone", exact: true });
   await expect(move).toBeEnabled();
-  await page.getByRole("button", { name: "Add device", exact: true }).last().click();
-  const picker = page.getByRole("button", { name: "Pick a device…", exact: true });
-  await expect(picker).toBeEnabled();
   await addStand(page);
   await expect.poll(() => fixture.writes.length).toBe(1);
-  // The rail may close its picker when the operation starts. Either state
-  // must make another assignment unavailable until the reply arrives.
-  if (await picker.count()) {
-    await expect(picker).toBeDisabled();
-  } else {
-    await expect(page.getByRole("button", { name: "Add device", exact: true }).last()).toBeDisabled();
-  }
   if (!(await move.isVisible())) await page.getByTitle("Device options", { exact: true }).click();
   await expect(move).toBeDisabled();
   await expect(remove).toBeDisabled();
-  await expect(page.getByTitle("Add to a zone", { exact: true })).toBeDisabled();
+  await expect(page.getByTitle("Add to Desk lights", { exact: true })).toBeDisabled();
   await expect(page.getByRole("tab", { name: "Accent lights", exact: true })).toBeEnabled();
   release();
   await expect.poll(() => fixture.assigned().length).toBe(1);
-  if (!(await picker.count())) await page.getByRole("button", { name: "Add device", exact: true }).last().click();
-  await expect(picker).toBeEnabled();
   if (!(await move.isVisible())) {
     await page.locator('div.group\\/card').filter({ has: page.getByText("Anchor light", { exact: true }) })
       .getByTitle("Device options", { exact: true }).click();

@@ -9,19 +9,19 @@
 mod composition_panel;
 pub mod device_assignment;
 mod device_card;
+mod device_pane;
 mod face_composition;
 pub mod history;
 mod offline_device_card;
+pub mod pane_model;
 mod scene_selector;
 mod screen_list;
 mod stage;
 pub use crate::zones::surface;
 pub mod tab_model;
 mod undo_notice;
-mod zone_add_device;
 mod zone_controls;
 mod zone_strip;
-mod zone_tree;
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,11 +43,11 @@ use crate::zones::surface::{
     UNASSIGNED_SURFACE_ID, selected_screen_device_id, surfaces_from_zones,
 };
 use composition_panel::CompositionPanel;
+use device_pane::DevicePane;
 use scene_selector::SceneSelector;
 use stage::Stage;
 use undo_notice::{UndoNotice, UndoNoticeHost};
 use zone_strip::{ZONE_PANEL_ID, ZoneStrip, active_tab_dom_id};
-use zone_tree::ZoneTree;
 
 const TREE_WIDTH_KEY: &str = "hc-studio-tree-width";
 const TREE_WIDTH_RANGE: (f64, f64) = (240.0, 460.0);
@@ -78,9 +78,8 @@ fn save_hidden_outputs(map: &HashMap<String, HashSet<String>>) {
     }
 }
 
-/// An empty layer stack at revision 0 — the resource value for a selection
-/// that has no per-zone layer endpoint (none selected, or the synthetic
-/// Unassigned entry).
+/// An empty layer stack at revision 0 — the resource value while nothing
+/// is selected.
 fn empty_layer_stack() -> api::LayerStackResponse {
     api::LayerStackResponse {
         items: Vec::new(),
@@ -131,14 +130,18 @@ pub struct StudioContext {
     /// The daemon's render canvas extent. Zone layouts carry placements
     /// only, so anything fitting a footprint to the canvas reads this.
     pub render_canvas_size: Memo<(u32, u32)>,
-    /// Which rail disclosure (device kebab, add-device picker) is open,
-    /// by key. The rail rebuilds on scene events and search
-    /// keystrokes, so openness must outlive the DOM that renders it; one
-    /// shared slot also means opening a menu closes the previous one.
+    /// Which device-pane disclosure (a card's kebab) is open, by key. The
+    /// pane rebuilds on scene events and search keystrokes, so openness
+    /// must outlive the DOM that renders it; one shared slot also means
+    /// opening a menu closes the previous one.
     pub rail_disclosure: RwSignal<Option<String>>,
     /// An in-flight zone rename: `(zone id, draft text)`. Lives here so a
     /// tab strip rebuild mid-typing does not eat the field or the text.
     pub zone_rename_draft: RwSignal<Option<(String, String)>>,
+    /// Other zones expanded in the device pane. Session state: rows start
+    /// collapsed, a split device's hint opens its other zone, and a new
+    /// zone opens every row so its first devices are in view.
+    pub pane_expanded: RwSignal<HashSet<String>>,
     /// The offer to undo the last destructive zone action, if still open.
     pub undo_notice: RwSignal<Option<UndoNotice>>,
     /// Whether the narrow-viewport device drawer is open.
@@ -185,8 +188,9 @@ pub fn StudioPage() -> impl IntoView {
 
     let selected_surface_id = RwSignal::new(None::<String>);
 
-    // Keep the selection on a still-present zone, defaulting to the first
-    // LED zone so Studio always opens on a Light.
+    // Keep the selection on a still-present zone. A fresh selection opens
+    // the zone the rest of the app targets, else the first LED zone, so
+    // Studio always opens on a Light.
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
             if selected_surface_id.get_untracked().is_some() {
@@ -195,20 +199,22 @@ pub fn StudioPage() -> impl IntoView {
             return;
         };
         let current = selected_surface_id.get_untracked();
-        // The synthetic Unassigned entry has no zone; it is "present"
-        // while the scene is genuinely multi-zone (§9.4).
-        let multi_zone = surface::led_zone_count(&scene.zones) > 1;
-        let still_present = current.as_ref().is_some_and(|id| {
-            (id == UNASSIGNED_SURFACE_ID && multi_zone)
-                || scene.zones.iter().any(|zone| zone.id.to_string() == *id)
-        });
+        let still_present = current
+            .as_ref()
+            .is_some_and(|id| scene.zones.iter().any(|zone| zone.id.to_string() == *id));
         if still_present {
             return;
         }
-        let next = scene
-            .zones
-            .iter()
-            .find(|zone| zone.role != ZoneRole::Display)
+        let focused = zones_ctx.focused_zone.get_untracked();
+        let led_zones = || {
+            scene
+                .zones
+                .iter()
+                .filter(|zone| zone.role != ZoneRole::Display)
+        };
+        let next = led_zones()
+            .find(|zone| focused.as_deref() == Some(zone.id.to_string().as_str()))
+            .or_else(|| led_zones().next())
             .or_else(|| scene.zones.first())
             .map(|zone| zone.id.to_string());
         selected_surface_id.set(next);
@@ -253,7 +259,6 @@ pub fn StudioPage() -> impl IntoView {
     let layers_resource = LocalResource::new(move || {
         let zone_id = selected_surface_id.get();
         let stack = active_scene.with(|scene| match (scene.as_ref(), zone_id.as_deref()) {
-            (_, Some(UNASSIGNED_SURFACE_ID)) => Ok(empty_layer_stack()),
             (Some(scene), Some(zone_id)) => scene
                 .zones
                 .iter()
@@ -422,6 +427,7 @@ pub fn StudioPage() -> impl IntoView {
         render_canvas_size,
         rail_disclosure,
         zone_rename_draft,
+        pane_expanded: RwSignal::new(HashSet::new()),
         undo_notice: RwSignal::new(None),
         pane_drawer: tree_drawer,
         pointer_output_id,
@@ -485,7 +491,7 @@ pub fn StudioPage() -> impl IntoView {
                     class=("max-lg:-translate-x-full", move || !tree_drawer.get())
                     style:--tree-w=move || format!("{}px", tree_width.get())
                 >
-                    <ZoneTree />
+                    <DevicePane />
                 </div>
                 <div class="hidden lg:contents">
                     <ResizeHandle
