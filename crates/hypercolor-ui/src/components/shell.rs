@@ -62,7 +62,7 @@ pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
 
     // One zone per preview: the page's focused zone where it has a zone
-    // picker, the Default zone everywhere else.
+    // picker, the primary zone everywhere else.
     crate::preview_zone::follow_preview_zone(use_location().pathname);
 
     // Ambient hue extraction — driven by the shared frame-analysis pass in

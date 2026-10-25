@@ -31,8 +31,8 @@ pub struct Surface {
     pub name: String,
     pub kind: SurfaceKind,
     pub enabled: bool,
-    /// Semantic role of the backing zone. `Primary` is the §9.2
-    /// Default zone — it cannot be deleted through the zone endpoints.
+    /// Semantic role of the backing zone. The `Primary` zone (§9.2)
+    /// cannot be deleted through the zone endpoints.
     pub role: ZoneRole,
     /// Optional UI accent color for the zone swatch (§9.2).
     pub color: Option<String>,
@@ -52,7 +52,7 @@ pub struct Surface {
 
 impl Surface {
     /// Whether this surface is an LED zone the user may delete. The
-    /// `Primary` Default zone is permanent; `Custom` zones are removable.
+    /// `Primary` zone is permanent; `Custom` zones are removable.
     #[must_use]
     pub fn is_deletable_zone(&self) -> bool {
         self.kind == SurfaceKind::Light && self.role == ZoneRole::Custom

@@ -129,7 +129,7 @@ pub fn Sidebar() -> impl IntoView {
     }
 
     // The player acts on the zone the preview shows: the thumbnail's
-    // Default zone here, or the zone a page's picker focused.
+    // primary zone here, or the zone a page's picker focused.
     let preview_zone = use_context::<PreviewZoneContext>();
     let shown_zone_effect = Memo::new(move |last_seen: Option<&Option<ZoneEffectState>>| {
         let zone_id = preview_zone.and_then(|preview| preview.zone.get());

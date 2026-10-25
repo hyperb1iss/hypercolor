@@ -4,7 +4,7 @@
 //! devices' layout boxes (Spec 86 §5.1). That is the right picture for
 //! hardware and an unreadable one for a person, so previews show one zone
 //! at a time. A page with a zone picker beside its preview shows the zone
-//! it has focused; every other page shows the Default zone. A single-zone
+//! it has focused; every other page shows the primary zone. A single-zone
 //! scene's canvas already is its one zone, so it keeps the scene canvas.
 
 use hypercolor_types::scene::ZoneRole;
@@ -43,7 +43,7 @@ impl PreviewZoneContext {
 /// The zone a page's preview shows, or `None` for the scene canvas.
 ///
 /// `focused_zone` is the picker's choice, already checked to be an LED
-/// zone of the active scene; `primary_zone` is the scene's Default zone.
+/// zone of the active scene; `primary_zone` is the scene's primary zone.
 #[must_use]
 pub fn preview_zone_for(
     multi_zone: bool,
@@ -121,9 +121,9 @@ pub fn shown_zone_state(
 ///
 /// `shown` is the state of [`PreviewZoneContext::zone`]'s zone. While a
 /// zone is shown, the player applies to it, so a thumbnail of the Default
-/// zone never steers a zone focused on another page. The Default zone
+/// zone never steers a zone focused on another page. The primary zone
 /// steps from the primary effect, which an apply updates at once and which
-/// is what a Default zone apply replaces; another zone steps from its top
+/// is what a primary zone apply replaces; another zone steps from its top
 /// effect. On the scene canvas the player steps from the primary effect
 /// and applies to `target_zone`, the apply zone of the app's target zone.
 #[must_use]

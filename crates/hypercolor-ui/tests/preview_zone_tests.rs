@@ -78,7 +78,7 @@ fn a_multi_zone_scene_without_a_default_zone_falls_back_to_the_scene_canvas() {
 #[test]
 fn a_player_beside_the_default_zone_steps_the_default_zone() {
     // ROLI is focused on another page, but the thumbnail shows the
-    // Default zone, so its player steps and applies there. It steps from
+    // primary zone, so its player steps and applies there. It steps from
     // the primary effect, which an apply updates at once, not from the
     // zone list, which lags until the scene refetch lands.
     let shown = zone("default", ZoneRole::Primary, "touch-ripple");
@@ -107,8 +107,8 @@ fn the_shown_zone_s_state_comes_from_the_current_scene() {
 
 #[test]
 fn a_failed_refetch_keeps_the_shown_zone_s_last_state() {
-    // The preview keeps the Default zone through a failed refetch, so the
-    // player beside it must keep targeting the Default zone too rather
+    // The preview keeps the primary zone through a failed refetch, so the
+    // player beside it must keep targeting the primary zone too rather
     // than falling back to the target zone.
     let last = zone("default", ZoneRole::Primary, "digital-rain");
     assert_eq!(
