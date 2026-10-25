@@ -42,7 +42,9 @@ pub fn next_tab(current: Option<usize>, len: usize, key: &str) -> Option<usize> 
 
 /// One zone as a tab draws it: the zone's identity dot (neutral when the
 /// zone has no color), its name, and a paused glyph while it is disabled.
-/// The zone color stays on the dot; it never tints the tab itself.
+/// The zone color stays on the dot; it never tints the tab itself. The
+/// neutral tones read the semantic variables directly, so they resolve
+/// for whichever theme scope the label renders in.
 #[component]
 pub fn ZoneTabLabel(zone: Surface) -> impl IntoView {
     let dot_style = zone
@@ -56,13 +58,13 @@ pub fn ZoneTabLabel(zone: Surface) -> impl IntoView {
     view! {
         <span
             class="h-1.5 w-1.5 shrink-0 rounded-full"
-            class=("bg-fg-tertiary", neutral)
+            class=("bg-[var(--text-tertiary)]", neutral)
             style=dot_style
             aria-hidden="true"
         />
         <span class="min-w-0 truncate">{zone.name}</span>
         {paused.then(|| view! {
-            <span class="flex shrink-0 text-fg-tertiary" title="Paused">
+            <span class="flex shrink-0 text-[var(--text-tertiary)]" title="Paused">
                 <Icon icon=LuPause width="10px" height="10px" />
                 <span class="sr-only">", paused"</span>
             </span>
@@ -112,8 +114,13 @@ pub fn CompactZoneTabs() -> impl IntoView {
 
     view! {
         <Show when=move || zones_ctx.multi_zone.get()>
+            // The cabinet is a black canvas in both themes, so its tabs
+            // take the dark theme's tokens. Tailwind's color aliases are
+            // resolved at the document root, so the tab colors read the
+            // semantic variables directly to pick up this scope.
             <div
                 class="pointer-events-auto flex flex-wrap items-center gap-1.5"
+                data-theme="dark"
                 role="tablist"
                 aria-label="Zone"
                 on:keydown=on_keydown
@@ -155,11 +162,13 @@ pub fn CompactZoneTabs() -> impl IntoView {
                                                 focus-visible:outline-none focus-visible:ring-1 \
                                                 focus-visible:ring-accent/60";
                                     let state = if is_selected.get() {
-                                        "border-accent/60 bg-accent/20 text-fg-primary \
+                                        "border-[var(--accent)] bg-[var(--accent-muted)] \
+                                         text-[var(--text-primary)] \
                                          shadow-[0_0_10px_var(--glow-accent-50)]"
                                     } else {
-                                        "border-edge-subtle/60 bg-black/45 text-fg-secondary \
-                                         hover:border-edge-strong hover:bg-black/60 hover:text-fg-primary"
+                                        "border-[var(--border-subtle)] bg-black/45 \
+                                         text-[var(--text-secondary)] hover:border-[var(--border-strong)] \
+                                         hover:bg-black/60 hover:text-[var(--text-primary)]"
                                     };
                                     // Dimming rides in the same string: a
                                     // reactive `class` rebuild replaces the

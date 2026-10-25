@@ -280,7 +280,7 @@ pub fn ScenePicker() -> impl IntoView {
         current
     });
 
-    // A closed panel always reopens on the list, with no stale draft.
+    // A closed panel always reopens on the list.
     Effect::new(move |_| {
         if open.get() {
             return;
