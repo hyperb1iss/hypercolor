@@ -20,7 +20,6 @@ pub mod install_effect_panel;
 pub mod layer_panel;
 pub mod layout_builder;
 pub mod layout_canvas;
-pub mod layout_palette;
 pub mod layout_zone_properties;
 pub mod media_grid;
 pub mod media_kind;

@@ -119,7 +119,8 @@ pub(super) fn reconcile_replay(
         .retain(|id| snapshot.zones.iter().any(|output| &output.id == id));
 }
 
-/// Shared layout editor state — provided via context to palette, canvas, and zone properties.
+/// Shared layout editor state, provided via context to the canvas and the
+/// zone properties panel.
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutEditorContext {
     pub layout: Signal<Option<SpatialLayout>>,
@@ -138,7 +139,6 @@ pub(crate) struct LayoutEditorContext {
     pub set_is_dirty: WriteSignal<bool>,
     pub set_hidden_zones: WriteSignal<HashSet<String>>,
     pub set_keep_aspect_ratio: WriteSignal<bool>,
-    pub removed_zone_cache: Signal<RemovedOutputCache>,
     pub set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     /// Push the current in-flight layout to the daemon's preview engine.
     /// Used by the canvas during drag to keep the LED preview live without
@@ -191,7 +191,6 @@ pub(super) struct LayoutEditorSession {
     pub(super) set_hidden_zones: WriteSignal<HashSet<String>>,
     pub(super) hovered_zone_ids: ReadSignal<HashSet<String>>,
     pub(super) set_hovered_zone_ids: WriteSignal<HashSet<String>>,
-    pub(super) removed_zone_cache: ReadSignal<RemovedOutputCache>,
     pub(super) set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     pub(super) write: LayoutWriteHandle,
     pub(super) layout_signal: Signal<Option<SpatialLayout>>,
@@ -246,7 +245,6 @@ impl LayoutEditorSession {
             set_hidden_zones,
             hovered_zone_ids,
             set_hovered_zone_ids,
-            removed_zone_cache,
             set_removed_zone_cache,
             write,
             layout_signal: Signal::derive(move || layout.get()),
@@ -272,7 +270,6 @@ impl LayoutEditorSession {
             set_keep_aspect_ratio: self.set_keep_aspect_ratio,
             compound_depth: Signal::derive(move || self.compound_depth.get()),
             set_compound_depth: self.set_compound_depth,
-            removed_zone_cache: Signal::derive(move || self.removed_zone_cache.get()),
             set_removed_zone_cache: self.set_removed_zone_cache,
             push_preview,
             can_undo: self.can_undo,

@@ -11,7 +11,6 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::app::{DevicesContext, WsContext};
 use crate::components::layout_canvas::LayoutCanvas;
-use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
@@ -26,15 +25,11 @@ use hypercolor_leptos_ext::events::target_is_text_entry;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
-// Panel size defaults and constraints
-const SIDEBAR_DEFAULT: f64 = 280.0;
-const SIDEBAR_MIN: f64 = 180.0;
-const SIDEBAR_MAX: f64 = 480.0;
+// Zone-properties panel size default and constraints
 const BOTTOM_DEFAULT: f64 = 160.0;
 const BOTTOM_MIN: f64 = 96.0;
 const BOTTOM_MAX: f64 = 500.0;
 
-const LS_KEY_SIDEBAR: &str = "hc-layout-sidebar-width";
 const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -224,17 +219,17 @@ use editor_session::{
     LayoutEditorSession, ZoneDraft, embedded_attachment_profiles, merge_draft, reconcile_replay,
 };
 
-/// The layout editor body with its device palette, canvas viewport,
-/// zone-properties panel, and resizable-panel state. It consumes the
-/// [`LayoutEditorContext`] provided by [`ZoneLayoutProvider`].
+/// The layout editor body: the canvas viewport above a resizable
+/// zone-properties panel. It consumes the [`LayoutEditorContext`]
+/// provided by [`ZoneLayoutProvider`].
 #[component]
 pub(crate) fn LayoutWorkspace(
-    /// Compact embedding (Studio Stage). The device palette collapses
-    /// into a slide-over drawer instead of a permanent left column, so
-    /// the canvas reads as the hero rather than one panel among four.
+    /// Accepted from the Studio Stage, the one embedding; the workspace
+    /// has a single arrangement, so it changes nothing.
     #[prop(optional)]
     compact: bool,
 ) -> impl IntoView {
+    let _ = compact;
     let editor = expect_context::<LayoutEditorContext>();
     let has_layout = Signal::derive(move || editor.layout.with(Option::is_some));
 
@@ -279,13 +274,7 @@ pub(crate) fn LayoutWorkspace(
         });
     on_cleanup(move || history_shortcuts.remove());
 
-    // --- Resizable panel state ---
-    let (sidebar_width, set_sidebar_width) = signal(load_panel_size(
-        LS_KEY_SIDEBAR,
-        SIDEBAR_DEFAULT,
-        SIDEBAR_MIN,
-        SIDEBAR_MAX,
-    ));
+    // --- Resizable zone-properties panel ---
     let (bottom_height, set_bottom_height) = signal(load_panel_size(
         LS_KEY_BOTTOM,
         BOTTOM_DEFAULT,
@@ -293,43 +282,26 @@ pub(crate) fn LayoutWorkspace(
         BOTTOM_MAX,
     ));
 
-    // Which panel edge is being dragged, and its size at the press so a
-    // cancelled drag can put it back.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum PanelDrag {
-        Sidebar,
-        Bottom,
-    }
+    // The splitter's height at the press, so a cancelled drag can put it
+    // back.
     #[derive(Clone, Copy, Debug)]
     struct PanelGrip {
-        panel: PanelDrag,
         start_size: f64,
     }
-    let (dragging, set_dragging) = signal(None::<PanelDrag>);
+    let (dragging, set_dragging) = signal(false);
     let grip = StoredValue::new(PointerGesture::<PanelGrip>::new());
     let container_ref = NodeRef::<leptos::html::Div>::new();
-    let sidebar_grip_ref = NodeRef::<leptos::html::Div>::new();
     let bottom_grip_ref = NodeRef::<leptos::html::Div>::new();
 
-    let grip_element = move |panel: PanelDrag| -> Option<web_sys::Element> {
-        match panel {
-            PanelDrag::Sidebar => sidebar_grip_ref.get_untracked().map(Into::into),
-            PanelDrag::Bottom => bottom_grip_ref.get_untracked().map(Into::into),
-        }
-    };
+    let grip_element =
+        move || -> Option<web_sys::Element> { bottom_grip_ref.get_untracked().map(Into::into) };
 
     let finish_grip = move |outcome: GestureEnd, state: PanelGrip| {
-        set_dragging.set(None);
-        match (outcome, state.panel) {
-            (GestureEnd::Cancel, PanelDrag::Sidebar) => set_sidebar_width.set(state.start_size),
-            (GestureEnd::Cancel, PanelDrag::Bottom) => set_bottom_height.set(state.start_size),
+        set_dragging.set(false);
+        match outcome {
+            GestureEnd::Cancel => set_bottom_height.set(state.start_size),
             // Persist on release.
-            (GestureEnd::Commit, PanelDrag::Sidebar) => {
-                if let Some(width) = sidebar_width.try_get_untracked() {
-                    save_panel_size(LS_KEY_SIDEBAR, width);
-                }
-            }
-            (GestureEnd::Commit, PanelDrag::Bottom) => {
+            GestureEnd::Commit => {
                 if let Some(height) = bottom_height.try_get_untracked() {
                     save_panel_size(LS_KEY_BOTTOM, height);
                 }
@@ -337,18 +309,18 @@ pub(crate) fn LayoutWorkspace(
         }
     };
 
-    // Each splitter captures its pointer on press, so the drag keeps
+    // The splitter captures its pointer on press, so the drag keeps
     // tracking anywhere on screen without window listeners.
-    let start_grip = move |ev: web_sys::PointerEvent, panel: PanelDrag| {
+    let start_grip = move |ev: web_sys::PointerEvent| {
         suppress_press_defaults(&ev);
-        let Some(element) = grip_element(panel) else {
+        let Some(element) = grip_element() else {
             return;
         };
         let pointer_id = ev.pointer_id();
         let press = grip
             .try_update_value(|g| {
-                g.press(pointer_id, |owner, state| {
-                    holds_capture(grip_element(state.panel).as_ref(), owner)
+                g.press(pointer_id, |owner, _| {
+                    holds_capture(grip_element().as_ref(), owner)
                 })
             })
             .unwrap_or(Press::Busy);
@@ -357,14 +329,11 @@ pub(crate) fn LayoutWorkspace(
             Press::Stale(stale) => finish_grip(GestureEnd::Cancel, stale),
             Press::Ready => {}
         }
-        let start_size = match panel {
-            PanelDrag::Sidebar => sidebar_width.get_untracked(),
-            PanelDrag::Bottom => bottom_height.get_untracked(),
-        };
+        let start_size = bottom_height.get_untracked();
         capture_pointer(&element, &ev);
         let button = ev.button();
-        grip.update_value(|g| g.start(pointer_id, button, PanelGrip { panel, start_size }));
-        set_dragging.set(Some(panel));
+        grip.update_value(|g| g.start(pointer_id, button, PanelGrip { start_size }));
+        set_dragging.set(true);
     };
 
     let end_grip = move |ev: web_sys::PointerEvent, how: PointerEnd| {
@@ -381,32 +350,21 @@ pub(crate) fn LayoutWorkspace(
             end_grip(ev, PointerEnd::Up);
             return;
         }
-        let Some(panel) = grip.with_value(|g| g.state(ev.pointer_id()).map(|state| state.panel))
-        else {
+        if !grip.with_value(|g| g.state(ev.pointer_id()).is_some()) {
             return;
-        };
+        }
         let Some(container) = container_ref.try_get_untracked().flatten() else {
             return;
         };
         ev.prevent_default();
         let rect = container.get_bounding_client_rect();
-
-        match panel {
-            PanelDrag::Sidebar => {
-                let x = f64::from(ev.client_x()) - rect.left();
-                let clamped = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(rect.width() - 200.0));
-                set_sidebar_width.set(clamped);
-            }
-            PanelDrag::Bottom => {
-                let y = f64::from(ev.client_y()) - rect.top();
-                let panel_h = rect.height() - y;
-                let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
-                set_bottom_height.set(clamped);
-            }
-        }
+        let y = f64::from(ev.client_y()) - rect.top();
+        let panel_h = rect.height() - y;
+        let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
+        set_bottom_height.set(clamped);
     };
 
-    // The splitters render under `Show`, so they can leave the DOM mid-drag
+    // The splitter renders under `Show`, so it can leave the DOM mid-drag
     // while this state lives on. A detached element's lost capture goes to
     // the document, not the splitter, so a window listener ends the drag.
     let detached_capture_loss = window_event_listener(ev::lostpointercapture, move |ev| {
@@ -434,40 +392,13 @@ pub(crate) fn LayoutWorkspace(
                 class="relative flex min-h-0 flex-1 overflow-hidden"
                 node_ref=container_ref
                 style=move || {
-                    match dragging.get() {
-                        Some(PanelDrag::Sidebar) => "cursor: col-resize; user-select: none",
-                        Some(PanelDrag::Bottom) => "cursor: row-resize; user-select: none",
-                        None => "",
+                    if dragging.get() {
+                        "cursor: row-resize; user-select: none"
+                    } else {
+                        ""
                     }
                 }
             >
-                // Full-page editor keeps the palette as a permanent
-                // resizable column. Compact embeddings drop it here and
-                // surface it through the slide-over drawer below instead.
-                {(!compact).then(|| view! {
-                    <div
-                        class="shrink-0 min-h-0 overflow-y-auto"
-                        style=move || format!("width: {:.0}px", sidebar_width.get())
-                    >
-                        <LayoutPalette />
-                    </div>
-
-                    <div
-                        node_ref=sidebar_grip_ref
-                        class="shrink-0 w-1 cursor-col-resize group/handle relative touch-none touch-grab
-                               hover:bg-accent-muted/20 active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
-                        on:pointerdown=move |ev| start_grip(ev, PanelDrag::Sidebar)
-                        on:pointermove=move_grip
-                        on:pointerup=move |ev| end_grip(ev, PointerEnd::Up)
-                        on:pointercancel=move |ev| end_grip(ev, PointerEnd::Cancel)
-                        on:lostpointercapture=move |ev| end_grip(ev, PointerEnd::LostCapture)
-                    >
-                        <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
-                        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
-                                    rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
-                    </div>
-                })}
-
                 // Main area: canvas above, zone properties below
                 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                     // Canvas viewport — flexes to fill remaining space.
@@ -483,7 +414,7 @@ pub(crate) fn LayoutWorkspace(
                         node_ref=bottom_grip_ref
                         class="shrink-0 h-1 cursor-row-resize group/handle relative touch-none touch-grab
                                hover:bg-accent-muted/20 active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
-                        on:pointerdown=move |ev| start_grip(ev, PanelDrag::Bottom)
+                        on:pointerdown=start_grip
                         on:pointermove=move_grip
                         on:pointerup=move |ev| end_grip(ev, PointerEnd::Up)
                         on:pointercancel=move |ev| end_grip(ev, PointerEnd::Cancel)
