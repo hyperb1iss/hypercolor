@@ -17,7 +17,6 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api;
-use crate::apply_target::ApplyTarget;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::modal::Modal;
 use crate::components::shell::Shell;
@@ -49,9 +48,8 @@ use crate::ws::{
 mod effect_state;
 
 use effect_state::{
-    apply_active_effect_snapshot, apply_active_scene_snapshot, apply_effect_to_current_led_zones,
-    capture_active_effect_state, clear_active_scene_state, effect_error_toast_message,
-    restore_active_effect_state,
+    apply_active_effect_snapshot, apply_active_scene_snapshot, capture_active_effect_state,
+    clear_active_scene_state, effect_error_toast_message, restore_active_effect_state,
 };
 
 /// Global WebSocket state provided via Leptos context.
@@ -200,10 +198,8 @@ pub struct EffectsContext {
     /// depend on the reactive owner being live.
     pub preferences: PreferencesStore,
     pub apply_generation: StoredValue<u64>,
-    /// The zone a quick-apply targets. Studio writes it from the selected
-    /// zone; every quick-apply surface reads it so applies land in the
-    /// zone the user is composing (Wave B3).
-    pub apply_target: RwSignal<ApplyTarget>,
+    /// The shared zone state. Effect applies land in its target zone.
+    pub zones: crate::zones::ZonesContext,
     /// Refresh hook for the shared active-scene resource (crate::zones).
     /// Apply paths run it after zone-targeted writes; the snapshot
     /// application happens in the app-root effect that watches the
@@ -280,53 +276,47 @@ impl EffectsContext {
         }
     }
 
-    /// Apply an effect by ID — sets local state + calls API.
+    /// Apply an effect by ID to the target zone: sets local state and
+    /// calls the API.
     ///
     /// When remembered preferences exist for this effect, they're baked
     /// into the one `/apply` request, so the daemon admits the effect with
     /// the user's saved preset + controls in a single scene mutation
     /// instead of starting at defaults and being corrected afterwards.
     pub fn apply_effect(&self, id: String) {
-        self.apply_effect_to(id, self.apply_target.get_untracked());
+        let zone_id =
+            crate::zones::surface::apply_zone_id(self.zones.target_zone_untracked().as_ref());
+        self.apply_effect_to(id, zone_id);
     }
 
-    /// Apply an effect to one target rather than wherever quick-applies
-    /// go. A control tied to the zone a preview shows names that zone, so
-    /// it never lands on a zone focused on another page.
-    pub fn apply_effect_to(&self, id: String, apply_target: ApplyTarget) {
+    /// Apply an effect to one zone rather than the target zone; `None` is
+    /// the primary zone. A player tied to the zone a preview shows names
+    /// that zone, so it never lands on a zone focused on another page.
+    pub fn apply_effect_to(&self, id: String, zone_id: Option<String>) {
         let stored_prefs = self.preferences.get(&id);
-        if apply_target == ApplyTarget::AllZones {
-            let ctx = *self;
-            leptos::task::spawn_local(async move {
-                apply_effect_to_current_led_zones(&ctx, id).await;
-            });
-            return;
-        }
 
         // A body is sent when there are preferences to bake in, or when a
         // named zone has to be targeted.
-        let target_zone_id = apply_target.zone_id().map(ToOwned::to_owned);
-        let body =
-            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectRequest {
-                preset_id: stored_prefs
-                    .as_ref()
-                    .and_then(|prefs| prefs.preset_id.as_deref())
-                    .and_then(|preset_id| preset_id.parse().ok()),
-                controls: stored_prefs.as_ref().and_then(|prefs| {
-                    (!prefs.control_values.is_empty())
-                        .then(|| prefs.control_values.clone().into_iter().collect())
-                }),
-                zone: target_zone_id.as_deref().and_then(|zone_id| {
-                    uuid::Uuid::parse_str(zone_id)
-                        .ok()
-                        .map(hypercolor_types::scene::ZoneId)
-                }),
-                ..api::ApplyEffectRequest::default()
-            });
+        let body = (stored_prefs.is_some() || zone_id.is_some()).then(|| api::ApplyEffectRequest {
+            preset_id: stored_prefs
+                .as_ref()
+                .and_then(|prefs| prefs.preset_id.as_deref())
+                .and_then(|preset_id| preset_id.parse().ok()),
+            controls: stored_prefs.as_ref().and_then(|prefs| {
+                (!prefs.control_values.is_empty())
+                    .then(|| prefs.control_values.clone().into_iter().collect())
+            }),
+            zone: zone_id.as_deref().and_then(|zone_id| {
+                uuid::Uuid::parse_str(zone_id)
+                    .ok()
+                    .map(hypercolor_types::scene::ZoneId)
+            }),
+            ..api::ApplyEffectRequest::default()
+        });
 
         // A named-zone apply renders into that zone and leaves the default
         // effect untouched, so it skips the default-state optimism below.
-        if target_zone_id.is_some() {
+        if zone_id.is_some() {
             let ctx = *self;
             leptos::task::spawn_local(async move {
                 if api::apply_effect(&id, body.as_ref()).await.is_ok() {
@@ -801,7 +791,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         apply_generation: StoredValue::new(0),
-        apply_target: RwSignal::new(ApplyTarget::Primary),
+        zones: zones_ctx,
         scene_refresh: zones_ctx.refresh,
         zone_effects,
         focused_zone_effect,

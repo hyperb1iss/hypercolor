@@ -38,9 +38,10 @@ pub struct ZonesContext {
     /// `multi_zone` and the zone lists describe it rather than an empty
     /// page still loading. See [`scene_read_settles`].
     pub scene_resolved: Memo<bool>,
-    /// The zone quick-applies and the controls panel target. `None`
-    /// means the primary zone. Set by Studio's selection and by explicit
-    /// zone pickers; surfaces that consume it must render it visibly.
+    /// The one record of which LED zone effect applies, presets, the
+    /// controls, and the preview target. `None`, or an id that has left
+    /// the scene, means the primary zone. Written by the zone tabs and by
+    /// Studio's selection; read through [`ZonesContext::target_zone`].
     pub focused_zone: RwSignal<Option<String>>,
     /// Refetch the shared active-scene resource.
     pub refresh: Callback<()>,
@@ -53,26 +54,24 @@ impl ZonesContext {
             .with(|zones| zones.iter().find(|zone| zone.id == id).cloned())
     }
 
-    /// The zone writes currently target: the focused zone when it still
-    /// exists in the active scene, otherwise the primary LED zone.
+    /// The LED zone writes currently target. See [`surface::target_zone`].
     pub fn target_zone(&self) -> Option<Surface> {
-        let focused = self
-            .focused_zone
-            .get()
-            .and_then(|id| self.zone(&id))
-            .filter(|zone| zone.kind == SurfaceKind::Light);
-        focused.or_else(|| self.primary_zone())
+        let focused = self.focused_zone.get();
+        self.zones
+            .with(|zones| surface::target_zone(zones, focused.as_deref()).cloned())
     }
 
-    /// The primary (Default) LED zone of the active scene.
+    /// [`ZonesContext::target_zone`] without tracking, for event handlers.
+    pub fn target_zone_untracked(&self) -> Option<Surface> {
+        let focused = self.focused_zone.get_untracked();
+        self.zones
+            .with_untracked(|zones| surface::target_zone(zones, focused.as_deref()).cloned())
+    }
+
+    /// The primary LED zone of the active scene.
     pub fn primary_zone(&self) -> Option<Surface> {
-        self.led_zones.with(|zones| {
-            zones
-                .iter()
-                .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Primary)
-                .or_else(|| zones.first())
-                .cloned()
-        })
+        self.zones
+            .with(|zones| surface::primary_led_zone(zones).cloned())
     }
 
     /// Untracked focused-zone id, validated against the current scene.

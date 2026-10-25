@@ -59,6 +59,38 @@ impl Surface {
     }
 }
 
+/// The primary LED zone: the `Primary` role, else the first LED zone.
+#[must_use]
+pub fn primary_led_zone(zones: &[Surface]) -> Option<&Surface> {
+    zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .or_else(|| zones.iter().find(|zone| zone.kind == SurfaceKind::Light))
+}
+
+/// The LED zone effect applies, presets, controls, and the preview
+/// target: the focused zone while it is still an LED zone of the scene,
+/// otherwise the primary zone.
+#[must_use]
+pub fn target_zone<'a>(zones: &'a [Surface], focused: Option<&str>) -> Option<&'a Surface> {
+    focused
+        .and_then(|id| {
+            zones
+                .iter()
+                .find(|zone| zone.id == id && zone.kind == SurfaceKind::Light)
+        })
+        .or_else(|| primary_led_zone(zones))
+}
+
+/// The zone an effect apply names. The primary zone is the daemon's
+/// default target, so it goes unnamed and keeps the primary apply path.
+#[must_use]
+pub fn apply_zone_id(target: Option<&Surface>) -> Option<String> {
+    target
+        .filter(|zone| zone.role != ZoneRole::Primary)
+        .map(|zone| zone.id.clone())
+}
+
 /// Count of LED-role zones in a scene. A scene is multi-zone when
 /// this exceeds one — the trigger for the per-zone controls and the
 /// zone-assignment panel.

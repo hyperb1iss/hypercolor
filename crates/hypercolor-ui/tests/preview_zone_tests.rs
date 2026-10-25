@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use hypercolor_types::scene::ZoneRole;
 
-use hypercolor_ui::apply_target::ApplyTarget;
 use hypercolor_ui::preview_zone::{
     PlayerTarget, player_target, preview_frame_owner, preview_zone_for, settled_preview_zone,
     shown_zone_state,
@@ -84,14 +83,10 @@ fn a_player_beside_the_default_zone_steps_the_default_zone() {
     // zone list, which lags until the scene refetch lands.
     let shown = zone("default", ZoneRole::Primary, "touch-ripple");
     assert_eq!(
-        player_target(
-            Some(&shown),
-            Some("digital-rain"),
-            &ApplyTarget::Zone("roli".to_owned()),
-        ),
+        player_target(Some(&shown), Some("digital-rain"), Some("roli")),
         PlayerTarget {
             current_effect: Some("digital-rain".to_owned()),
-            apply_target: ApplyTarget::Primary,
+            apply_zone: None,
         }
     );
 }
@@ -114,7 +109,7 @@ fn the_shown_zone_s_state_comes_from_the_current_scene() {
 fn a_failed_refetch_keeps_the_shown_zone_s_last_state() {
     // The preview keeps the Default zone through a failed refetch, so the
     // player beside it must keep targeting the Default zone too rather
-    // than falling back to the quick-apply target.
+    // than falling back to the target zone.
     let last = zone("default", ZoneRole::Primary, "digital-rain");
     assert_eq!(
         shown_zone_state(Some("default"), &[], Some(&last)),
@@ -133,28 +128,28 @@ fn a_shown_zone_missing_from_a_loaded_scene_has_no_state() {
 fn a_player_beside_a_focused_zone_steps_from_that_zone_s_effect() {
     let shown = zone("roli", ZoneRole::Custom, "bubble-garden");
     assert_eq!(
-        player_target(
-            Some(&shown),
-            Some("digital-rain"),
-            &ApplyTarget::Zone("roli".to_owned()),
-        ),
+        player_target(Some(&shown), Some("digital-rain"), Some("roli")),
         PlayerTarget {
             current_effect: Some("bubble-garden".to_owned()),
-            apply_target: ApplyTarget::Zone("roli".to_owned()),
+            apply_zone: Some("roli".to_owned()),
         }
     );
 }
 
 #[test]
-fn a_player_beside_the_scene_canvas_keeps_the_quick_apply_target() {
+fn a_player_beside_the_scene_canvas_applies_to_the_target_zone() {
     // A single-zone scene previews its scene canvas, which already is
-    // its one zone: nothing about the player changes.
+    // its one zone, so the player applies wherever an apply would.
     assert_eq!(
-        player_target(None, Some("digital-rain"), &ApplyTarget::AllZones),
+        player_target(None, Some("digital-rain"), None),
         PlayerTarget {
             current_effect: Some("digital-rain".to_owned()),
-            apply_target: ApplyTarget::AllZones,
+            apply_zone: None,
         }
+    );
+    assert_eq!(
+        player_target(None, Some("digital-rain"), Some("roli")).apply_zone,
+        Some("roli".to_owned())
     );
 }
 

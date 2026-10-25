@@ -31,7 +31,6 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::api::ComponentBindingSummary;
 use crate::app::WsContext;
-use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
@@ -219,10 +218,10 @@ pub fn StudioPage() -> impl IntoView {
         selected_surface_id.set(next);
     });
 
-    // Studio's selected LED zone is the app-wide effect apply-target
-    // (Wave B3): a quick-apply from anywhere lands in the zone being
-    // composed. A Screen or the Unassigned entry is not an apply target.
-    let effects_ctx = expect_context::<crate::app::EffectsContext>();
+    // Studio's selected LED zone is the app's target zone, so an apply
+    // from anywhere lands in the zone being composed. A Screen or the
+    // Unassigned entry is not a target and leaves the focus alone; a focus
+    // left over from another scene already resolves to the primary zone.
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
             return;
@@ -234,21 +233,10 @@ pub fn StudioPage() -> impl IntoView {
                     .iter()
                     .any(|zone| zone.id.to_string() == *id && zone.role != ZoneRole::Display)
         });
-        if let Some(zone_id) = selected_led_zone {
-            zones_ctx.focused_zone.set(Some(zone_id.clone()));
-            effects_ctx.apply_target.set(ApplyTarget::Zone(zone_id));
-        } else if matches!(
-            effects_ctx.apply_target.get_untracked(),
-            ApplyTarget::Zone(ref target)
-                if !scene
-                    .zones
-                    .iter()
-                    .any(|zone| zone.id.to_string() == target.as_str())
-        ) {
-            // A Screen / Unassigned selection holding a target left over
-            // from a no-longer-active scene falls back to the default zone.
-            zones_ctx.focused_zone.set(None);
-            effects_ctx.apply_target.set(ApplyTarget::Primary);
+        if let Some(zone_id) = selected_led_zone
+            && zones_ctx.focused_zone.get_untracked().as_deref() != Some(zone_id.as_str())
+        {
+            zones_ctx.focused_zone.set(Some(zone_id));
         }
     });
 

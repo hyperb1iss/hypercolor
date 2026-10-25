@@ -261,20 +261,8 @@ fn format_bytes_per_sec(bytes_per_sec: f64) -> String {
 #[component]
 pub(super) fn FavoritesPanel() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
-    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
-
-    // Where a click on a favorite lands. Multi-zone scenes name the
-    // target zone so the otherwise-invisible apply target is visible;
-    // single-zone scenes show nothing (there is only one place to go).
-    let target_zone_name = Memo::new(move |_| {
-        zones_ctx
-            .multi_zone
-            .get()
-            .then(|| zones_ctx.target_zone().map(|zone| zone.name))
-            .flatten()
-    });
 
     let favorite_effects = Memo::new(move |_| {
         let fav_ids = fx.favorite_ids.get();
@@ -340,17 +328,6 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
                     >
                         "Favorites"
                     </h2>
-                    {move || target_zone_name.get().map(|name| view! {
-                        <span
-                            class="text-[10px] font-mono rounded-full px-2 py-[3px] truncate max-w-[120px]"
-                            style="color: var(--color-accent); \
-                                   background: rgba(225, 53, 255, 0.08); \
-                                   border: 1px solid rgba(225, 53, 255, 0.22)"
-                            title="Effects apply to this zone"
-                        >
-                            {format!("→ {name}")}
-                        </span>
-                    })}
                 </div>
                 <div
                     class="text-[10px] font-mono rounded-full px-2 py-[3px] tabular-nums"
