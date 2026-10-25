@@ -38,9 +38,7 @@ use crate::components::scene_picker::ScenePicker;
 use crate::icons::*;
 use crate::storage;
 
-use crate::zones::surface::{
-    UNASSIGNED_SURFACE_ID, selected_screen_device_id, surfaces_from_zones,
-};
+use crate::zones::surface::{selected_screen_device_id, surfaces_from_zones};
 use composition_panel::CompositionPanel;
 use device_pane::DevicePane;
 use stage::Stage;
@@ -219,19 +217,18 @@ pub fn StudioPage() -> impl IntoView {
     });
 
     // Studio's selected LED zone is the app's target zone, so an apply
-    // from anywhere lands in the zone being composed. A Screen or the
-    // Unassigned entry is not a target and leaves the focus alone; a focus
-    // left over from another scene already resolves to the primary zone.
+    // from anywhere lands in the zone being composed. A Screen is not a
+    // target and leaves the focus alone; a focus left over from another
+    // scene already resolves to the primary zone.
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
             return;
         };
         let selected_led_zone = selected_surface_id.get().filter(|id| {
-            id != UNASSIGNED_SURFACE_ID
-                && scene
-                    .zones
-                    .iter()
-                    .any(|zone| zone.id.to_string() == *id && zone.role != ZoneRole::Display)
+            scene
+                .zones
+                .iter()
+                .any(|zone| zone.id.to_string() == *id && zone.role != ZoneRole::Display)
         });
         if let Some(zone_id) = selected_led_zone
             && zones_ctx.focused_zone.get_untracked().as_deref() != Some(zone_id.as_str())

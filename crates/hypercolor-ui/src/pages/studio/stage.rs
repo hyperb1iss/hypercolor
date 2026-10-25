@@ -300,7 +300,7 @@ pub fn Stage() -> impl IntoView {
                             // here collapses the canvas to zero height.
                             <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                                 <div class="contents" inert=move || studio.history.busy.get() aria-busy=move || studio.history.busy.get().to_string()>
-                                    <LayoutWorkspace compact=true />
+                                    <LayoutWorkspace />
                                 </div>
                             </div>
                         </div>

@@ -223,13 +223,7 @@ use editor_session::{
 /// zone-properties panel. It consumes the [`LayoutEditorContext`]
 /// provided by [`ZoneLayoutProvider`].
 #[component]
-pub(crate) fn LayoutWorkspace(
-    /// Accepted from the Studio Stage, the one embedding; the workspace
-    /// has a single arrangement, so it changes nothing.
-    #[prop(optional)]
-    compact: bool,
-) -> impl IntoView {
-    let _ = compact;
+pub(crate) fn LayoutWorkspace() -> impl IntoView {
     let editor = expect_context::<LayoutEditorContext>();
     let has_layout = Signal::derive(move || editor.layout.with(Option::is_some));
 

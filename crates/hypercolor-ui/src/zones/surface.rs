@@ -9,11 +9,6 @@ use hypercolor_types::scene::ZoneRole;
 
 use crate::api::ZoneResource;
 
-/// Synthetic rail-entry id for the §9.4 Unassigned entry. It is not a
-/// surface — it has no layer stack and no Stage — so it never collides
-/// with a real `ZoneId` (a UUID, which this is not).
-pub const UNASSIGNED_SURFACE_ID: &str = "__unassigned__";
-
 /// Which rail section a surface belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceKind {
