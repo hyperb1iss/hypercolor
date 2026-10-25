@@ -181,7 +181,8 @@ pub enum DropTarget {
     Tab(String),
     /// The "+" after the tab strip.
     NewZone,
-    /// A row in the pane's Other zones section.
+    /// A zone's section in the pane: the open zone's own, or an Other
+    /// zones row.
     PaneZone(String),
     /// The pane's Unassigned section.
     Unassigned,

@@ -110,6 +110,41 @@ fn membership_replay_preserves_newer_geometry_but_rejects_changed_binding() {
 }
 
 #[test]
+fn placement_replay_restores_the_geometry_the_edit_recorded() {
+    let scene = scene();
+    let zone = &scene.zones[0];
+    let live = hypercolor_ui::api::zone_outputs(zone).remove(0);
+    // A drop moved the output from x 0.7 to x 0.3. Replaying it while the
+    // output still sits where the drop found it lands it at the recorded
+    // 0.3, rather than leaving it at its live spot.
+    let mut dropped = live.clone();
+    dropped.position.x = 0.3;
+    dropped.size.x = 0.2;
+    let original = live.clone();
+    let change = MemberEdit {
+        before: Some(MemberState {
+            zone_id: zone.id,
+            output: original,
+            index: 0,
+        }),
+        after: Some(MemberState {
+            zone_id: zone.id,
+            output: dropped,
+            index: 0,
+        }),
+    };
+    let replay = prepare_members_replay(&scene, vec![change]).expect("same binding");
+    let after = &replay[0].after.as_ref().expect("after").output;
+    assert_eq!(after.position.x, 0.3);
+    assert_eq!(after.size.x, 0.2);
+    assert_eq!(after.name, live.name);
+    assert_eq!(
+        replay[0].before.as_ref().expect("before").output.position.x,
+        0.7
+    );
+}
+
+#[test]
 fn removed_output_restoration_keeps_recorded_snapshot_without_live_hardware() {
     let scene = scene();
     let zone = &scene.zones[0];

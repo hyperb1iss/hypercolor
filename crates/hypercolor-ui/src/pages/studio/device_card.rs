@@ -810,8 +810,8 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
 
 /// The Placed device card's operations menu, folded behind the card's
 /// kebab so the action cluster stays at two icons. Expands inline below
-/// the card body. "Move to" opens the shared menu of what moves and where,
-/// releasing to Unassigned included.
+/// the card body. "Move to" opens the shared menu of what moves and where;
+/// "Remove from zone" releases the whole device.
 fn card_ops_menu(
     studio: StudioContext,
     drag: DragController,
@@ -865,6 +865,23 @@ fn card_ops_menu(
                 <Icon icon=LuArrowRightLeft width="12px" height="12px" />
                 <span class="flex-1">"Move to"</span>
                 <Icon icon=LuChevronRight width="11px" height="11px" />
+            </button>
+            <button
+                type="button"
+                class=format!("{row} text-status-error hover:bg-surface-hover/40 disabled:opacity-40")
+                disabled=move || studio.history.busy.get()
+                on:click=move |ev: web_sys::MouseEvent| {
+                    ev.stop_propagation();
+                    ops_open.set(false);
+                    let Some(whole) = scopes.with_value(|scopes| scopes.first().map(|(_, whole)| whole.clone())) else {
+                        return;
+                    };
+                    let focus = FocusReturn { target: kebab_id.get_value(), fallback: None };
+                    perform(drag, whole, DropAction::Unassign, Some(focus));
+                }
+            >
+                <Icon icon=LuTrash2 width="12px" height="12px" />
+                <span>"Remove from zone"</span>
             </button>
         </div>
     }

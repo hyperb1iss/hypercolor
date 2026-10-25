@@ -469,7 +469,6 @@ pub fn StudioPage() -> impl IntoView {
             on:pointerup=move |ev| drag.on_end(&ev, PointerEnd::Up)
             on:pointercancel=move |ev| drag.on_end(&ev, PointerEnd::Cancel)
             on:lostpointercapture=move |ev| drag.on_lost_capture(&ev)
-            on:touchmove=move |ev| drag.on_touch_move(&ev)
             on:contextmenu=move |ev: web_sys::MouseEvent| {
                 if drag.holds_touch() {
                     ev.prevent_default();

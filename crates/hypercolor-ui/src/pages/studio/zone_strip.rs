@@ -811,7 +811,7 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
             // Holding a drag here opens the tab when the ring fills.
             <Show when=move || springing.get()>
                 <svg
-                    class="pointer-events-none mr-2 h-3.5 w-3.5 shrink-0 -rotate-90"
+                    class="pointer-events-none absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 -rotate-90"
                     viewBox="0 0 16 16"
                     aria-hidden="true"
                 >

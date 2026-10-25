@@ -610,6 +610,9 @@ pub fn LayoutCanvas() -> impl IntoView {
         else {
             return;
         };
+        if let Some(out) = drag_out {
+            out.cancel.try_run(());
+        }
         set_layout.abandon_interaction();
         if runtime.moved.get()
             && let Some(snapshot) = layout.try_get_untracked().flatten()

@@ -102,8 +102,9 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
     // font size makes of its width.
     let size = RwSignal::new((280.0_f64, 320.0_f64));
 
+    let open = Memo::new(move |_| menu.with(Option::is_some));
     Effect::new(move |_| {
-        if menu.with(Option::is_some) {
+        if open.get() {
             request_animation_frame(move || {
                 if let Some(panel) = menu_ref.get_untracked() {
                     let rect = panel.get_bounding_client_rect();

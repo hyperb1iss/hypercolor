@@ -31,6 +31,7 @@ use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use crate::app::DevicesContext;
 use crate::components::layout_canvas::CanvasDragOut;
@@ -59,6 +60,9 @@ const TOUCH_HOLD_MS: u64 = 350;
 /// and how fast it scrolls at the very edge, in pixels per frame.
 const AUTOSCROLL_EDGE_PX: f64 = 48.0;
 const AUTOSCROLL_MAX_STEP: f64 = 14.0;
+/// Controls a press on a drag source leaves alone, so they keep their
+/// own clicks.
+const NESTED_CONTROLS: &str = "button, a, input, select, textarea, [role=button]";
 const TARGET_SELECTOR: &str = "[data-zone-tab], [data-drop-new-zone], [data-pane-zone], \
     [data-pane-unassigned], [data-studio-canvas]";
 
@@ -135,6 +139,10 @@ pub(crate) struct DragController {
     /// Pixels per frame the pane scrolls while a drag rests near its edge,
     /// and whether the frame loop doing it is running.
     autoscroll: StoredValue<(f64, bool)>,
+    /// The window `touchmove` guard a touch drag installs: non-passive, so
+    /// it can stop the browser panning after the drag's source has left
+    /// the document and its own listeners with it.
+    touch_guard: StoredValue<Option<Closure<dyn FnMut(web_sys::TouchEvent)>>, LocalStorage>,
     /// The open "Move to" menu.
     pub menu: RwSignal<Option<MoveMenuAnchor>>,
 }
@@ -158,6 +166,7 @@ impl DragController {
             pending_focus: RwSignal::new(None),
             canvas_escaped: StoredValue::new(false),
             autoscroll: StoredValue::new((0.0, false)),
+            touch_guard: StoredValue::new_local(None),
             menu: RwSignal::new(None),
         };
 
@@ -197,14 +206,27 @@ impl DragController {
             });
         });
 
-        let escape = window_event_listener(ev::keydown, move |ev| {
-            if ev.key() == "Escape" && drag.payload.with_untracked(Option::is_some) {
+        // Registered before any child's window listener, so stopping
+        // propagation here keeps a live drag's keys from them: Escape
+        // cancels only the drag, and undo waits until the drop lands.
+        let keys = window_event_listener(ev::keydown, move |ev| {
+            if drag.payload.with_untracked(Option::is_none) {
+                return;
+            }
+            let history_key = (ev.ctrl_key() || ev.meta_key())
+                && matches!(ev.key().as_str(), "z" | "Z" | "y" | "Y");
+            if ev.key() == "Escape" || history_key {
                 ev.prevent_default();
-                ev.stop_propagation();
+                ev.stop_immediate_propagation();
+            }
+            if ev.key() == "Escape" {
                 drag.cancel();
             }
         });
-        on_cleanup(move || escape.remove());
+        on_cleanup(move || {
+            keys.remove();
+            drag.release_touch_guard();
+        });
 
         provide_context(CanvasDragOut {
             hover: Callback::new(move |(x, y, ids): (f64, f64, Vec<String>)| {
@@ -230,6 +252,14 @@ impl DragController {
         let Some(element) = listener_element(ev) else {
             return;
         };
+        let nested_control = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|target| target.closest(NESTED_CONTROLS).ok().flatten())
+            .is_some_and(|control| control != element);
+        if nested_control {
+            return;
+        }
         let pointer_id = ev.pointer_id();
         let press = self
             .gesture
@@ -245,6 +275,11 @@ impl DragController {
             Press::Stale(_) | Press::Ready => {}
         }
         suppress_press_defaults(ev);
+        // Cancelling a mouse press also stops it focusing the source, which
+        // keyboard follow-ups like Shift+F10 rely on.
+        if let Some(focusable) = element.dyn_ref::<web_sys::HtmlElement>() {
+            let _ = focusable.focus();
+        }
         capture_pointer(&element, ev);
         let touch = ev.pointer_type() == "touch";
         let pending = Pending {
@@ -361,14 +396,37 @@ impl DragController {
         }
     }
 
-    /// The page root's `touchmove`: once a touch drag is live, the pane
-    /// must not scroll under it.
-    pub fn on_touch_move(self, ev: &web_sys::TouchEvent) {
-        let dragging = self
-            .gesture
-            .with_value(|gesture| gesture.current().is_some_and(|state| state.dragging));
-        if dragging && ev.cancelable() {
-            ev.prevent_default();
+    /// Hold the page still under a touch drag. Touch events keep
+    /// targeting the element the touch began on, which the pane may have
+    /// removed, so the guard listens on the window, and only while a
+    /// touch drag is live, so it never slows ordinary scrolling.
+    fn install_touch_guard(self) {
+        if self.touch_guard.with_value(Option::is_some) {
+            return;
+        }
+        let guard = Closure::<dyn FnMut(web_sys::TouchEvent)>::new(|ev: web_sys::TouchEvent| {
+            if ev.cancelable() {
+                ev.prevent_default();
+            }
+        });
+        let options = web_sys::AddEventListenerOptions::new();
+        options.set_passive(false);
+        if window()
+            .add_event_listener_with_callback_and_add_event_listener_options(
+                "touchmove",
+                guard.as_ref().unchecked_ref(),
+                &options,
+            )
+            .is_ok()
+        {
+            self.touch_guard.set_value(Some(guard));
+        }
+    }
+
+    fn release_touch_guard(self) {
+        if let Some(guard) = self.touch_guard.try_update_value(Option::take).flatten() {
+            let _ = window()
+                .remove_event_listener_with_callback("touchmove", guard.as_ref().unchecked_ref());
         }
     }
 
@@ -439,18 +497,21 @@ impl DragController {
             return;
         };
         let root: web_sys::Element = (*root).clone().into();
-        let payload = self
+        let picked = self
             .gesture
             .try_update_value(|gesture| {
                 let state = gesture.state_mut(pointer_id)?;
                 state.dragging = true;
                 state.capture = root.clone();
-                Some(state.payload.clone())
+                Some((state.payload.clone(), state.touch))
             })
             .flatten();
-        let Some(payload) = payload else {
+        let Some((payload, touch)) = picked else {
             return;
         };
+        if touch {
+            self.install_touch_guard();
+        }
         let _ = root.set_pointer_capture(pointer_id);
         self.spring.set_value(SpringLoad::default());
         self.payload.set(Some(payload));
@@ -660,6 +721,7 @@ impl DragController {
     }
 
     fn lift(self) {
+        self.release_touch_guard();
         self.spring.try_set_value(SpringLoad::default());
         self.payload.try_set(None);
         self.over.try_set(None);
@@ -765,18 +827,22 @@ pub(crate) fn DragLayer() -> impl IntoView {
     let drag = expect_context::<DragController>();
     let studio = drag.studio;
 
+    let hint = Memo::new(move |_| {
+        let over = drag.over.get()?;
+        drag.payload
+            .with(|payload| {
+                payload
+                    .as_ref()
+                    .and_then(|payload| resolve_drop(payload, &over))
+            })
+            .map(|action| action_hint(&action, |id| zone_name(studio, id)))
+    });
+    // The ghost mounts once per drag; only its hint line follows the
+    // target, so it does not replay its entrance on every target change.
     let ghost = Memo::new(move |_| {
         let payload = drag.payload.get()?;
-        let over = drag.over.get();
-        let hint = over
-            .as_ref()
-            .and_then(|target| resolve_drop(&payload, target))
-            .map(|action| action_hint(&action, |id| zone_name(studio, id)));
         // A box dragged on its own canvas is its own ghost.
-        if payload.source == DragSource::Canvas && hint.is_none() {
-            return None;
-        }
-        Some((payload, hint))
+        (payload.source != DragSource::Canvas || hint.with(Option::is_some)).then_some(payload)
     });
     let canvas_look = Memo::new(move |_| {
         let rect = drag.canvas_rect.get()?;
@@ -830,7 +896,7 @@ pub(crate) fn DragLayer() -> impl IntoView {
         {move || {
             ghost
                 .get()
-                .map(|(payload, hint)| {
+                .map(|payload| {
                     let (primary, secondary) = device_accent_colors(&payload.device_id);
                     let strip = format!(
                         "background: linear-gradient(180deg, rgb({primary}), rgb({secondary}))",
@@ -847,14 +913,17 @@ pub(crate) fn DragLayer() -> impl IntoView {
                                     <div class="truncate text-[12px] font-medium text-fg-primary">
                                         {payload.label.clone()}
                                     </div>
-                                    {hint.map(|hint| {
-                                        view! {
-                                            <div class="flex items-center gap-1 text-[10px] text-fg-tertiary">
-                                                <Icon icon=LuChevronRight width="10px" height="10px" />
-                                                <span class="truncate">{hint}</span>
-                                            </div>
-                                        }
-                                    })}
+                                    {move || {
+                                        hint.get()
+                                            .map(|hint| {
+                                                view! {
+                                                    <div class="flex items-center gap-1 text-[10px] text-fg-tertiary">
+                                                        <Icon icon=LuChevronRight width="10px" height="10px" />
+                                                        <span class="truncate">{hint}</span>
+                                                    </div>
+                                                }
+                                            })
+                                    }}
                                 </div>
                                 {payload.badge().map(|count| {
                                     view! {

@@ -182,6 +182,7 @@ fn move_into(
     let studio = drag.studio;
     let history = studio.history;
     let Some(scene) = history.current_scene() else {
+        done(None);
         return;
     };
     let Some(target) = scene
@@ -189,14 +190,18 @@ fn move_into(
         .iter()
         .find(|zone| zone.id.to_string() == zone_id && zone.role != ZoneRole::Display)
     else {
+        done(None);
         return;
     };
 
     if payload.origin == Origin::Unassigned {
         let device = registry_device(drag, &payload.device_id);
         let mut arriving = Vec::new();
-        let hints = arrival_placement(studio, zone_id, device.as_ref(), &mut arriving);
+        let mut hints = arrival_placement(studio, zone_id, device.as_ref(), &mut arriving);
         let segments = payload.segments.clone();
+        // Seeded hints already carry the geometry, so a drop point only
+        // moves them; without hints the arrivals are placed once minted.
+        let point = point.filter(|point| !center_hints_on(&mut hints, *point));
         match point {
             Some(point) => history.assign_device_at(
                 zone_id.to_owned(),
@@ -249,9 +254,6 @@ fn move_into(
         })
         .filter(|change| change.before != change.after)
         .collect();
-    if changes.is_empty() {
-        return;
-    }
     history.edit_members(changes, Some(done));
 }
 
@@ -270,8 +272,17 @@ fn unassign(studio: StudioContext, payload: &MovePayload, done: EditDone) {
 /// Make a zone named after the device, move the payload in, then open its
 /// tab with the name selected for typing over.
 fn move_to_new_zone(drag: DragController, payload: MovePayload) {
+    // Wait out any write in flight, then hold the scene until the zone
+    // exists and the move into it goes first, so no other edit slips in.
+    drag.studio
+        .history
+        .run_when_free(move || create_zone_and_move(drag, payload));
+}
+
+fn create_zone_and_move(drag: DragController, payload: MovePayload) {
     let studio = drag.studio;
-    let Some(scene) = studio.history.current_scene() else {
+    let history = studio.history;
+    let Some(scene) = history.current_scene() else {
         toasts::toast_error("No active scene is available");
         return;
     };
@@ -286,30 +297,45 @@ fn move_to_new_zone(drag: DragController, payload: MovePayload) {
         .chain(shown.iter().map(String::as_str))
         .collect();
     let name = zone_name_for_device(&payload.device_name, &names);
+    let from = origin_name(&payload.origin, |id| zone_name(studio, id));
     let revision = scene.revision;
+    let Some(generation) = history.begin() else {
+        toasts::toast_info("Still saving the last change");
+        return;
+    };
     spawn_local(async move {
-        let zone = match api::zones::create_zone(&name, None, revision).await {
+        let created = api::zones::create_zone(&name, None, revision).await;
+        if !history.is_current(generation) {
+            return;
+        }
+        let zone = match created {
             Ok(ZoneOutcome::Applied(zone)) => zone,
             Ok(ZoneOutcome::Stale { .. }) => {
                 toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                 studio.refresh_scene.run(());
+                history.finish(generation);
                 return;
             }
             Err(error) => {
                 toasts::toast_error(&format!("Zone create failed: {error}"));
+                history.finish(generation);
                 return;
             }
         };
-        let zone_id = zone.id.to_string();
-        match api::fetch_active_scene().await {
-            Ok(live) => studio.history.adopt(live),
+        let live = api::fetch_active_scene().await;
+        if !history.is_current(generation) {
+            return;
+        }
+        match live {
+            Ok(live) => history.adopt(live),
             Err(error) => {
                 toasts::toast_error(&format!("Created {name}, but the move failed: {error}"));
                 studio.refresh_scene.run(());
+                history.finish(generation);
                 return;
             }
         }
-        let from = origin_name(&payload.origin, |id| zone_name(studio, id));
+        let zone_id = zone.id.to_string();
         let text = moved_announcement(&payload.label, &zone.name, &from);
         let opened = zone_id.clone();
         let zone_name = zone.name.clone();
@@ -324,8 +350,29 @@ fn move_to_new_zone(drag: DragController, payload: MovePayload) {
                 .try_set(Some((opened.clone(), zone_name)));
             studio.selected_surface_id.try_set(Some(opened));
         });
-        move_into(drag, &payload, &zone_id, None, done);
+        history.hand_over(generation, move || {
+            move_into(drag, &payload, &zone_id, None, done);
+        });
     });
+}
+
+/// Center seeded placement hints on `point`, keeping their arrangement.
+/// False when there are none to move.
+fn center_hints_on(hints: &mut [MemberPlacementHint], point: NormalizedPosition) -> bool {
+    let footprints: Vec<Footprint> = hints
+        .iter()
+        .map(|hint| Footprint {
+            center: hint.position,
+            size: hint.size,
+        })
+        .collect();
+    let Some((dx, dy)) = offset_to_center(&footprints, point) else {
+        return false;
+    };
+    for hint in hints {
+        hint.position = NormalizedPosition::new(hint.position.x + dx, hint.position.y + dy);
+    }
+    true
 }
 
 /// Center a group of outputs on `point`, keeping their arrangement.
@@ -349,9 +396,9 @@ fn center_on(outputs: &mut [Output], point: NormalizedPosition) {
 ///
 /// Returns placement hints, keyed by segment, for outputs the daemon will
 /// mint for `device`, and may adjust `arriving`, the outputs that already
-/// exist and keep their geometry otherwise. Today only devices with a
-/// seeded footprint get hints; placement from the rig's physical layout
-/// belongs here.
+/// exist and keep their geometry otherwise. Devices with a seeded
+/// footprint get hints; placement from the rig's physical layout plugs in
+/// here too.
 fn arrival_placement(
     studio: StudioContext,
     _zone_id: &str,

@@ -110,12 +110,14 @@ enum Waiting {
         deleted: Callback<DeletedZone>,
     },
     RestoreZone(DeletedZone),
+    /// A flow that claims the scene itself once it is free.
+    Run(Box<dyn FnOnce()>),
 }
 
 impl Waiting {
     /// Whether this operation records a journal entry when it lands.
     fn records(&self) -> bool {
-        matches!(self, Self::Assign { .. } | Self::Edit { .. })
+        matches!(self, Self::Assign { .. } | Self::Edit { .. } | Self::Run(_))
     }
 
     /// Tell whoever waits on this operation that it will not run.
@@ -147,6 +149,8 @@ pub(crate) struct StudioHistory {
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
     waiting: StoredValue<VecDeque<Waiting>, LocalStorage>,
+    /// Set while a flow hands the scene straight to its follow-up edit.
+    handing_over: StoredValue<bool>,
     editor: StoredValue<Option<EditorHooks>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
@@ -187,6 +191,7 @@ impl StudioHistory {
             busy,
             committing,
             waiting,
+            handing_over: StoredValue::new(false),
             editor: StoredValue::new(None),
             pending_layout,
             scene,
@@ -316,18 +321,44 @@ impl StudioHistory {
     }
 
     /// Run `operation` now when nothing holds the scene, otherwise after
-    /// everything already waiting.
+    /// everything already waiting. A flow handing the scene over runs its
+    /// follow-up first.
     fn when_free(self, operation: Waiting) {
+        let handing_over = self.handing_over.try_get_value().unwrap_or(false);
         let queued = self
             .waiting
             .try_with_value(|waiting| !waiting.is_empty())
             .unwrap_or(false);
-        if self.is_free() && !queued && !self.held_by_gesture(&operation) {
+        let free = self.is_free() && !self.held_by_gesture(&operation);
+        if free && (handing_over || !queued) {
             self.run(operation);
+        } else if handing_over {
+            self.waiting
+                .try_update_value(|waiting| waiting.push_front(operation));
         } else {
             self.waiting
                 .try_update_value(|waiting| waiting.push_back(operation));
         }
+    }
+
+    /// Run `flow` once nothing holds the scene. The flow claims it with
+    /// [`Self::begin`] and releases it with [`Self::finish`] or
+    /// [`Self::hand_over`].
+    pub fn run_when_free(self, flow: impl FnOnce() + 'static) {
+        self.when_free(Waiting::Run(Box::new(flow)));
+    }
+
+    /// Release the scene a flow holds straight to `follow`, so the edit it
+    /// asks for runs before anything else that waited.
+    pub fn hand_over(self, generation: u64, follow: impl FnOnce()) {
+        if !self.is_current(generation) {
+            return;
+        }
+        self.busy.set(false);
+        self.handing_over.try_set_value(true);
+        follow();
+        self.handing_over.try_set_value(false);
+        self.next_waiting();
     }
 
     /// Pick the queue up again after a canvas gesture ends.
@@ -388,6 +419,7 @@ impl StudioHistory {
                 done,
             } => self.assign_device_at_now(zone_id, device_id, segments, placements, point, done),
             Waiting::Edit { changes, done } => self.edit_members_now(changes, done),
+            Waiting::Run(flow) => flow(),
             Waiting::DeleteZone {
                 zone_id,
                 select_after,
@@ -1310,6 +1342,7 @@ mod replay_tests {
             busy: RwSignal::new(busy),
             committing: RwSignal::new(false),
             waiting: StoredValue::new_local(VecDeque::new()),
+            handing_over: StoredValue::new(false),
             editor: StoredValue::new(None),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),
