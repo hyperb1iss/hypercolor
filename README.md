@@ -83,11 +83,12 @@ graph LR
 ```
 
 Effects render to a virtual RGBA canvas, 640×480 by default and configurable.
-**SparkleFlinger**, the GPU compositor (wgpu, with a CPU fallback), latches the newest surface from each producer every
-frame and blends them into one canonical canvas, and the spatial engine samples it at each
-LED's physical position. Effects use normalized coordinates, so they stay
-resolution-independent. Audio, screen capture, and keyboard input feed every frame. One effect
-paints the whole room: your keyboard, LED strip, and case fans all draw from the same source.
+**SparkleFlinger**, the GPU compositor (wgpu, with a CPU fallback), latches the newest
+surface from each producer every frame and blends them into one canonical canvas, and the
+spatial engine samples it at each LED's physical position. Effects use normalized
+coordinates, so they stay resolution-independent. Audio, screen capture, and keyboard input
+feed every frame. One effect paints the whole room: your keyboard, LED strip, and case fans
+all draw from the same source.
 
 ## 🌈 Features
 
@@ -294,10 +295,12 @@ systemd user service:
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
 ```
 
-Device permissions are a separate step: run `just udev-install` from a source checkout, or
-install the `.deb` from the releases page or
-[`hypercolor-bin`](https://aur.archlinux.org/packages/hypercolor-bin) from the AUR, which
-both ship the udev rules. Homebrew works on Linux too
+Device permissions are a separate step. The
+[udev rules guide](docs/content/guide/installation.md#linux-udev-rules-usb-and-input-device-access)
+has the commands for this installer, and a source checkout runs `just udev-install`. The
+`.deb` from the releases page and
+[`hypercolor-bin`](https://aur.archlinux.org/packages/hypercolor-bin) from the AUR ship the
+rules themselves, so they skip this step. Homebrew works on Linux too
 (`brew install hyperb1iss/tap/hypercolor`), and NixOS users get a flake with a
 `services.hypercolor` module; `nix run github:hyperb1iss/hypercolor` tries the CLI without
 installing anything.
@@ -542,8 +545,9 @@ when a single full-opacity layer is active. The event bus uses lock-free
 events, and `zerocopy` structs encode device wire formats with no per-frame allocation.
 
 Workspace lints forbid `unsafe` outside the audited platform crates (GPU surface import,
-screen capture, host input on macOS and Windows, session and power monitors, macOS now-playing media, the PawnIO
-SMBus broker, the signed Windows helper, and filesystem glue) and the desktop app shell.
+screen capture, host input on macOS and Windows, session and power monitors, macOS
+now-playing media, the PawnIO SMBus broker, the signed Windows helper, and filesystem glue)
+and the desktop app shell.
 Each opts out explicitly and denies undocumented unsafe blocks. Edition 2024, Rust 1.95+.
 
 ## 📡 Status
