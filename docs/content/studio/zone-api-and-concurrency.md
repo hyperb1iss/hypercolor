@@ -44,7 +44,7 @@ DELETE /scenes/{id}
 POST   /scenes/{id}/activate
 ```
 
-`POST /scenes` seeds a Default zone server-side. `POST /scenes/snapshot` is the
+`POST /scenes` seeds a primary zone named "Main" server-side. `POST /scenes/snapshot` is the
 other creation path: it captures the live scene as a new stored scene instead of
 starting from a fresh default. Activating a stored scene
 makes it the resource returned by `GET /scene`. To edit stored scene structure,
@@ -77,7 +77,7 @@ canonical stop gesture and optionally accepts `If-Match`.
 ### Zones and members
 
 {% <api_endpoint method="POST" path="/api/v1/scene/zones"> %}
-Create a custom zone. The Default zone and display zones are created by their
+Create a custom zone. The primary zone and display zones are created by their
 owning engine flows, not through this route.
 {% </api_endpoint> %}
 
@@ -216,7 +216,7 @@ The live tree embeds the ids a client needs for every follow-up:
     "zones": [
       {
         "id": "84b20af9-0700-4b82-8488-88314b87fb5c",
-        "name": "Default zone",
+        "name": "Main",
         "role": "primary",
         "enabled": true,
         "brightness": 1.0,

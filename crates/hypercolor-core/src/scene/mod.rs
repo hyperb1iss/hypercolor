@@ -38,7 +38,8 @@ use hypercolor_types::scene::{
 };
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
-const DEFAULT_ZONE_NAME: &str = "Default zone";
+const DEFAULT_ZONE_NAME: &str = "Main";
+const DEFAULT_ZONE_DESCRIPTION: &str = "The scene's main zone.";
 
 /// Error variants for precondition-checked layer mutations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -577,7 +578,7 @@ impl SceneManager {
             let mut zone = Zone {
                 id: ZoneId::new(),
                 name: DEFAULT_ZONE_NAME.to_owned(),
-                description: Some("Default zone.".to_owned()),
+                description: Some(DEFAULT_ZONE_DESCRIPTION.to_owned()),
                 layers: Vec::new(),
                 layout: next_primary_layout,
                 brightness: 1.0,
@@ -1719,7 +1720,7 @@ pub fn default_primary_zone(mut layout: SpatialLayout) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: DEFAULT_ZONE_NAME.to_owned(),
-        description: Some("Default zone.".to_owned()),
+        description: Some(DEFAULT_ZONE_DESCRIPTION.to_owned()),
         layers: Vec::new(),
         layout,
         brightness: 1.0,
@@ -1844,11 +1845,6 @@ fn empty_default_spatial_layout() -> SpatialLayout {
     }
 }
 
-/// Place a freshly assigned output at a modest default size, cascaded by
-/// its slot in the target zone so successive adds neither stack on one
-/// spot nor blanket the whole canvas. `size` is a normalized extent and
-/// `position` is the box center, so a 0.2 x 0.15 box centered inside the
-/// canvas stays small and movable; the user repositions from there.
 /// How [`SceneManager::assign_output_to_zone`] places an output that lands in a
 /// zone it did not previously belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1863,6 +1859,11 @@ pub enum OutputPlacement {
     Preserve,
 }
 
+/// Place a freshly assigned output at a modest default size, cascaded by
+/// its slot in the target zone so successive adds neither stack on one
+/// spot nor blanket the whole canvas. `size` is a normalized extent and
+/// `position` is the box center, so a 0.2 x 0.15 box centered inside the
+/// canvas stays small and movable; the user repositions from there.
 fn reset_device_zone_placement(zone: &mut Output, slot: usize) {
     const COLS: usize = 5;
     let col = (slot % COLS) as f32;

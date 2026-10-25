@@ -15,7 +15,7 @@ Studio is where you compose your whole rig. It is the web UI's creative workspac
 Four nouns compose everything in Studio. Learn these once and the whole workspace clicks into place.
 
 - **Scene**: a whole-rig configuration. Exactly one scene is active at a time, and it owns everything below it. Switching scenes reconfigures your entire setup at once.
-- **Zone**: a flexible partition of a scene. Each zone is its own switchable unit with its own devices, its own layers, and its own layout. A single-zone scene has just the **Default zone**; a multi-zone scene splits devices across several.
+- **Zone**: a flexible partition of a scene. Each zone is its own switchable unit with its own devices, its own layers, and its own layout. A single-zone scene has just the **Main** zone; a multi-zone scene splits devices across several.
 - **Layers**: a zone's inputs, stacked. An effect under a gif, a screen capture, a solid color: each is a layer with its own blend mode, opacity, and transform.
 - **Layout**: a zone's own spatial canvas. You place each device output on it, and Studio samples the composited pixels onto your LEDs.
 

@@ -4,7 +4,7 @@ description = "The locked Studio vocabulary, the kill list (never 'rooms' or 'Al
 weight = 130
 +++
 
-The Studio vocabulary is locked. A **scene** is a whole-rig config, a **zone** is a flexible partition of that scene's canvas, and the default zone is always called **"Default zone."** Smart-home language ("rooms," "All Lights," "Lights") never appears in user-facing strings, and a layer's content kind always renders in plain words ("Effect," "Media," "Color"), never as a raw enum name or a UUID. This page is the canonical reference for that vocabulary, the words that are banned, and the small set of rendering rules in `crates/hypercolor-ui/src/zones/surface.rs` that enforce them.
+The Studio vocabulary is locked. A **scene** is a whole-rig config, a **zone** is a flexible partition of that scene's canvas, and the primary zone of a fresh scene is called **"Main."** Smart-home language ("rooms," "All Lights," "Lights") never appears in user-facing strings, and a layer's content kind always renders in plain words ("Effect," "Media," "Color"), never as a raw enum name or a UUID. This page is the canonical reference for that vocabulary, the words that are banned, and the small set of rendering rules in `crates/hypercolor-ui/src/zones/surface.rs` that enforce them.
 
 The internal Rust type names that back these concepts are documented in [Studio architecture](@/studio/architecture.md). They differ from the user-facing words by design; which wire surface spells the concept which way is summarized at the end of this page.
 
@@ -33,7 +33,7 @@ Load-bearing consequences of the hierarchy:
 - **A scene owns everything.** Pick a scene and you have its zones, their layers, and their device placement. Nothing meaningful exists outside a scene. See [Scenes](@/studio/scenes.md).
 - **Each zone owns its own layout.** A zone's layout is its own spatial canvas; switching zones switches the canvas. See [Layouts](@/studio/layouts.md).
 - **A device output lives in exactly one zone's layout at a time.** Adding it to another zone removes it from the first. See [Device assignment](@/studio/device-assignment.md).
-- **The default zone is just a zone.** A fresh scene has one, holding every device, named "Default zone." The user can rename it. There is no "All Lights." See [Zones](@/studio/zones.md).
+- **The Main zone is just a zone.** A fresh scene has one, holding every device, named "Main." The user can rename it. There is no "All Lights." See [Zones](@/studio/zones.md).
 - **There is no standalone "layouts library."** A saved arrangement is part of a scene. What the user picks is a scene.
 
 ## The vocabulary table
@@ -44,7 +44,7 @@ The single source of truth for the words. The user-facing term is what the UI, d
 | --- | --- | --- |
 | Top-level container, one active | **Scene** | "preset" (for the whole rig), "room" |
 | A device partition with layers and a layout | **Zone** | "room," "group," "area" in prose |
-| The default zone of a fresh scene | **Default zone** | "All Lights," "Lights," "Primary," "Main" |
+| The primary zone of a fresh scene | **Main** | "All Lights," "Lights," "Primary," "Default zone" |
 | A zone's input | **Layer** | "channel" (channel means something else) |
 | A layer's content kind | **Source** (rendered as Effect / Media / Screen capture / Web page / Color) | the enum name, a UUID |
 | A zone's spatial canvas | **Layout** | "room," "scene" (a scene is not a layout) |
@@ -53,16 +53,16 @@ The single source of truth for the words. The user-facing term is what the UI, d
 | An addressable run on a device | **Channel** | "zone" (a channel is not a zone) |
 | What is wired to a channel | **Component** | "attachment" in user-facing text |
 
-The left column tracks design doc 55 §3, which is the locked source. When a concept here gains a new affordance, the word does not change; only design doc 55 may revise this table.
+The left column tracks design doc 55 §3, which is the locked source, with one revision from design doc 73: a fresh scene's primary zone is "Main." When a concept here gains a new affordance, the word does not change; only a design doc may revise this table.
 
 ## The kill list
 
 These strings are banned from user-facing surfaces. They are smart-home vocabulary for a professional tool, and several of them are flatly wrong under the locked model. If you find one in the UI, the docs, or CLI output, it is a bug.
 
 - **"Room" / "rooms."** Hypercolor has no concept of a room. The partition is a zone, the spatial surface is a layout. ("Room" was the old `StageLayoutBar` label for the dead layouts-library picker; the picker is gone.)
-- **"All Lights" / "Lights."** The default zone is "Default zone." "All Lights" implied a magic everything-bucket that does not exist in the model; every device lives in exactly one zone.
+- **"All Lights" / "Lights."** The primary zone is "Main." "All Lights" implied a magic everything-bucket that does not exist in the model; every device lives in exactly one zone.
 - **"Zones & Devices."** The old left-column header. The left column is the zone tree; it does not need a generic catch-all label.
-- **"Primary" (user-facing).** `ZoneRole::Primary` is the internal role of the default zone. Fresh scenes seed the zone's stored name as `"Default zone"` already, but older persisted scenes may still carry the legacy `"Primary"` seed; either way the UI substitutes **"Default zone"** before showing a blank-or-legacy name (see the rendering rules below). "Primary" must never reach the screen.
+- **"Primary" (user-facing).** `ZoneRole::Primary` is the internal role of the Main zone. Fresh scenes seed the zone's stored name as `"Main"` already, but older persisted scenes may still carry the legacy `"Primary"` seed; either way the UI substitutes **"Main"** before showing a blank-or-legacy name (see the rendering rules below). "Primary" must never reach the screen.
 - Any other smart-home framing: "scenes for the living room," "turn the lights on," "the lighting group." Scenes are whole-rig configs and zones are canvas partitions. Keep the home-automation register out.
 
 {% <callout type="danger"> %}
@@ -73,9 +73,9 @@ These strings are banned from user-facing surfaces. They are smart-home vocabula
 
 Three small functions in `crates/hypercolor-ui/src/zones/surface.rs` are where the vocabulary is enforced in code. They are kept Leptos-free so they can be `#[path]`-tested directly, and they are the canonical place to look when a label looks wrong.
 
-### Default-zone naming
+### Main-zone naming
 
-A fresh scene's default zone is seeded with the name `"Default zone"` already, but `surface_name` also defends against an unnamed zone or a legacy scene that still carries the old `"Primary"` seed, substituting the friendly label so the internal role string never leaks:
+A fresh scene's primary zone is seeded with the name `"Main"` already, but `surface_name` also defends against an unnamed zone or a legacy scene that still carries the old `"Primary"` seed, substituting the friendly label so the internal role string never leaks:
 
 ```rust
 fn surface_name(zone: &ZoneResource, kind: SurfaceKind) -> String {
@@ -83,7 +83,7 @@ fn surface_name(zone: &ZoneResource, kind: SurfaceKind) -> String {
         return zone.name.clone();
     }
     if is_blank_default_name(&zone.name) {
-        "Default zone".to_owned()
+        "Main".to_owned()
     } else {
         zone.name.clone()
     }
@@ -95,7 +95,7 @@ fn is_blank_default_name(name: &str) -> bool {
 }
 ```
 
-A `Primary`-role LED zone whose name is blank or the legacy `"Primary"` string renders as **"Default zone."** Fresh scenes already store `"Default zone"`, so this rule mostly guards persisted scenes and freshly cleared names. The moment the user types a real name, that name wins. Any other zone shows its stored name verbatim.
+A `Primary`-role LED zone whose name is blank or the legacy `"Primary"` string renders as **"Main."** Fresh scenes already store `"Main"`, so this rule mostly guards persisted scenes and freshly cleared names. A scene saved by an older version that stored `"Default zone"` keeps that name. The moment the user types a real name, that name wins. Any other zone shows its stored name verbatim.
 
 ### Layer-source labels
 
@@ -149,7 +149,7 @@ So when you document a surface, use `zones`, `members`, `layers`, and
 
 ## Quick reference
 
-- Scene = whole-rig config. Zone = a partition of that scene's canvas. Default zone = "Default zone," never "Primary," never "All Lights."
+- Scene = whole-rig config. Zone = a partition of that scene's canvas. Primary zone = "Main," never "Primary," never "All Lights."
 - Layer source renders in plain words: Effect, Media, Screen capture, Web page, Color.
 - Never "rooms," never smart-home framing. Scenes and zones are not home-automation nouns.
 - User-facing prose follows the vocabulary table; API docs follow each surface's own wire names; Rust type names are in [architecture](@/studio/architecture.md).

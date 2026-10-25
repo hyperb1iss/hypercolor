@@ -26,7 +26,7 @@ The active scene is shared app-wide. Studio reads it from the same source the da
 The search box in the header toolbar filters the zone tree. Type any part of a device name and the tree keeps only the matching device rows; an empty box leaves every row visible. The match is a case-insensitive substring on the device name, applied to both assigned and unassigned rows.
 
 {% <callout type="tip"> %}
-The selected LED zone in Studio is also the app-wide effect apply-target. A quick-apply from the dashboard, sidebar, or command palette lands in the zone you are composing. Selecting a Screen or the Unassigned entry is not an apply target, so the target falls back to the default zone.
+The selected LED zone in Studio is also the app-wide effect apply-target. A quick-apply from the dashboard, sidebar, or command palette lands in the zone you are composing. Selecting a Screen or the Unassigned entry is not an apply target, so the target falls back to the Main zone.
 {% </callout> %}
 
 ## The zone tree (left column)
@@ -43,7 +43,7 @@ Each zone card has three interactive regions:
 
 - **The chevron** on the left expands or collapses the zone's nested device list. Collapsed state is remembered per browser.
 - **The zone header** selects the zone.
-- **The kebab** (the three-dot menu on the right) opens zone settings: rename, recolor, enable, and delete. The kebab is always present so even a single-zone scene can rename or recolor its Default zone. Delete stays gated for zones that are not eligible. See [Zones](@/studio/zones.md) for the full set.
+- **The kebab** (the three-dot menu on the right) opens zone settings: rename, recolor, enable, and delete. The kebab is always present so even a single-zone scene can rename or recolor its Main zone. Delete stays gated for zones that are not eligible. See [Zones](@/studio/zones.md) for the full set.
 
 A zone that has a failed or asset-missing layer shows a red warning triangle next to its name, so trouble is visible without opening the zone.
 

@@ -27,12 +27,12 @@ This is deliberately not smart-home language. A scene is not a room and it is no
 
 Inside a scene, zones let you drive disjoint parts of your rig independently. One zone can run a screen-mirror effect on the keyboard while another runs ambient plasma on the case fans and a third pulses room strips to music. Each zone is a name, a set of assigned device outputs, and its own layer stack.
 
-Every scene has a **Default zone** to start with. It holds every LED output until you split things out into more zones. A fresh single-zone setup keeps the whole workspace quiet: there is no zone management to learn, because the Default zone is the only row in the tree. Add a second zone and the multi-zone affordances appear, reusing the exact controls you already know.
+Every scene has a **Main** zone to start with. It holds every LED output until you split things out into more zones. A fresh single-zone setup keeps the whole workspace quiet: there is no zone management to learn, because the Main zone is the only row in the tree. Add a second zone and the multi-zone affordances appear, reusing the exact controls you already know.
 
 The unit of assignment is a device **output**, not a whole physical device. A multi-channel controller can have one channel in one zone and another channel somewhere else. An output lives in exactly one zone's layout at a time, so dragging it into another zone moves it rather than copying it.
 
 {% <callout type="info"> %}
-Zone creation and device assignment light up only when the running daemon advertises the matching capabilities. On a single-zone setup you will see just the Default zone, which is the complete, working baseline rather than a stripped-down mode.
+Zone creation and device assignment light up only when the running daemon advertises the matching capabilities. On a single-zone setup you will see just the Main zone, which is the complete, working baseline rather than a stripped-down mode.
 {% </callout> %}
 
 For the full zone lifecycle (create, rename, color, enable, delete, and the Unassigned entry), see [zones](@/studio/zones.md). For moving devices between zones, see [device assignment](@/studio/device-assignment.md).
@@ -53,7 +53,7 @@ The workspace is two columns plus an on-demand panel.
 
 ```
 ┌─ ZONES ─────────┐┌─ STAGE ────────────────────────┐
-│ Default zone    ││                                │
+│ Main            ││                                │
 │ Keyboard        ││   live spatial layout +        │
 │ Case Fans       ││   composited effect preview    │
 │                 ││                                │
@@ -70,7 +70,7 @@ The center column is the **Stage**. It drives off whatever zone you have selecte
 
 {{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
 
-Your selected lighting zone is also the app-wide effect apply-target. Apply an effect from the dashboard, sidebar, or command palette while a zone is selected in Studio, and it lands in the zone you are composing. A Screen or the Unassigned entry is not an apply target, so selection there falls back to the Default zone.
+Your selected lighting zone is also the app-wide effect apply-target. Apply an effect from the dashboard, sidebar, or command palette while a zone is selected in Studio, and it lands in the zone you are composing. A Screen or the Unassigned entry is not an apply target, so selection there falls back to the Main zone.
 
 ## Where to go next
 

@@ -30,11 +30,11 @@ The catalog spans the native built-in effects compiled into the daemon plus the 
 
 The zone you have selected in Studio is also the app-wide *apply target*. That means a quick-apply from the dashboard, the sidebar player, or the command palette lands in the zone you are composing, not on some global default. The target is one of:
 
-- **Default zone**: used when nothing else is selected (`ApplyTarget::Primary` in the Rust enum).
+- **Main zone**: used when nothing else is selected (`ApplyTarget::Primary` in the Rust enum).
 - A named **zone**: the LED zone currently focused in Studio.
 - **All zones**: applies the effect to every LED zone in the active scene at once.
 
-Selecting a screen or the Unassigned entry is not a valid apply target, so the target falls back to the Default zone. For the whole picture of how zones and scenes compose, read [Zones](@/studio/zones.md) and [Scenes](@/studio/scenes.md).
+Selecting a screen or the Unassigned entry is not a valid apply target, so the target falls back to the Main zone. For the whole picture of how zones and scenes compose, read [Zones](@/studio/zones.md) and [Scenes](@/studio/scenes.md).
 
 ## The live control panel
 

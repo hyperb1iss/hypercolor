@@ -2691,7 +2691,7 @@ pub struct SceneDeactivated {
     pub commit: SceneCommit,
 }
 
-/// Create a scene, seeded with a Default zone holding the current
+/// Create a scene, seeded with a primary zone holding the current
 /// device output roster.
 ///
 /// Every scene is born with that zone so the Studio scene selector

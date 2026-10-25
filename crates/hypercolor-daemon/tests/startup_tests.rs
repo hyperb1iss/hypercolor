@@ -1675,7 +1675,7 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
     );
     let zones = scenes.resolved_zones();
     assert_eq!(zones.len(), 1, "default scene should start with a zone");
-    assert_eq!(zones[0].name, "Default zone");
+    assert_eq!(zones[0].name, "Main");
     assert_eq!(zones[0].role, ZoneRole::Primary);
 }
 

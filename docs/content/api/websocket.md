@@ -410,7 +410,7 @@ control-tier key.
   "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f",
   "layout": {
     "id": "default-zone-layout-preview",
-    "name": "Default zone",
+    "name": "Main",
     "canvas_width": 640,
     "canvas_height": 480,
     "zones": [],

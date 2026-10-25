@@ -1,6 +1,6 @@
 +++
 title = "Zones"
-description = "Zones are flexible canvas partitions: create, rename, color, enable, and delete them, plus the Default zone and the Unassigned entry."
+description = "Zones are flexible canvas partitions: create, rename, color, enable, and delete them, plus the Main zone and the Unassigned entry."
 weight = 40
 +++
 
@@ -12,7 +12,7 @@ zones that each drive a different slice of your hardware with a different effect
 Zones live in the left column of Studio, the **zone tree**. Every zone shows up
 as a card there with its devices nested beneath it. This page covers the full
 zone lifecycle (create, rename, recolor, enable, delete), the permanent
-**Default zone**, and the **Unassigned** entry that catches hardware no zone
+**Main** zone, and the **Unassigned** entry that catches hardware no zone
 has claimed.
 
 {{< img path="img/ui/studio.webp" alt="The Studio workspace with the zone tree on the left" />}}
@@ -25,7 +25,7 @@ while zones split one scene into independently lit regions.
 
 ## Single-zone and multi-zone scenes
 
-Every scene starts with one zone, the **Default zone**, which covers all your
+Every scene starts with one zone, **Main**, which covers all your
 LED hardware. That is a complete, useful setup on its own: pick an effect, and
 it plays across everything.
 
@@ -42,18 +42,19 @@ single fact changes how the zone tree behaves:
 This progressive split keeps the simple case simple. You only meet the
 Unassigned entry once you actually have multiple zones to assign devices across.
 
-## The Default zone
+## The Main zone
 
-The Default zone is the **Primary** zone of a scene, and it is permanent. You
+The Main zone is the **Primary** zone of a scene, and it is permanent. You
 can rename it, recolor it, disable it, and move devices in and out of it, but
 you cannot delete it through the zone controls. Every scene always has exactly
-one Default zone so there is always a home for your lights.
+one Main zone so there is always a home for your lights.
 
-Until you give it a name, the zone tree shows it as **"Default zone"** rather
-than its internal seed label. Rename it and your name takes over immediately.
+New scenes name it **"Main"**, and a primary zone with a blank name or the
+legacy "Primary" seed shows as "Main" too. Scenes saved by older versions keep
+the name they stored. Rename it and your name takes over immediately.
 
 {% <callout type="tip"> %}
-The Default zone is a real zone at every scale. In a single-zone scene it is
+The Main zone is a real zone at every scale. In a single-zone scene it is
 just the zone, with no special chrome. You can still open its settings to rename
 or recolor it.
 {% </callout> %}
@@ -66,7 +67,7 @@ press **Escape** to cancel.
 
 ```text
 Zones
-  ▸ Default zone        3 devices
+  ▸ Main                3 devices
   ▸ Desk strip          1 device
   ─────────────────────────────
   + New zone            ← click, type a name, Enter
@@ -86,7 +87,7 @@ on its [layout canvas](@/studio/layouts.md).
 
 Every zone card has a settings affordance (the **⋯** kebab on the zone header)
 that reveals the per-zone control cluster. This row is available on every zone,
-including the Default zone, so a single-zone scene still has a route to rename or
+including the Main zone, so a single-zone scene still has a route to rename or
 recolor its one zone.
 
 **Rename.** Click **Rename** to turn the label into an inline input. Press
@@ -118,7 +119,7 @@ trash icon in the settings cluster; the control swaps to a red **Delete**
 button alongside a cancel **✕**. Click **Delete** to remove the zone, or **✕**
 to back out.
 
-Only Custom zones expose a delete control. The Default zone has no delete
+Only Custom zones expose a delete control. The Main zone has no delete
 affordance at all, because every scene must keep one.
 
 {% <callout type="warning"> %}

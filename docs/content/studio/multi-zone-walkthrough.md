@@ -31,7 +31,7 @@ Open Studio in the web UI and confirm two things:
   is connected, so there is something to split. See [Finding devices](@/guide/finding-devices.md)
   if your rig is empty.
 - A scene is active. A fresh install gives you a default scene with a single
-  **Default zone** that already owns every device. That single zone is your
+  **Main** zone that already owns every device. That single zone is your
   starting point.
 
 The left column is the **zone tree**. The center is the **Stage**. For a Light
@@ -59,7 +59,7 @@ a single-zone scene neither shows, because there is nothing to partition.
 
 ## 2. Split devices across the two zones
 
-Every device output starts in the Default zone. You move outputs out of it and
+Every device output starts in the Main zone. You move outputs out of it and
 into your new zone. The model's unit of assignment is an **output** (one device
 output or addressable segment), so a multi-channel controller can in principle
 have one channel in one zone and another elsewhere. Studio's rail always moves
@@ -71,7 +71,7 @@ You have two ways to move a device between zones, both in the zone tree.
 
 On the target zone, use the **Add device** control. It opens a picker of every
 device that is not already entirely in this zone. Each entry shows where the
-device currently lives, for example `Desk Strip (in Default zone)`, so you can
+device currently lives, for example `Desk Strip (in Main)`, so you can
 see what the move pulls from.
 
 Picking a device brings every output it has into this zone. A device already
@@ -155,7 +155,7 @@ covers creating, renaming, and switching whole-rig configurations.
 ## 6. Set the unassigned-lights policy
 
 If you split devices and leave an output in no zone, it becomes **unassigned**.
-That happens deliberately (you moved everything out of the Default zone) or as a
+That happens deliberately (you moved everything out of the Main zone) or as a
 side effect (you deleted a zone, and its outputs fell out). The scene decides
 what those outputs do.
 
@@ -187,7 +187,7 @@ One scene, two zones, two effects, a defined fate for everything in between:
 
 {% <mermaid> %}
 graph TD
-    SCENE[Active scene] --> Z1[Default zone<br/>keyboard + case]
+    SCENE[Active scene] --> Z1[Main<br/>keyboard + case]
     SCENE --> Z2[Desk strips zone]
     SCENE --> UN[Unassigned outputs]
     Z1 --> E1[Effect A]

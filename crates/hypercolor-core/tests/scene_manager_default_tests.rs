@@ -152,7 +152,7 @@ fn with_default_installs_default_scene_as_ephemeral() {
     let primary = scene
         .primary_zone()
         .expect("default scene should seed a primary zone");
-    assert_eq!(primary.name, "Default zone");
+    assert_eq!(primary.name, "Main");
     assert_eq!(primary.layout.id, "default");
     assert!(primary.layout.zones.is_empty());
 }
