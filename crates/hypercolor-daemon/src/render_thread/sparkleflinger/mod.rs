@@ -1252,6 +1252,22 @@ impl SparkleFlinger {
         }
     }
 
+    /// Block until the GPU backend's submissions have finished.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn wait_for_gpu_idle_for_test(&self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+            gpu.wait_for_gpu_idle();
+        }
+    }
+
+    /// Lose the GPU backend's device the way a driver device loss does.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn lose_gpu_device_for_test(&self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+            gpu.lose_device();
+        }
+    }
+
     #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn gpu_frames_in_flight_for_test(&self) -> Option<usize> {
         match &self.backend {

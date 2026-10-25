@@ -284,10 +284,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                     frame_format: display_route.frame_format,
                     pending,
                 };
-                if let Some(frame) = self.try_finish_display_finalize_work(&mut work) {
-                    return Some(frame);
+                match self.try_finish_display_finalize_work(&mut work) {
+                    DisplayFinalizeAttempt::Finished(Some(frame)) => return Some(frame),
+                    DisplayFinalizeAttempt::Finished(None) | DisplayFinalizeAttempt::Failed => {}
+                    DisplayFinalizeAttempt::InFlight => {
+                        self.compose.display_finalize_runtime.insert(zone_id, work);
+                    }
                 }
-                self.compose.display_finalize_runtime.insert(zone_id, work);
                 None
             }
             Ok(
@@ -327,11 +330,15 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             return DisplayFinalizeProgress::Idle;
         }
 
-        if let Some(frame) = self.try_finish_display_finalize_work(&mut work) {
-            DisplayFinalizeProgress::Ready(frame)
-        } else {
-            self.compose.display_finalize_runtime.insert(zone_id, work);
-            DisplayFinalizeProgress::Pending
+        match self.try_finish_display_finalize_work(&mut work) {
+            DisplayFinalizeAttempt::Finished(Some(frame)) => DisplayFinalizeProgress::Ready(frame),
+            DisplayFinalizeAttempt::Finished(None) | DisplayFinalizeAttempt::Failed => {
+                DisplayFinalizeProgress::Idle
+            }
+            DisplayFinalizeAttempt::InFlight => {
+                self.compose.display_finalize_runtime.insert(zone_id, work);
+                DisplayFinalizeProgress::Pending
+            }
         }
     }
 
@@ -339,17 +346,22 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
     fn try_finish_display_finalize_work(
         &mut self,
         work: &mut PendingDisplayFinalizeWork,
-    ) -> Option<DisplayZoneFrame> {
+    ) -> DisplayFinalizeAttempt {
         match self
             .compose
             .display_sparkleflinger
             .try_finish_pending_display_finalization(&mut work.pending)
         {
-            Ok(Some(frame)) => display_finalize_frame_to_zone(frame, work.frame_format),
-            Ok(None) => None,
+            Ok(Some(frame)) => DisplayFinalizeAttempt::Finished(display_finalize_frame_to_zone(
+                frame,
+                work.frame_format,
+            )),
+            Ok(None) => DisplayFinalizeAttempt::InFlight,
             Err(error) => {
+                // The failed finalization already released its readback slot,
+                // so the work is dropped and the next frame dispatches anew.
                 debug!(%error, "GPU display-face finalization deferred to retained frame");
-                None
+                DisplayFinalizeAttempt::Failed
             }
         }
     }
@@ -360,6 +372,17 @@ enum DisplayFinalizeProgress {
     Idle,
     Pending,
     Ready(DisplayZoneFrame),
+}
+
+/// One poll of a display finalization still in flight.
+#[cfg(feature = "wgpu")]
+enum DisplayFinalizeAttempt {
+    /// The readback finished; `None` when its format did not match the route.
+    Finished(Option<DisplayZoneFrame>),
+    /// The readback is still in flight and should be polled next frame.
+    InFlight,
+    /// The finalization failed and released its resources.
+    Failed,
 }
 
 fn display_route_matches_target(
@@ -719,6 +742,63 @@ mod tests {
             slots_in_use(&harness),
             0,
             "a failed frame should free every display finalize readback slot"
+        );
+    }
+
+    /// Device loss destroys a finalization's readback buffer even after its
+    /// map completed. The lane reports that finalization as failed and drops
+    /// it, freeing its slot, rather than panicking or re-polling dead work.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn display_finalization_lost_after_its_map_completed_is_dropped() {
+        let Some(mut harness) = DisplayLaneHarness::with_gpu_display() else {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "GPU display finalization test was required but no GPU compositor started"
+            );
+            return;
+        };
+        let zone_id = ZoneId::new();
+        let device_id = DeviceId::new();
+        let display_target = DisplayFaceTarget::new(device_id);
+        let display_route = rgb_display_route(device_id);
+        let dependency_key = SceneDependencyKey::new(1, 1);
+        let materialize = |harness: &mut DisplayLaneHarness, elapsed_ms| {
+            materialize_display_color(
+                harness,
+                zone_id,
+                &display_target,
+                &display_route,
+                dependency_key,
+                elapsed_ms,
+                [255, 0, 0],
+            )
+        };
+        harness
+            .display_sparkleflinger
+            .defer_next_display_finalize_resolve_for_test();
+        assert_eq!(materialize(&mut harness, 100), None);
+        // Land the map, then hold the completed finalization one more frame.
+        harness.display_sparkleflinger.wait_for_gpu_idle_for_test();
+        harness
+            .display_sparkleflinger
+            .defer_next_display_finalize_resolve_for_test();
+        assert_eq!(materialize(&mut harness, 133), None);
+        assert_eq!(harness.display_finalize_runtime.pending_zone_count(), 1);
+
+        harness.display_sparkleflinger.lose_gpu_device_for_test();
+
+        assert_eq!(materialize(&mut harness, 166), None);
+        assert_eq!(
+            harness.display_finalize_runtime.pending_zone_count(),
+            0,
+            "a failed finalization must not stay queued"
+        );
+        assert_eq!(
+            harness
+                .display_sparkleflinger
+                .display_finalize_readback_slots_in_use_for_test(),
+            Some(0)
         );
     }
 
