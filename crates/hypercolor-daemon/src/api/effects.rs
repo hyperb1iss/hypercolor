@@ -7,9 +7,6 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use tokio::fs;
 use tracing::{info, warn};
 
 use hypercolor_core::effect::console::EffectConsoleJournal;
@@ -34,15 +31,17 @@ use crate::api::extract::{ApiJson, ApiMultipart, ApiPath, ApiQuery};
 use crate::domain::effect::RequestedTransition;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::resource_summary::{
-    EffectListIncludes, effect_cover_image_path, effect_cover_image_url, effect_summary,
-    html_effect_source_path, is_runnable_source,
+    EffectListIncludes, effect_cover_image_url, effect_summary, is_runnable_source,
 };
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
 /// Largest HTML effect the install routes accept.
 pub(crate) const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
-const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
+/// A cover URL names its image, so a matching `v` may be cached for good.
+const COVER_CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// An unversioned or outdated request must revalidate against the `ETag`.
+const COVER_CACHE_REVALIDATE: &str = "no-cache";
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
@@ -315,16 +314,39 @@ pub async fn apply_effect(
     response
 }
 
+/// Query string for `GET /api/v1/effects/{id}/cover`.
+#[derive(Debug, Clone, Default, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EffectCoverQuery {
+    /// The SHA-256 the cover URL names. When it matches the cover served,
+    /// the response may be cached forever.
+    #[serde(default)]
+    pub v: Option<String>,
+}
+
 /// `GET /api/v1/effects/{id}/cover` — Get an effect cover image.
+///
+/// The image is named by the SHA-256 of its bytes: the `ETag` carries it,
+/// `If-None-Match` answers 304, and a request whose `v` names the current
+/// digest is cacheable forever.
 pub async fn get_effect_cover(
     State(state): State<Arc<AppState>>,
     ApiPath(id): ApiPath<String>,
+    ApiQuery(query): ApiQuery<EffectCoverQuery>,
+    request_headers: HeaderMap,
 ) -> Response {
     let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
-
-    effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
+    let name = metadata.name.clone();
+    let cover = tokio::task::spawn_blocking(move || crate::effect_covers::read_cover(&metadata))
+        .await
+        .ok()
+        .flatten();
+    let Some(cover) = cover else {
+        return DomainError::not_found(ResourceKind::Asset, &name).into_response();
+    };
+    effect_cover_response(&cover, query.v.as_deref(), &request_headers)
 }
 
 /// Query string for `GET /api/v1/effects/console`.
@@ -600,85 +622,44 @@ fn log_effect_apply_completion(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum EffectCoverCache {
-    Catalog,
-}
-
-async fn effect_cover_image_response(
-    metadata: &EffectMetadata,
-    cache: EffectCoverCache,
+fn effect_cover_response(
+    cover: &crate::effect_covers::EffectCover,
+    requested: Option<&str>,
+    request_headers: &HeaderMap,
 ) -> Response {
-    let Some(cover) = effect_cover_image_bytes(metadata).await else {
-        return DomainError::not_found(ResourceKind::Asset, &metadata.name).into_response();
+    let identity = &cover.identity;
+    let etag = identity.etag();
+    let cache_control = if requested == Some(identity.sha256.as_str()) {
+        COVER_CACHE_IMMUTABLE
+    } else {
+        COVER_CACHE_REVALIDATE
     };
-
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&cover.content_type)
-            .unwrap_or_else(|_| HeaderValue::from_static(EFFECT_COVER_CONTENT_TYPE)),
-    );
+    if let Ok(value) = HeaderValue::from_str(&etag) {
+        headers.insert(header::ETAG, value);
+    }
     headers.insert(
         header::CACHE_CONTROL,
-        match cache {
-            EffectCoverCache::Catalog => HeaderValue::from_static("public, max-age=86400"),
-        },
+        HeaderValue::from_static(cache_control),
     );
-    (headers, cover.bytes).into_response()
-}
-
-struct EffectCover {
-    content_type: String,
-    bytes: Vec<u8>,
-}
-
-/// Resolve cover bytes, preferring curated artwork over whatever the effect
-/// ships inline so a locally curated image can override the bundled art.
-async fn effect_cover_image_bytes(metadata: &EffectMetadata) -> Option<EffectCover> {
-    if let Some(path) = effect_cover_image_path(metadata) {
-        match fs::read(&path).await {
-            Ok(bytes) => {
-                return Some(EffectCover {
-                    content_type: EFFECT_COVER_CONTENT_TYPE.to_owned(),
-                    bytes,
-                });
-            }
-            Err(error) => warn!(
-                path = %path.display(),
-                error = %error,
-                "Failed to read curated effect cover; falling back to inline cover"
-            ),
-        }
+    if if_none_match_names(request_headers, &etag) {
+        return (axum::http::StatusCode::NOT_MODIFIED, headers).into_response();
     }
-
-    effect_inline_cover(metadata).await
+    if let Ok(value) = HeaderValue::from_str(&identity.content_type) {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    (headers, cover.bytes.clone()).into_response()
 }
 
-/// Decode the `data:image/<type>;base64,` cover an HTML effect declares in its
-/// `<meta cover>` tag.
-async fn effect_inline_cover(metadata: &EffectMetadata) -> Option<EffectCover> {
-    let path = html_effect_source_path(metadata)?;
-    let html = fs::read_to_string(path).await.ok()?;
-    let cover = hypercolor_core::effect::parse_html_effect_metadata(&html).cover?;
-
-    let (declaration, payload) = cover.split_once(";base64,")?;
-    let content_type = declaration.strip_prefix("data:")?.to_owned();
-
-    match BASE64_STANDARD.decode(payload) {
-        Ok(bytes) => Some(EffectCover {
-            content_type,
-            bytes,
-        }),
-        Err(error) => {
-            warn!(
-                effect = %metadata.name,
-                error = %error,
-                "Effect declared an inline cover that is not valid base64"
-            );
-            None
-        }
-    }
+/// Whether `If-None-Match` lists this strong `ETag` (or `*`).
+fn if_none_match_names(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .any(|candidate| candidate == etag || candidate == "*")
 }
 
 struct ValidatedUploadedHtml {

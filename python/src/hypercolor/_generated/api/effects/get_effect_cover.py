@@ -8,18 +8,27 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...types import File, Response
+from ...types import UNSET, File, Response, Unset
 
 
 def _get_kwargs(
     id: str,
+    *,
+    v: str | Unset = UNSET,
 ) -> dict[str, Any]:
+
+    params: dict[str, Any] = {}
+
+    params["v"] = v
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "get",
         "url": "/api/v1/effects/{id}/cover".format(
             id=quote(str(id), safe=""),
         ),
+        "params": params,
     }
 
     return _kwargs
@@ -99,11 +108,13 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    v: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | File]:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -115,6 +126,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
+        v=v,
     )
 
     response = client.get_httpx_client().request(
@@ -128,11 +140,13 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    v: str | Unset = UNSET,
 ) -> ApiErrorBody | File | None:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -145,6 +159,7 @@ def sync(
     return sync_detailed(
         id=id,
         client=client,
+        v=v,
     ).parsed
 
 
@@ -152,11 +167,13 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    v: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | File]:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -168,6 +185,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
+        v=v,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -179,11 +197,13 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    v: str | Unset = UNSET,
 ) -> ApiErrorBody | File | None:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -197,5 +217,6 @@ async def asyncio(
         await asyncio_detailed(
             id=id,
             client=client,
+            v=v,
         )
     ).parsed
