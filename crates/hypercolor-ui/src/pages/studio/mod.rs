@@ -14,6 +14,7 @@ mod face_composition;
 pub mod history;
 mod offline_device_card;
 pub mod pane_model;
+pub mod placement;
 mod screen_list;
 mod stage;
 pub use crate::zones::surface;
@@ -145,6 +146,9 @@ pub struct StudioContext {
     /// The output box under the pointer on the canvas, mirrored from the
     /// editor so the rail can softly highlight the card that owns it.
     pub pointer_output_id: RwSignal<Option<String>>,
+    /// The active named layout: where the rig's hardware physically sits.
+    /// Outputs joining a zone are placed from it.
+    pub rig_layout: Signal<Option<hypercolor_types::spatial::SpatialLayout>>,
 }
 
 /// A local open/closed signal whose truth lives in a shared keyed slot,
@@ -388,6 +392,15 @@ pub fn StudioPage() -> impl IntoView {
     });
 
     let render_canvas_size = crate::render_canvas::use_render_canvas_size();
+    // Layout events and scene switches can both change the active layout.
+    let active_scene_id =
+        Memo::new(move |_| active_scene.with(|scene| scene.as_ref().map(|scene| scene.id)));
+    let rig_layout_resource = api::daemon_resource(move || {
+        let _ = ws.layout_generation.get();
+        let _ = active_scene_id.get();
+        async move { api::fetch_active_layout().await.ok() }
+    });
+    let rig_layout = Signal::derive(move || rig_layout_resource.get().flatten());
     let rail_disclosure = RwSignal::new(None::<String>);
     let zone_rename_draft = RwSignal::new(None::<(String, String)>);
     let pointer_output_id = RwSignal::new(None::<String>);
@@ -415,6 +428,7 @@ pub fn StudioPage() -> impl IntoView {
         undo_notice: RwSignal::new(None),
         pane_drawer: tree_drawer,
         pointer_output_id,
+        rig_layout,
     });
 
     let on_screens = Memo::new(move |_| {

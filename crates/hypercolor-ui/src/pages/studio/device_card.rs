@@ -772,45 +772,23 @@ fn card_ops_menu(
     }
 }
 
-/// Move a set of device outputs into `target_zone_id` by reassigning them
-/// as existing outputs in one call. The daemon moves each output out of
-/// whatever zone currently holds it.
+/// Move a set of device outputs into `target_zone_id` in one membership
+/// edit. The daemon moves each output out of whatever zone holds it, and
+/// each lands where [`super::placement::move_edits`] places it.
 fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_ids: Vec<String>) {
-    use hypercolor_types::api::scene::{MemberEdit, MemberState};
-    let history = studio.history;
-    let Some(scene) = history.current_scene() else {
+    let Some(scene) = studio.history.current_scene() else {
         return;
     };
-    let Some(target) = scene
-        .zones
-        .iter()
-        .find(|zone| zone.id.to_string() == target_zone_id)
-    else {
-        return;
-    };
-    let mut changes = Vec::new();
-    for zone in &scene.zones {
-        if zone.id == target.id {
-            continue;
-        }
-        for (index, output) in api::zone_outputs(zone).into_iter().enumerate() {
-            if output_ids.contains(&output.id) {
-                changes.push(MemberEdit {
-                    before: Some(MemberState {
-                        zone_id: zone.id,
-                        output: output.clone(),
-                        index,
-                    }),
-                    after: Some(MemberState {
-                        zone_id: target.id,
-                        output,
-                        index: target.members.len() + changes.len(),
-                    }),
-                });
-            }
-        }
-    }
-    history.edit_members(changes);
+    let changes = studio.rig_layout.with_untracked(|rig| {
+        super::placement::move_edits(
+            &scene,
+            rig.as_ref(),
+            &target_zone_id,
+            &output_ids,
+            studio.render_canvas_size.get_untracked(),
+        )
+    });
+    studio.history.edit_members(changes);
 }
 
 /// Render one per-channel row beneath the card body.
@@ -1074,50 +1052,26 @@ fn zone_label(studio: StudioContext, zone_id: &str) -> String {
     })
 }
 
-/// Assign the device through the daemon's canonical hardware-output factory.
+/// Assign the device through the daemon's canonical hardware-output factory,
+/// seeding each segment's placement per [`super::placement::assignment_hints`].
 /// The response records one reversible operation for the complete device.
 pub(super) fn assign_device_to_zone(
     studio: StudioContext,
     device: api::DeviceSummary,
     zone_id: String,
 ) {
-    let (width, height) = studio.render_canvas_size.get_untracked();
-    let light_segments = device
-        .segments
-        .iter()
-        .filter(|segment| {
-            segment.led_count > 0
-                && !matches!(
-                    segment.topology_hint,
-                    Some(api::SegmentTopologySummary::Display { .. })
-                )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    // Seeded footprints describe editor geometry only. The daemon keeps
-    // ownership of output identity, hardware topology, and binding metadata.
-    let placements = crate::layout_geometry::seeded_device_layout(
-        &device.layout_device_id,
-        &device.name,
-        &light_segments,
-        width,
-        height,
-        0,
-    )
-    .map(|seed| {
-        seed.zones
-            .into_iter()
-            .map(|output| hypercolor_types::api::scene::MemberPlacementHint {
-                segment: output.zone_name,
-                position: output.position,
-                size: output.size,
-                rotation: output.rotation,
-                scale: output.scale,
-                orientation: output.orientation,
-            })
-            .collect()
-    })
-    .unwrap_or_default();
+    let Some(scene) = studio.history.current_scene() else {
+        return;
+    };
+    let placements = studio.rig_layout.with_untracked(|rig| {
+        super::placement::assignment_hints(
+            &scene,
+            rig.as_ref(),
+            &device,
+            &zone_id,
+            studio.render_canvas_size.get_untracked(),
+        )
+    });
     studio
         .history
         .assign_device(zone_id, device.layout_device_id, Vec::new(), placements);
