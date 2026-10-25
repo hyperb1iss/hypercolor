@@ -375,8 +375,7 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
                         <div class="text-center space-y-3 animate-enter-fade">
                             <Icon icon=LuLayoutTemplate width="48px" height="48px"
                                   style="color: rgba(255, 106, 193, 0.25); filter: drop-shadow(0 0 12px rgba(255, 106, 193, 0.15))" />
-                            <div class="text-fg-tertiary/50 text-sm">"Select or create a layout to begin"</div>
-                            <div class="text-fg-tertiary/40 text-xs font-mono tracking-wide">"Drag devices onto the canvas to build your spatial mapping"</div>
+                            <div class="text-fg-tertiary/50 text-sm">"Choose a zone tab to edit its canvas"</div>
                         </div>
                     </div>
                 }
