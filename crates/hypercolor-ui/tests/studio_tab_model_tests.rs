@@ -6,12 +6,12 @@ use hypercolor_types::api::scene::{ZoneMember, ZoneMemberId};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId, ZoneRole};
 
-use hypercolor_ui::api::ZoneResource;
+use hypercolor_ui::api::{ApiError, ZoneResource};
 use hypercolor_ui::pages::studio::tab_model::{
-    DeleteBlock, ReorderTarget, ScreenName, TabStatus, deletable, delete_prompt, drag_target,
-    drop_slot, fit_tab_count, full_zone_index, next_tab_index, next_zone_name, nudge_target,
-    screen_label_map, screen_labels, split_overflow, tab_status, tab_status_note,
-    zone_device_count, zone_move_index,
+    DeleteBlock, ReorderTarget, ScreenName, TabStatus, deletable, delete_prompt,
+    describe_zone_failure, drag_target, drop_slot, fit_tab_count, full_zone_index, next_tab_index,
+    next_zone_name, nudge_target, screen_label_map, screen_labels, split_overflow, tab_status,
+    tab_status_note, zone_device_count, zone_move_index,
 };
 
 fn zone(name: &str, role: ZoneRole, devices: &[&str]) -> ZoneResource {
@@ -314,4 +314,45 @@ fn screen_label_map_reads_display_output_names_from_led_zones() {
     assert_eq!(labels.len(), 2);
     assert_eq!(labels[&a.id.to_string()], "TL LCD 1");
     assert_eq!(labels[&b.id.to_string()], "TL LCD 2");
+}
+
+#[test]
+fn zone_write_failures_read_as_words() {
+    let http = |status: u16, message: &str| ApiError::Http {
+        status,
+        code: None,
+        message: Some(message.to_owned()),
+        details: None,
+    };
+    let old_daemon = http(
+        422,
+        "Failed to deserialize the JSON body into the target type: index: unknown field \
+         `index`, expected one of `name`, `enabled`, `brightness`, `color`",
+    );
+    assert_eq!(
+        describe_zone_failure("Couldn't reorder zones", &old_daemon),
+        "This Hypercolor daemon can't reorder zones yet. Update Hypercolor to reorder."
+    );
+    assert_eq!(
+        describe_zone_failure(
+            "Zone update failed",
+            &http(
+                422,
+                "Failed to deserialize the JSON body into the target type: name: bad"
+            )
+        ),
+        "Zone update failed: the daemon didn't accept the request"
+    );
+    assert_eq!(
+        describe_zone_failure("Couldn't reorder zones", &http(404, "Zone not found.")),
+        "Couldn't reorder zones: Zone not found"
+    );
+    assert_eq!(
+        describe_zone_failure("Zone update failed", &ApiError::http(503, None)),
+        "Zone update failed (HTTP 503)"
+    );
+    assert_eq!(
+        describe_zone_failure("Zone update failed", &ApiError::Network("reset".into())),
+        "Zone update failed: the daemon could not be reached"
+    );
 }

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use hypercolor_types::scene::ZoneRole;
 
-use crate::api::ZoneResource;
+use crate::api::{ApiError, ZoneResource};
 
 /// The one optional status glyph a zone tab carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,6 +376,38 @@ pub fn screen_label_map(
         .map(|zone| zone.id.to_string())
         .zip(screen_labels(&names))
         .collect()
+}
+
+/// The toast for a zone write the daemon refused, in words: `what` is the
+/// action ("Couldn't reorder zones"). A daemon that predates zone moves
+/// rejects `index` as an unknown field, which gets its own explanation;
+/// other request-shape rejections never surface serde's text.
+#[must_use]
+pub fn describe_zone_failure(what: &str, error: &ApiError) -> String {
+    match error {
+        ApiError::Http {
+            message: Some(message),
+            ..
+        } if message.contains("unknown field `index`") => {
+            "This Hypercolor daemon can't reorder zones yet. Update Hypercolor to reorder."
+                .to_owned()
+        }
+        ApiError::Http {
+            message: Some(message),
+            ..
+        } if message.starts_with("Failed to deserialize") => {
+            format!("{what}: the daemon didn't accept the request")
+        }
+        ApiError::Http {
+            message: Some(message),
+            ..
+        } => format!("{what}: {}", message.trim_end_matches('.')),
+        ApiError::Http { status, .. } => format!("{what} (HTTP {status})"),
+        ApiError::Network(_) => format!("{what}: the daemon could not be reached"),
+        ApiError::Parse(_) | ApiError::Serialize(_) => {
+            format!("{what}: the daemon sent an unexpected reply")
+        }
+    }
 }
 
 /// Identity swatches offered by a tab's Color menu. Zone colors are data

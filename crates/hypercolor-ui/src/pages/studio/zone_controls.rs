@@ -17,7 +17,7 @@ use crate::toasts;
 
 use super::StudioContext;
 use super::device_pane::other_led_zone_ids;
-use super::tab_model::{ReorderTarget, next_zone_name, zone_move_index};
+use super::tab_model::{ReorderTarget, describe_zone_failure, next_zone_name, zone_move_index};
 
 fn scene_revision(studio: StudioContext) -> Option<u64> {
     studio
@@ -137,7 +137,7 @@ fn apply_zone_update(
                 toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                 studio.refresh_scene.run(());
             }
-            Err(error) => toasts::toast_error(&format!("{failure}: {error}")),
+            Err(error) => toasts::toast_error(&describe_zone_failure(failure, &error)),
         }
     });
 }
