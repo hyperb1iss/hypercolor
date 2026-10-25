@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 
+use hypercolor_types::layer::LayerSource;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -25,7 +26,7 @@ use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 use crate::ws::messages::zone_has_degraded_layer;
 
-use super::surface::{Surface, SurfaceKind, now_playing, surfaces_from_zones};
+use super::surface::{Surface, SurfaceKind, layer_label, now_playing, surfaces_from_zones};
 use super::{StudioContext, hidden_outputs_storage_key};
 
 /// Preview FPS ceiling for a Light Stage — the canvas is always live, so
@@ -390,10 +391,40 @@ fn ZoneCanvasBar() -> impl IntoView {
 #[component]
 fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let fx = expect_context::<crate::app::EffectsContext>();
     // A Screen painting its stored default names that face; the pill
     // says it is the display's default rather than a layer of this scene.
     let playing = Memo::new(move |_| {
-        let surface = surface.get();
+        let mut surface = surface.get();
+        // An effect layer without a stored name takes the effect's own
+        // name from the index, as the dashboard caption does, rather than
+        // the bare word "Effect".
+        if let Some(current) = surface.as_mut()
+            && let Some(caption) = studio.active_scene.with(|scene| {
+                let top = scene
+                    .as_ref()?
+                    .zones
+                    .iter()
+                    .find(|zone| zone.id.to_string() == current.id)?
+                    .layers
+                    .last()?;
+                let effect_name = match &top.source {
+                    LayerSource::Effect { effect_id, .. } => {
+                        let effect_id = effect_id.to_string();
+                        fx.effects_index.with(|effects| {
+                            effects
+                                .iter()
+                                .find(|entry| entry.effect.id == effect_id)
+                                .map(|entry| entry.effect.name.clone())
+                        })
+                    }
+                    _ => None,
+                };
+                Some(layer_label(top, effect_name.as_deref()))
+            })
+        {
+            current.top_layer = Some(caption);
+        }
         let default_face = studio
             .screen_face
             .get()
