@@ -1,99 +1,165 @@
-//! Dashboard header widgets — status strip and loading skeleton.
+//! The dashboard's status line: one calm row under the title.
 //!
-//! The preview widget lives in the shared `components::preview_cabinet`
-//! module so both the dashboard and the effects page render the same
-//! cinematic cabinet.
+//! `● Running · up 11h 40m · 23 devices · 60 fps`. The dot is the only
+//! color and carries the daemon's health in status tokens; every value is
+//! secondary text. Devices, fps, and the pause state ride the WebSocket;
+//! the uptime is anchored to the shared status snapshot and advanced on
+//! each metrics message. The preview widget lives in the shared
+//! `components::preview_cabinet` module.
 
+use hypercolor_leptos_ext::prelude::now_ms;
 use leptos::prelude::*;
+use leptos_router::components::A;
 
-use crate::api::SystemStatus;
-use crate::components::status_pill::StatusPill;
-use crate::live_uptime::{format_uptime, use_live_uptime};
+use crate::app::{DaemonStatusContext, WsContext};
+use crate::live_uptime::{advanced_uptime_seconds, format_uptime};
+use crate::ws::messages::ConnectionState;
 
-// ── Status strip ─────────────────────────────────────────────────────
+use super::fps_display::stabilize_fps_for_display;
 
-/// Inline status pills — no outer padding or border, so it can sit on the
-/// same row as the page title in the dashboard header.
-#[component]
-pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
-    let running = status.running;
-    let live_uptime = use_live_uptime(status.uptime_seconds);
-    let uptime = Signal::derive(move || format_uptime(live_uptime.get()));
-    let device_count = status.device_count;
-    let effect_count = status.effect_count;
+/// The daemon's health, as the status line's dot reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonHealth {
+    Running,
+    Paused,
+    Connecting,
+    Stopped,
+    Offline,
+}
 
-    let status_color = if running {
-        "var(--color-status-success)"
-    } else {
-        "var(--color-status-error)"
-    };
+/// The status token a health state paints its dot with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthTone {
+    Success,
+    Warning,
+    Error,
+}
 
-    view! {
-        // Desktop keeps the pill grammar, minus the WS Clients pill —
-        // that number is developer telemetry and lives with the perf
-        // panels. Phones condense to one mono line where the pulsing dot
-        // carries the running state.
-        <div class="flex items-center gap-4 shrink-0 max-md:gap-2.5">
-            <div class="max-md:hidden flex items-center gap-4">
-                <StatusPill
-                    label="Status"
-                    value=if running { "Running" } else { "Stopped" }
-                    color=status_color
-                    pulsing=running
-                />
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                <StatusPill
-                    label="Uptime"
-                    value=uptime
-                    color="var(--color-cyan)"
-                    pulsing=false
-                />
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                <StatusPill
-                    label="Devices"
-                    value=format!("{device_count}")
-                    color="var(--color-coral)"
-                    pulsing=false
-                />
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                <StatusPill
-                    label="Effects"
-                    value=format!("{effect_count}")
-                    color="var(--color-accent)"
-                    pulsing=false
-                />
-            </div>
-            <div class="md:hidden flex items-center gap-2 min-w-0 text-[11px] font-mono text-fg-tertiary">
-                <div
-                    class="w-2 h-2 rounded-full shrink-0"
-                    class=("animate-pulse", running)
-                    style=format!("background: {status_color}; box-shadow: 0 0 8px {status_color}")
-                />
-                <span class="tabular-nums shrink-0">{move || uptime.get()}</span>
-                <span class="text-fg-tertiary/40">"·"</span>
-                <span class="tabular-nums shrink-0">{format!("{device_count} dev")}</span>
-                <span class="text-fg-tertiary/40">"·"</span>
-                <span class="tabular-nums shrink-0">{format!("{effect_count} fx")}</span>
-            </div>
-        </div>
+impl DaemonHealth {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Running => "Running",
+            Self::Paused => "Paused",
+            Self::Connecting => "Connecting",
+            Self::Stopped => "Stopped",
+            Self::Offline => "Offline",
+        }
+    }
+
+    #[must_use]
+    pub const fn tone(self) -> HealthTone {
+        match self {
+            Self::Running => HealthTone::Success,
+            Self::Paused | Self::Connecting => HealthTone::Warning,
+            Self::Stopped | Self::Offline => HealthTone::Error,
+        }
     }
 }
 
-// ── Skeleton ─────────────────────────────────────────────────────────
+/// Health from the socket, the render loop's state in the last status
+/// snapshot (`None` before one arrives), and the live output pause.
+#[must_use]
+pub const fn daemon_health(
+    connection: ConnectionState,
+    render_loop_running: Option<bool>,
+    output_paused: bool,
+) -> DaemonHealth {
+    match (connection, render_loop_running, output_paused) {
+        (ConnectionState::Connecting, _, _) => DaemonHealth::Connecting,
+        (ConnectionState::Disconnected | ConnectionState::Error, _, _) => DaemonHealth::Offline,
+        (ConnectionState::Connected, Some(false), _) => DaemonHealth::Stopped,
+        (ConnectionState::Connected, _, true) => DaemonHealth::Paused,
+        (ConnectionState::Connected, _, false) => DaemonHealth::Running,
+    }
+}
+
+/// "1 device", "23 devices".
+#[must_use]
+pub fn device_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 device".to_owned()
+    } else {
+        format!("{count} devices")
+    }
+}
+
+/// The delivered frame rate, whole frames per second.
+#[must_use]
+pub fn fps_label(fps: f64) -> String {
+    format!("{fps:.0} fps")
+}
 
 #[component]
-pub(super) fn StatusSkeleton() -> impl IntoView {
+pub(super) fn StatusLine() -> impl IntoView {
+    let ws = expect_context::<WsContext>();
+    let status = expect_context::<DaemonStatusContext>().status;
+
+    let health = Memo::new(move |_| {
+        daemon_health(
+            ws.connection_state.get(),
+            status.with(|status| status.as_ref().map(|status| status.running)),
+            ws.output_paused.get(),
+        )
+    });
+    // The snapshot's uptime, stamped with when it arrived.
+    let uptime_anchor = Memo::new(move |_| {
+        status
+            .with(|status| status.as_ref().map(|status| status.uptime_seconds))
+            .map(|seconds| (seconds, now_ms()))
+    });
+    let uptime = Memo::new(move |_| {
+        ws.metrics_tick.track();
+        uptime_anchor
+            .get()
+            .map(|(seconds, at)| format_uptime(advanced_uptime_seconds(seconds, at, now_ms())))
+    });
+    let devices = Memo::new(move |_| {
+        ws.metrics
+            .with(|metrics| metrics.as_ref().map(|metrics| metrics.devices.connected))
+            .or_else(|| status.with(|status| status.as_ref().map(|status| status.device_count)))
+    });
+    let fps = Memo::new(move |_| {
+        ws.metrics.with(|metrics| {
+            metrics
+                .as_ref()
+                .map(|metrics| stabilize_fps_for_display(metrics.fps.delivered, metrics.fps.target))
+        })
+    });
+
+    let separator = || {
+        view! { <span class="text-fg-tertiary/50" aria-hidden="true">"·"</span> }
+    };
+
     view! {
-        <div class="flex items-center gap-4 shrink-0 animate-pulse">
-            {(0..5).map(|_| view! {
-                <div class="flex items-center gap-2.5">
-                    <div class="w-2 h-2 rounded-full bg-surface-overlay/60" />
-                    <div>
-                        <div class="h-2 w-10 bg-surface-overlay/50 rounded mb-1" />
-                        <div class="h-3 w-14 bg-surface-overlay/50 rounded" />
-                    </div>
-                </div>
-            }).collect_view()}
+        <div class="flex min-w-0 items-center gap-2 text-[12px] text-fg-secondary tabular-nums max-md:text-[11px]">
+            <span
+                class="h-2 w-2 shrink-0 rounded-full"
+                class=("bg-status-success", move || health.get().tone() == HealthTone::Success)
+                class=("bg-status-warning", move || health.get().tone() == HealthTone::Warning)
+                class=("bg-status-error", move || health.get().tone() == HealthTone::Error)
+                aria-hidden="true"
+            />
+            // Phones keep the dot and drop the word; readers keep both.
+            <span class="shrink-0 max-md:sr-only">{move || health.get().label()}</span>
+            {move || uptime.get().map(|uptime| view! {
+                {separator()}
+                <span class="shrink-0">{format!("up {uptime}")}</span>
+            })}
+            {move || devices.get().map(|count| view! {
+                {separator()}
+                <A
+                    href=crate::route_ui::route_href("/devices")
+                    attr:class="shrink-0 rounded transition-colors hover:text-fg-primary"
+                    attr:title="Open Devices"
+                >
+                    {device_count_label(count)}
+                </A>
+            })}
+            {move || fps.get().filter(|fps| *fps > 0.0).map(|fps| view! {
+                {separator()}
+                <span class="shrink-0">{fps_label(fps)}</span>
+            })}
         </div>
     }
 }

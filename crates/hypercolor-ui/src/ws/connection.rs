@@ -254,6 +254,8 @@ pub struct WsManager {
     /// daemon state over REST should fold this into their fetcher epochs
     /// to heal after a reconnect gap.
     pub connection_generation: ReadSignal<u64>,
+    /// Whether the daemon socket is open, opening, or down.
+    pub connection_state: ReadSignal<ConnectionState>,
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
@@ -1195,6 +1197,7 @@ impl WsManager {
             last_input_source_status_event,
             last_service_identity_event,
             connection_generation,
+            connection_state,
             layer_health,
             audio_level,
             preview_target_fps,

@@ -20,7 +20,6 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 
-use crate::api;
 use crate::app::WsContext;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::perf_charts::PhaseFrame;
@@ -35,7 +34,7 @@ use crate::ws::PerformanceMetrics;
 mod charts;
 pub mod fps_display;
 mod gauges;
-mod header;
+pub mod header;
 mod layout;
 mod panel_frame;
 pub mod phase_timeline;
@@ -45,7 +44,7 @@ mod timeline;
 use charts::{DistributionPanel, FavoritesPanel, PipelinePanel, ThroughputPanel};
 use fps_display::{stabilize_fps_for_display, stabilize_fps_for_display_f32};
 use gauges::{HeroGauges, MemoryAndDevicesPanel, ReuseRatesPanel};
-use header::{StatusSkeleton, StatusStrip};
+use header::StatusLine;
 use layout::{DashboardLayout, PanelId};
 use panel_frame::PanelFrame;
 use phase_timeline::phase_frame_from_timeline;
@@ -166,7 +165,6 @@ impl MetricsSample {
 pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let preview_telemetry = expect_context::<PreviewTelemetryContext>();
-    let status_resource = api::daemon_resource(api::fetch_status);
     let fullscreenchange_listener: StoredValue<Option<EventHandle>, LocalStorage> =
         StoredValue::new_local(None);
 
@@ -440,19 +438,7 @@ pub fn DashboardPage() -> impl IntoView {
                     </div>
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    // The strip is condensed enough to fit a phone outright.
-                    <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                        {move || status_resource.get().map(|result| {
-                            match result {
-                                Ok(status) => view! { <StatusStrip status=status /> }.into_any(),
-                                Err(e) => view! {
-                                    <div class="text-[11px] text-status-error shrink-0">
-                                        "Failed to connect: " {e.to_string()}
-                                    </div>
-                                }.into_any(),
-                            }
-                        })}
-                    </Suspense>
+                    <StatusLine />
                 </HeaderToolbar>
             </PageHeader>
 

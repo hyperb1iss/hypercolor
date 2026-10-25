@@ -46,7 +46,6 @@ pub mod sidebar;
 pub mod silk_select;
 pub mod software_conflict_banner;
 pub mod status_banner;
-pub mod status_pill;
 pub mod viewport_designer;
 pub mod welcome_overlay;
 pub mod zone_now_playing;

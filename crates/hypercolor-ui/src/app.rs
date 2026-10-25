@@ -37,6 +37,7 @@ use crate::preferences::PreferencesStore;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
+use crate::ws::messages::ConnectionState;
 use crate::ws::messages::scene_event_requires_effect_refresh;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
@@ -112,6 +113,8 @@ pub struct WsContext {
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
     pub connection_generation: ReadSignal<u64>,
+    /// Whether the daemon socket is open, opening, or down.
+    pub connection_state: ReadSignal<ConnectionState>,
     /// Per-layer runtime health, keyed by `scene/zone/layer`, fed by the
     /// daemon's `layer_health_changed` events. A layer with no entry is
     /// treated as healthy — including, until the daemon replays a snapshot
@@ -159,6 +162,15 @@ impl CapabilitiesContext {
             && self.has("multi-zone-sampling")
             && self.has("zone-device-assignment")
     }
+}
+
+/// The daemon's status snapshot, read once per connection. Live values
+/// such as device counts, frame rates, and the pause state ride the
+/// WebSocket; this carries what only the snapshot knows, such as uptime
+/// and whether the render loop is running.
+#[derive(Clone, Copy)]
+pub struct DaemonStatusContext {
+    pub status: Memo<Option<api::SystemStatus>>,
 }
 
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
@@ -561,6 +573,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         last_input_source_status_event: ws.last_input_source_status_event,
         last_service_identity_event: ws.last_service_identity_event,
         connection_generation: ws.connection_generation,
+        connection_state: ws.connection_state,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,
         send_zone_layout_preview: ws.send_zone_layout_preview,
@@ -607,9 +620,10 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         provide_context(remote_preview);
     }
 
-    // Daemon capability advertisement (§9.6). Fetched once — the set is
-    // fixed per daemon build — and exposed as a context so multi-zone
-    // Studio affordances can gate on it without each re-querying status.
+    // Daemon capability advertisement (§9.6) and the status snapshot.
+    // Fetched once per connection (the capability set is fixed per daemon
+    // build) and exposed as contexts so multi-zone Studio affordances and
+    // the dashboard read it without each re-querying status.
     let status_resource = api::daemon_resource(api::fetch_status);
     let capabilities = Memo::new(move |_| {
         status_resource
@@ -620,6 +634,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
     provide_context(CapabilitiesContext {
         capabilities: capabilities.into(),
+    });
+    provide_context(DaemonStatusContext {
+        status: Memo::new(move |_| status_resource.get().and_then(Result::ok)),
     });
     crate::release_notifications::provide_release_notifications();
 
