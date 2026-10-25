@@ -28,10 +28,13 @@ pub enum StudioEdit {
 pub struct StudioJournal {
     entries: Vec<StudioEdit>,
     cursor: usize,
+    /// Edits recorded so far; replays do not count.
+    recorded: u64,
 }
 
 impl StudioJournal {
     pub fn record(&mut self, edit: StudioEdit) {
+        self.recorded = self.recorded.wrapping_add(1);
         self.entries.truncate(self.cursor);
         self.entries.push(edit);
         if self.entries.len() > crate::layout_history::MAX_HISTORY_DEPTH {
@@ -44,6 +47,11 @@ impl StudioJournal {
     }
     pub fn redo_edit(&self) -> Option<&StudioEdit> {
         self.entries.get(self.cursor)
+    }
+    /// Changes whenever a new edit is recorded, so a waiting undo or redo
+    /// can tell the history moved on after it was asked for.
+    pub fn recorded(&self) -> u64 {
+        self.recorded
     }
     pub fn complete(&mut self, redo: bool) {
         if redo && self.cursor < self.entries.len() {
@@ -64,7 +72,12 @@ pub(crate) struct LayoutReplay {
 
 /// A scene operation waiting for the one ahead of it to land.
 enum Waiting {
-    Replay(bool),
+    /// An undo (`false`) or redo (`true`), with the journal's recorded
+    /// count when it was asked for.
+    Replay {
+        redo: bool,
+        recorded: u64,
+    },
     Assign {
         zone_id: String,
         device_id: String,
@@ -80,6 +93,16 @@ enum Waiting {
     RestoreZone(DeletedZone),
 }
 
+/// How the history reaches the layout editor: its commit queue, which
+/// goes before any waiting operation, and its gestures, which a waiting
+/// undo or redo never lands in the middle of.
+#[derive(Clone, Copy)]
+pub(crate) struct EditorHooks {
+    pub commits_pending: Callback<(), bool>,
+    pub drain_commits: Callback<()>,
+    pub gesture_active: Callback<(), bool>,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct StudioHistory {
     pub journal: RwSignal<StudioJournal>,
@@ -91,6 +114,7 @@ pub(crate) struct StudioHistory {
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
     waiting: StoredValue<VecDeque<Waiting>>,
+    editor: StoredValue<Option<EditorHooks>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
     generation: RwSignal<u64>,
@@ -127,6 +151,7 @@ impl StudioHistory {
             busy,
             committing,
             waiting,
+            editor: StoredValue::new(None),
             pending_layout,
             scene,
             latest,
@@ -237,6 +262,23 @@ impl StudioHistory {
         }
     }
 
+    /// Connect the layout editor; `None` disconnects it.
+    pub fn attach_editor(self, hooks: Option<EditorHooks>) {
+        self.editor.try_set_value(hooks);
+    }
+
+    fn editor_hooks(self) -> Option<EditorHooks> {
+        self.editor.try_get_value().flatten()
+    }
+
+    /// Whether `operation` must hold back for a canvas gesture.
+    fn held_by_gesture(self, operation: &Waiting) -> bool {
+        matches!(operation, Waiting::Replay { .. })
+            && self
+                .editor_hooks()
+                .is_some_and(|editor| editor.gesture_active.run(()))
+    }
+
     /// Run `operation` now when nothing holds the scene, otherwise after
     /// everything already waiting.
     fn when_free(self, operation: Waiting) {
@@ -244,7 +286,7 @@ impl StudioHistory {
             .waiting
             .try_with_value(|waiting| !waiting.is_empty())
             .unwrap_or(false);
-        if self.is_free() && !queued {
+        if self.is_free() && !queued && !self.held_by_gesture(&operation) {
             self.run(operation);
         } else {
             self.waiting
@@ -252,9 +294,36 @@ impl StudioHistory {
         }
     }
 
+    /// Pick the queue up again after a canvas gesture ends.
+    pub fn resume(self) {
+        self.next_waiting();
+    }
+
     /// Start waiting operations, in order, while the scene stays free.
+    /// Layout commits go first, so an operation always acts on the scene
+    /// with every finished edit (an undo included) already written.
     fn next_waiting(self) {
         while self.is_free() {
+            let editor = self.editor_hooks();
+            if let Some(editor) = editor
+                && editor.commits_pending.run(())
+            {
+                editor.drain_commits.run(());
+                if !self.is_free() {
+                    return;
+                }
+            }
+            let held = self
+                .waiting
+                .try_with_value(|waiting| {
+                    waiting
+                        .front()
+                        .is_some_and(|operation| self.held_by_gesture(operation))
+                })
+                .unwrap_or(false);
+            if held {
+                return;
+            }
             let Some(operation) = self.waiting.try_update_value(VecDeque::pop_front).flatten()
             else {
                 return;
@@ -265,7 +334,7 @@ impl StudioHistory {
 
     fn run(self, operation: Waiting) {
         match operation {
-            Waiting::Replay(redo) => self.replay_now(redo),
+            Waiting::Replay { redo, recorded } => self.replay_now(redo, recorded),
             Waiting::Assign {
                 zone_id,
                 device_id,
@@ -457,10 +526,21 @@ impl StudioHistory {
     }
 
     pub fn replay(self, redo: bool) {
-        self.when_free(Waiting::Replay(redo));
+        let recorded = self.journal.with_untracked(StudioJournal::recorded);
+        self.when_free(Waiting::Replay { redo, recorded });
     }
 
-    fn replay_now(self, redo: bool) {
+    fn replay_now(self, redo: bool, recorded: u64) {
+        // An edit made while this waited is newer than what it was asked
+        // to reverse; undoing that instead would surprise.
+        if self.journal.with_untracked(StudioJournal::recorded) != recorded {
+            toasts::toast_info(if redo {
+                "Redo skipped: a newer change came first"
+            } else {
+                "Undo skipped: a newer change came first"
+            });
+            return;
+        }
         let edit = self
             .journal
             .with_untracked(|j| if redo { j.redo_edit() } else { j.undo_edit() }.cloned());
@@ -966,6 +1046,7 @@ mod replay_tests {
             busy: RwSignal::new(busy),
             committing: RwSignal::new(false),
             waiting: StoredValue::new(VecDeque::new()),
+            editor: StoredValue::new(None),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),
             can_redo: Signal::stored(false),
@@ -1061,6 +1142,73 @@ mod replay_tests {
                     .journal
                     .with_untracked(|journal| journal.undo_edit().is_none())
             );
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn layout_commits_go_before_waiting_operations() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let history = history(None, true, None, zone);
+            record_layout_edit(history, zone);
+            let pending = RwSignal::new(true);
+            history.attach_editor(Some(EditorHooks {
+                commits_pending: Callback::new(move |()| pending.get_untracked()),
+                drain_commits: Callback::new(move |()| {
+                    pending.set(false);
+                    let _ = history.begin_commit();
+                }),
+                gesture_active: Callback::new(|()| false),
+            }));
+            // An undo asked for while a structural operation runs.
+            history.replay(false);
+            history.finish(1);
+            assert!(
+                history.committing.get_untracked(),
+                "the queued commit took the scene first"
+            );
+            assert!(history.pending_layout.get_untracked().is_none());
+            let generation = history.generation.get_untracked();
+            history.end_commit(generation);
+            assert!(
+                history.pending_layout.get_untracked().is_none(),
+                "the undo found no scene to replay against and stood down"
+            );
+            assert!(history.waiting.with_value(VecDeque::is_empty));
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn a_waiting_undo_holds_for_a_gesture_and_skips_a_newer_edit() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let history = history(None, false, None, zone);
+            record_layout_edit(history, zone);
+            let dragging = RwSignal::new(true);
+            history.attach_editor(Some(EditorHooks {
+                commits_pending: Callback::new(|()| false),
+                drain_commits: Callback::new(|()| {}),
+                gesture_active: Callback::new(move |()| dragging.get_untracked()),
+            }));
+            history.replay(false);
+            assert!(
+                history.waiting.with_value(|waiting| waiting.len() == 1),
+                "the undo waits out the gesture"
+            );
+            // The gesture ends with a new edit of its own.
+            record_layout_edit(history, zone);
+            dragging.set(false);
+            history.resume();
+            assert!(history.waiting.with_value(VecDeque::is_empty));
+            assert!(
+                history.pending_layout.get_untracked().is_none(),
+                "the stale undo stood down instead of undoing the new edit"
+            );
+            assert!(!history.busy.get_untracked());
         });
         owner.cleanup();
     }

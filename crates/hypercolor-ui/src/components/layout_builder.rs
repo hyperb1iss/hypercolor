@@ -179,6 +179,7 @@ impl LayoutWriteHandle {
         ) {
             self.record(zone_id, before, after);
         }
+        self.studio_history.resume();
     }
 
     /// Commit the in-flight drag/resize result in a single signal write.
@@ -678,9 +679,10 @@ pub(crate) fn ZoneLayoutProvider(
             active_preview_key.set_value(None);
         }
         if let Some(replay) = applied_replay {
-            studio_history.complete_layout(replay.redo);
-            // An undo or redo is an edit like any other: it commits.
+            // An undo or redo is an edit like any other: it commits, ahead
+            // of anything that waited for it.
             set_layout.commit(zone_id);
+            studio_history.complete_layout(replay.redo);
         }
     });
 
@@ -884,6 +886,19 @@ pub(crate) fn ZoneLayoutProvider(
             commit_queue.update_value(|queue| queue.push(zone_id, baseline, edited));
             drain();
         })));
+
+    // Studio history runs these commits ahead of any operation waiting for
+    // the scene, and holds a waiting undo or redo until a gesture ends.
+    studio_history.attach_editor(Some(crate::pages::studio::history::EditorHooks {
+        commits_pending: Callback::new(move |()| {
+            !commit_queue
+                .try_with_value(commit::CommitQueue::is_empty)
+                .unwrap_or(true)
+        }),
+        drain_commits: Callback::new(move |()| drain()),
+        gesture_active: Callback::new(move |()| set_layout.in_interaction()),
+    }));
+    on_cleanup(move || studio_history.attach_editor(None));
 
     // A commit queued while a structural operation held the scene goes out
     // once it finishes.
