@@ -51,6 +51,7 @@ web-sys = { version = "0.3", features = [
     "FormData",
     "ReadableStream",
     "ReadableStreamDefaultReader",
+    "ResizeObserverBoxOptions",
     "Response",
     "HtmlCanvasElement",
     "HtmlInputElement",

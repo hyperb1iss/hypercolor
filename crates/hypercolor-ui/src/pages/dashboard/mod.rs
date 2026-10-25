@@ -12,7 +12,8 @@ use hypercolor_leptos_ext::events::{
     EventHandle, document as browser_document, document_event_target, on, target_closest,
 };
 use hypercolor_leptos_ext::prelude::{
-    device_pixel_ratio, viewport_width as browser_viewport_width,
+    device_pixel_ratio, viewport_height as browser_viewport_height,
+    viewport_width as browser_viewport_width,
 };
 use leptos::ev;
 use leptos::html;
@@ -24,6 +25,9 @@ use crate::api;
 use crate::app::WsContext;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::perf_charts::PhaseFrame;
+use crate::components::preview_box::{
+    CabinetChrome, contained_width, hug_cabinet, preview_source_size,
+};
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -65,13 +69,18 @@ const MIN_ADAPTIVE_MAX_PREVIEW_WIDTH: f64 = 820.0;
 // Room reserved for sidebar + page padding + resize handle + a usable
 // favorites panel when the preview is pushed to its maximum.
 const PREVIEW_MAX_SIBLING_RESERVE_PX: f64 = 600.0;
-// Default preview cabinet width and matching hero row height keep the
-// canvas at its true 320:200 aspect with zero letterbox at the default
-// settings. `720 * 200 / 320 = 450` plus a `~46px` preset strip lands at
-// `~496px` of hero height. Users can drag the splitter to taste; mild
-// letterbox/pillarbox kicks in naturally off-default.
+// Default preview cabinet width and the tallest the hero row gets. The
+// cabinet hugs its picture inside these bounds: a tall source narrows it,
+// a wide source shortens the row, so the picture keeps the source's aspect
+// with no bars at any splitter position.
 const DEFAULT_PREVIEW_WIDTH: f64 = 720.0;
 const HERO_ROW_HEIGHT_PX: f64 = 496.0;
+// The cabinet's left and right borders, and its top accent border plus
+// bottom border; the preset strip's measured height adds to the latter.
+const CABINET_BORDER_X_PX: f64 = 2.0;
+const CABINET_BORDER_Y_PX: f64 = 3.0;
+// Preset strip height until the cabinet measures it.
+const PRESET_STRIP_ESTIMATE_PX: f64 = 46.0;
 // Bumping the storage key resets the saved width once after this change
 // so reviewers see the new aspect-correct default; previous saves from
 // the old squished layout would otherwise pin the preview at 460px.
@@ -177,6 +186,30 @@ pub fn DashboardPage() -> impl IntoView {
     );
     let drag_start_width = StoredValue::new(0.0_f64);
 
+    // The picture's shape: the frame's, or the render canvas's before the
+    // first frame (and under Remote, where frames arrive as video).
+    let render_canvas = crate::render_canvas::use_render_canvas_size();
+    let preview_source = Memo::new(move |_| {
+        let decoded = ws
+            .canvas_frame
+            .with(|frame| frame.as_ref().map(|frame| (frame.width, frame.height)));
+        preview_source_size(decoded, render_canvas.get())
+    });
+    let strip_height = RwSignal::new(PRESET_STRIP_ESTIMATE_PX);
+    let cabinet_chrome = Memo::new(move |_| CabinetChrome {
+        width: CABINET_BORDER_X_PX,
+        height: strip_height.get() + CABINET_BORDER_Y_PX,
+    });
+    let hero = Memo::new(move |_| {
+        hug_cabinet(
+            preview_source.get(),
+            preview_width.get(),
+            HERO_ROW_HEIGHT_PX,
+            cabinet_chrome.get(),
+            MIN_PREVIEW_WIDTH,
+        )
+    });
+
     // Fullscreen preview — takes over the whole viewport with a true
     // browser-level Fullscreen API request when available so browser
     // chrome gets out of the way. State drives both CSS (overlay class
@@ -185,7 +218,7 @@ pub fn DashboardPage() -> impl IntoView {
     let preview_wrapper_ref = NodeRef::<html::Div>::new();
 
     let on_drag_start = Callback::new(move |()| {
-        drag_start_width.set_value(preview_width.get_untracked());
+        drag_start_width.set_value(hero.get_untracked().0);
         set_resizing_body(true);
     });
     let on_drag = Callback::new(move |delta_x: f64| {
@@ -199,15 +232,19 @@ pub fn DashboardPage() -> impl IntoView {
     });
 
     // Match the effects page cadence, but only request enough preview
-    // pixels to fill the dashboard cabinet on the current display. In
-    // fullscreen we size to the whole viewport so the upscaled frame
-    // stays sharp on wide monitors.
+    // pixels to fill the picture on the current display: the hugged
+    // cabinet's picture inline, the picture contained in the viewport in
+    // fullscreen, so the upscaled frame stays sharp on wide monitors.
     Effect::new(move |_| {
         ws.set_preview_cap.set(DASHBOARD_PREVIEW_FPS_CAP);
         let effective_width = if fullscreen.get() {
-            viewport_width_px()
+            contained_width(
+                preview_source.get(),
+                viewport_width_px(),
+                browser_viewport_height(1080.0),
+            )
         } else {
-            preview_width.get()
+            hero.get().0 - CABINET_BORDER_X_PX
         };
         ws.set_preview_width_cap
             .set(dashboard_preview_request_width(
@@ -468,20 +505,28 @@ pub fn DashboardPage() -> impl IntoView {
                     // horizontal layout to divide.
                     <div
                         class="flex items-stretch gap-0 shrink-0 max-md:flex-col max-md:gap-3 max-md:h-auto!"
-                        style=move || format!("height: {HERO_ROW_HEIGHT_PX}px")
+                        style=move || format!("height: {}px", hero.get().1)
                     >
                         <div
                             node_ref=preview_wrapper_ref
-                            class="shrink-0 h-full max-md:w-full! max-md:h-auto max-md:aspect-video"
+                            class="dashboard-hero-preview shrink-0 h-full max-md:w-full!"
                             class:fullscreen-preview=move || fullscreen.get()
                             style=move || {
+                                // Phones stack the hero at full width, so its
+                                // height follows the source's aspect there.
+                                let (width, height) = preview_source.get();
+                                let phone = format!(
+                                    "--hero-source-ratio: {height} / {width}; \
+                                     --hero-chrome: {}px; --hero-chrome-x: {CABINET_BORDER_X_PX}px;",
+                                    cabinet_chrome.get().height
+                                );
                                 if fullscreen.get() {
                                     // Class drives the positioning; style is
                                     // still set so the non-fullscreen state
                                     // cleanly takes over when toggled off.
-                                    String::new()
+                                    phone
                                 } else {
-                                    format!("width: {}px", preview_width.get())
+                                    format!("width: {}px; {phone}", hero.get().0)
                                 }
                             }
                         >
@@ -490,6 +535,7 @@ pub fn DashboardPage() -> impl IntoView {
                                 fill_height=true
                                 on_toggle_fullscreen=on_toggle_fullscreen
                                 is_fullscreen=Signal::derive(move || fullscreen.get())
+                                strip_height=strip_height
                             />
                         </div>
 
