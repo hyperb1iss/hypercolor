@@ -5,7 +5,16 @@ use hypercolor_ui::zones::surface::zone_display_name;
 
 #[test]
 fn an_unnamed_primary_zone_reads_as_main() {
-    for stored in ["Primary", "primary", "PRIMARY", "  Primary  ", "", "   "] {
+    for stored in [
+        "Primary",
+        "primary",
+        "PRIMARY",
+        "  Primary  ",
+        "",
+        "   ",
+        "Default zone",
+        "default ZONE",
+    ] {
         assert_eq!(
             zone_display_name(stored, ZoneRole::Primary),
             "Main",
@@ -19,11 +28,6 @@ fn a_named_primary_zone_keeps_its_trimmed_name() {
     assert_eq!(
         zone_display_name("  Desk Strips ", ZoneRole::Primary),
         "Desk Strips"
-    );
-    // A stored "Default zone" is a name the user kept, not a placeholder.
-    assert_eq!(
-        zone_display_name("Default zone", ZoneRole::Primary),
-        "Default zone"
     );
     assert_eq!(
         zone_display_name("Primary lights", ZoneRole::Primary),

@@ -171,12 +171,15 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
 }
 
 /// The name a zone shows everywhere in the UI: its stored name, trimmed.
-/// The primary zone reads **"Main"** while it has no name of its own,
-/// meaning an empty name or the daemon's seeded "Primary" in any case.
+/// The primary zone reads **"Main"** while it has no name of its own:
+/// an empty name, or one of the names older daemons seeded ("Primary",
+/// "Default zone"), in any case.
 #[must_use]
 pub fn zone_display_name(name: &str, role: ZoneRole) -> String {
     let trimmed = name.trim();
-    let unnamed = trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary");
+    let unnamed = trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("primary")
+        || trimmed.eq_ignore_ascii_case("default zone");
     if role == ZoneRole::Primary && unnamed {
         "Main".to_owned()
     } else {
