@@ -6,9 +6,6 @@ use super::gpu_errors::{
     DeviceLossSignal, GpuDeviceRole, GpuErrorKind, record_device_lost, record_uncaptured_error,
 };
 
-const GPU_RESOURCE_CREATION_BUDGET_PERCENT: u8 = 80;
-const GPU_DEVICE_LOSS_BUDGET_PERCENT: u8 = 95;
-
 #[derive(Debug, Clone)]
 pub struct GpuRenderDevice {
     inner: Arc<GpuRenderDeviceInner>,
@@ -72,26 +69,7 @@ impl GpuRenderDevice {
         label: &'static str,
         backend_preference: GpuBackendPreference,
     ) -> Result<Self> {
-        // The single consumer of backend_preference lives behind the
-        // servo-gpu-import + Windows cfg gate. Discard-bind here so
-        // non-Windows / feature-disabled builds don't trip the unused-
-        // variable lint under `-D warnings`.
-        let _ = backend_preference;
-        #[cfg_attr(
-            not(all(feature = "servo-gpu-import", target_os = "windows")),
-            allow(unused_mut)
-        )]
-        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        #[cfg(target_os = "windows")]
-        {
-            instance_descriptor.backends = windows_backends_for_preference(backend_preference);
-        }
-        instance_descriptor.memory_budget_thresholds = wgpu::MemoryBudgetThresholds {
-            for_resource_creation: Some(GPU_RESOURCE_CREATION_BUDGET_PERCENT),
-            for_device_loss: Some(GPU_DEVICE_LOSS_BUDGET_PERCENT),
-        };
-        #[cfg(test)]
-        pin_shipped_shader_compilation(&mut instance_descriptor);
+        let instance_descriptor = compositor_instance_descriptor(backend_preference);
         let adapter_options = wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: test_fallback_adapter_requested(),
@@ -333,6 +311,42 @@ pub(crate) fn raise_uncaptured_validation_error(device: &wgpu::Device) {
     });
 }
 
+/// The instance every compositor device is opened from.
+///
+/// It leaves wgpu's memory budget thresholds unset, so wgpu never fails an
+/// allocation or loses the device on its own budget arithmetic. The native
+/// budget those thresholds compare against is not a fixed allowance:
+/// NVIDIA's Vulkan driver reports this process's usage plus the VRAM still
+/// free on the card, so every other process that allocates VRAM shrinks it.
+/// wgpu also allocates a staging buffer for each `Queue::write_buffer` and
+/// `Queue::write_texture` and treats a budget rejection there as device
+/// loss. A creation threshold would therefore lose the device on an
+/// ordinary per-frame upload once free VRAM fell below a fraction of the
+/// daemon's own usage, while the card still had room and `gpu-allocator`
+/// could have placed the staging memory in host RAM. Without thresholds,
+/// allocations fail only when the driver fails them: buffers and textures
+/// the daemon creates report out-of-memory to the error scopes that admit
+/// canvas, sampling, and screen resources, and only a real driver device
+/// loss ends the device.
+fn compositor_instance_descriptor(
+    backend_preference: GpuBackendPreference,
+) -> wgpu::InstanceDescriptor {
+    // The single consumer of backend_preference lives behind the
+    // servo-gpu-import + Windows cfg gate. Discard-bind here so
+    // non-Windows / feature-disabled builds don't trip the unused-
+    // variable lint under `-D warnings`.
+    let _ = backend_preference;
+    #[cfg_attr(not(any(test, target_os = "windows")), allow(unused_mut))]
+    let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    #[cfg(target_os = "windows")]
+    {
+        instance_descriptor.backends = windows_backends_for_preference(backend_preference);
+    }
+    #[cfg(test)]
+    pin_shipped_shader_compilation(&mut instance_descriptor);
+    instance_descriptor
+}
+
 /// Make test devices compile shaders the way shipped builds do on users'
 /// machines.
 ///
@@ -569,6 +583,15 @@ fn adapter_name_looks_software(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compositor_instance_leaves_memory_budget_thresholds_to_the_driver() {
+        let thresholds =
+            compositor_instance_descriptor(GpuBackendPreference::Default).memory_budget_thresholds;
+
+        assert_eq!(thresholds.for_resource_creation, None);
+        assert_eq!(thresholds.for_device_loss, None);
+    }
 
     #[test]
     fn maps_backend_names_to_stable_status_strings() {
