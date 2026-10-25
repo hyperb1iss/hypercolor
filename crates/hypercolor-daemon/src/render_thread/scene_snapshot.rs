@@ -97,6 +97,9 @@ pub(crate) struct EffectSceneSnapshot {
 pub(crate) struct FrameSceneSnapshot {
     pub frame_token: u64,
     pub elapsed_ms: u64,
+    /// The same render-loop elapsed time, in microseconds, for cadences
+    /// that whole milliseconds would alias.
+    pub elapsed_us: u64,
     pub budget_us: u32,
     pub output_power: OutputPowerState,
     pub effect_demand: EffectDemand,
@@ -109,6 +112,7 @@ pub(crate) struct FrameSceneSnapshot {
 pub(crate) struct RenderLoopSnapshot {
     pub(crate) frame_token: u64,
     pub(crate) elapsed_ms: u64,
+    pub(crate) elapsed_us: u64,
     pub(crate) budget_us: u32,
 }
 
@@ -213,6 +217,7 @@ pub(crate) async fn build_frame_scene_snapshot(
     FrameSceneSnapshot {
         frame_token: render_loop_snapshot.frame_token,
         elapsed_ms: render_loop_snapshot.elapsed_ms,
+        elapsed_us: render_loop_snapshot.elapsed_us,
         budget_us: render_loop_snapshot.budget_us,
         output_power: *state.power_state.borrow(),
         effect_demand: effect_scene.demand,
@@ -608,9 +613,11 @@ fn zone_has_enabled_layer(zone: &Zone) -> bool {
 
 async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
     let render_loop = state.render_loop.read().await;
+    let elapsed = render_loop.elapsed();
     RenderLoopSnapshot {
         frame_token: render_loop.frame_number(),
-        elapsed_ms: super::millis_u64(render_loop.elapsed()),
+        elapsed_ms: super::millis_u64(elapsed),
+        elapsed_us: super::micros_u64(elapsed),
         budget_us: super::micros_u32(render_loop.target_interval()),
     }
 }
@@ -1332,6 +1339,7 @@ mod tests {
         let mut scene_snapshot = FrameSceneSnapshot {
             frame_token: 42,
             elapsed_ms: 123,
+            elapsed_us: 123_456,
             budget_us: 16_666,
             output_power: OutputPowerState::default(),
             effect_demand: effect_scene.demand,

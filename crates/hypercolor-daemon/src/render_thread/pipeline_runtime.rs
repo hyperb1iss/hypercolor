@@ -919,19 +919,145 @@ impl DeferredSamplingState {
     }
 }
 
-#[derive(Debug, Default)]
+/// The render interval a preview cadence assumes until the loop has
+/// rendered two frames: the engine's default 60 fps.
+const DEFAULT_RENDER_INTERVAL_US: u64 = 16_667;
+
+/// How far under its target a lane may run before it takes one frame
+/// fewer per publication, as a share of a render interval.
+const PREVIEW_STRIDE_SLACK: f64 = 0.1;
+
+/// Render gaps the interval estimate keeps; it reads their median.
+const RENDER_GAP_WINDOW: usize = 8;
+
+/// A gap longer than this is a pause (idle, sleep, a stall), not the loop's
+/// cadence, and stays out of the estimate.
+const MAX_RENDER_GAP_US: u64 = 250_000;
+
+/// Where a preview lane last published: the render frame count and the
+/// render loop's elapsed time then.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LanePublication {
+    frames: u64,
+    elapsed_us: u64,
+}
+
+/// Preview lanes publish on whole render frames. The frame loop reports
+/// each rendered frame's elapsed time; the cadence counts frames and
+/// estimates the loop's real frame interval from the median of its recent
+/// gaps, which can be longer than its tier's when frames overrun.
+#[derive(Debug)]
 #[allow(clippy::struct_field_names)]
 pub(crate) struct PublicationCadenceState {
     pub(crate) last_audio_level_update_ms: Option<u64>,
     audio_publication_observed: bool,
-    pub(crate) last_canvas_preview_publish_ms: Option<u64>,
-    pub(crate) last_scene_canvas_publish_ms: Option<u64>,
-    pub(crate) last_screen_canvas_preview_publish_ms: Option<u64>,
-    pub(crate) last_web_viewport_preview_publish_ms: Option<u64>,
-    pub(crate) last_zone_preview_publish_ms: Option<u64>,
+    render_frames: u64,
+    render_time_us: u64,
+    previous_render_time_us: Option<u64>,
+    render_gaps_us: VecDeque<u64>,
+    latest_render_gap_us: Option<u64>,
+    pub(crate) last_canvas_preview_publish: Option<LanePublication>,
+    pub(crate) last_scene_canvas_publish: Option<LanePublication>,
+    pub(crate) last_screen_canvas_preview_publish: Option<LanePublication>,
+    pub(crate) last_web_viewport_preview_publish: Option<LanePublication>,
+    pub(crate) last_zone_preview_publish: Option<LanePublication>,
+}
+
+impl Default for PublicationCadenceState {
+    fn default() -> Self {
+        Self {
+            last_audio_level_update_ms: None,
+            audio_publication_observed: false,
+            render_frames: 0,
+            render_time_us: 0,
+            previous_render_time_us: None,
+            render_gaps_us: VecDeque::with_capacity(RENDER_GAP_WINDOW),
+            latest_render_gap_us: None,
+            last_canvas_preview_publish: None,
+            last_scene_canvas_publish: None,
+            last_screen_canvas_preview_publish: None,
+            last_web_viewport_preview_publish: None,
+            last_zone_preview_publish: None,
+        }
+    }
 }
 
 impl PublicationCadenceState {
+    /// Starts a rendered frame at `elapsed_us` of render-loop time. Its gap
+    /// from the frame before joins the interval estimate unless it is a
+    /// pause. A clock that ran backwards (a restarted loop) forgets the
+    /// estimate and makes every lane due.
+    pub(crate) fn begin_render_frame(&mut self, elapsed_us: u64) {
+        match self
+            .previous_render_time_us
+            .map(|previous| elapsed_us.checked_sub(previous))
+        {
+            Some(None) => {
+                self.render_gaps_us.clear();
+                self.latest_render_gap_us = None;
+                self.last_canvas_preview_publish = None;
+                self.last_scene_canvas_publish = None;
+                self.last_screen_canvas_preview_publish = None;
+                self.last_web_viewport_preview_publish = None;
+                self.last_zone_preview_publish = None;
+            }
+            Some(Some(gap)) if gap > 0 && gap <= MAX_RENDER_GAP_US => {
+                if self.render_gaps_us.len() == RENDER_GAP_WINDOW {
+                    self.render_gaps_us.pop_front();
+                }
+                self.render_gaps_us.push_back(gap);
+                self.latest_render_gap_us = Some(gap);
+            }
+            Some(Some(_)) => self.latest_render_gap_us = None,
+            None => {}
+        }
+        self.previous_render_time_us = Some(elapsed_us);
+        self.render_frames = self.render_frames.saturating_add(1);
+        self.render_time_us = elapsed_us;
+    }
+
+    /// The loop's real frame interval: the median of its recent gaps.
+    fn render_interval_us(&self) -> u64 {
+        if self.render_gaps_us.is_empty() {
+            return DEFAULT_RENDER_INTERVAL_US;
+        }
+        let mut gaps: Vec<u64> = self.render_gaps_us.iter().copied().collect();
+        gaps.sort_unstable();
+        gaps[gaps.len() / 2]
+    }
+
+    fn lane_due(
+        &self,
+        last: Option<LanePublication>,
+        total_receivers: usize,
+        tracked_receivers: usize,
+        tracked_max_fps: u32,
+    ) -> bool {
+        if total_receivers == 0 {
+            return false;
+        }
+        let render_interval_us = self.render_interval_us();
+        should_publish_preview_frame(
+            PreviewClock {
+                frames: self.render_frames,
+                elapsed_us: self.render_time_us,
+                render_interval_us,
+                latest_gap_us: self
+                    .latest_render_gap_us
+                    .map_or(render_interval_us, |gap| gap.min(render_interval_us)),
+            },
+            last,
+            preview_publish_fps_limit(total_receivers, tracked_receivers, tracked_max_fps),
+        )
+    }
+
+    const fn publication(&self) -> LanePublication {
+        LanePublication {
+            frames: self.render_frames,
+            elapsed_us: self.render_time_us,
+        }
+    }
+
     pub(crate) fn observe_audio_publication(&mut self, published: bool) {
         self.audio_publication_observed |= published;
     }
@@ -957,110 +1083,100 @@ impl PublicationCadenceState {
 
     pub(crate) fn canvas_preview_due(
         &self,
-        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
     ) -> bool {
-        preview_publication_due(
-            elapsed_ms,
-            self.last_canvas_preview_publish_ms,
+        self.lane_due(
+            self.last_canvas_preview_publish,
             total_receivers,
             tracked_receivers,
             tracked_max_fps,
         )
     }
 
-    pub(crate) fn record_canvas_publication(&mut self, elapsed_ms: u64) {
-        self.last_canvas_preview_publish_ms = Some(elapsed_ms);
+    pub(crate) fn record_canvas_publication(&mut self) {
+        self.last_canvas_preview_publish = Some(self.publication());
     }
 
     pub(crate) fn scene_canvas_due(
         &self,
-        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
     ) -> bool {
-        preview_publication_due(
-            elapsed_ms,
-            self.last_scene_canvas_publish_ms,
+        self.lane_due(
+            self.last_scene_canvas_publish,
             total_receivers,
             tracked_receivers,
             tracked_max_fps,
         )
     }
 
-    pub(crate) fn record_scene_canvas_publication(&mut self, elapsed_ms: u64) {
-        self.last_scene_canvas_publish_ms = Some(elapsed_ms);
+    pub(crate) fn record_scene_canvas_publication(&mut self) {
+        self.last_scene_canvas_publish = Some(self.publication());
     }
 
     /// Make the `canvas` and scene canvas previews due on the current frame,
     /// whatever their cadence. A lane nobody watches still publishes
     /// nothing.
     pub(crate) fn make_scene_previews_due(&mut self) {
-        self.last_canvas_preview_publish_ms = None;
-        self.last_scene_canvas_publish_ms = None;
+        self.last_canvas_preview_publish = None;
+        self.last_scene_canvas_publish = None;
     }
 
     pub(crate) fn screen_canvas_preview_due(
         &self,
-        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
     ) -> bool {
-        preview_publication_due(
-            elapsed_ms,
-            self.last_screen_canvas_preview_publish_ms,
+        self.lane_due(
+            self.last_screen_canvas_preview_publish,
             total_receivers,
             tracked_receivers,
             tracked_max_fps,
         )
     }
 
-    pub(crate) fn record_screen_canvas_publication(&mut self, elapsed_ms: u64) {
-        self.last_screen_canvas_preview_publish_ms = Some(elapsed_ms);
+    pub(crate) fn record_screen_canvas_publication(&mut self) {
+        self.last_screen_canvas_preview_publish = Some(self.publication());
     }
 
     pub(crate) fn web_viewport_preview_due(
         &self,
-        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
     ) -> bool {
-        preview_publication_due(
-            elapsed_ms,
-            self.last_web_viewport_preview_publish_ms,
+        self.lane_due(
+            self.last_web_viewport_preview_publish,
             total_receivers,
             tracked_receivers,
             tracked_max_fps,
         )
     }
 
-    pub(crate) fn record_web_viewport_publication(&mut self, elapsed_ms: u64) {
-        self.last_web_viewport_preview_publish_ms = Some(elapsed_ms);
+    pub(crate) fn record_web_viewport_publication(&mut self) {
+        self.last_web_viewport_preview_publish = Some(self.publication());
     }
 
     pub(crate) fn zone_preview_due(
         &self,
-        elapsed_ms: u64,
         total_receivers: usize,
         tracked_receivers: usize,
         tracked_max_fps: u32,
     ) -> bool {
-        preview_publication_due(
-            elapsed_ms,
-            self.last_zone_preview_publish_ms,
+        self.lane_due(
+            self.last_zone_preview_publish,
             total_receivers,
             tracked_receivers,
             tracked_max_fps,
         )
     }
 
-    pub(crate) fn record_zone_preview_publication(&mut self, elapsed_ms: u64) {
-        self.last_zone_preview_publish_ms = Some(elapsed_ms);
+    pub(crate) fn record_zone_preview_publication(&mut self) {
+        self.last_zone_preview_publish = Some(self.publication());
     }
 }
 
@@ -1195,41 +1311,52 @@ fn preview_publish_fps_limit(
     (total_receivers > 0 && total_receivers == tracked_receivers).then_some(tracked_max_fps.max(1))
 }
 
+/// The render loop as a preview lane sees it this frame.
+#[derive(Debug, Clone, Copy)]
+struct PreviewClock {
+    frames: u64,
+    elapsed_us: u64,
+    render_interval_us: u64,
+    /// The gap before this frame, capped at the interval estimate.
+    latest_gap_us: u64,
+}
+
+/// Render frames per publication: the smallest whole stride that keeps a
+/// lane at its target or under it by no more than [`PREVIEW_STRIDE_SLACK`]
+/// of a render frame.
+fn preview_stride(target_interval_us: u64, render_interval_us: u64) -> u64 {
+    let ratio = target_interval_us as f64 / render_interval_us.max(1) as f64;
+    // A hair under the slack, so a ratio of exactly 1.1 rounds down.
+    ((ratio - PREVIEW_STRIDE_SLACK - 1e-9).ceil() as u64).max(1)
+}
+
 fn should_publish_preview_frame(
-    elapsed_ms: u64,
-    last_publish_ms: Option<u64>,
+    clock: PreviewClock,
+    last: Option<LanePublication>,
     target_fps: Option<u32>,
 ) -> bool {
     let Some(target_fps) = target_fps else {
         return true;
     };
-    // Publish once per 1/fps slot of the uptime clock rather than once per
-    // whole-millisecond interval. A 30 fps target rounded up to a 34 ms
-    // interval refused every other frame of a 33 ms render cadence, so the
-    // preview ran at half rate; slots deliver the target rate on average and
-    // absorb render jitter in either direction. A fixed-point slot index
-    // keeps the comparison exact past u32 milliseconds of uptime.
-    let target_fps = u128::from(target_fps.max(1));
-    let slot = |at_ms: u64| u128::from(at_ms) * target_fps / 1000;
-    last_publish_ms.is_none_or(|last_sent| slot(elapsed_ms) > slot(last_sent))
-}
-
-fn preview_publication_due(
-    elapsed_ms: u64,
-    last_publish_ms: Option<u64>,
-    total_receivers: usize,
-    tracked_receivers: usize,
-    tracked_max_fps: u32,
-) -> bool {
-    if total_receivers == 0 {
-        return false;
-    }
-
-    should_publish_preview_frame(
-        elapsed_ms,
-        last_publish_ms,
-        preview_publish_fps_limit(total_receivers, tracked_receivers, tracked_max_fps),
-    )
+    let Some(last) = last else {
+        return true;
+    };
+    // A clock that ran backwards (a restarted loop) publishes at once.
+    let Some(waited_us) = clock.elapsed_us.checked_sub(last.elapsed_us) else {
+        return true;
+    };
+    // Whole-millisecond slots of the uptime clock aliased against the
+    // render cadence: a 60 fps loop gated to 30 fps published at 50, 33 and
+    // 17 ms intervals, which every viewer saw as judder while the average
+    // rate read 30 fps. Counting render frames keeps every publication a
+    // whole number of frames apart however the frames jitter. The time
+    // floor, the target interval less half the frame just rendered, holds a
+    // lane through a tier change, when frames rendered at the old rate
+    // would otherwise count at the new one.
+    let target_interval_us = 1_000_000 / u64::from(target_fps.max(1));
+    let frames = clock.frames.saturating_sub(last.frames);
+    frames >= preview_stride(target_interval_us, clock.render_interval_us)
+        && waited_us.saturating_add(clock.latest_gap_us / 2) > target_interval_us
 }
 
 pub(crate) struct FrameLoopState {
@@ -2481,8 +2608,8 @@ mod tests {
 
     use super::{
         EffectDeltaClock, FrameClockState, FrameInputs, InputRouteCache, OutputFrameSource,
-        OutputReuseKey, OutputReuseState, PipelineRuntime, authoritative_input_demand,
-        should_publish_preview_frame,
+        OutputReuseKey, OutputReuseState, PipelineRuntime, PublicationCadenceState,
+        authoritative_input_demand,
     };
     use super::{ScreenNativeDemandState, ScreenNativeUnavailable};
     use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
@@ -3473,58 +3600,181 @@ mod tests {
         assert_eq!(clock.dependency_key, None);
     }
 
-    #[test]
-    fn preview_cadence_remains_live_after_u32_millisecond_uptime() {
-        // A slot boundary sits at every multiple of 1000/60 ms; start the
-        // clock on one so the two assertions straddle exactly one slot.
-        let last_publish_ms = (u64::from(u32::MAX) + 1_000) / 50 * 50;
+    /// Publish intervals, in microseconds, of a lane at `target_fps` on a
+    /// loop whose frames start `gap_at(frame)` microseconds after the
+    /// frame before, over `frames`.
+    fn published_intervals(gap_at: impl Fn(u64) -> u64, target_fps: u32, frames: u64) -> Vec<u64> {
+        let mut cadence = PublicationCadenceState::default();
+        let mut published_at = Vec::new();
+        let mut now_us = 0_u64;
+        for frame in 0..frames {
+            if frame > 0 {
+                now_us += gap_at(frame);
+            }
+            cadence.begin_render_frame(now_us);
+            if cadence.canvas_preview_due(1, 1, target_fps) {
+                cadence.record_canvas_publication();
+                published_at.push(now_us);
+            }
+        }
+        published_at
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect()
+    }
 
-        assert!(!should_publish_preview_frame(
-            last_publish_ms + 15,
-            Some(last_publish_ms),
-            Some(60),
-        ));
-        assert!(should_publish_preview_frame(
-            last_publish_ms + 17,
-            Some(last_publish_ms),
-            Some(60),
-        ));
+    const fn every(fps: u64) -> impl Fn(u64) -> u64 {
+        move |_| 1_000_000 / fps
     }
 
     #[test]
-    fn preview_cadence_keeps_a_30_fps_render_loop_at_30_fps() {
-        // Frames land every 33 ms, as a 30 fps render loop measured in whole
-        // milliseconds does. The old 34 ms interval gate refused every other
-        // one; slots publish all but the occasional frame that shares a slot
-        // with its predecessor.
-        let mut last = None;
-        let mut published = 0;
-        for frame in 0..300_u64 {
-            let elapsed = frame * 33;
-            if should_publish_preview_frame(elapsed, last, Some(30)) {
-                published += 1;
-                last = Some(elapsed);
+    fn preview_cadence_publishes_at_one_even_interval() {
+        // The whole-millisecond slot gate published a 60 fps loop at 30 fps
+        // as 50, 33 and 17 ms gaps, and a 45 fps loop as 22 and 44 ms gaps.
+        for (render_fps, target_fps, expected_us) in [
+            (60, 30, 33_332),
+            (60, 60, 16_666),
+            (45, 30, 44_444),
+            (30, 30, 33_333),
+            (60, 24, 49_998),
+            (144, 30, 34_720),
+        ] {
+            let intervals = published_intervals(every(render_fps), target_fps, 600);
+            assert!(!intervals.is_empty());
+            let (min, max) = (
+                *intervals.iter().min().expect("intervals"),
+                *intervals.iter().max().expect("intervals"),
+            );
+            assert_eq!(
+                (min, max),
+                (expected_us, expected_us),
+                "{render_fps} fps at a {target_fps} fps target"
+            );
+        }
+    }
+
+    #[test]
+    fn render_jitter_keeps_a_whole_number_of_frames_per_publication() {
+        // A 60 fps loop whose frames start up to 3 ms early or late still
+        // publishes every second frame at a 30 fps target.
+        let jitter = [0_i64, 3_000, -2_500, 1_500, -3_000, 2_000];
+        let mut cadence = PublicationCadenceState::default();
+        let mut published = Vec::new();
+        for frame in 0..600_i64 {
+            let at = frame * 16_667 + jitter[(frame % 6) as usize];
+            cadence.begin_render_frame(u64::try_from(at.max(0)).expect("time"));
+            if cadence.canvas_preview_due(1, 1, 30) {
+                cadence.record_canvas_publication();
+                published.push(frame);
             }
         }
         assert!(
-            (290..=300).contains(&published),
-            "published {published} of 300"
+            published.windows(2).all(|pair| pair[1] - pair[0] == 2),
+            "{published:?}"
         );
     }
 
     #[test]
-    fn preview_cadence_caps_a_fast_render_loop_at_the_target() {
-        // A 60 fps loop against a 2 fps target publishes twice a second.
-        let mut last = None;
-        let mut published = 0;
-        for frame in 0..600_u64 {
-            let elapsed = frame * 1000 / 60;
-            if should_publish_preview_frame(elapsed, last, Some(2)) {
-                published += 1;
-                last = Some(elapsed);
+    fn render_jitter_at_the_render_rate_keeps_every_frame() {
+        // A 60 fps receiver on a 60 fps loop whose frames alternate 3 ms late
+        // and on time: every frame goes out, not every second one.
+        let gap = |frame: u64| if frame % 2 == 1 { 19_667 } else { 13_667 };
+        let intervals = published_intervals(gap, 60, 600);
+        assert_eq!(intervals.len(), 599);
+    }
+
+    #[test]
+    fn preview_cadence_never_exceeds_the_target() {
+        // Within a tenth of a render frame, the slack that keeps a loop just
+        // under its target from halving.
+        for render_fps in [10, 20, 30, 45, 60, 120, 144] {
+            for target_fps in [1, 2, 10, 15, 24, 30, 45, 60] {
+                let intervals = published_intervals(every(render_fps), target_fps, 1_200);
+                let floor_us = 1_000_000 / u64::from(target_fps);
+                let slack_us = 1_000_000 / render_fps / 10;
+                assert!(
+                    intervals.iter().all(|&gap| gap + slack_us >= floor_us),
+                    "{render_fps} fps at {target_fps} fps published faster than the target"
+                );
             }
         }
-        assert_eq!(published, 20);
+    }
+
+    #[test]
+    fn a_loop_slower_than_its_tier_keeps_every_frame_it_renders() {
+        // Frames that overrun a 60 fps tier come every 31 ms; a 30 fps lane
+        // takes each of them rather than every second one.
+        let intervals = published_intervals(|_| 31_000, 30, 120);
+        assert!(intervals.iter().all(|&gap| gap == 31_000), "{intervals:?}");
+    }
+
+    #[test]
+    fn a_tier_change_keeps_the_interval_already_waited() {
+        // A 1 fps lane through a drop from 60 to 30 fps, and a 10 fps lane
+        // through a climb from 10 to 20 fps.
+        let down = published_intervals(|frame| if frame < 30 { 16_667 } else { 33_333 }, 1, 120);
+        assert!(!down.is_empty());
+        assert!(down.iter().all(|&gap| gap >= 875_000), "{down:?}");
+        let up = published_intervals(|frame| if frame < 10 { 100_000 } else { 50_000 }, 10, 60);
+        assert!(!up.is_empty());
+        assert!(up.iter().all(|&gap| gap == 100_000), "{up:?}");
+    }
+
+    #[test]
+    fn a_tier_climb_never_publishes_under_the_target_interval() {
+        // A 30 fps lane on a 30 fps loop that climbs to 45 fps: no two
+        // publications closer than the lane's interval while the interval
+        // estimate catches up.
+        let intervals =
+            published_intervals(|frame| if frame < 30 { 33_333 } else { 22_222 }, 30, 120);
+        assert!(intervals.iter().all(|&gap| gap >= 33_333), "{intervals:?}");
+    }
+
+    #[test]
+    fn a_loop_that_starts_overrunning_settles_on_every_frame() {
+        // Warm at 60 fps, then frames overrun to 30,303 us: once the estimate
+        // has caught up, a 30 fps lane takes every frame.
+        let intervals =
+            published_intervals(|frame| if frame < 60 { 16_667 } else { 30_303 }, 30, 240);
+        let settled = &intervals[intervals.len() - 60..];
+        assert!(settled.iter().all(|&gap| gap == 30_303), "{settled:?}");
+    }
+
+    #[test]
+    fn pauses_stay_out_of_the_interval_estimate() {
+        // A 60 fps loop that idles for half a second and comes back: the 30
+        // fps lane keeps every second frame rather than taking every one.
+        let intervals =
+            published_intervals(|frame| if frame == 60 { 500_000 } else { 16_667 }, 30, 180);
+        let after = &intervals[intervals.len() - 50..];
+        assert!(after.iter().all(|&gap| gap == 33_334), "{after:?}");
+    }
+
+    #[test]
+    fn huge_gaps_never_overflow() {
+        let mut cadence = PublicationCadenceState::default();
+        cadence.begin_render_frame(0);
+        cadence.record_canvas_publication();
+        cadence.begin_render_frame(u64::MAX - 1);
+        // One frame after a pause is not a 1 fps lane's whole stride; what
+        // matters is that the arithmetic holds.
+        assert!(!cadence.canvas_preview_due(1, 1, 1));
+    }
+
+    #[test]
+    fn a_restarted_loop_clock_publishes_at_once() {
+        // The clock runs backwards relative to the frame before, not only
+        // relative to the last publication.
+        let mut cadence = PublicationCadenceState::default();
+        cadence.begin_render_frame(0);
+        cadence.record_canvas_publication();
+        cadence.begin_render_frame(16_667);
+        assert!(!cadence.canvas_preview_due(1, 1, 1));
+        cadence.begin_render_frame(10_000);
+        assert!(cadence.canvas_preview_due(1, 1, 1));
+        // Untracked receivers take every frame.
+        cadence.record_canvas_publication();
+        assert!(cadence.canvas_preview_due(2, 1, 30));
     }
 
     #[test]

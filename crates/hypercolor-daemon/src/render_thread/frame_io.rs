@@ -205,7 +205,6 @@ pub(crate) fn publish_frame_updates(
         display_zone_frames,
         zone_canvases,
         frame_number,
-        elapsed_ms,
         timestamp_ms,
         &mut publication_full_frame_copy,
     );
@@ -223,7 +222,6 @@ pub(crate) fn publish_frame_updates(
             };
             changed
                 && publication_cadence.scene_canvas_due(
-                    elapsed_ms,
                     scene_canvas_receivers,
                     tracked_scene_canvas_receivers,
                     state.preview_runtime.scene_canvas_demand().max_fps,
@@ -239,7 +237,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_scene_canvas_publication(elapsed_ms);
+            publication_cadence.record_scene_canvas_publication();
             state
                 .event_bus
                 .scene_canvas_lane()
@@ -271,7 +269,6 @@ pub(crate) fn publish_frame_updates(
             };
             changed
                 && publication_cadence.canvas_preview_due(
-                    elapsed_ms,
                     canvas_receivers,
                     tracked_canvas_receivers,
                     state.preview_runtime.tracked_canvas_demand().max_fps,
@@ -298,7 +295,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_canvas_publication(elapsed_ms);
+            publication_cadence.record_canvas_publication();
             state.event_bus.canvas_lane().send_replace(canvas_frame);
         }
     }
@@ -318,7 +315,6 @@ pub(crate) fn publish_frame_updates(
             };
             changed
                 && publication_cadence.screen_canvas_preview_due(
-                    elapsed_ms,
                     screen_canvas_receivers,
                     tracked_screen_canvas_receivers,
                     state.preview_runtime.screen_canvas_demand().max_fps,
@@ -330,7 +326,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_screen_canvas_publication(elapsed_ms);
+            publication_cadence.record_screen_canvas_publication();
             state
                 .event_bus
                 .screen_canvas_lane()
@@ -352,7 +348,6 @@ pub(crate) fn publish_frame_updates(
             };
             changed
                 && publication_cadence.web_viewport_preview_due(
-                    elapsed_ms,
                     web_viewport_canvas_receivers,
                     tracked_receivers,
                     state.preview_runtime.web_viewport_canvas_demand().max_fps,
@@ -364,7 +359,7 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_web_viewport_publication(elapsed_ms);
+            publication_cadence.record_web_viewport_publication();
             let _ = state
                 .event_bus
                 .web_viewport_canvas_lane()
@@ -397,21 +392,19 @@ fn publish_zone_previews(
     display_zone_frames: &[(ZoneId, DisplayZoneCanvasFrame)],
     zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
-    elapsed_ms: u64,
     timestamp_ms: u32,
     publication_full_frame_copy: &mut FullFrameCopyMetrics,
 ) {
     let zone_preview_receivers = state.event_bus.zone_preview_receiver_count();
     let Some(scene_id) = scene_id else {
-        clear_zone_previews(state, publication_cadence, elapsed_ms);
+        clear_zone_previews(state, publication_cadence);
         return;
     };
     if zone_preview_receivers == 0 {
-        clear_zone_previews(state, publication_cadence, elapsed_ms);
+        clear_zone_previews(state, publication_cadence);
         return;
     }
     if !publication_cadence.zone_preview_due(
-        elapsed_ms,
         zone_preview_receivers,
         state.preview_runtime.zone_preview_receiver_count(),
         state.preview_runtime.zone_preview_demand().max_fps,
@@ -429,7 +422,7 @@ fn publish_zone_previews(
         publication_full_frame_copy,
     );
     if zone_previews.is_empty() {
-        clear_zone_previews(state, publication_cadence, elapsed_ms);
+        clear_zone_previews(state, publication_cadence);
         return;
     }
 
@@ -441,7 +434,7 @@ fn publish_zone_previews(
         return;
     }
 
-    publication_cadence.record_zone_preview_publication(elapsed_ms);
+    publication_cadence.record_zone_preview_publication();
     let published = u64::try_from(zone_previews.len()).unwrap_or(u64::MAX);
     state
         .event_bus
@@ -452,12 +445,11 @@ fn publish_zone_previews(
 fn clear_zone_previews(
     state: &RenderThreadState,
     publication_cadence: &mut PublicationCadenceState,
-    elapsed_ms: u64,
 ) {
     if state.event_bus.zone_preview_lane().borrow().is_empty() {
         return;
     }
-    publication_cadence.record_zone_preview_publication(elapsed_ms);
+    publication_cadence.record_zone_preview_publication();
     state
         .event_bus
         .zone_preview_lane()
@@ -1328,6 +1320,7 @@ mod tests {
         let mut recycled_frame = FrameData::empty();
         let mut cadence = PublicationCadenceState::default();
 
+        cadence.begin_render_frame(0);
         publish_frame_updates(
             &state,
             &mut cadence,
@@ -1361,6 +1354,7 @@ mod tests {
         );
         let _ = scene_rx.borrow_and_update();
 
+        cadence.begin_render_frame(16_667);
         publish_frame_updates(
             &state,
             &mut cadence,
@@ -1403,6 +1397,10 @@ mod tests {
 
         let third_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 9, 1_000);
         let third_identity = third_surface.storage_identity();
+        // A second of 60 fps frames later, the 1 fps lane is due again.
+        for frame in 2..=60 {
+            cadence.begin_render_frame(frame * 16_667);
+        }
         publish_frame_updates(
             &state,
             &mut cadence,
