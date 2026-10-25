@@ -5,6 +5,58 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-10-25
+
+Zone-targeted previews land across the daemon, web UI, TUI, and Python client: multi-zone scenes now preview one zone at a time, and the daemon does preview work only for zones a subscriber actually selects. The release also hardens the render thread against failure churn and pins every Linux CI job to the Ubuntu 24.04 release baseline.
+
+### Added
+
+- ✨ Add `zones` to the `zone_preview` topic config so subscribers name the zones they want, or `["all"]` (defaults to `["all"]`, so existing clients are unaffected) (`9486f9a`, `d9a120b`)
+- ✨ Add a zone variant to `interactive_preview` config `target` (`{"zone": "<uuid>"}`) so an interactive lane can render and receive pointer input in a single zone's coordinates (`04df246`, `a0226a8`)
+- ✨ Follow one zone in the web UI main preview, picked from the cabinet's zone chips, with the sidebar player steered at the zone the preview shows (`bb61f73`, `20c45fc`, `fa85341`)
+- ✨ Preview one zone at a time in the TUI for multi-zone scenes, name it in the dashboard, browser, and fullscreen labels, and cycle it with `[` and `]` (`a7a30bd`, `b96d467`, `9615e9b`)
+- ✨ Accept a zone target for interactive previews in the Python client's `websocket.py`
+- ✨ Add `FailureLog<K>` in `render_thread/failure_log.rs` to deduplicate persistent render failures by error text and outcome
+
+### Changed
+
+- ⚡️ Stage GPU scaled readbacks and copy CPU zone frames only for selected zones; a zone nobody previews costs no preview work (`1ae0f6c`)
+- 🔄 Widen the Python interactive preview `target` parameter to `str | Mapping[str, str]`; string callers keep working unchanged
+- ♻️ Open zone preview receivers with their zones and demand so the daemon tracks the union of subscriber selections (`d56d8dd`, `7a08704`)
+- 👷 Pin every Linux CI and release job to `ubuntu-24.04` instead of `ubuntu-latest`, matching the Docker glibc 2.39 baseline, and enforce it with a workflow test (`5002688`)
+- 👷 Key Linux Rust build caches per runner image via `runnerKey()` so a newer image's objects cannot leak into baseline binaries (`f2af443`)
+- 📝 Trim stale macOS manual-release detail from the README and point curl installs at the udev rules commands (`39cc73c`, `9e7a705`)
+
+### Fixed
+
+- 🐛 Darken zone previews when a pause or stop holds output, instead of leaving the last live frame on screen while LEDs sit dark (`1df6efd`, `7d610fd`, `dae5b80`)
+- 🐛 Publish sleep, idle-entry, and release static frames to zone previews outside the preview cadence, since a hold never gives a skipped publication a second chance (`97340b0`, `78cdb8b`, `e8a4fe5`)
+- 🐛 End a frame in flight on a stop's black frame so an in-flight render cannot republish live content after the lights go out (`b7db7e4`)
+- 🐛 Keep a memberless zone from blacking out GPU scenes: zones and outputs without affine placements now project nothing rather than failing admission (`d0bef41`)
+- 🐛 Admit CPU scene backing on demand when a GPU-resident scene loses zone textures, replacing the hard "CPU scene composition was not admitted" failure (`b2ff6da`)
+- 🐛 Keep zone resources, effect errors, and layer health through a failed scene frame, stopping per-frame teardown and duplicate `LayerHealthChanged` events (`a394669`, `04ae7cc`)
+- 🐛 Log a persistent scene render or projection composition failure once, then report recovery with the failed frame count, instead of warning every frame (`0effebc`, `f0e5b74`)
+- 🐛 Validate every layer's controls before building effect renderers, so a rejected admission builds zero renderers (`a904226`)
+- 🐛 Capture thumbnails only from frames the active effect owns (`58ef219`)
+- 🐛 Hold the web UI main preview until its zone is known, keep the zone through a failed scene read, and fall back to the scene canvas when a daemon cannot pick zones (`dc85f8f`, `2c6ab82`, `f869e78`)
+- 🐛 Keep interactive previews open through other subscribe acks and address refusals (including refused unsubscribes) to the preview that asked (`b6ca5b2`, `ed9ea83`, `702d441`)
+- 🐛 Treat an in-flight GPU readback as a pending frame and fail a scaled readback whose GPU composition fell back (`f24f46b`, `9bf42a4`)
+
+### Security
+
+- 🔒 Move `tokio` 1.54.0 → 1.54.1 for **RUSTSEC-2026-0384** (timer entry race between `Interval::poll_tick` and the multi-threaded time driver; 1.54.0 is yanked) (`016f569`)
+- 🔒 Move `ctutils` 0.4.2 → 0.4.5 for **RUSTSEC-2026-0385** (branching on secret values in mask generation and u128 comparison) (`016f569`)
+- 🔒 Move `crypto-bigint` 0.7.5 → 0.7.6 for **RUSTSEC-2026-0387** (secret-dependent branches in constant-time arithmetic) (`e7865a2`)
+- 🔒 Waive **RUSTSEC-2026-0387** for `crypto-bigint` 0.5.5 in `deny.toml`: it has no patched release and reaches the tree only via `webrtc-dtls` 0.12, where the Hue driver restricts DTLS to `TLS_PSK_WITH_AES_128_GCM_SHA256`, so no ECDHE or ECDSA arithmetic runs on secrets. Drop the waiver once `webrtc-dtls` adopts `elliptic-curve` 0.14
+
+### Metrics
+
+- Total Commits: 76
+- Files Changed: 99
+- Insertions: +8,728
+- Deletions: -939
+<!-- -------------------------------------------------------------- -->
+
 ## [0.7.2] - 2026-10-21
 
 Ableton Push 2 becomes a full input surface, the render loop now parks when nothing consumes frames, and the render pipeline survives GPU failures by restarting in-process instead of taking the daemon down with it. Fresh installs start on a curated scene, and the default render target moves to 60 fps.
