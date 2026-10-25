@@ -432,12 +432,16 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
     }
 }
 
-/// The Studio Stage's zone-canvas actions — Save and Revert plus the
+/// The Studio Stage's zone-canvas actions — Fit, Save, and Revert plus the
 /// dirty and has-layout flags. Provided by [`ZoneLayoutProvider`]; the
 /// Stage header consumes it. Undo / redo and the editor write handle come
 /// from [`LayoutEditorContext`].
 #[derive(Clone, Copy)]
 pub(crate) struct ZoneCanvasActions {
+    /// Scale and center every member of the zone to fill its canvas.
+    pub fit: Callback<()>,
+    /// Whether the zone has members to fit.
+    pub can_fit: Signal<bool>,
     /// Persist the selected zone's layout through the per-zone API.
     pub save: Callback<()>,
     /// Restore the canvas to the last saved state.
@@ -804,7 +808,30 @@ pub(crate) fn ZoneLayoutProvider(
         toasts::toast_info("Zone layout reverted");
     });
 
+    // One edit: the whole group scales and recenters together, so undo
+    // steps back over the Fit in one go.
+    let fit = Callback::new(move |()| {
+        let mut fitted = false;
+        set_layout.update(|current| {
+            if let Some(layout) = current.as_mut() {
+                let canvas = (layout.canvas_width, layout.canvas_height);
+                fitted = crate::pages::studio::placement::fit_outputs(&mut layout.zones, canvas);
+            }
+        });
+        if fitted {
+            set_layout.set_dirty.set(true);
+        }
+    });
+
     provide_context(ZoneCanvasActions {
+        fit,
+        can_fit: Signal::derive(move || {
+            layout.with(|current| {
+                current
+                    .as_ref()
+                    .is_some_and(|layout| !layout.zones.is_empty())
+            })
+        }),
         save,
         revert,
         is_dirty,

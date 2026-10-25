@@ -313,7 +313,7 @@ pub fn Stage() -> impl IntoView {
     }
 }
 
-/// The Light Stage header's zone-canvas controls — undo / redo and
+/// The Light Stage header's zone-canvas controls — undo / redo, Fit, and
 /// Revert / Save for the selected zone's layout. Save doubles as the
 /// dirty indicator. Reads the [`LayoutEditorContext`] and
 /// [`ZoneCanvasActions`] a `ZoneLayoutProvider` mounts on a Studio
@@ -330,6 +330,8 @@ fn ZoneCanvasBar() -> impl IntoView {
     let has_layout = actions.has_layout;
     let save = actions.save;
     let revert = actions.revert;
+    let fit = actions.fit;
+    let can_fit = actions.can_fit;
 
     view! {
         <Show when=move || has_layout.get()>
@@ -351,6 +353,16 @@ fn ZoneCanvasBar() -> impl IntoView {
                     disabled=move || !can_redo.get()
                 >
                     <Icon icon=LuRedo2 width="14px" height="14px" />
+                </button>
+                <button
+                    type="button"
+                    class="flex items-center gap-1 rounded-md border border-edge-subtle px-2 py-1 text-[11px] font-medium text-fg-secondary transition-colors hover:bg-surface-hover disabled:opacity-40 btn-press"
+                    title="Fit every output to the canvas"
+                    on:click=move |_| fit.run(())
+                    disabled=move || !can_fit.get() || history.busy.get()
+                >
+                    <Icon icon=LuMaximize width="12px" height="12px" />
+                    "Fit"
                 </button>
 
                 <div class="mx-0.5 h-5 w-px bg-edge-subtle/40" />
