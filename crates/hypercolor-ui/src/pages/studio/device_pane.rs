@@ -78,6 +78,7 @@ pub fn reveal_pane_zone(studio: StudioContext, zone_id: &str) {
 #[component]
 pub fn DevicePane() -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let devices = expect_context::<DevicesContext>();
     let ws = expect_context::<WsContext>();
     let search = RwSignal::new(String::new());
@@ -212,7 +213,12 @@ pub fn DevicePane() -> impl IntoView {
     });
 
     view! {
-        <div class="flex h-full flex-col border-r border-edge-subtle/70 bg-surface-raised/40">
+        // Touch drags start here, so the pane listens for touchmove from
+        // a touch's first move; see `DragController::on_touch_move`.
+        <div
+            class="flex h-full flex-col border-r border-edge-subtle/70 bg-surface-raised/40"
+            on:touchmove=move |ev| drag.on_touch_move(&ev)
+        >
             <PaneSearch search=search on_screens=on_screens />
             <div class="scrollbar-none flex-1 overflow-y-auto px-3 pb-3" data-pane-scroll="">
                 {move || {

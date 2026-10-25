@@ -199,6 +199,14 @@ fn move_into(
         let mut arriving = Vec::new();
         let mut hints = arrival_placement(studio, zone_id, device.as_ref(), &mut arriving);
         let segments = payload.segments.clone();
+        // A channel brings only its own segment, so only its hint counts.
+        if !segments.is_empty() {
+            hints.retain(|hint| {
+                hint.segment
+                    .as_ref()
+                    .is_some_and(|segment| segments.contains(segment))
+            });
+        }
         // Seeded hints already carry the geometry, so a drop point only
         // moves them; without hints the arrivals are placed once minted.
         let point = point.filter(|point| !center_hints_on(&mut hints, *point));

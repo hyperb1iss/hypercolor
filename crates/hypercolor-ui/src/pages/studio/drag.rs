@@ -139,10 +139,12 @@ pub(crate) struct DragController {
     /// Pixels per frame the pane scrolls while a drag rests near its edge,
     /// and whether the frame loop doing it is running.
     autoscroll: StoredValue<(f64, bool)>,
-    /// The window `touchmove` guard a touch drag installs: non-passive, so
-    /// it can stop the browser panning after the drag's source has left
-    /// the document and its own listeners with it.
-    touch_guard: StoredValue<Option<Closure<dyn FnMut(web_sys::TouchEvent)>>, LocalStorage>,
+    /// The `touchmove` guard a touch press puts on its source, with the
+    /// element it listens on.
+    touch_guard: StoredValue<
+        Option<(web_sys::Element, Closure<dyn FnMut(web_sys::TouchEvent)>)>,
+        LocalStorage,
+    >,
     /// The open "Move to" menu.
     pub menu: RwSignal<Option<MoveMenuAnchor>>,
 }
@@ -278,10 +280,15 @@ impl DragController {
         // Cancelling a mouse press also stops it focusing the source, which
         // keyboard follow-ups like Shift+F10 rely on.
         if let Some(focusable) = element.dyn_ref::<web_sys::HtmlElement>() {
-            let _ = focusable.focus();
+            let options = web_sys::FocusOptions::new();
+            options.set_prevent_scroll(true);
+            let _ = focusable.focus_with_options(&options);
         }
         capture_pointer(&element, ev);
         let touch = ev.pointer_type() == "touch";
+        if touch {
+            self.install_touch_guard(&element);
+        }
         let pending = Pending {
             payload,
             pointer_id,
@@ -363,6 +370,7 @@ impl DragController {
         else {
             return;
         };
+        self.release_touch_guard();
         if !state.dragging {
             return;
         }
@@ -396,22 +404,42 @@ impl DragController {
         }
     }
 
-    /// Hold the page still under a touch drag. Touch events keep
-    /// targeting the element the touch began on, which the pane may have
-    /// removed, so the guard listens on the window, and only while a
-    /// touch drag is live, so it never slows ordinary scrolling.
-    fn install_touch_guard(self) {
-        if self.touch_guard.with_value(Option::is_some) {
-            return;
+    /// The device pane's `touchmove`. A non-passive listener there marks
+    /// the pane as a region whose touches may be cancelled from a touch's
+    /// first move, so a drag that starts with a swipe can hold the page
+    /// still.
+    pub fn on_touch_move(self, ev: &web_sys::TouchEvent) {
+        if self.touch_dragging() && ev.cancelable() {
+            ev.prevent_default();
         }
-        let guard = Closure::<dyn FnMut(web_sys::TouchEvent)>::new(|ev: web_sys::TouchEvent| {
-            if ev.cancelable() {
-                ev.prevent_default();
-            }
-        });
+    }
+
+    fn touch_dragging(self) -> bool {
+        self.gesture
+            .try_with_value(|gesture| {
+                gesture
+                    .current()
+                    .is_some_and(|state| state.touch && state.dragging)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Guard a touch press's own source. Touch events keep targeting the
+    /// element the touch began on, and stop bubbling once the pane removes
+    /// it (a spring-loaded tab rebuilds the pane), so only a listener on
+    /// that element can still hold the page still. The controller owns the
+    /// listener so it outlives the element's component.
+    fn install_touch_guard(self, source: &web_sys::Element) {
+        self.release_touch_guard();
+        let guard =
+            Closure::<dyn FnMut(web_sys::TouchEvent)>::new(move |ev: web_sys::TouchEvent| {
+                if self.touch_dragging() && ev.cancelable() {
+                    ev.prevent_default();
+                }
+            });
         let options = web_sys::AddEventListenerOptions::new();
         options.set_passive(false);
-        if window()
+        if source
             .add_event_listener_with_callback_and_add_event_listener_options(
                 "touchmove",
                 guard.as_ref().unchecked_ref(),
@@ -419,13 +447,13 @@ impl DragController {
             )
             .is_ok()
         {
-            self.touch_guard.set_value(Some(guard));
+            self.touch_guard.set_value(Some((source.clone(), guard)));
         }
     }
 
     fn release_touch_guard(self) {
-        if let Some(guard) = self.touch_guard.try_update_value(Option::take).flatten() {
-            let _ = window()
+        if let Some((source, guard)) = self.touch_guard.try_update_value(Option::take).flatten() {
+            let _ = source
                 .remove_event_listener_with_callback("touchmove", guard.as_ref().unchecked_ref());
         }
     }
@@ -497,21 +525,18 @@ impl DragController {
             return;
         };
         let root: web_sys::Element = (*root).clone().into();
-        let picked = self
+        let payload = self
             .gesture
             .try_update_value(|gesture| {
                 let state = gesture.state_mut(pointer_id)?;
                 state.dragging = true;
                 state.capture = root.clone();
-                Some((state.payload.clone(), state.touch))
+                Some(state.payload.clone())
             })
             .flatten();
-        let Some((payload, touch)) = picked else {
+        let Some(payload) = payload else {
             return;
         };
-        if touch {
-            self.install_touch_guard();
-        }
         let _ = root.set_pointer_capture(pointer_id);
         self.spring.set_value(SpringLoad::default());
         self.payload.set(Some(payload));
