@@ -520,7 +520,7 @@ pub fn ZoneStrip() -> impl IntoView {
                     class=("hover:text-fg-secondary", move || !on_screens.get())
                 >
                     <Show when=move || on_screens.get()>
-                        <span class="pointer-events-none absolute inset-x-2 top-0 h-0.5 rounded-full bg-accent" />
+                        <span class="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent" />
                     </Show>
                     <button
                         type="button"
@@ -779,7 +779,7 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
             class=("opacity-50", move || is_dragged.get())
         >
             <Show when=move || is_active.get()>
-                <span class="pointer-events-none absolute inset-x-2 top-0 h-0.5 rounded-full bg-accent" />
+                <span class="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent" />
             </Show>
             {tab_view}
             <Show when=move || is_active.get() && !renaming.get()>
