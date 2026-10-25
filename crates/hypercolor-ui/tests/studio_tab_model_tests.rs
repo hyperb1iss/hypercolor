@@ -98,14 +98,11 @@ fn deleting_asks_only_when_devices_would_become_unassigned() {
     let keyboard = zone("Keyboard", ZoneRole::Custom, &["k", "k", "m"]);
     assert_eq!(zone_device_count(&keyboard), 2);
     assert_eq!(delete_prompt("Keyboard", 0), None);
-    assert_eq!(
-        delete_prompt("Keyboard", 1).as_deref(),
-        Some("Delete \u{2018}Keyboard\u{2019}? 1 device becomes unassigned.")
-    );
-    assert_eq!(
-        delete_prompt("Keyboard", 2).as_deref(),
-        Some("Delete \u{2018}Keyboard\u{2019}? 2 devices become unassigned.")
-    );
+    let one = delete_prompt("Keyboard", 1).expect("a zone with devices asks first");
+    assert_eq!(one.title, "Delete \u{2018}Keyboard\u{2019}?");
+    assert_eq!(one.detail, "1 device becomes unassigned.");
+    let two = delete_prompt("Keyboard", 2).expect("a zone with devices asks first");
+    assert_eq!(two.detail, "2 devices become unassigned.");
 }
 
 #[test]

@@ -93,19 +93,28 @@ pub fn zone_device_count(zone: &ZoneResource) -> usize {
     seen.len()
 }
 
-/// The question asked before deleting a zone, or `None` when the zone is
-/// empty and deletes straight away (with undo).
+/// The confirmation shown before deleting a zone that holds devices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletePrompt {
+    /// The question: "Delete 'Keyboard'?"
+    pub title: String,
+    /// The consequence: "1 device becomes unassigned."
+    pub detail: String,
+}
+
+/// The confirmation for deleting a zone, or `None` when the zone is empty
+/// and deletes straight away (with undo).
 #[must_use]
-pub fn delete_prompt(zone_name: &str, device_count: usize) -> Option<String> {
-    match device_count {
-        0 => None,
-        1 => Some(format!(
-            "Delete \u{2018}{zone_name}\u{2019}? 1 device becomes unassigned."
-        )),
-        count => Some(format!(
-            "Delete \u{2018}{zone_name}\u{2019}? {count} devices become unassigned."
-        )),
-    }
+pub fn delete_prompt(zone_name: &str, device_count: usize) -> Option<DeletePrompt> {
+    let detail = match device_count {
+        0 => return None,
+        1 => "1 device becomes unassigned.".to_owned(),
+        count => format!("{count} devices become unassigned."),
+    };
+    Some(DeletePrompt {
+        title: format!("Delete \u{2018}{zone_name}\u{2019}?"),
+        detail,
+    })
 }
 
 /// Where a reordered zone lands among the other LED zones.

@@ -21,7 +21,6 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::app::{CapabilitiesContext, WsContext};
-use crate::components::device_pairing_modal::ModalBackdrop;
 use crate::icons::*;
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture, listener_element,
@@ -32,8 +31,9 @@ use crate::ws::messages::zone_has_degraded_layer;
 use super::StudioContext;
 use super::surface::{Surface, SurfaceKind, surfaces_from_zones};
 use super::tab_model::{
-    TabStatus, ZONE_COLOR_PRESETS, deletable, delete_prompt, drag_target, drop_slot, fit_tab_count,
-    next_tab_index, nudge_target, split_overflow, tab_status, tab_status_note, zone_device_count,
+    DeletePrompt, TabStatus, ZONE_COLOR_PRESETS, deletable, delete_prompt, drag_target, drop_slot,
+    fit_tab_count, next_tab_index, nudge_target, split_overflow, tab_status, tab_status_note,
+    zone_device_count,
 };
 use super::undo_notice::UndoNotice;
 use super::zone_controls::{
@@ -283,7 +283,7 @@ pub fn ZoneStrip() -> impl IntoView {
 
     let menu = RwSignal::new(None::<MenuAnchor>);
     let overflow_menu = RwSignal::new(None::<(f64, f64)>);
-    let confirm = RwSignal::new(None::<(String, String)>);
+    let confirm = RwSignal::new(None::<(String, DeletePrompt)>);
     let creating = RwSignal::new(false);
     let notice_seq = StoredValue::new(0_u64);
 
@@ -306,7 +306,10 @@ pub fn ZoneStrip() -> impl IntoView {
                 .or_else(|| ids.get(index + 1))
                 .cloned()
         });
-        studio.history.delete_zone(zone_id, neighbor, on_deleted);
+        studio
+            .history
+            .delete_zone(zone_id, neighbor.clone(), on_deleted);
+        neighbor
     };
     let request_delete = Callback::new(move |zone_id: String| {
         let Some(scene) = studio.active_scene.get_untracked() else {
@@ -332,7 +335,9 @@ pub fn ZoneStrip() -> impl IntoView {
             })
             .unwrap_or_else(|| zone.name.clone());
         match delete_prompt(&name, zone_device_count(zone)) {
-            None => run_delete(zone_id),
+            None => {
+                run_delete(zone_id);
+            }
             Some(prompt) => confirm.set(Some((zone_id, prompt))),
         }
     });
@@ -554,34 +559,10 @@ pub fn ZoneStrip() -> impl IntoView {
         </div>
         <ZoneTabMenu handles=handles />
         <OverflowMenu anchor=overflow_menu hidden_ids=hidden_ids handles=handles />
-        <Show when=move || confirm.get().is_some()>
-            <ModalBackdrop on_close=Callback::new(move |()| confirm.set(None)) label="Delete zone">
-                <h2 class="mb-4 text-sm font-medium text-fg-primary">
-                    {move || confirm.get().map(|(_, prompt)| prompt)}
-                </h2>
-                <div class="flex justify-end gap-2">
-                    <button
-                        type="button"
-                        class="btn-press rounded-lg border border-edge-subtle px-3 py-2 text-xs text-fg-secondary"
-                        on:click=move |_| confirm.set(None)
-                    >
-                        "Keep zone"
-                    </button>
-                    <button
-                        type="button"
-                        class="btn-press rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error"
-                        on:click=move |_| {
-                            if let Some((zone_id, _)) = confirm.get_untracked() {
-                                confirm.set(None);
-                                run_delete(zone_id);
-                            }
-                        }
-                    >
-                        "Delete zone"
-                    </button>
-                </div>
-            </ModalBackdrop>
-        </Show>
+        <DeleteZoneConfirm
+            confirm=confirm
+            on_delete=Callback::new(move |zone_id: String| run_delete(zone_id))
+        />
     }
 }
 
@@ -1159,6 +1140,109 @@ fn ColorSwatches(
                 "No color"
             </button>
         </div>
+    }
+}
+
+/// The confirmation before deleting a zone with devices: an alert dialog
+/// that opens on "Keep zone", keeps the zone on Escape or a backdrop
+/// click, traps Tab between its two choices, and hands focus back to the
+/// strip when it closes. `on_delete` returns the tab that will take the
+/// selection.
+#[component]
+fn DeleteZoneConfirm(
+    confirm: RwSignal<Option<(String, DeletePrompt)>>,
+    on_delete: Callback<String, Option<String>>,
+) -> impl IntoView {
+    let keep_ref = NodeRef::<html::Button>::new();
+    let delete_ref = NodeRef::<html::Button>::new();
+    Effect::new(move |_| {
+        if confirm.with(Option::is_some) {
+            request_animation_frame(move || {
+                if let Some(keep) = keep_ref.get_untracked() {
+                    let _ = keep.focus();
+                }
+            });
+        }
+    });
+    let keep = move || {
+        if let Some((zone_id, _)) = confirm.get_untracked() {
+            confirm.set(None);
+            focus_soon(zone_tab_dom_id(&zone_id));
+        }
+    };
+    let delete = move || {
+        if let Some((zone_id, _)) = confirm.get_untracked() {
+            confirm.set(None);
+            if let Some(next) = on_delete.run(zone_id) {
+                focus_soon(zone_tab_dom_id(&next));
+            }
+        }
+    };
+    let on_keydown = move |ev: web_sys::KeyboardEvent| match ev.key().as_str() {
+        "Escape" => {
+            ev.prevent_default();
+            ev.stop_propagation();
+            keep();
+        }
+        "Tab" => {
+            ev.prevent_default();
+            let on_keep = keep_ref.get_untracked().is_some_and(|keep| {
+                let keep: &web_sys::Element = &keep;
+                document().active_element().as_ref() == Some(keep)
+            });
+            let target = if on_keep {
+                delete_ref.get_untracked()
+            } else {
+                keep_ref.get_untracked()
+            };
+            if let Some(target) = target {
+                let _ = target.focus();
+            }
+        }
+        _ => {}
+    };
+    view! {
+        <Show when=move || confirm.with(Option::is_some)>
+            <Portal>
+                <div class="fixed inset-0 z-[80] grid place-items-center p-4 animate-enter-fade">
+                    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" on:click=move |_| keep() />
+                    <div
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-labelledby="zone-delete-title"
+                        aria-describedby="zone-delete-detail"
+                        class="relative rounded-xl border border-edge-subtle bg-surface-raised p-5 animate-enter-scale"
+                        style="width: min(24rem, calc(100vw - 2rem))"
+                        on:keydown=on_keydown
+                    >
+                        <h2 id="zone-delete-title" class="text-sm font-medium text-fg-primary">
+                            {move || confirm.get().map(|(_, prompt)| prompt.title)}
+                        </h2>
+                        <p id="zone-delete-detail" class="mb-4 mt-1.5 text-xs text-fg-secondary">
+                            {move || confirm.get().map(|(_, prompt)| prompt.detail)}
+                        </p>
+                        <div class="flex justify-end gap-2">
+                            <button
+                                node_ref=keep_ref
+                                type="button"
+                                class="btn-press rounded-lg border border-edge-subtle px-3 py-2 text-xs text-fg-secondary"
+                                on:click=move |_| keep()
+                            >
+                                "Keep zone"
+                            </button>
+                            <button
+                                node_ref=delete_ref
+                                type="button"
+                                class="btn-press rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-xs text-status-error"
+                                on:click=move |_| delete()
+                            >
+                                "Delete zone"
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </Portal>
+        </Show>
     }
 }
 
