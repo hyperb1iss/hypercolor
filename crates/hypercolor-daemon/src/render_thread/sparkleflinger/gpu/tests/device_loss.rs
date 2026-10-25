@@ -43,6 +43,39 @@ fn yuv_display_readback_reports_a_buffer_lost_after_its_map_completed() {
 }
 
 #[test]
+fn rgba_display_readback_reports_a_buffer_lost_after_its_map_completed() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+    let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
+    let GpuDisplayFinalizeDispatch::Pending(mut pending) = compositor
+        .begin_finalize_display_face(&scene, &face, params)
+        .expect("RGBA display finalize should dispatch")
+    else {
+        panic!("a 2x2 RGBA display finalize should be admitted");
+    };
+    compositor.wait_for_gpu_idle();
+    compositor.defer_next_display_finalize_resolve();
+    assert!(
+        compositor
+            .try_finish_pending_display_finalization(&mut pending)
+            .expect("the completed map should resolve")
+            .is_none()
+    );
+    assert!(pending.map_ready(), "the map completes before the loss");
+
+    compositor.lose_device();
+
+    let Err(error) = compositor.try_finish_pending_display_finalization(&mut pending) else {
+        panic!("a readback destroyed after its map must report an error");
+    };
+    assert!(format!("{error:#}").contains("not mapped"), "{error:#}");
+    assert_eq!(compositor.display_finalize_readback_slots_in_use(), 0);
+}
+
+#[test]
 fn surface_readback_reports_a_buffer_lost_after_its_map_completed() {
     let Some(compositor) = super::gpu_test_compositor() else {
         return;

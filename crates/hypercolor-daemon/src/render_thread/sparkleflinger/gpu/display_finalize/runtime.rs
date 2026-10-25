@@ -1,7 +1,7 @@
 #[cfg(test)]
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 #[cfg(test)]
 use hypercolor_core::bus::DisplayYuv420Frame;
 #[cfg(test)]
@@ -328,7 +328,6 @@ impl GpuSparkleFlinger {
         let frame = match self.finish_display_finalize_readback(pending) {
             Ok(frame) => frame,
             Err(error) => {
-                pending.buffer.unmap();
                 self.release_display_finalize_slot(
                     pending.cache_key,
                     pending.surface_generation,
@@ -400,7 +399,6 @@ impl GpuSparkleFlinger {
         let frame = match self.finish_display_finalize_readback(&pending) {
             Ok(frame) => frame,
             Err(error) => {
-                pending.buffer.unmap();
                 self.release_display_finalize_slot(
                     pending.cache_key,
                     pending.surface_generation,
@@ -418,17 +416,22 @@ impl GpuSparkleFlinger {
         Ok(Some(frame))
     }
 
+    /// Read a mapped display finalization back and unmap its buffer, on
+    /// success and on every error.
     fn finish_display_finalize_readback(
         &mut self,
         pending: &PendingGpuDisplayFinalize,
     ) -> Result<GpuDisplayFinalizeFrame> {
         match pending.format {
             GpuDisplayFinalizeFormat::Rgba => {
-                let surfaces = self
+                let Some(surfaces) = self
                     .display_finalize_surfaces
                     .get_mut(&pending.cache_key)
                     .filter(|surfaces| surfaces.generation == pending.surface_generation)
-                    .context("GPU display finalize surfaces changed before RGBA readback")?;
+                else {
+                    pending.buffer.unmap();
+                    anyhow::bail!("GPU display finalize surfaces changed before RGBA readback");
+                };
                 copy_mapped_readback_buffer_into_surface(
                     &pending.buffer,
                     pending.used_bytes,

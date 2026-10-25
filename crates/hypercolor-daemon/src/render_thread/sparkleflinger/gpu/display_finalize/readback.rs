@@ -109,14 +109,20 @@ fn take_display_finalize_readback_ready(pending: &mut PendingGpuDisplayFinalize)
     }
 }
 
+/// Copy a mapped YUV display readback out and unmap its buffer, on success
+/// and on error, the way the shared RGBA readback copy does.
 pub(super) fn finish_yuv420_display_readback(
     pending: &PendingGpuDisplayFinalize,
 ) -> Result<DisplayYuv420Frame> {
     let slice = pending.buffer.slice(..pending.mapped_bytes);
-    let mapped = slice
-        .get_mapped_range()
-        .map_err(super::super::readback::unmapped_readback_error)
-        .context("GPU display finalize YUV readback")?;
+    let mapped = match slice.get_mapped_range() {
+        Ok(mapped) => mapped,
+        Err(error) => {
+            pending.buffer.unmap();
+            return Err(super::super::readback::unmapped_readback_error(error))
+                .context("GPU display finalize YUV readback");
+        }
+    };
     let used_len = usize::try_from(pending.used_bytes).expect("YUV readback should fit usize");
     let mut data = Vec::with_capacity(used_len);
     data.extend_from_slice(&mapped[..used_len]);
