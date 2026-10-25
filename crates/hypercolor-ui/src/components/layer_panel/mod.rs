@@ -161,13 +161,6 @@ pub fn LayerPanel(
             .unwrap_or_default()
     });
 
-    // The Add-layer target scopes worth offering for the current scene.
-    let scopes = Signal::derive(move || {
-        active_scene
-            .get()
-            .map(|scene| available_add_layer_scopes(&scene.zones))
-            .unwrap_or_default()
-    });
     let selected_zone_role = Signal::derive(move || {
         let selected = selected_zone_id.get()?;
         active_scene
@@ -176,6 +169,13 @@ pub fn LayerPanel(
             .into_iter()
             .find(|zone| zone.id.to_string() == selected)
             .map(|zone| zone.role)
+    });
+    // The Add-layer target scopes worth offering for the selected surface.
+    let scopes = Signal::derive(move || {
+        active_scene
+            .get()
+            .map(|scene| available_add_layer_scopes(&scene.zones, selected_zone_role.get()))
+            .unwrap_or_default()
     });
 
     let add_layer = Callback::new(move |(draft, scope): (NewLayerDraft, AddLayerScope)| {
@@ -190,7 +190,7 @@ pub fn LayerPanel(
         };
         let targets = resolve_add_layer_targets(scope, &scene.zones, &zone_id);
         if targets.is_empty() {
-            toasts::toast_error("No target surfaces for that scope");
+            toasts::toast_error("There is nothing to add the layer to");
             return;
         }
         let expected_revision = scene_revision.get_untracked();
@@ -219,13 +219,13 @@ pub fn LayerPanel(
             if failed == 0 {
                 toasts::toast_success(&match applied {
                     1 => "Layer added".to_owned(),
-                    count => format!("Layer added to {count} surfaces"),
+                    count => format!("Layer added to {count} screens"),
                 });
             } else if applied == 0 {
                 toasts::toast_error("Layer add failed");
             } else {
                 toasts::toast_error(&format!(
-                    "Layer added to {applied} surfaces, {failed} failed"
+                    "Layer added to {applied} screens, {failed} failed"
                 ));
             }
         });
