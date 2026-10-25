@@ -1272,6 +1272,11 @@ async fn a_followed_zone_stops_with_its_scene_and_returns_with_it() {
         every_pixel_is(&back, BLUE),
         "the lane picks the zone back up when its scene returns"
     );
+    assert_eq!(
+        lane.snapshot().last_error,
+        None,
+        "the frame that brings the zone back arrives with its absence cleared"
+    );
 }
 
 #[cfg(feature = "wgpu")]

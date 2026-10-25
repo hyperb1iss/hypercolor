@@ -1176,8 +1176,8 @@ impl PreviewLane {
             surface,
             resource_lease: self.resources.clone(),
         });
-        self.frame_tx.send_replace(Some(Arc::clone(&frame)));
-        self.retained_frame = Some(frame);
+        // Telemetry first, so a client woken by the frame reads counters
+        // and an error state that already account for it.
         self.telemetry
             .frames_published
             .fetch_add(1, Ordering::Relaxed);
@@ -1185,6 +1185,8 @@ impl PreviewLane {
             .last_frame_number
             .store(self.frame_number, Ordering::Relaxed);
         self.telemetry.clear_error();
+        self.frame_tx.send_replace(Some(Arc::clone(&frame)));
+        self.retained_frame = Some(frame);
         self.frame_number = self.frame_number.wrapping_add(1);
     }
 }
