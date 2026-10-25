@@ -1217,6 +1217,11 @@ async fn retargeting_to_a_target_with_nothing_to_show_releases_the_old_frame() {
         "the old target's frame is withdrawn"
     );
     assert_eq!(
+        lane.snapshot().last_error.as_deref(),
+        Some("preview zone is not in the active scene"),
+        "the retarget that withdraws the frame says why"
+    );
+    assert_eq!(
         rig.executor.resource_snapshot().used,
         one_lane,
         "only the new target's resources stay reserved"
