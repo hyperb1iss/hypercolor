@@ -30,6 +30,8 @@ pub(super) fn copy_mapped_readback_buffer_into_surface(
     let mapped = match slice.get_mapped_range() {
         Ok(mapped) => mapped,
         Err(error) => {
+            // Unmapping resets the buffer's map state so its slot can map
+            // again; on a destroyed buffer it only raises a validation error.
             buffer.unmap();
             return Err(unmapped_readback_error(error));
         }

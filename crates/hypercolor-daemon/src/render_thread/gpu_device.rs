@@ -326,8 +326,14 @@ pub(crate) fn raise_uncaptured_validation_error(device: &wgpu::Device) {
 /// could have placed the staging memory in host RAM. Without thresholds,
 /// allocations fail only when the driver fails them: buffers and textures
 /// the daemon creates report out-of-memory to the error scopes that admit
-/// canvas, sampling, and screen resources, and only a real driver device
-/// loss ends the device.
+/// canvas, sampling, and screen resources, and the device is lost only on
+/// a driver device loss or a staging allocation the driver itself refuses.
+///
+/// On DX12 this also lets canvas, sampling, and screen admission succeed
+/// past the WDDM budget, where the OS pages resources out, instead of
+/// choosing the CPU fallback early. The device-loss threshold is unset for
+/// the same reason on every backend: WDDM shrinks the budget when other
+/// applications need VRAM, and paging beats losing the compositor.
 fn compositor_instance_descriptor(
     backend_preference: GpuBackendPreference,
 ) -> wgpu::InstanceDescriptor {
