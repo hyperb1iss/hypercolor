@@ -49,6 +49,34 @@ fn journal_interleaves_membership_and_geometry_and_discards_only_redo_branch() {
 }
 
 #[test]
+fn undoing_a_move_returns_an_untouched_output_to_its_recorded_placement() {
+    let scene = scene();
+    let zone = &scene.zones[0];
+    // The move left the output where it sits now; before it, the output
+    // sat at x 0.2 in another zone.
+    let landed = hypercolor_ui::api::zone_outputs(zone).remove(0);
+    let mut original = landed.clone();
+    original.position.x = 0.2;
+    original.size.x = 0.3;
+    let undo = MemberEdit {
+        before: Some(MemberState {
+            zone_id: zone.id,
+            output: landed,
+            index: 0,
+        }),
+        after: Some(MemberState {
+            zone_id: zone.id,
+            output: original,
+            index: 0,
+        }),
+    };
+    let replay = prepare_members_replay(&scene, vec![undo]).expect("same binding");
+    let restored = &replay[0].after.as_ref().expect("after").output;
+    assert_eq!(restored.position.x, 0.2);
+    assert_eq!(restored.size.x, 0.3);
+}
+
+#[test]
 fn membership_replay_preserves_newer_geometry_but_rejects_changed_binding() {
     let scene = scene();
     let zone = &scene.zones[0];

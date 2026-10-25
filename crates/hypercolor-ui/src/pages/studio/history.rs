@@ -9,6 +9,7 @@
 
 use std::collections::HashSet;
 
+use super::placement::Footprint;
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{EditMembersRequest, EditMembersResponse, MemberEdit};
 use leptos::prelude::*;
@@ -773,6 +774,9 @@ async fn patch_zone(zone_id: &str, request: api::zones::PatchZoneRequest) -> boo
 
 /// Resolve live preconditions while retaining unrelated placement edits.
 /// Ownership and binding must still match the operation being reversed.
+/// An output still sitting where the operation left it returns to the
+/// placement the operation recorded (a move lands its outputs per the rig,
+/// so its undo puts them back); one placed since keeps its newer spot.
 pub fn prepare_members_replay(
     scene: &api::SceneDocument,
     changes: Vec<MemberEdit>,
@@ -796,10 +800,15 @@ pub fn prepare_members_replay(
                 {
                     return Err("Output binding changed".into());
                 }
+                let untouched = Footprint::of(&output) == Footprint::of(&before.output);
                 before.output = output.clone();
                 before.index = index;
                 if let Some(after) = change.after.as_mut() {
+                    let recorded = Footprint::of(&after.output);
                     after.output = output;
+                    if untouched {
+                        recorded.apply(&mut after.output);
+                    }
                 }
             }
             Ok(change)
