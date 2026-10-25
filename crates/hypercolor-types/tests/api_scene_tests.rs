@@ -239,6 +239,17 @@ fn zone_color_patches_are_tri_state() {
 }
 
 #[test]
+fn zone_patches_carry_an_optional_move_index() {
+    let moved: PatchZoneRequest =
+        serde_json::from_value(json!({"index": 2})).expect("index decodes");
+    assert_eq!(moved.index, Some(2));
+    let leave: PatchZoneRequest = serde_json::from_value(json!({})).expect("absent decodes");
+    assert_eq!(leave.index, None, "missing leaves the order");
+    let encoded = serde_json::to_value(PatchZoneRequest::default()).expect("encodes");
+    assert_eq!(encoded, json!({}), "an unset index stays off the wire");
+}
+
+#[test]
 fn the_zone_layout_contract_speaks_placements_only() {
     let request: ZoneLayoutRequest = serde_json::from_value(json!({
         "placements": [{

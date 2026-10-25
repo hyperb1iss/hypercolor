@@ -251,6 +251,11 @@ pub struct PatchZoneRequest {
         reason = "the double Option IS the tri-state wire pattern: missing = leave, null = clear, value = set"
     )]
     pub color: Option<Option<String>>,
+    /// Move the zone to this position in the scene's zone order, clamped
+    /// to the last slot. Zone order is Studio's tab order and the paint
+    /// order of the scene preview projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
 }
 
 #[allow(
