@@ -73,7 +73,7 @@ pub(super) fn compose_layer_into_gpu(
             frame,
             output,
             native_screen_leases,
-        );
+        )?;
         set_texture_contents(
             surfaces,
             output_surface,
@@ -85,7 +85,7 @@ pub(super) fn compose_layer_into_gpu(
     }
 
     if gpu_frame.is_none() {
-        upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame);
+        upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame)?;
         if shader_mode == ComposeShaderMode::Replace
             && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
         {
@@ -125,7 +125,7 @@ pub(super) fn compose_layer_into_gpu(
         source_flip_y,
     );
     let params_offset =
-        encode_compose_params_upload(device, queue, pipeline, surfaces, encoder, &params);
+        encode_compose_params_upload(device, queue, pipeline, surfaces, encoder, &params)?;
     #[cfg(test)]
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);

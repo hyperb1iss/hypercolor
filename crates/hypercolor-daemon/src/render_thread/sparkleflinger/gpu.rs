@@ -419,6 +419,17 @@ impl GpuCompositorSurfaceSet {
         self.screen_upload_pool.discard_encoding();
     }
 
+    /// Drop the uploads staged for a composition encoder that will never be
+    /// submitted, and forget what its textures were recorded to hold, so the
+    /// next composition uploads and composes again instead of trusting work
+    /// that never ran.
+    fn abandon_encoded_composition(&mut self) {
+        self.discard_pending_uploads();
+        self.cached_source_upload = None;
+        self.front_contents = None;
+        self.back_contents = None;
+    }
+
     fn try_new(
         device: &wgpu::Device,
         pipeline: &GpuCompositorPipeline,

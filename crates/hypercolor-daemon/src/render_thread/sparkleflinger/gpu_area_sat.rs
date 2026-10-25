@@ -217,6 +217,13 @@ impl GpuAreaPipeline {
                 "GPU area resources failed device validation: {error}"
             )));
         }
+        // A lost device reports no scoped error, but its buffers still
+        // come back without a mapping.
+        let resources = resources.map_err(|error| {
+            GpuSamplingPreparationFailure::transient(format!(
+                "GPU area resource allocation failed: {error:#}"
+            ))
+        })?;
         #[cfg(test)]
         self.allocation_count
             .set(self.allocation_count.get().saturating_add(1));
@@ -301,7 +308,7 @@ impl GpuAreaResources {
         device: &wgpu::Device,
         hierarchy_layout: &wgpu::BindGroupLayout,
         geometry: GpuAreaGeometry,
-    ) -> Self {
+    ) -> Result<Self> {
         let values = storage_buffer(
             device,
             "SparkleFlinger GPU area SAT values",
@@ -312,13 +319,13 @@ impl GpuAreaResources {
             hierarchy_layout,
             "SparkleFlinger GPU area horizontal block sums",
             geometry.horizontal_hierarchy,
-        );
+        )?;
         let vertical_sums = GpuAreaHierarchy::new(
             device,
             hierarchy_layout,
             "SparkleFlinger GPU area vertical block sums",
             geometry.vertical_hierarchy,
-        );
+        )?;
         let params = create_buffer_with_contents(
             device,
             "SparkleFlinger GPU area SAT params",
@@ -329,9 +336,9 @@ impl GpuAreaResources {
                 geometry.vertical_block_count,
             ),
             wgpu::BufferUsages::UNIFORM,
-        );
+        )?;
 
-        Self {
+        Ok(Self {
             width: geometry.width,
             height: geometry.height,
             horizontal_block_count: geometry.horizontal_block_count,
@@ -341,7 +348,7 @@ impl GpuAreaResources {
             vertical_sums,
             params,
             bind_groups: Vec::with_capacity(2),
-        }
+        })
     }
 
     pub(super) const fn matches(&self, width: u32, height: u32) -> bool {
@@ -399,7 +406,7 @@ impl GpuAreaHierarchy {
         layout: &wgpu::BindGroupLayout,
         label: &'static str,
         geometry: GpuAreaHierarchyGeometry,
-    ) -> Self {
+    ) -> Result<Self> {
         let buffer = storage_buffer(device, label, geometry.byte_len);
         let levels = geometry
             .levels
@@ -410,24 +417,24 @@ impl GpuAreaHierarchy {
                     "SparkleFlinger GPU area hierarchy params",
                     &encode_hierarchy_params(level),
                     wgpu::BufferUsages::UNIFORM,
-                );
+                )?;
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("SparkleFlinger GPU area hierarchy bind group"),
                     layout,
                     entries: &[buffer_entry(0, &buffer), buffer_entry(1, &params)],
                 });
-                GpuAreaHierarchyLevel {
+                Ok(GpuAreaHierarchyLevel {
                     block_count: level.block_count,
                     _params: params,
                     bind_group,
-                }
+                })
             })
-            .collect();
-        Self {
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
             buffer,
             segment_count: geometry.segment_count,
             levels,
-        }
+        })
     }
 }
 

@@ -143,13 +143,26 @@ impl GpuSparkleFlinger {
                     .as_mut()
                     .expect("compositor surfaces should exist before preview staging")
                     .pending_upload_buffers;
-                let write = self.pipeline.preview_scale_params.write(
+                let write = match self.pipeline.preview_scale_params.write(
                     &self.device,
                     &self.queue,
                     &mut encoder,
                     pending_upload_buffers,
                     &params,
-                );
+                ) {
+                    Ok(write) => write,
+                    Err(error) => {
+                        // The composition this encoder carries is already
+                        // committed, so it still goes out without the
+                        // preview; the next request restages the preview.
+                        self.stage_frame_in_flight_with_native_screen_leases(
+                            encoder,
+                            None,
+                            native_screen_leases,
+                        );
+                        return Err(error);
+                    }
+                };
                 preview_surfaces.cached_scale_params = Some(params);
                 preview_surfaces.cached_scale_params_offset =
                     write.reusable.then_some(write.offset);

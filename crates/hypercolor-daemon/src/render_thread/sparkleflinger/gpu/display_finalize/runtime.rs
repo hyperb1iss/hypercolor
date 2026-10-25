@@ -129,7 +129,7 @@ impl GpuSparkleFlinger {
 
         let scene_gpu = gpu_source_frame(scene);
         let mut native_screen_leases = Vec::new();
-        prepare_display_source_texture(
+        let scene_prepared = prepare_display_source_texture(
             device,
             queue,
             pipeline,
@@ -143,8 +143,12 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             &mut surfaces.scene_upload_count,
         );
+        if let Err(error) = scene_prepared {
+            surfaces.abandon_dispatch(readback_slot);
+            return Err(error);
+        }
         let face_gpu = gpu_source_frame(face);
-        prepare_display_source_texture(
+        let face_prepared = prepare_display_source_texture(
             device,
             queue,
             pipeline,
@@ -158,6 +162,10 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             &mut surfaces.face_upload_count,
         );
+        if let Err(error) = face_prepared {
+            surfaces.abandon_dispatch(readback_slot);
+            return Err(error);
+        }
 
         for frame in [&scene_gpu, &face_gpu]
             .into_iter()
@@ -201,16 +209,20 @@ impl GpuSparkleFlinger {
             &surfaces.output.view,
             &surfaces.yuv_output,
         );
-        let params_offset = pipeline
-            .display_finalize_params
-            .write(
-                device,
-                queue,
-                &mut encoder,
-                &mut surfaces.pending_upload_buffers,
-                &encode_display_finalize_params(&params, scene, face),
-            )
-            .offset;
+        let params_write = pipeline.display_finalize_params.write(
+            device,
+            queue,
+            &mut encoder,
+            &mut surfaces.pending_upload_buffers,
+            &encode_display_finalize_params(&params, scene, face),
+        );
+        let params_offset = match params_write {
+            Ok(write) => write.offset,
+            Err(error) => {
+                surfaces.abandon_dispatch(readback_slot);
+                return Err(error);
+            }
+        };
 
         let (used_bytes, mapped_bytes) = match format {
             GpuDisplayFinalizeFormat::Rgba => {

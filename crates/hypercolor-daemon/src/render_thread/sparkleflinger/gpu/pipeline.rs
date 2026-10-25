@@ -1,3 +1,5 @@
+use anyhow::Result;
+
 use super::super::gpu_buffer_init::create_buffer_with_contents;
 
 use crate::render_thread::sparkleflinger::compile_compute_pipeline;
@@ -91,6 +93,9 @@ impl UniformParamsRing {
         })
     }
 
+    /// Write `params` and return the dynamic offset to bind. Fails only when
+    /// the overflow path cannot create its upload buffer; nothing is encoded
+    /// then, and the caller must abandon the dispatch that needed it.
     pub(super) fn write(
         &mut self,
         device: &wgpu::Device,
@@ -98,7 +103,7 @@ impl UniformParamsRing {
         encoder: &mut wgpu::CommandEncoder,
         pending_upload_buffers: &mut PendingUploadBuffers,
         params: &[u8],
-    ) -> UniformParamsWrite {
+    ) -> Result<UniformParamsWrite> {
         debug_assert_eq!(params.len(), self.param_bytes as usize);
         if self.cursor.saturating_sub(self.watermark) >= self.slot_count {
             // Overflow: the next ring slot may still be referenced by an
@@ -109,7 +114,7 @@ impl UniformParamsRing {
                 self.label,
                 params,
                 wgpu::BufferUsages::COPY_SRC,
-            );
+            )?;
             encoder.copy_buffer_to_buffer(
                 &upload,
                 0,
@@ -122,10 +127,10 @@ impl UniformParamsRing {
             {
                 self.fallback_write_count = self.fallback_write_count.saturating_add(1);
             }
-            return UniformParamsWrite {
+            return Ok(UniformParamsWrite {
                 offset: self.overflow_offset,
                 reusable: false,
-            };
+            });
         }
         let offset = self.slot_offset(self.cursor);
         queue.write_buffer(&self.buffer, u64::from(offset), params);
@@ -134,10 +139,10 @@ impl UniformParamsRing {
         {
             self.ring_write_count = self.ring_write_count.saturating_add(1);
         }
-        UniformParamsWrite {
+        Ok(UniformParamsWrite {
             offset,
             reusable: true,
-        }
+        })
     }
 
     /// Pins the most recent ring write so its slot cannot be reused while a

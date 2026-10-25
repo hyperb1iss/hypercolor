@@ -193,4 +193,18 @@ impl GpuDisplayFinalizeSurfaceSet {
             self.readback_slots_in_use[slot] = false;
         }
     }
+
+    /// Undo a dispatch whose encoder will never be submitted: free its
+    /// readback slot, drop its staged uploads, and forget what the source
+    /// textures were recorded to hold so the next dispatch fills them again.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn abandon_dispatch(&mut self, slot: usize) {
+        self.release_readback_slot(slot);
+        self.pending_upload_buffers.clear();
+        for source in [&mut self.scene_source, &mut self.face_source]
+            .into_iter()
+            .flatten()
+        {
+            source.forget_contents();
+        }
+    }
 }

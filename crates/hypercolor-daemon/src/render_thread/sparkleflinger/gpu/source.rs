@@ -114,6 +114,13 @@ impl GpuDisplaySourceTexture {
             bind_group_cache: SourceCopyBindGroupCache::default(),
         }
     }
+
+    /// Forget what the texture was recorded to hold, so the next use
+    /// uploads or copies its source again.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn forget_contents(&mut self) {
+        self.cached_upload = None;
+        self.cached_gpu_copy = None;
+    }
 }
 
 struct CachedSourceCopyBindGroup {

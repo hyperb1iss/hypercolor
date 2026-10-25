@@ -287,7 +287,7 @@ impl GpuSparkleFlinger {
             .and_then(Option::as_ref);
 
         if first_layer.can_bypass_for_size(plan.width, plan.height) {
-            copy_frame_into_output_texture(
+            let copy_result = copy_frame_into_output_texture(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
@@ -301,6 +301,12 @@ impl GpuSparkleFlinger {
                 #[cfg(test)]
                 &mut surfaces.front_upload_count,
             );
+            if let Err(error) = copy_result {
+                drop(uploaded_screen_frames);
+                return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                surfaces.abandon_encoded_composition();
+                return Err(error);
+            }
         } else {
             // The first layer only blends against FRONT when it cannot take
             // the direct-copy path inside `compose_layer_into_gpu`; skip the
@@ -325,6 +331,7 @@ impl GpuSparkleFlinger {
             if let Err(error) = compose_result {
                 drop(uploaded_screen_frames);
                 return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                surfaces.abandon_encoded_composition();
                 return Err(error);
             }
             use_front_as_current = false;
@@ -349,6 +356,7 @@ impl GpuSparkleFlinger {
             if let Err(error) = compose_result {
                 drop(uploaded_screen_frames);
                 return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                surfaces.abandon_encoded_composition();
                 return Err(error);
             }
             use_front_as_current = !use_front_as_current;

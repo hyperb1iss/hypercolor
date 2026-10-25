@@ -137,7 +137,7 @@ impl GpuSparkleFlinger {
             &mut native_screen_leases,
             #[cfg(test)]
             &mut source_upload_count,
-        );
+        )?;
         let source_view = if source.needs_display_source_copy() {
             lane.source
                 .as_ref()

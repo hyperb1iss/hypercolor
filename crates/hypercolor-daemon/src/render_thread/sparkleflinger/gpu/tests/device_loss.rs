@@ -146,11 +146,12 @@ fn cpu_layer_uploads_after_device_loss_do_not_panic() {
 
     // Fresh layer content forces new upload buffers on the lost device.
     let _ = compositor.compose(&plan(Rgba::new(0, 0, 255, 255)), false, None);
-    let upload = create_buffer_with_contents(
+    let error = create_buffer_with_contents(
         &compositor.device,
         "SparkleFlinger device loss upload test",
         &[1, 2, 3, 4, 5],
         wgpu::BufferUsages::COPY_SRC,
-    );
-    assert_eq!(upload.size(), 8);
+    )
+    .expect_err("a lost device cannot create an initialized buffer");
+    assert!(error.to_string().contains("could not create"), "{error:#}");
 }

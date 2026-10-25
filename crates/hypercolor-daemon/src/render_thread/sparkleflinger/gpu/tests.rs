@@ -3243,4 +3243,5 @@ mod sampler;
 mod shaders;
 mod startup_progress;
 mod surface;
+mod upload_failure;
 mod warmup;

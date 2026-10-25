@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Weak;
 
+use anyhow::Result;
+
 use super::super::super::CompositionLayer;
 use super::super::{COMPOSE_PARAM_BYTES, GpuCompositorPipeline, GpuCompositorSurfaceSet};
 #[cfg(feature = "allocation-contract-tests")]
@@ -387,12 +389,12 @@ pub(super) fn encode_compose_params_upload(
     surfaces: &mut GpuCompositorSurfaceSet,
     encoder: &mut wgpu::CommandEncoder,
     params: &[u8; COMPOSE_PARAM_BYTES],
-) -> u32 {
+) -> Result<u32> {
     if surfaces.cached_compose_params.as_ref() == Some(params)
         && let Some(offset) = surfaces.cached_compose_params_offset
     {
         pipeline.compose_params.pin_last_slot();
-        return offset;
+        return Ok(offset);
     }
     let write = pipeline.compose_params.write(
         device,
@@ -400,14 +402,14 @@ pub(super) fn encode_compose_params_upload(
         encoder,
         &mut surfaces.pending_upload_buffers,
         params,
-    );
+    )?;
     surfaces.cached_compose_params = Some(*params);
     surfaces.cached_compose_params_offset = write.reusable.then_some(write.offset);
     #[cfg(test)]
     {
         surfaces.compose_param_write_count = surfaces.compose_param_write_count.saturating_add(1);
     }
-    write.offset
+    Ok(write.offset)
 }
 
 pub(in crate::render_thread::sparkleflinger::gpu) fn encode_compose_params(

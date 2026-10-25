@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use anyhow::Result;
+
 use crate::render_thread::sparkleflinger::gpu_buffer_init::create_buffer_with_contents;
 use hypercolor_types::canvas::BYTES_PER_PIXEL;
 
@@ -71,7 +73,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
     label: &'static str,
     native_screen_leases: &mut Vec<NativeScreenTextureLease>,
     #[cfg(test)] upload_count: &mut usize,
-) {
+) -> Result<()> {
     let Some(gpu_frame) = gpu_frame else {
         ensure_display_source_texture(device, source, frame.width(), frame.height(), label);
         let source = source
@@ -86,11 +88,11 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
             #[cfg(test)]
             upload_count,
         );
-        return;
+        return Ok(());
     };
 
     if !gpu_frame.needs_display_source_copy() {
-        return;
+        return Ok(());
     }
 
     ensure_display_source_texture(device, source, frame.width(), frame.height(), label);
@@ -99,7 +101,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
         .expect("display source texture should exist before GPU copy");
     let next_copy = gpu_frame.cached_display_source_copy();
     if source.cached_gpu_copy == Some(next_copy) {
-        return;
+        return Ok(());
     }
     record_gpu_source_upload_skipped();
     copy_gpu_source_frame_into_texture(
@@ -112,9 +114,10 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
         gpu_frame,
         &source.texture,
         native_screen_leases,
-    );
+    )?;
     source.cached_upload = None;
     source.cached_gpu_copy = Some(next_copy);
+    Ok(())
 }
 
 fn ensure_display_source_texture(
@@ -138,7 +141,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn upload_frame_into_source_te
     encoder: &mut wgpu::CommandEncoder,
     surfaces: &mut GpuCompositorSurfaceSet,
     frame: &ProducerFrame,
-) {
+) -> Result<()> {
     upload_frame_into_cached_texture_with_encoder(
         device,
         encoder,
@@ -148,7 +151,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn upload_frame_into_source_te
         frame,
         #[cfg(test)]
         &mut surfaces.source_upload_count,
-    );
+    )
 }
 
 pub(in crate::render_thread::sparkleflinger::gpu) fn copy_frame_into_output_texture(
@@ -163,7 +166,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn copy_frame_into_output_text
     frame: &ProducerFrame,
     native_screen_leases: &mut Vec<NativeScreenTextureLease>,
     #[cfg(test)] upload_count: &mut usize,
-) {
+) -> Result<()> {
     if let Some(frame) = gpu_source_frame(frame) {
         record_gpu_source_upload_skipped();
         copy_gpu_source_frame_into_texture(
@@ -176,9 +179,9 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn copy_frame_into_output_text
             &frame,
             output,
             native_screen_leases,
-        );
+        )?;
         *cached_upload = None;
-        return;
+        return Ok(());
     }
 
     upload_frame_into_cached_texture(
@@ -189,6 +192,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn copy_frame_into_output_text
         #[cfg(test)]
         upload_count,
     );
+    Ok(())
 }
 
 pub(in crate::render_thread::sparkleflinger::gpu) fn copy_gpu_source_frame_into_texture(
@@ -201,7 +205,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn copy_gpu_source_frame_into_
     frame: &GpuSourceFrame<'_>,
     output: &GpuCompositorTexture,
     native_screen_leases: &mut Vec<NativeScreenTextureLease>,
-) {
+) -> Result<()> {
     if let Some(lease) = frame.native_screen_lease() {
         native_screen_leases.push(lease);
     }
@@ -217,7 +221,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn copy_gpu_source_frame_into_
                 frame.height(),
                 frame.flip_y_on_shader_copy(),
             ),
-        );
+        )?;
         let bind_group = bind_group_cache.get_or_create(
             device,
             pipeline,
@@ -233,7 +237,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn copy_gpu_source_frame_into_
             frame.width(),
             frame.height(),
         );
-        return;
+        return Ok(());
     }
 
     encoder.copy_texture_to_texture(
@@ -251,6 +255,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn copy_gpu_source_frame_into_
         },
         texture_extent(frame.width(), frame.height()),
     );
+    Ok(())
 }
 
 fn upload_frame_into_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, frame: &ProducerFrame) {
@@ -313,18 +318,27 @@ fn upload_frame_into_cached_texture_with_encoder(
     cached_upload: &mut Option<CachedSourceUpload>,
     frame: &ProducerFrame,
     #[cfg(test)] upload_count: &mut usize,
-) {
+) -> Result<()> {
     let next_upload = cached_source_upload(frame);
     if next_upload.is_some() && *cached_upload == next_upload {
-        return;
+        return Ok(());
     }
 
-    upload_frame_into_texture_with_encoder(device, encoder, texture, pending_upload_buffers, frame);
+    // The cache only advances once the upload is encoded, so a failed
+    // upload is retried by the next frame instead of being skipped.
+    upload_frame_into_texture_with_encoder(
+        device,
+        encoder,
+        texture,
+        pending_upload_buffers,
+        frame,
+    )?;
     *cached_upload = next_upload;
     #[cfg(test)]
     {
         *upload_count = upload_count.saturating_add(1);
     }
+    Ok(())
 }
 
 fn upload_frame_into_texture_with_encoder(
@@ -333,9 +347,9 @@ fn upload_frame_into_texture_with_encoder(
     texture: &wgpu::Texture,
     pending_upload_buffers: &mut PendingUploadBuffers,
     frame: &ProducerFrame,
-) {
+) -> Result<()> {
     let Some(rgba_bytes) = frame.cpu_rgba_bytes() else {
-        return;
+        return Ok(());
     };
     let width = frame.width();
     let height = frame.height();
@@ -360,7 +374,7 @@ fn upload_frame_into_texture_with_encoder(
         "SparkleFlinger GPU source texture upload",
         &contents,
         wgpu::BufferUsages::COPY_SRC,
-    );
+    )?;
     encoder.copy_buffer_to_texture(
         wgpu::TexelCopyBufferInfo {
             buffer: &upload,
@@ -379,6 +393,7 @@ fn upload_frame_into_texture_with_encoder(
         texture_extent(width, height),
     );
     pending_upload_buffers.push(upload);
+    Ok(())
 }
 
 pub(in crate::render_thread::sparkleflinger::gpu) fn cached_source_upload(
@@ -516,11 +531,11 @@ fn encode_source_copy_params_upload(
     encoder: &mut wgpu::CommandEncoder,
     pending_upload_buffers: &mut PendingUploadBuffers,
     params: &[u8; SOURCE_COPY_PARAM_BYTES],
-) -> u32 {
-    pipeline
+) -> Result<u32> {
+    Ok(pipeline
         .source_copy_params
-        .write(device, queue, encoder, pending_upload_buffers, params)
-        .offset
+        .write(device, queue, encoder, pending_upload_buffers, params)?
+        .offset)
 }
 
 fn encode_source_copy_params(
