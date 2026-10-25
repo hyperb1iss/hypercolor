@@ -1,18 +1,20 @@
 //! The zone tree — the Studio workspace's left column.
 //!
 //! One column that answers "what hardware do I have and how is it
-//! grouped": every zone, with its devices nested beneath it, an
-//! Unassigned group for hardware in no zone, and an always-present
-//! "+ New zone". It replaces the old surface rail and the separate
-//! device palette — devices are visible here, not behind a drawer.
+//! grouped": a device search, every zone with its devices nested beneath
+//! it, and an Unassigned group for hardware in no zone. While the Screens
+//! tab is active the column lists the scene's Screens instead.
 
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
+use hypercolor_types::scene::ZoneRole;
+
 use crate::api::DeviceSummary;
-use crate::app::{CapabilitiesContext, DevicesContext, WsContext};
+use crate::app::{DevicesContext, WsContext};
+use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::storage;
@@ -24,9 +26,9 @@ use super::device_assignment::{
     unassigned_device_rows,
 };
 use super::device_card::{CardMode, StudioDeviceCard};
+use super::screen_list::ScreenList;
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use super::zone_add_device::ZoneAddDevice;
-use super::zone_controls::{NewZoneControl, ZoneControls};
 
 /// Collapsed zone ids, persisted per browser. Empty (the default) leaves
 /// every zone expanded.
@@ -43,7 +45,7 @@ fn load_collapsed() -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// Keep only device rows whose name matches the header search term — a
+/// Keep only device rows whose name matches the search term, a
 /// case-insensitive substring. An empty term leaves every row untouched.
 fn retain_by_search(rows: &mut Vec<ZoneDeviceRow>, search: &str) {
     if !search.is_empty() {
@@ -56,9 +58,21 @@ fn retain_by_search(rows: &mut Vec<ZoneDeviceRow>, search: &str) {
 #[component]
 pub fn ZoneTree() -> impl IntoView {
     let studio = expect_context::<StudioContext>();
-    let caps = expect_context::<CapabilitiesContext>();
     let devices = expect_context::<DevicesContext>();
     let ws = expect_context::<WsContext>();
+    let search = RwSignal::new(String::new());
+    let query = Memo::new(move |_| search.get().trim().to_lowercase());
+    let on_screens = Memo::new(move |_| {
+        let selected = studio.selected_surface_id.get();
+        studio.active_scene.with(|scene| {
+            scene.as_ref().is_some_and(|scene| {
+                scene.zones.iter().any(|zone| {
+                    zone.role == ZoneRole::Display
+                        && selected.as_deref() == Some(zone.id.to_string().as_str())
+                })
+            })
+        })
+    });
     let scene_members = Memo::new(move |_| {
         studio.active_scene.get().map(|scene| {
             (
@@ -95,15 +109,7 @@ pub fn ZoneTree() -> impl IntoView {
             .filter(|surface| surface.kind == SurfaceKind::Light)
             .collect::<Vec<_>>()
     });
-    let screens = Memo::new(move |_| {
-        surfaces
-            .get()
-            .into_iter()
-            .filter(|surface| surface.kind == SurfaceKind::Screen)
-            .collect::<Vec<_>>()
-    });
     let multi_zone = Memo::new(move |_| lights.get().len() > 1);
-    let zone_crud_ready = Memo::new(move |_| caps.zone_crud_ready());
 
     // The device registry as `DeviceMeta` — the join target for grouping
     // a zone's outputs back to physical devices.
@@ -145,7 +151,7 @@ pub fn ZoneTree() -> impl IntoView {
         };
         let metas = device_metas.get();
         let by_id = device_by_id.get();
-        let search = studio.device_search.get().trim().to_lowercase();
+        let search = query.get();
         lights
             .get()
             .into_iter()
@@ -174,7 +180,7 @@ pub fn ZoneTree() -> impl IntoView {
             return Vec::new();
         };
         let by_id = device_by_id.get();
-        let search = studio.device_search.get().trim().to_lowercase();
+        let search = query.get();
         let mut base_rows = unassigned_device_rows(&scene.zones, &device_metas.get());
         let known_devices = devices
             .devices_resource
@@ -207,8 +213,12 @@ pub fn ZoneTree() -> impl IntoView {
 
     view! {
         <div class="flex h-full flex-col border-r border-edge-subtle/70 bg-surface-raised/40">
-            <div class="scrollbar-none flex-1 space-y-4 overflow-y-auto px-3 py-3">
-                <div class="space-y-1.5">
+            <PaneSearch search=search on_screens=on_screens />
+            <div class="scrollbar-none flex-1 space-y-4 overflow-y-auto px-3 pb-3">
+                <Show when=move || on_screens.get()>
+                    <ScreenList query=query />
+                </Show>
+                <div class="space-y-1.5" class=("hidden", move || on_screens.get())>
                     <div class="px-1">
                         <span class=label_class(LabelSize::Small, LabelTone::Default)>
                             "Zones"
@@ -257,38 +267,77 @@ pub fn ZoneTree() -> impl IntoView {
                     <Show when=move || multi_zone.get()>
                         <UnassignedNode rows=unassigned />
                     </Show>
-                    <Show when=move || zone_crud_ready.get()>
-                        <NewZoneControl />
-                    </Show>
                 </div>
-                {move || {
-                    let items = screens.get();
-                    (!items.is_empty()).then(|| {
-                        view! {
-                            <div class="space-y-1.5">
-                                <div class="px-1">
-                                    <span class=label_class(LabelSize::Small, LabelTone::Default)>
-                                        "Screens"
-                                    </span>
-                                </div>
-                                {items
-                                    .into_iter()
-                                    .map(|surface| view! { <ScreenRow surface=surface /> })
-                                    .collect_view()}
-                            </div>
-                        }
-                    })
-                }}
             </div>
         </div>
     }
 }
 
-/// One light zone: a selectable header over its nested device list,
-/// with the per-zone controls folded behind a kebab. The kebab is
-/// always present so a single-zone scene still has a route to rename
-/// or recolor its Default zone; make-default and delete remain gated
-/// inside [`ZoneControls`] by [`Surface::is_deletable_zone`].
+/// The pane's search field. It owns the page search id, so the shell's
+/// `/` shortcut lands here; focusing it on a narrow viewport opens the
+/// drawer it lives in. Escape clears a term, then leaves the field.
+#[component]
+fn PaneSearch(search: RwSignal<String>, on_screens: Memo<bool>) -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let placeholder = move || {
+        if on_screens.get() {
+            "Search screens"
+        } else {
+            "Search devices"
+        }
+    };
+    view! {
+        <div class="relative shrink-0 px-3 pb-2 pt-3">
+            <span class="pointer-events-none absolute left-5.5 top-1/2 mt-0.5 -translate-y-1/2 text-fg-tertiary">
+                <Icon icon=LuSearch width="13px" height="13px" />
+            </span>
+            <input
+                id=PAGE_SEARCH_INPUT_ID
+                type="text"
+                placeholder=placeholder
+                aria-label=placeholder
+                class="w-full rounded-lg border border-edge-subtle bg-surface-overlay/60 py-1.5 pl-8 pr-8 text-[12px] text-fg-primary placeholder-fg-tertiary transition-[border-color,box-shadow] duration-300 focus:border-accent-muted focus:outline-none search-glow glow-ring"
+                prop:value=move || search.get()
+                on:input=move |ev| search.set(event_target_value(&ev))
+                on:focus=move |_| {
+                    // Below Tailwind's `lg` breakpoint the pane is a drawer.
+                    let narrow = window()
+                        .inner_width()
+                        .ok()
+                        .and_then(|width| width.as_f64())
+                        .is_some_and(|width| width < 1024.0);
+                    if narrow {
+                        studio.pane_drawer.set(true);
+                    }
+                }
+                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                    if ev.key() != "Escape" {
+                        return;
+                    }
+                    ev.prevent_default();
+                    if search.with_untracked(String::is_empty) {
+                        if let Some(input) = ev
+                            .target()
+                            .and_then(|target| {
+                                wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(target).ok()
+                            })
+                        {
+                            let _ = input.blur();
+                        }
+                    } else {
+                        search.set(String::new());
+                    }
+                }
+            />
+            <kbd class="pointer-events-none absolute right-5 top-1/2 mt-0.5 -translate-y-1/2 rounded border border-edge-subtle bg-surface-overlay/30 px-1.5 py-0.5 font-mono text-[9px] text-fg-tertiary">
+                "/"
+            </kbd>
+        </div>
+    }
+}
+
+/// One light zone: a selectable header over its nested device list. Zone
+/// settings live on the zone's tab.
 #[component]
 fn ZoneNode(
     surface: Surface,
@@ -331,12 +380,9 @@ fn ZoneNode(
         })
     });
 
-    let controls_open =
-        super::keyed_disclosure(studio.rail_disclosure, format!("zone-menu::{zone_id}"));
     let dimmed = !surface.enabled;
     let row_name = surface.name.clone();
     let swatch = surface.color.clone();
-    let controls_surface = surface.clone();
 
     let select_id = zone_id.clone();
     let toggle_id = zone_id.clone();
@@ -417,17 +463,6 @@ fn ZoneNode(
                         </span>
                     </Show>
                 </button>
-                <button
-                    type="button"
-                    class="flex h-9 w-7 shrink-0 items-center justify-center text-fg-secondary/70 transition-colors hover:text-fg-primary"
-                    title="Zone settings — rename, color, enable"
-                    on:click=move |_| controls_open.update(|open| *open = !*open)
-                >
-                    <Icon icon=LuEllipsis width="14px" height="14px" />
-                </button>
-            </div>
-            <div class=("hidden", move || !controls_open.get())>
-                <ZoneControls surface=controls_surface />
             </div>
             <div
                 class="space-y-1.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-2"
@@ -551,48 +586,6 @@ fn UnassignedNode(rows: Memo<Vec<(ZoneDeviceRow, Option<DeviceSummary>)>>) -> im
                     }
                 })
             }}
-        </div>
-    }
-}
-
-/// One display-face screen — a 1:1 surface, no nested devices.
-#[component]
-fn ScreenRow(surface: Surface) -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let select_id = surface.id.clone();
-    let is_selected = Signal::derive({
-        let row_id = surface.id.clone();
-        move || studio.selected_surface_id.get().as_deref() == Some(row_id.as_str())
-    });
-    let dimmed = !surface.enabled;
-    let row_name = surface.name.clone();
-
-    view! {
-        <div
-            class="rounded-xl border transition-[border-color,background-color] duration-200"
-            class=("border-accent-muted", move || is_selected.get())
-            class=("bg-accent/8", move || is_selected.get())
-            class=("border-edge-subtle/70", move || !is_selected.get())
-            class=("bg-surface-overlay/40", move || !is_selected.get())
-            class=("opacity-55", move || dimmed)
-        >
-            <button
-                type="button"
-                class="card-hover flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left"
-                on:click=move |_| studio.selected_surface_id.set(Some(select_id.clone()))
-            >
-                <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-surface-sunken/70">
-                    <Icon
-                        icon=LuMonitor
-                        width="14px"
-                        height="14px"
-                        style="color: rgba(128, 255, 234, 0.8)"
-                    />
-                </span>
-                <span class="min-w-0 flex-1 truncate text-sm font-medium text-fg-primary">
-                    {row_name}
-                </span>
-            </button>
         </div>
     }
 }

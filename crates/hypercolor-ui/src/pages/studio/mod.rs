@@ -1,9 +1,10 @@
 //! `/studio` — the unified surface-centric composition workspace (Spec 65).
 //!
-//! Two columns: the zone tree on the left and the center Stage.
-//! Selecting a zone drives the Stage preview. The composition panel —
-//! effect and layer editing — slides in over the Stage on demand rather
-//! than occupying a permanent rail.
+//! The page header's second row is the zone tab strip: one tab per LED
+//! zone, then a Screens tab. Below it, two columns: the device pane on
+//! the left and the center Stage, both about the active tab. The
+//! composition panel (effect and layer editing) slides in over the Stage
+//! on demand rather than occupying a permanent rail.
 
 mod composition_panel;
 pub mod device_assignment;
@@ -12,10 +13,14 @@ mod face_composition;
 pub mod history;
 mod offline_device_card;
 mod scene_selector;
+mod screen_list;
 mod stage;
 pub use crate::zones::surface;
+pub mod tab_model;
+mod undo_notice;
 mod zone_add_device;
 mod zone_controls;
+mod zone_strip;
 mod zone_tree;
 
 use std::collections::{HashMap, HashSet};
@@ -30,7 +35,6 @@ use crate::app::WsContext;
 use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
-use crate::components::page_search_bar::PageSearchBar;
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
@@ -41,6 +45,8 @@ use crate::zones::surface::{
 use composition_panel::CompositionPanel;
 use scene_selector::SceneSelector;
 use stage::Stage;
+use undo_notice::{UndoNotice, UndoNoticeHost};
+use zone_strip::{ZONE_PANEL_ID, ZoneStrip, active_tab_dom_id};
 use zone_tree::ZoneTree;
 
 const TREE_WIDTH_KEY: &str = "hc-studio-tree-width";
@@ -118,20 +124,25 @@ pub struct StudioContext {
     /// Each device card lazily fills its own entry; channel rows read it
     /// to surface live binding labels without re-fetching per render.
     pub attachment_cache: RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>,
-    /// Header search term. Filters the zone tree's device rows by name,
-    /// filling the header toolbar the way every other page's search does.
-    pub device_search: Signal<String>,
+    /// Display labels for Screens, keyed by zone id. Repeated device
+    /// names ("Lian Li Uni Fan TL Wireless LCD" three times) resolve to
+    /// the per-device label the canvas shows ("TL LCD 2").
+    pub screen_labels: Memo<HashMap<String, String>>,
     /// The daemon's render canvas extent. Zone layouts carry placements
     /// only, so anything fitting a footprint to the canvas reads this.
     pub render_canvas_size: Memo<(u32, u32)>,
-    /// Which rail disclosure (zone menu, device kebab, add-device picker)
-    /// is open, by key. The rail rebuilds on scene events and search
+    /// Which rail disclosure (device kebab, add-device picker) is open,
+    /// by key. The rail rebuilds on scene events and search
     /// keystrokes, so openness must outlive the DOM that renders it; one
     /// shared slot also means opening a menu closes the previous one.
     pub rail_disclosure: RwSignal<Option<String>>,
     /// An in-flight zone rename: `(zone id, draft text)`. Lives here so a
-    /// rail rebuild mid-typing does not eat the field or the text.
+    /// tab strip rebuild mid-typing does not eat the field or the text.
     pub zone_rename_draft: RwSignal<Option<(String, String)>>,
+    /// The offer to undo the last destructive zone action, if still open.
+    pub undo_notice: RwSignal<Option<UndoNotice>>,
+    /// Whether the narrow-viewport device drawer is open.
+    pub pane_drawer: RwSignal<bool>,
     /// The output box under the pointer on the canvas, mirrored from the
     /// editor so the rail can softly highlight the card that owns it.
     pub pointer_output_id: RwSignal<Option<String>>,
@@ -305,10 +316,29 @@ pub fn StudioPage() -> impl IntoView {
         set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
     });
 
-    // The zone tree owns selection, so the layer panel shows the selected
+    let devices_ctx = expect_context::<crate::app::DevicesContext>();
+    let screen_labels = Memo::new(move |_| {
+        let Some(scene) = active_scene.get() else {
+            return HashMap::new();
+        };
+        let layout_ids: HashMap<String, String> = devices_ctx
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|device| (device.id, device.layout_device_id))
+            .collect();
+        tab_model::screen_label_map(&scene.zones, &layout_ids)
+    });
+
+    // The tab strip owns selection, so the layer panel shows the selected
     // surface's name in its header rather than a redundant zone selector.
     let surface_label = Signal::derive(move || {
         let id = selected_surface_id.get()?;
+        if let Some(label) = screen_labels.with(|labels| labels.get(&id).cloned()) {
+            return Some(label);
+        }
         let scene = active_scene.get()?;
         surfaces_from_zones(&scene.zones)
             .into_iter()
@@ -316,8 +346,8 @@ pub fn StudioPage() -> impl IntoView {
             .map(|surface| surface.name)
     });
 
-    // The zone-tree column width persists per browser; the Stage
-    // takes the space that is left.
+    // The device pane's width persists per browser; the Stage takes the
+    // space that is left.
     let tree_width = RwSignal::new(storage::get_clamped(
         TREE_WIDTH_KEY,
         280.0,
@@ -329,9 +359,9 @@ pub fn StudioPage() -> impl IntoView {
     });
     let tree_drag_start = StoredValue::new(0.0_f64);
 
-    // Narrow viewports collapse the tree into a slide-over drawer (§13).
+    // Narrow viewports collapse the pane into a slide-over drawer (§13).
     let tree_drawer = RwSignal::new(false);
-    // Picking a zone from the drawer reveals the Stage behind it.
+    // Picking a zone or a Screen reveals the Stage behind the drawer.
     Effect::new(move |_| {
         let _ = selected_surface_id.get();
         if tree_drawer.get_untracked() {
@@ -368,7 +398,6 @@ pub fn StudioPage() -> impl IntoView {
         current
     });
 
-    let (device_search, set_device_search) = signal(String::new());
     let render_canvas_size = crate::render_canvas::use_render_canvas_size();
     let rail_disclosure = RwSignal::new(None::<String>);
     let zone_rename_draft = RwSignal::new(None::<(String, String)>);
@@ -389,12 +418,28 @@ pub fn StudioPage() -> impl IntoView {
         selected_output_ids,
         hovered_output_ids,
         attachment_cache,
-        device_search: device_search.into(),
+        screen_labels,
         render_canvas_size,
         rail_disclosure,
         zone_rename_draft,
+        undo_notice: RwSignal::new(None),
+        pane_drawer: tree_drawer,
         pointer_output_id,
     });
+
+    let on_screens = Memo::new(move |_| {
+        let selected = selected_surface_id.get();
+        active_scene.with(|scene| {
+            scene.as_ref().is_some_and(|scene| {
+                scene.zones.iter().any(|zone| {
+                    zone.role == ZoneRole::Display
+                        && selected.as_deref() == Some(zone.id.to_string().as_str())
+                })
+            })
+        })
+    });
+    let panel_label =
+        move || active_tab_dom_id(selected_surface_id.get().as_deref(), on_screens.get());
 
     view! {
         <div class="flex h-full flex-col overflow-hidden">
@@ -407,14 +452,10 @@ pub fn StudioPage() -> impl IntoView {
                     <SceneSelector />
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    <PageSearchBar
-                        placeholder="Search devices...".to_string()
-                        value=device_search
-                        set_value=set_device_search
-                    />
+                    <ZoneStrip />
                 </HeaderToolbar>
             </PageHeader>
-            // Narrow-viewport drawer toggle; the tree sits beside the Stage
+            // Narrow-viewport drawer toggle; the pane sits beside the Stage
             // on `lg` and up, so this strip is hidden there.
             <div class="flex shrink-0 items-center border-b border-edge-subtle/70 bg-surface-raised/40 px-3 py-2 lg:hidden">
                 <button
@@ -423,11 +464,16 @@ pub fn StudioPage() -> impl IntoView {
                     on:click=move |_| tree_drawer.set(true)
                 >
                     <Icon icon=LuLightbulb width="13px" height="13px" />
-                    "Zones"
+                    "Devices"
                 </button>
             </div>
 
-            <div class="relative flex min-h-0 flex-1 overflow-hidden">
+            <div
+                class="relative flex min-h-0 flex-1 overflow-hidden"
+                role="tabpanel"
+                id=ZONE_PANEL_ID
+                aria-labelledby=panel_label
+            >
                 <div
                     // z-index 45: the drawer must paint over the mobile
                     // bottom nav (40, later in the DOM) and add its
@@ -469,6 +515,7 @@ pub fn StudioPage() -> impl IntoView {
                         layers_resource=layers_resource
                         on_layers_mutated=on_layers_mutated
                     />
+                    <UndoNoticeHost />
                 </div>
 
                 <Show when=move || tree_drawer.get()>

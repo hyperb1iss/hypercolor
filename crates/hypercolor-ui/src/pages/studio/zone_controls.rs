@@ -1,287 +1,24 @@
-//! Zone lifecycle controls and mutations for the Studio zone UI.
+//! Zone lifecycle mutations behind the Studio zone tab strip: create,
+//! rename, recolor, pause, reorder, and delete.
 //!
-//! The per-zone control cluster (rename / color / enable / make-default /
-//! delete), the `+ New zone` affordance, and the zone-mutation helpers
-//! they drive. Extracted so the zone tree can reuse them without dragging
-//! in the retired surface rail.
-//!
-//! Every mutation carries the live scene's `revision` as the
-//! `If-Match` precondition; a `Stale` outcome reloads the scene so the
-//! user retries against the fresh revision rather than clobbering a
-//! concurrent edit.
+//! Every mutation carries the live scene's `revision` as the `If-Match`
+//! precondition; a `Stale` outcome reloads the scene so the user retries
+//! against the fresh revision rather than clobbering a concurrent edit.
+//! Nothing here edits local state ahead of the daemon: the tab strip
+//! re-renders from the refreshed scene, so a rejected write leaves the
+//! strip exactly as it was.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_icons::Icon;
 
 use hypercolor_types::scene::UnassignedBehavior;
 
 use crate::api;
 use crate::api::zones::ZoneOutcome;
-use crate::icons::*;
 use crate::toasts;
 
 use super::StudioContext;
-use super::surface::Surface;
-
-/// Per-zone controls: inline rename, an accent-color swatch, an enable
-/// toggle, and — for `Custom` zones — a "make default" promotion and a
-/// delete affordance.
-#[component]
-pub fn ZoneControls(surface: Surface) -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let zone_id = surface.id.clone();
-    // The draft (and with it, "renaming") lives in StudioContext keyed by
-    // zone id, so a rail rebuild mid-typing keeps the field and the text.
-    // A Memo, not Signal::derive: it dedupes, so keystrokes that update
-    // the draft text do not re-render (and re-create) the input mid-typing.
-    let renaming = {
-        let zone_id = zone_id.clone();
-        Memo::new(move |_| {
-            studio
-                .zone_rename_draft
-                .with(|draft| draft.as_ref().is_some_and(|(id, _)| *id == zone_id))
-        })
-    };
-    let stop_renaming = move || studio.zone_rename_draft.set(None);
-    let confirm_delete = RwSignal::new(false);
-    let deletable = surface.is_deletable_zone();
-
-    let name_for_input = surface.name.clone();
-    let color_value = surface
-        .color
-        .clone()
-        .unwrap_or_else(|| "#80ffea".to_owned());
-    let enabled = surface.enabled;
-
-    view! {
-        <div class="flex items-center gap-1 border-t border-edge-subtle/45 px-2.5 py-1.5">
-            {
-                let zone_id = zone_id.clone();
-                move || {
-                    if renaming.get() {
-                        let zone_id = zone_id.clone();
-                        let seed = studio
-                            .zone_rename_draft
-                            .with_untracked(|draft| {
-                                draft.as_ref().map(|(_, text)| text.clone())
-                            })
-                            .unwrap_or_else(|| name_for_input.clone());
-                        let draft_id = zone_id.clone();
-                        view! {
-                            <input
-                                class="min-w-0 flex-1 rounded-md border border-edge-subtle/70 bg-surface-sunken/60 px-2 py-1 text-[12px] text-fg-primary outline-none focus:border-accent-muted"
-                                prop:value=seed
-                                autofocus
-                                on:input=move |ev| {
-                                    studio
-                                        .zone_rename_draft
-                                        .set(Some((draft_id.clone(), event_target_value(&ev))));
-                                }
-                                on:keydown={
-                                    let zone_id = zone_id.clone();
-                                    move |ev| {
-                                        if ev.key() == "Enter" {
-                                            let value = event_target_value(&ev);
-                                            commit_zone_rename(studio, &zone_id, &value);
-                                            stop_renaming();
-                                        } else if ev.key() == "Escape" {
-                                            stop_renaming();
-                                        }
-                                    }
-                                }
-                                // Closing the field unmounts the input, and
-                                // Chromium fires blur on a removed element.
-                                // Only commit while the draft is still open,
-                                // so Enter cannot double-submit (the second
-                                // PATCH carries a stale revision) and Escape
-                                // really discards.
-                                on:blur=move |ev| {
-                                    if !renaming.get_untracked() {
-                                        return;
-                                    }
-                                    let value = event_target_value(&ev);
-                                    commit_zone_rename(studio, &zone_id, &value);
-                                    stop_renaming();
-                                }
-                            />
-                        }
-                            .into_any()
-                    } else {
-                        let rename_start_id = zone_id.clone();
-                        let rename_start_name = name_for_input.clone();
-                        view! {
-                            <button
-                                type="button"
-                                class="chip-interactive inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-fg-tertiary hover:text-fg-secondary"
-                                title="Rename zone"
-                                on:click={
-                                    let zone_id = rename_start_id.clone();
-                                    let seed_name = rename_start_name.clone();
-                                    move |_| {
-                                        studio
-                                            .zone_rename_draft
-                                            .set(Some((zone_id.clone(), seed_name.clone())));
-                                    }
-                                }
-                            >
-                                <Icon icon=LuPencil width="11px" height="11px" />
-                                "Rename"
-                            </button>
-                        }
-                            .into_any()
-                    }
-                }
-            }
-            <label
-                class="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md border border-edge-subtle/70 bg-surface-sunken/60"
-                title="Zone accent color"
-            >
-                <span
-                    class="h-3 w-3 rounded-full"
-                    style:background-color=color_value.clone()
-                />
-                <input
-                    type="color"
-                    class="absolute inset-0 cursor-pointer opacity-0"
-                    prop:value=color_value.clone()
-                    on:change={
-                        let zone_id = zone_id.clone();
-                        move |ev| {
-                            let value = event_target_value(&ev);
-                            commit_zone_color(studio, &zone_id, &value);
-                        }
-                    }
-                />
-            </label>
-            <button
-                type="button"
-                class="chip-interactive inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-edge-subtle/70"
-                class=("text-[rgba(80,250,123,0.85)]", move || enabled)
-                class=("text-fg-tertiary/55", move || !enabled)
-                title=if enabled { "Disable zone" } else { "Enable zone" }
-                on:click={
-                    let zone_id = zone_id.clone();
-                    move |_| commit_zone_enabled(studio, &zone_id, !enabled)
-                }
-            >
-                <Icon icon=LuPower width="11px" height="11px" />
-            </button>
-            <div class="flex-1" />
-            <Show when=move || deletable>
-                {
-                    let zone_id = zone_id.clone();
-                    move || {
-                        let delete_id = zone_id.clone();
-                        if confirm_delete.get() {
-                            view! {
-                                <button
-                                    type="button"
-                                    class="rounded-md bg-[rgba(255,99,99,0.16)] px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[rgba(255,99,99,0.95)]"
-                                    on:click={
-                                        let delete_id = delete_id.clone();
-                                        move |_| {
-                                            commit_zone_delete(studio, &delete_id);
-                                            confirm_delete.set(false);
-                                        }
-                                    }
-                                >
-                                    "Delete"
-                                </button>
-                                <button
-                                    type="button"
-                                    class="chip-interactive inline-flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary"
-                                    on:click=move |_| confirm_delete.set(false)
-                                >
-                                    <Icon icon=LuX width="11px" height="11px" />
-                                </button>
-                            }
-                                .into_any()
-                        } else {
-                            view! {
-                                <button
-                                    type="button"
-                                    class="chip-interactive inline-flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary hover:text-[rgba(255,99,99,0.9)]"
-                                    title="Delete zone"
-                                    on:click=move |_| confirm_delete.set(true)
-                                >
-                                    <Icon icon=LuTrash2 width="11px" height="11px" />
-                                </button>
-                            }
-                                .into_any()
-                        }
-                    }
-                }
-            </Show>
-        </div>
-    }
-}
-
-/// The `+ New zone` control. Collapsed to a button until clicked, then an
-/// inline name input — no modal.
-#[component]
-pub fn NewZoneControl() -> impl IntoView {
-    let studio = expect_context::<StudioContext>();
-    let creating = RwSignal::new(false);
-
-    view! {
-        {move || {
-            if creating.get() {
-                view! {
-                    <input
-                        class="w-full rounded-lg border border-accent-muted bg-surface-sunken/60 px-3 py-2 text-[12px] text-fg-primary outline-none"
-                        placeholder="Zone name…"
-                        autofocus
-                        on:keydown=move |ev| {
-                            if ev.key() == "Enter" {
-                                let value = event_target_value(&ev);
-                                if create_zone_from(studio, &value) {
-                                    creating.set(false);
-                                }
-                            } else if ev.key() == "Escape" {
-                                creating.set(false);
-                            }
-                        }
-                        // Blur commits a typed name, like the scene and rename
-                        // fields; only Escape (or an empty field) discards.
-                        // Enter and Escape close the field first, and the
-                        // unmount blur must not submit again: a second POST
-                        // carries the pre-create revision and comes back 412.
-                        on:blur=move |ev| {
-                            if !creating.get_untracked() {
-                                return;
-                            }
-                            let value = event_target_value(&ev);
-                            if value.trim().is_empty() || create_zone_from(studio, &value) {
-                                creating.set(false);
-                            }
-                        }
-                    />
-                }
-                    .into_any()
-            } else {
-                // Cyan tint, matching the zone tile lightbulb so the
-                // affordance reads as a real "add zone" action rather
-                // than a secondary device-row picker. Inline style
-                // because the semantic accent tokens bake in their own
-                // alpha; layering Tailwind's `/N` modifier on top
-                // washes the color out below readability.
-                view! {
-                    <button
-                        type="button"
-                        class="chip-interactive flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed px-3 py-2 text-[11px] font-medium transition-colors"
-                        style="background: rgba(128, 255, 234, 0.08); border-color: rgba(128, 255, 234, 0.32); color: rgb(128, 255, 234)"
-                        on:click=move |_| creating.set(true)
-                    >
-                        <Icon icon=LuPlus width="12px" height="12px" />
-                        "New zone"
-                    </button>
-                }
-                    .into_any()
-            }
-        }}
-    }
-}
+use super::tab_model::{ReorderTarget, next_zone_name, zone_move_index};
 
 /// Plain-words rendering of a scene's `unassigned_behavior` (§9.4).
 #[must_use]
@@ -293,124 +30,122 @@ pub fn unassigned_behavior_label(behavior: &UnassignedBehavior) -> String {
     }
 }
 
-// ── Zone mutations ───────────────────────────────────────────────────────
-
-fn scene_context(studio: StudioContext) -> Option<(String, u64)> {
+fn scene_revision(studio: StudioContext) -> Option<u64> {
     studio
         .active_scene
-        .get_untracked()
-        .map(|scene| (scene.id.to_string(), scene.revision))
+        .with_untracked(|scene| scene.as_ref().map(|scene| scene.revision))
 }
 
-/// Create a zone from a typed name. Returns whether the request was sent
-/// — `false` keeps the inline input open so the user can fix the name.
-pub fn create_zone_from(studio: StudioContext, name: &str) -> bool {
-    let name = name.trim().to_owned();
-    if name.is_empty() {
-        toasts::toast_error("Zone name must not be empty");
-        return false;
-    }
-    let Some((_, revision)) = scene_context(studio) else {
+/// Create a zone under a fresh default name, open its tab, and put its
+/// name into rename mode so the user can type over it. `pending` holds
+/// true while the request is in flight.
+pub fn create_zone(studio: StudioContext, pending: RwSignal<bool>) {
+    let Some(scene) = studio.active_scene.get_untracked() else {
         toasts::toast_error("No active scene is available");
-        return false;
+        return;
     };
+    let names: Vec<&str> = scene.zones.iter().map(|zone| zone.name.as_str()).collect();
+    let name = next_zone_name(&names);
+    let revision = scene.revision;
+    pending.set(true);
     spawn_local(async move {
-        match api::zones::create_zone(&name, None, revision).await {
+        let outcome = api::zones::create_zone(&name, None, revision).await;
+        pending.try_set(false);
+        match outcome {
             Ok(ZoneOutcome::Applied(zone)) => {
-                studio.selected_surface_id.set(Some(zone.id.to_string()));
-                toasts::toast_success(&format!("Zone \"{}\" created", zone.name));
+                let id = zone.id.to_string();
+                studio
+                    .zone_rename_draft
+                    .set(Some((id.clone(), zone.name.clone())));
+                studio.selected_surface_id.set(Some(id));
                 studio.refresh_scene.run(());
             }
             Ok(ZoneOutcome::Stale { .. }) => {
-                toasts::toast_error("Scene changed elsewhere — reloaded, try again");
+                toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                 studio.refresh_scene.run(());
             }
             Err(error) => toasts::toast_error(&format!("Zone create failed: {error}")),
         }
     });
-    true
 }
 
-fn commit_zone_rename(studio: StudioContext, zone_id: &str, name: &str) {
+/// Rename a zone. A blank or unchanged name sends nothing.
+pub fn commit_zone_rename(studio: StudioContext, zone_id: &str, name: &str) {
     let name = name.trim().to_owned();
-    if name.is_empty() {
+    let unchanged = studio.active_scene.with_untracked(|scene| {
+        scene.as_ref().is_some_and(|scene| {
+            scene
+                .zones
+                .iter()
+                .any(|zone| zone.id.to_string() == zone_id && zone.name == name)
+        })
+    });
+    if name.is_empty() || unchanged {
         return;
     }
     let request = api::zones::PatchZoneRequest {
         name: Some(name),
         ..Default::default()
     };
-    apply_zone_update(studio, zone_id, request, "Zone renamed");
+    apply_zone_update(studio, zone_id, request, "Zone update failed");
 }
 
-fn commit_zone_color(studio: StudioContext, zone_id: &str, color: &str) {
+/// Set or clear a zone's identity color.
+pub fn commit_zone_color(studio: StudioContext, zone_id: &str, color: Option<String>) {
     let request = api::zones::PatchZoneRequest {
-        color: Some(Some(color.to_owned())),
+        color: Some(color),
         ..Default::default()
     };
-    apply_zone_update(studio, zone_id, request, "Zone color updated");
+    apply_zone_update(studio, zone_id, request, "Zone update failed");
 }
 
-fn commit_zone_enabled(studio: StudioContext, zone_id: &str, enabled: bool) {
+/// Pause (`enabled = false`) or resume a zone.
+pub fn commit_zone_enabled(studio: StudioContext, zone_id: &str, enabled: bool) {
     let request = api::zones::PatchZoneRequest {
         enabled: Some(enabled),
         ..Default::default()
     };
-    apply_zone_update(
-        studio,
-        zone_id,
-        request,
-        if enabled {
-            "Zone enabled"
-        } else {
-            "Zone disabled"
-        },
-    );
+    apply_zone_update(studio, zone_id, request, "Zone update failed");
+}
+
+/// Move a zone to `target` in the tab order. The daemon keeps one zone
+/// order for LED zones and Screens together, so the index is computed
+/// against the full list.
+pub fn commit_zone_move(studio: StudioContext, zone_id: &str, target: &ReorderTarget) {
+    let index = studio.active_scene.with_untracked(|scene| {
+        scene
+            .as_ref()
+            .and_then(|scene| zone_move_index(&scene.zones, zone_id, target))
+    });
+    let Some(index) = index else {
+        return;
+    };
+    let request = api::zones::PatchZoneRequest {
+        index: Some(index),
+        ..Default::default()
+    };
+    apply_zone_update(studio, zone_id, request, "Couldn't reorder zones");
 }
 
 fn apply_zone_update(
     studio: StudioContext,
     zone_id: &str,
     request: api::zones::PatchZoneRequest,
-    success: &'static str,
+    failure: &'static str,
 ) {
-    let Some((_, revision)) = scene_context(studio) else {
+    let Some(revision) = scene_revision(studio) else {
         toasts::toast_error("No active scene is available");
         return;
     };
     let zone_id = zone_id.to_owned();
     spawn_local(async move {
         match api::zones::update_zone(&zone_id, &request, revision).await {
-            Ok(ZoneOutcome::Applied(_)) => {
-                toasts::toast_success(success);
-                studio.refresh_scene.run(());
-            }
+            Ok(ZoneOutcome::Applied(_)) => studio.refresh_scene.run(()),
             Ok(ZoneOutcome::Stale { .. }) => {
-                toasts::toast_error("Scene changed elsewhere — reloaded, try again");
+                toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                 studio.refresh_scene.run(());
             }
-            Err(error) => toasts::toast_error(&format!("Zone update failed: {error}")),
-        }
-    });
-}
-
-fn commit_zone_delete(studio: StudioContext, zone_id: &str) {
-    let Some((_, revision)) = scene_context(studio) else {
-        toasts::toast_error("No active scene is available");
-        return;
-    };
-    let zone_id = zone_id.to_owned();
-    spawn_local(async move {
-        match api::zones::delete_zone(&zone_id, revision).await {
-            Ok(ZoneOutcome::Applied(())) => {
-                toasts::toast_success("Zone deleted");
-                studio.refresh_scene.run(());
-            }
-            Ok(ZoneOutcome::Stale { .. }) => {
-                toasts::toast_error("Scene changed elsewhere — reloaded, try again");
-                studio.refresh_scene.run(());
-            }
-            Err(error) => toasts::toast_error(&format!("Zone delete failed: {error}")),
+            Err(error) => toasts::toast_error(&format!("{failure}: {error}")),
         }
     });
 }

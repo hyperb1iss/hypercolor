@@ -1,4 +1,7 @@
-//! One chronological journal for Studio placements and persisted assignments.
+//! One chronological journal for Studio placements and persisted assignments,
+//! plus the multi-step zone delete and its undo.
+
+use std::collections::HashSet;
 
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{EditMembersRequest, EditMembersResponse, MemberEdit};
@@ -417,6 +420,281 @@ impl StudioHistory {
             }
         }
     }
+}
+
+/// What a zone delete removed, kept so its undo can rebuild the zone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeletedZone {
+    pub name: String,
+    pub color: Option<String>,
+    pub enabled: bool,
+    /// The zone's position in the scene's full zone order.
+    pub index: usize,
+    /// Complete snapshots of the outputs the zone held, in zone order.
+    pub outputs: Vec<hypercolor_types::spatial::Output>,
+}
+
+/// The live scene's revision, read fresh between the steps of a
+/// multi-request zone operation.
+async fn live_revision() -> Option<u64> {
+    api::fetch_active_scene()
+        .await
+        .ok()
+        .map(|scene| scene.revision)
+}
+
+impl StudioHistory {
+    /// Delete a zone. Its outputs leave first, through one membership
+    /// transaction whose receipt holds their complete snapshots, so an
+    /// undo can put them back exactly; then the empty zone goes.
+    /// `select_after` takes the selection when the deleted zone held it.
+    /// `deleted` runs with the restore record once the zone is gone.
+    pub fn delete_zone(
+        self,
+        zone_id: String,
+        select_after: Option<String>,
+        deleted: Callback<DeletedZone>,
+    ) {
+        use hypercolor_types::api::scene::MemberState;
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some((index, zone)) = scene
+            .zones
+            .iter()
+            .enumerate()
+            .find(|(_, zone)| zone.id.to_string() == zone_id)
+        else {
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        let zone_key = zone.id;
+        let changes: Vec<MemberEdit> = api::zone_outputs(zone)
+            .into_iter()
+            .enumerate()
+            .map(|(index, output)| MemberEdit {
+                before: Some(MemberState {
+                    zone_id: zone_key,
+                    output,
+                    index,
+                }),
+                after: None,
+            })
+            .collect();
+        let mut record = DeletedZone {
+            name: zone.name.clone(),
+            color: zone.color.clone(),
+            enabled: zone.enabled,
+            index,
+            outputs: Vec::new(),
+        };
+        leptos::task::spawn_local(async move {
+            let mut revision = scene.revision;
+            if !changes.is_empty() {
+                let request = EditMembersRequest {
+                    scene_id: scene.id,
+                    changes,
+                    assignment: None,
+                };
+                match api::zones::edit_members(&request, revision).await {
+                    Ok(api::zones::ZoneOutcome::Applied(response)) => {
+                        revision = response.document.revision;
+                        let mut released: Vec<_> = response
+                            .changes
+                            .into_iter()
+                            .filter_map(|change| change.before)
+                            .collect();
+                        released.sort_by_key(|state| state.index);
+                        record.outputs = released.into_iter().map(|state| state.output).collect();
+                    }
+                    Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                        toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
+                        self.refresh.run(());
+                        self.finish(generation);
+                        return;
+                    }
+                    Err(error) => {
+                        toasts::toast_error(&format!("Zone delete failed: {error}"));
+                        self.refresh.run(());
+                        self.finish(generation);
+                        return;
+                    }
+                }
+            }
+            match api::zones::delete_zone(&zone_id, revision).await {
+                Ok(api::zones::ZoneOutcome::Applied(())) => {
+                    if self.is_current(generation) {
+                        if self.selected.get_untracked().as_deref() == Some(zone_id.as_str()) {
+                            self.selected.set(select_after);
+                        }
+                        deleted.run(record);
+                    }
+                }
+                outcome => {
+                    // The outputs already left; put them back so a failed
+                    // delete never strands the zone's devices.
+                    if !record.outputs.is_empty()
+                        && let Some(revision) = live_revision().await
+                    {
+                        let _ =
+                            restore_outputs(scene.id, zone_key, &record.outputs, revision).await;
+                    }
+                    match outcome {
+                        Err(error) => toasts::toast_error(&format!("Zone delete failed: {error}")),
+                        _ => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
+                    }
+                }
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+
+    /// Rebuild a deleted zone: its name, color, and paused state, its
+    /// outputs (those still unclaimed), and, best effort, its position.
+    pub fn restore_zone(self, record: DeletedZone) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let created =
+                api::zones::create_zone(&record.name, record.color.as_deref(), scene.revision)
+                    .await;
+            let zone = match created {
+                Ok(api::zones::ZoneOutcome::Applied(zone)) => zone,
+                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                    toasts::toast_error("Scene changed elsewhere; the zone was not restored.");
+                    self.refresh.run(());
+                    self.finish(generation);
+                    return;
+                }
+                Err(error) => {
+                    toasts::toast_error(&format!("Zone restore failed: {error}"));
+                    self.refresh.run(());
+                    self.finish(generation);
+                    return;
+                }
+            };
+            let zone_id = zone.id;
+            let mut problems = Vec::new();
+
+            if let Ok(live) = api::fetch_active_scene().await {
+                let claimed: HashSet<&str> = live
+                    .zones
+                    .iter()
+                    .flat_map(|zone| zone.members.iter())
+                    .map(|member| member.id.0.as_str())
+                    .collect();
+                let free: Vec<_> = record
+                    .outputs
+                    .iter()
+                    .filter(|output| !claimed.contains(output.id.as_str()))
+                    .cloned()
+                    .collect();
+                let moved_on = record.outputs.len() - free.len();
+                if !free.is_empty()
+                    && restore_outputs(live.id, zone_id, &free, live.revision)
+                        .await
+                        .is_err()
+                {
+                    problems.push("its devices could not be put back");
+                } else if moved_on > 0 {
+                    problems.push("devices you moved since stayed where they are");
+                }
+            }
+
+            let zone_key = zone_id.to_string();
+            if !record.enabled
+                && !patch_zone(
+                    &zone_key,
+                    api::zones::PatchZoneRequest {
+                        enabled: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                problems.push("it could not be paused again");
+            }
+            let index = api::fetch_active_scene().await.ok().and_then(|live| {
+                let current = live.zones.iter().position(|zone| zone.id == zone_id)?;
+                (current != record.index).then_some(record.index)
+            });
+            if let Some(index) = index
+                && !patch_zone(
+                    &zone_key,
+                    api::zones::PatchZoneRequest {
+                        index: Some(index),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                problems.push("it kept its new place at the end of the tabs");
+            }
+
+            if self.is_current(generation) {
+                self.selected.set(Some(zone_key));
+            }
+            if problems.is_empty() {
+                toasts::toast_success(&format!("Restored {}", record.name));
+            } else {
+                toasts::toast_info(&format!(
+                    "Restored {}, but {}",
+                    record.name,
+                    problems.join(" and ")
+                ));
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+}
+
+/// Put complete output snapshots back into a zone in one transaction.
+async fn restore_outputs(
+    scene_id: hypercolor_types::scene::SceneId,
+    zone_id: hypercolor_types::scene::ZoneId,
+    outputs: &[hypercolor_types::spatial::Output],
+    revision: u64,
+) -> Result<(), ()> {
+    use hypercolor_types::api::scene::MemberState;
+    let request = EditMembersRequest {
+        scene_id,
+        changes: outputs
+            .iter()
+            .enumerate()
+            .map(|(index, output)| MemberEdit {
+                before: None,
+                after: Some(MemberState {
+                    zone_id,
+                    output: output.clone(),
+                    index,
+                }),
+            })
+            .collect(),
+        assignment: None,
+    };
+    match api::zones::edit_members(&request, revision).await {
+        Ok(api::zones::ZoneOutcome::Applied(_)) => Ok(()),
+        _ => Err(()),
+    }
+}
+
+/// Patch one zone against the live revision. Reports whether it applied.
+async fn patch_zone(zone_id: &str, request: api::zones::PatchZoneRequest) -> bool {
+    let Some(revision) = live_revision().await else {
+        return false;
+    };
+    matches!(
+        api::zones::update_zone(zone_id, &request, revision).await,
+        Ok(api::zones::ZoneOutcome::Applied(_))
+    )
 }
 
 /// Resolve live preconditions while retaining unrelated placement edits.

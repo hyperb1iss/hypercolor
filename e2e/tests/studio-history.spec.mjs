@@ -242,7 +242,7 @@ test("Studio assignment completion respects a surface selected while saving", as
   await page.getByRole("button", { name: /^Unassigned Hardware in no zone/ }).click();
   await addStand(page);
   await expect.poll(() => fixture.writes.length).toBe(1);
-  await page.getByRole("button", { name: "Accent lights 0 devices", exact: true }).click();
+  await page.getByRole("tab", { name: "Accent lights", exact: true }).click();
   release();
   await expect.poll(() => fixture.assigned().length).toBe(1);
   await expect(fixture.undo).toBeEnabled();
@@ -287,7 +287,7 @@ test("Studio pending assignment disables open device menus and the add picker", 
   await expect(move).toBeDisabled();
   await expect(remove).toBeDisabled();
   await expect(page.getByTitle("Add to a zone", { exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Accent lights 0 devices", exact: true })).toBeEnabled();
+  await expect(page.getByRole("tab", { name: "Accent lights", exact: true })).toBeEnabled();
   release();
   await expect.poll(() => fixture.assigned().length).toBe(1);
   if (!(await picker.count())) await page.getByRole("button", { name: "Add device", exact: true }).last().click();
@@ -309,7 +309,7 @@ test("Studio cancels an undo superseded by another zone selection without lockin
   await dragOutput(page, "anchor-output");
   await expect.poll(() => anchor.evaluate(geometry)).not.toEqual(original);
   await expect(fixture.undo).toBeEnabled();
-  const otherZone = page.getByRole("button", { name: "Accent lights 0 devices", exact: true });
+  const otherZone = page.getByRole("tab", { name: "Accent lights", exact: true });
   // Both handlers run before the reactive provider consumes the queued replay.
   await page.evaluate(({ undo, otherZone }) => { undo.click(); otherZone.click(); }, {
     undo: await fixture.undo.elementHandle(), otherZone: await otherZone.elementHandle(),

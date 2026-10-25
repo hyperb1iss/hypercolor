@@ -61,6 +61,7 @@ web-sys = { version = "0.3", features = [
     "History",
     "CanvasRenderingContext2d",
     "DomRect",
+    "DomRectReadOnly",
     "ImageData",
     "ImageBitmap",
     "ImageBitmapRenderingContext",
@@ -92,6 +93,8 @@ web-sys = { version = "0.3", features = [
     "console",
     "DragEvent",
     "DataTransfer",
+    "ResizeObserver",
+    "ResizeObserverEntry",
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
