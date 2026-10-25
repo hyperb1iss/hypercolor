@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.gpu_pass_timings_status import GpuPassTimingsStatus
+    from ..models.gpu_transfer_status import GpuTransferStatus
+
 
 T = TypeVar("T", bound="EffectHealthStatus")
 
@@ -84,6 +89,13 @@ class EffectHealthStatus:
         sparkleflinger_gpu_source_upload_skipped_total (int):
         sparkleflinger_media_texture_allocations_total (int):
         sparkleflinger_media_texture_upload_bytes_total (int):
+        gpu_pass_timings (GpuPassTimingsStatus | Unset): GPU timestamp coverage for SparkleFlinger's compute passes.
+
+            Durations exclude Servo's separate GPU context, uploads, transfer commands,
+            and queue latency. Counters belong to the current compositor instance.
+        gpu_transfers (GpuTransferStatus | Unset): Successful GPU mappings consumed by CPU publications or LED decoding.
+            Bytes count the mapped payload consumed, excluding RGBA row padding.
+            Counters are process totals and reset when the daemon restarts.
         servo_gpu_import_fallback_reason (None | str | Unset):
         servo_gpu_import_windows_sync_mode (None | str | Unset):
     """
@@ -156,6 +168,8 @@ class EffectHealthStatus:
     sparkleflinger_gpu_source_upload_skipped_total: int
     sparkleflinger_media_texture_allocations_total: int
     sparkleflinger_media_texture_upload_bytes_total: int
+    gpu_pass_timings: GpuPassTimingsStatus | Unset = UNSET
+    gpu_transfers: GpuTransferStatus | Unset = UNSET
     servo_gpu_import_fallback_reason: None | str | Unset = UNSET
     servo_gpu_import_windows_sync_mode: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -335,6 +349,14 @@ class EffectHealthStatus:
             self.sparkleflinger_media_texture_upload_bytes_total
         )
 
+        gpu_pass_timings: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.gpu_pass_timings, Unset):
+            gpu_pass_timings = self.gpu_pass_timings.to_dict()
+
+        gpu_transfers: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.gpu_transfers, Unset):
+            gpu_transfers = self.gpu_transfers.to_dict()
+
         servo_gpu_import_fallback_reason: None | str | Unset
         if isinstance(self.servo_gpu_import_fallback_reason, Unset):
             servo_gpu_import_fallback_reason = UNSET
@@ -421,6 +443,10 @@ class EffectHealthStatus:
                 "sparkleflinger_media_texture_upload_bytes_total": sparkleflinger_media_texture_upload_bytes_total,
             }
         )
+        if gpu_pass_timings is not UNSET:
+            field_dict["gpu_pass_timings"] = gpu_pass_timings
+        if gpu_transfers is not UNSET:
+            field_dict["gpu_transfers"] = gpu_transfers
         if servo_gpu_import_fallback_reason is not UNSET:
             field_dict["servo_gpu_import_fallback_reason"] = (
                 servo_gpu_import_fallback_reason
@@ -434,6 +460,11 @@ class EffectHealthStatus:
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.gpu_pass_timings_status import (
+            GpuPassTimingsStatus,
+        )
+        from ..models.gpu_transfer_status import GpuTransferStatus
+
         d = dict(src_dict)
         errors_total = d.pop("errors_total")
 
@@ -621,6 +652,20 @@ class EffectHealthStatus:
             "sparkleflinger_media_texture_upload_bytes_total"
         )
 
+        _gpu_pass_timings = d.pop("gpu_pass_timings", UNSET)
+        gpu_pass_timings: GpuPassTimingsStatus | Unset
+        if isinstance(_gpu_pass_timings, Unset):
+            gpu_pass_timings = UNSET
+        else:
+            gpu_pass_timings = GpuPassTimingsStatus.from_dict(_gpu_pass_timings)
+
+        _gpu_transfers = d.pop("gpu_transfers", UNSET)
+        gpu_transfers: GpuTransferStatus | Unset
+        if isinstance(_gpu_transfers, Unset):
+            gpu_transfers = UNSET
+        else:
+            gpu_transfers = GpuTransferStatus.from_dict(_gpu_transfers)
+
         def _parse_servo_gpu_import_fallback_reason(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -714,6 +759,8 @@ class EffectHealthStatus:
             sparkleflinger_gpu_source_upload_skipped_total=sparkleflinger_gpu_source_upload_skipped_total,
             sparkleflinger_media_texture_allocations_total=sparkleflinger_media_texture_allocations_total,
             sparkleflinger_media_texture_upload_bytes_total=sparkleflinger_media_texture_upload_bytes_total,
+            gpu_pass_timings=gpu_pass_timings,
+            gpu_transfers=gpu_transfers,
             servo_gpu_import_fallback_reason=servo_gpu_import_fallback_reason,
             servo_gpu_import_windows_sync_mode=servo_gpu_import_windows_sync_mode,
         )
