@@ -129,6 +129,7 @@ pub fn StudioDeviceCard(
     });
     let transport = transport_label(&device.connection.transport);
     let device_name = device.name.clone();
+    let name_title = device.name.clone();
     // A screen has no addressable LED tally — its layout topology is a
     // pixel grid. Show the real resolution; LED devices show the count.
     let leds = match resolution {
@@ -353,25 +354,32 @@ pub fn StudioDeviceCard(
                 >
                     <div class="w-1 shrink-0 self-stretch rounded-full" style=strip_style />
                     <div class="min-w-0 flex-1 space-y-1">
-                        <div class="flex items-center gap-1.5">
-                            {match vendor {
-                                Some(v) => {
-                                    view! { <VendorMark vendor=v size=VendorMarkSize::Xs /> }
-                                        .into_any()
-                                }
-                                None => {
-                                    view! {
-                                        <Icon
-                                            icon=class_icon
-                                            width="13px"
-                                            height="13px"
-                                            style=icon_style
-                                        />
+                        // Names wrap to a second line before they truncate:
+                        // the pane is narrow and model suffixes matter.
+                        <div class="flex items-start gap-1.5">
+                            <span class="mt-0.5 flex shrink-0">
+                                {match vendor {
+                                    Some(v) => {
+                                        view! { <VendorMark vendor=v size=VendorMarkSize::Xs /> }
+                                            .into_any()
                                     }
-                                        .into_any()
-                                }
-                            }}
-                            <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-fg-primary">
+                                    None => {
+                                        view! {
+                                            <Icon
+                                                icon=class_icon
+                                                width="13px"
+                                                height="13px"
+                                                style=icon_style
+                                            />
+                                        }
+                                            .into_any()
+                                    }
+                                }}
+                            </span>
+                            <span
+                                class="line-clamp-2 min-w-0 flex-1 break-words text-[12px] font-medium leading-4 text-fg-primary"
+                                title=name_title
+                            >
                                 {device_name}
                             </span>
                         </div>

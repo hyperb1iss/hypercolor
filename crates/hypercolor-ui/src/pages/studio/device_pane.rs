@@ -532,6 +532,7 @@ fn CompactDeviceRow(
     } else {
         row.name.clone()
     };
+    let label_title = label.clone();
     view! {
         <div
             class="flex items-center gap-2 rounded px-1.5 py-1"
@@ -543,7 +544,9 @@ fn CompactDeviceRow(
                 class="h-3.5 w-0.5 shrink-0 rounded-full bg-fg-tertiary/40"
                 style=move || accent.get().unwrap_or_default()
             />
-            <span class="min-w-0 flex-1 truncate text-[11px] text-fg-secondary">{label}</span>
+            <span class="min-w-0 flex-1 truncate text-[11px] text-fg-secondary" title=label_title>
+                {label}
+            </span>
             <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/60">
                 {row.led_count}
             </span>
