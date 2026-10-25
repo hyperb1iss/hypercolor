@@ -14,7 +14,6 @@ mod face_composition;
 pub mod history;
 mod offline_device_card;
 pub mod pane_model;
-mod scene_selector;
 mod screen_list;
 mod stage;
 pub use crate::zones::surface;
@@ -36,6 +35,7 @@ use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::scene_picker::ScenePicker;
 use crate::icons::*;
 use crate::storage;
 
@@ -44,7 +44,6 @@ use crate::zones::surface::{
 };
 use composition_panel::CompositionPanel;
 use device_pane::DevicePane;
-use scene_selector::SceneSelector;
 use stage::Stage;
 use undo_notice::{UndoNotice, UndoNoticeHost};
 use zone_strip::{ZONE_PANEL_ID, ZoneStrip, active_tab_dom_id};
@@ -455,7 +454,7 @@ pub fn StudioPage() -> impl IntoView {
                 accent=PageAccent::Coral
             >
                 <HeaderTrailing slot>
-                    <SceneSelector />
+                    <ScenePicker />
                 </HeaderTrailing>
                 <HeaderToolbar slot>
                     <ZoneStrip />

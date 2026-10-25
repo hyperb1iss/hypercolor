@@ -242,25 +242,6 @@ pub struct ScenesContext {
     pub deactivate: Callback<()>,
 }
 
-impl ScenesContext {
-    /// Whether the user has somewhere to switch *to* — the gate for
-    /// rendering scene-switcher affordances at all. True with two or
-    /// more saved scenes, or with one saved scene while the ephemeral
-    /// default is running (Default ↔ the saved scene is still a switch).
-    pub fn has_multiple(&self) -> bool {
-        let saved = self.scenes.with(Vec::len);
-        if saved > 1 {
-            return true;
-        }
-        saved == 1
-            && self.active.with(|active| {
-                active
-                    .as_ref()
-                    .is_none_or(|scene| scene.kind == hypercolor_types::scene::SceneKind::Ephemeral)
-            })
-    }
-}
-
 /// Whether one read of the active scene tells the page what scene this
 /// connection serves.
 ///

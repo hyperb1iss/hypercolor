@@ -17,6 +17,7 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::page_search_bar::PageSearchBar;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::scene_picker::ScenePicker;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::components::status_banner::{StatusBanner, StatusBannerTone};
@@ -25,7 +26,7 @@ use crate::control_session::{
 };
 use crate::icons::*;
 use crate::toasts;
-use crate::zones::{ZoneEffectState, ZonesContext};
+use crate::zones::{ScenesContext, ZoneEffectState, ZonesContext};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlDefinition, EffectCategory};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
@@ -139,6 +140,7 @@ pub fn EffectsPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
     let zones_ctx = expect_context::<ZonesContext>();
+    let scenes_ctx = expect_context::<ScenesContext>();
 
     Effect::new(move |_| {
         ws.set_preview_cap.set(EFFECTS_PREVIEW_FPS_CAP);
@@ -378,7 +380,9 @@ pub fn EffectsPage() -> impl IntoView {
             },
         ))
     });
-    let (returning_to_default, set_returning_to_default) = signal(false);
+    // Deactivation reports itself as a switch to the empty scene id.
+    let returning_to_default =
+        Memo::new(move |_| scenes_ctx.switching.with(|id| id.as_deref() == Some("")));
 
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
@@ -450,26 +454,6 @@ pub fn EffectsPage() -> impl IntoView {
         fx.apply_effect(id);
     });
 
-    let on_return_to_default = Callback::new(move |_| {
-        if returning_to_default.get_untracked() {
-            return;
-        }
-
-        set_returning_to_default.set(true);
-        let ctx = fx;
-        leptos::task::spawn_local(async move {
-            if api::deactivate_scene().await.is_ok() {
-                ctx.set_last_effect_error.set(None);
-                ctx.refresh_active_scene();
-                ctx.refresh_active_effect();
-                toasts::toast_success("Returned to Default scene.");
-            } else {
-                toasts::toast_error("Couldn't return to Default scene.");
-            }
-            set_returning_to_default.set(false);
-        });
-    });
-
     // Toggle favorite handler
     let on_toggle_favorite = Callback::new(move |id: String| {
         fx.toggle_favorite(id);
@@ -535,6 +519,7 @@ pub fn EffectsPage() -> impl IntoView {
                 accent=PageAccent::Purple
             >
                 <HeaderTrailing slot>
+                    <ScenePicker />
                     <ApplyTargetSelect scene=apply_target_scene />
                     <span class="max-md:hidden shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
                         {move || {
@@ -757,7 +742,7 @@ pub fn EffectsPage() -> impl IntoView {
                         <button
                             class="shrink-0 rounded-lg border border-status-warning/28 px-3 py-1.5 text-[11px] font-medium text-status-warning/92 transition-all duration-200 hover:bg-status-warning/8 disabled:cursor-wait disabled:opacity-60"
                             disabled=move || returning_to_default.get()
-                            on:click=move |_| on_return_to_default.run(())
+                            on:click=move |_| scenes_ctx.deactivate.run(())
                         >
                             {move || if returning_to_default.get() {
                                 "Returning..."

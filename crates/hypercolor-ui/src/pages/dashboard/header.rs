@@ -5,16 +5,10 @@
 //! cinematic cabinet.
 
 use leptos::prelude::*;
-use leptos_icons::Icon;
 
 use crate::api::SystemStatus;
-use crate::components::scene_switcher::{
-    SceneSwitcherMenu, active_scene_label, active_scene_locked,
-};
 use crate::components::status_pill::StatusPill;
-use crate::icons::*;
 use crate::live_uptime::{format_uptime, use_live_uptime};
-use crate::zones::ScenesContext;
 
 // ── Status strip ─────────────────────────────────────────────────────
 
@@ -27,8 +21,6 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
     let uptime = Signal::derive(move || format_uptime(live_uptime.get()));
     let device_count = status.device_count;
     let effect_count = status.effect_count;
-    let active_scene = status.active_scene;
-    let active_scene_snapshot_locked = status.active_scene_snapshot_locked;
 
     let status_color = if running {
         "var(--color-status-success)"
@@ -40,7 +32,7 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
         // Desktop keeps the pill grammar, minus the WS Clients pill —
         // that number is developer telemetry and lives with the perf
         // panels. Phones condense to one mono line where the pulsing dot
-        // carries the running state; only the scene pill stays a control.
+        // carries the running state.
         <div class="flex items-center gap-4 shrink-0 max-md:gap-2.5">
             <div class="max-md:hidden flex items-center gap-4">
                 <StatusPill
@@ -83,99 +75,7 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
                 <span class="text-fg-tertiary/40">"·"</span>
                 <span class="tabular-nums shrink-0">{format!("{effect_count} fx")}</span>
             </div>
-            <ScenePill
-                fallback_scene=active_scene
-                fallback_locked=active_scene_snapshot_locked
-            />
         </div>
-    }
-}
-
-/// The status strip's scene pill. The label comes from the shared scene
-/// resource (so external switches stay fresh), falling back to the
-/// page's one-shot status snapshot while that resource loads. With more
-/// than one scene to pick from, the pill becomes a switcher trigger;
-/// otherwise it stays the familiar static pill. Lock styling is kept
-/// for snapshot-locked scenes.
-#[component]
-fn ScenePill(fallback_scene: Option<String>, fallback_locked: bool) -> impl IntoView {
-    let scenes_ctx = expect_context::<ScenesContext>();
-    let (open, set_open) = signal(false);
-
-    // `(value, locked, interactive)` for the pill, or `None` to render
-    // nothing (default scene with nowhere to switch to).
-    let pill = Memo::new(move |_| {
-        let interactive = scenes_ctx.has_multiple();
-        scenes_ctx.active.with(|active| {
-            let is_saved = active
-                .as_ref()
-                .is_some_and(|scene| scene.kind != hypercolor_types::scene::SceneKind::Ephemeral);
-            if is_saved {
-                return Some((
-                    active_scene_label(active.as_ref()),
-                    active_scene_locked(active.as_ref()),
-                    interactive,
-                ));
-            }
-            if active.is_none()
-                && let Some(name) = fallback_scene.clone()
-            {
-                return Some((name, fallback_locked, interactive));
-            }
-            interactive.then(|| ("Default".to_owned(), false, true))
-        })
-    });
-
-    view! {
-        {move || pill.get().map(|(value, locked, interactive)| {
-            let label = if locked { "Scene Lock" } else { "Scene" };
-            let color = if locked {
-                "var(--color-status-warning)"
-            } else {
-                "var(--color-cyan)"
-            };
-            let value_text = if locked { format!("{value} · snap") } else { value };
-            view! {
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                {if interactive {
-                    view! {
-                        <div class="relative dashboard-scene-pill">
-                            <button
-                                type="button"
-                                class="group flex items-center gap-1.5 rounded-lg px-1.5 py-1 \
-                                       -mx-1.5 -my-1 transition-colors hover:bg-surface-hover/30 \
-                                       focus-visible:outline-none focus-visible:ring-1 \
-                                       focus-visible:ring-accent/50 btn-press"
-                                title="Switch scene"
-                                aria-haspopup="menu"
-                                aria-expanded=move || open.get().to_string()
-                                on:click=move |_| set_open.update(|value| *value = !*value)
-                            >
-                                <StatusPill
-                                    label=label
-                                    value=value_text
-                                    color=color
-                                    pulsing=false
-                                />
-                                <span class="text-fg-tertiary group-hover:text-fg-secondary transition-colors">
-                                    <Icon icon=LuChevronDown width="12px" height="12px" />
-                                </span>
-                            </button>
-                            <SceneSwitcherMenu
-                                anchor_class="dashboard-scene-pill"
-                                is_open=open
-                                set_open=set_open
-                                placement="left-0 top-full mt-2 w-52"
-                            />
-                        </div>
-                    }.into_any()
-                } else {
-                    view! {
-                        <StatusPill label=label value=value_text color=color pulsing=false />
-                    }.into_any()
-                }}
-            }
-        })}
     }
 }
 

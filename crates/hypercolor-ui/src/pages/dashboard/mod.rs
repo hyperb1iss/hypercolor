@@ -26,6 +26,7 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::perf_charts::PhaseFrame;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::scene_picker::ScenePicker;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::preview_telemetry::PreviewTelemetryContext;
@@ -407,6 +408,7 @@ pub fn DashboardPage() -> impl IntoView {
                 accent=PageAccent::Spectrum
             >
                 <HeaderTrailing slot>
+                    <ScenePicker />
                     // Layout gear — opens the panel visibility / reset menu.
                     // Coral dot badges the icon when one or more panels are hidden.
                     <div class="layout-menu-anchor relative shrink-0">
@@ -438,9 +440,7 @@ pub fn DashboardPage() -> impl IntoView {
                     </div>
                 </HeaderTrailing>
                 <HeaderToolbar slot>
-                    // No overflow value here: the scene pill anchors a
-                    // dropdown, and any scroll box would clip it. The strip
-                    // is condensed enough to fit a phone outright.
+                    // The strip is condensed enough to fit a phone outright.
                     <Suspense fallback=move || view! { <StatusSkeleton /> }>
                         {move || status_resource.get().map(|result| {
                             match result {

@@ -14,7 +14,7 @@ use crate::ambient::AmbientHuePublisher;
 use crate::app::{EffectsContext, FrameAnalysisContext};
 use crate::components::mobile_nav::MobileNav;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
-use crate::components::scene_switcher::active_saved_scene_id;
+use crate::components::scene_picker::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_shortcut_path};

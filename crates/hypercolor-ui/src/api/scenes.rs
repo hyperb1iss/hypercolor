@@ -5,6 +5,7 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
+use hypercolor_types::scene::SceneMutationMode;
 use hypercolor_types::spatial::Output;
 
 use super::http_transport::HttpMethod;
@@ -12,6 +13,7 @@ use super::{ApiError, ApiResult, client};
 
 pub use hypercolor_types::api::scenes::{
     ActivateSceneRequest, CreateSceneRequest, ReplaceSceneRequest, SceneListResponse, SceneSummary,
+    SnapshotSceneRequest,
 };
 
 /// The selected topmost effect layer inside one canonical zone resource.
@@ -105,11 +107,40 @@ pub async fn create_scene(name: &str) -> ApiResult<SceneSummary> {
     client::post_json("/api/v1/scenes", &request).await
 }
 
+/// Save the running scene as a new scene the user can keep editing.
+///
+/// The snapshot route copies the live zones, layers, and layout, but it
+/// stores the copy snapshot-locked, and a locked scene refuses every
+/// runtime edit. A duplicate exists to be edited, so the copy is switched
+/// to live right after it is written. When that second write fails, the
+/// locked copy stays in the library and the error is returned.
+pub async fn duplicate_active_scene(name: &str) -> ApiResult<SceneSummary> {
+    let request = SnapshotSceneRequest {
+        name: name.to_owned(),
+        description: None,
+    };
+    let created: SceneSummary = client::post_json("/api/v1/scenes/snapshot", &request).await?;
+    replace_stored_scene(&created.id, |document| {
+        document.mutation_mode = SceneMutationMode::Live;
+    })
+    .await?;
+    Ok(created)
+}
+
 /// Rename a scene through the guarded whole-document replacement route.
 pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
+    replace_stored_scene(scene_id, |document| name.clone_into(&mut document.name)).await
+}
+
+/// Read one stored scene, edit it, and write it back at the revision it
+/// was read at, so a concurrent change is refused rather than clobbered.
+async fn replace_stored_scene(
+    scene_id: &str,
+    edit: impl FnOnce(&mut SceneDocument),
+) -> ApiResult<()> {
     let url = format!("/api/v1/scenes/{scene_id}");
     let mut document = client::fetch_json::<SceneDocument>(&url).await?;
-    document.name = name.to_owned();
+    edit(&mut document);
     let request = ReplaceSceneRequest::from(&document);
     match client::send_json_versioned::<_, SceneDocument>(
         HttpMethod::Put,
@@ -121,7 +152,7 @@ pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
     {
         client::MutationOutcome::Applied(_) => Ok(()),
         client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
-            "Scene changed while it was being renamed; reload revision {current}"
+            "Scene changed while it was being saved; reload revision {current}"
         ))),
     }
 }
