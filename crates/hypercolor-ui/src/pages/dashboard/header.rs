@@ -93,7 +93,8 @@ pub fn fps_label(fps: f64) -> String {
 #[component]
 pub(super) fn StatusLine() -> impl IntoView {
     let ws = expect_context::<WsContext>();
-    let status = expect_context::<DaemonStatusContext>().status;
+    let daemon_status = expect_context::<DaemonStatusContext>();
+    let status = daemon_status.status;
 
     let health = Memo::new(move |_| {
         daemon_health(
@@ -102,17 +103,19 @@ pub(super) fn StatusLine() -> impl IntoView {
             ws.output_paused.get(),
         )
     });
-    // The snapshot's uptime, stamped with when it arrived.
-    let uptime_anchor = Memo::new(move |_| {
-        status
-            .with(|status| status.as_ref().map(|status| status.uptime_seconds))
-            .map(|seconds| (seconds, now_ms()))
-    });
+    // The snapshot's uptime, advanced from when the snapshot landed.
     let uptime = Memo::new(move |_| {
         ws.metrics_tick.track();
-        uptime_anchor
-            .get()
-            .map(|(seconds, at)| format_uptime(advanced_uptime_seconds(seconds, at, now_ms())))
+        let received_at = daemon_status.received_at_ms.get();
+        status.with(|status| {
+            status.as_ref().map(|status| {
+                format_uptime(advanced_uptime_seconds(
+                    status.uptime_seconds,
+                    received_at,
+                    now_ms(),
+                ))
+            })
+        })
     });
     let devices = Memo::new(move |_| {
         ws.metrics

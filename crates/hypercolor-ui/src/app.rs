@@ -170,7 +170,11 @@ impl CapabilitiesContext {
 /// and whether the render loop is running.
 #[derive(Clone, Copy)]
 pub struct DaemonStatusContext {
-    pub status: Memo<Option<api::SystemStatus>>,
+    /// The latest snapshot, or `None` before the first one lands.
+    pub status: ReadSignal<Option<api::SystemStatus>>,
+    /// When the latest snapshot landed, on the `now_ms` clock, so values
+    /// it reports as of that moment (the uptime) can be advanced.
+    pub received_at_ms: ReadSignal<f64>,
 }
 
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
@@ -221,8 +225,6 @@ pub struct EffectsContext {
     /// scene, in scene order. The multi-zone now-playing source of truth;
     /// the singular `active_*` signals above mirror the primary zone only.
     pub zone_effects: Memo<Vec<crate::zones::ZoneEffectState>>,
-    /// The focused zone's effect state (primary when nothing is focused).
-    pub focused_zone_effect: Memo<Option<crate::zones::ZoneEffectState>>,
 }
 
 /// Shared device + layout state — accessible from devices page and layout builder.
@@ -635,8 +637,19 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     provide_context(CapabilitiesContext {
         capabilities: capabilities.into(),
     });
+    // An Effect, not a Memo, stamps the arrival: a lazy Memo would stamp
+    // whenever a page first read it, long after the snapshot landed.
+    let (daemon_status, set_daemon_status) = signal(None::<api::SystemStatus>);
+    let (status_received_at_ms, set_status_received_at_ms) = signal(0.0_f64);
+    Effect::new(move |_| {
+        if let Some(Ok(status)) = status_resource.get() {
+            set_status_received_at_ms.set(now_ms());
+            set_daemon_status.set(Some(status));
+        }
+    });
     provide_context(DaemonStatusContext {
-        status: Memo::new(move |_| status_resource.get().and_then(Result::ok)),
+        status: daemon_status,
+        received_at_ms: status_received_at_ms,
     });
     crate::release_notifications::provide_release_notifications();
 
@@ -738,17 +751,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-    let focused_zone_effect = Memo::new(move |_| {
-        let focused = zones_ctx.focused_zone.get();
-        zone_effects.with(|zones| match focused.as_deref() {
-            Some(id) => zones.iter().find(|state| state.zone.id == id).cloned(),
-            None => zones
-                .iter()
-                .find(|state| state.zone.role == hypercolor_types::scene::ZoneRole::Primary)
-                .or_else(|| zones.first())
-                .cloned(),
-        })
-    });
 
     let active_resource = api::daemon_resource(api::fetch_primary_effect_view);
     let favorites_resource = api::daemon_resource(api::fetch_favorites);
@@ -811,7 +813,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         zones: zones_ctx,
         scene_refresh: zones_ctx.refresh,
         zone_effects,
-        focused_zone_effect,
     };
     provide_context(effects_ctx);
 
