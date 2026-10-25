@@ -57,6 +57,16 @@ pub(super) enum InteractionKind {
 }
 
 impl DragRuntime {
+    /// The outputs a box drag carries; `None` for a resize.
+    pub(super) fn dragged_ids(&self) -> Option<Vec<String>> {
+        match &self.kind {
+            InteractionKind::Drag {
+                initial_positions, ..
+            } => Some(initial_positions.iter().map(|(id, _)| id.clone()).collect()),
+            InteractionKind::Resize { .. } => None,
+        }
+    }
+
     /// Apply the latest pending pointer position to the in-flight zone copy
     /// and paint the affected elements directly. Returns true if any zone
     /// position/size actually changed this frame.

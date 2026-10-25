@@ -461,3 +461,40 @@ pub(crate) fn zone_device_payload(
         .unwrap_or_default();
     MovePayload::zone_device(device_id, device_name, zone_id, outputs)
 }
+
+/// The payload for boxes dragged off `zone_id`'s canvas: the outputs
+/// `ids` names in that zone.
+pub(crate) fn canvas_payload(
+    drag: DragController,
+    zone_id: &str,
+    ids: &[String],
+) -> Option<MovePayload> {
+    let scene = drag.studio.history.current_scene()?;
+    let zone = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id.to_string() == zone_id)?;
+    let members: Vec<_> = zone
+        .members
+        .iter()
+        .filter(|member| ids.contains(&member.id.to_string()))
+        .collect();
+    let first = members.first()?;
+    let device_name = registry_device(drag, &first.device_id)
+        .map_or_else(|| first.name.clone(), |device| device.name);
+    let one_device = members
+        .iter()
+        .all(|member| member.device_id == first.device_id);
+    let label = match (members.len(), one_device) {
+        (1, _) => first.name.clone(),
+        (_, true) => device_name.clone(),
+        (count, false) => format!("{count} outputs"),
+    };
+    Some(MovePayload::canvas(
+        &first.device_id,
+        &device_name,
+        &label,
+        zone_id,
+        members.iter().map(|member| member.id.to_string()).collect(),
+    ))
+}

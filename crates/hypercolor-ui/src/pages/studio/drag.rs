@@ -1,5 +1,5 @@
-//! The Studio drag controller: one pointer gesture for every drag from
-//! the device pane onto the zone tabs and the pane's own sections.
+//! The Studio drag controller: one pointer gesture for every drag between
+//! the device pane, the zone tabs, and the canvas.
 //!
 //! A drag source claims the press through [`DragController::press`] and
 //! captures the pointer on the pressed element, so a press that never
@@ -11,13 +11,20 @@
 //!
 //! Drop targets register through markup: zone tabs carry `data-zone-tab`,
 //! "+" carries `data-drop-new-zone`, pane zone sections carry
-//! `data-pane-zone`, and the Unassigned section carries
-//! `data-pane-unassigned`. The element under the pointer picks the target,
-//! and only targets that take the payload light up.
+//! `data-pane-zone`, the Unassigned section carries `data-pane-unassigned`,
+//! and the canvas viewport carries `data-studio-canvas`. The element under
+//! the pointer picks the target, and only targets that take the payload
+//! light up.
+//!
+//! A box dragged on the canvas stays the canvas's own gesture; the canvas
+//! reports it through [`CanvasDragOut`] so a release on another zone's tab
+//! moves the box there.
 
 use std::time::Duration;
 
 use hypercolor_leptos_ext::prelude::{now_ms, spawn_timeout};
+use hypercolor_types::scene::ZoneRole;
+use hypercolor_types::spatial::NormalizedPosition;
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
@@ -26,6 +33,7 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
+use crate::components::layout_canvas::CanvasDragOut;
 use crate::icons::*;
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
@@ -35,10 +43,10 @@ use crate::style_utils::device_accent_colors;
 
 use super::StudioContext;
 use super::drag_model::{
-    CANCELLED_ANNOUNCEMENT, DropTarget, MovePayload, SpringLoad, SpringPhase, action_hint,
-    opened_announcement, resolve_drop, springs,
+    CANCELLED_ANNOUNCEMENT, DragSource, DropTarget, MovePayload, SpringLoad, SpringPhase,
+    action_hint, opened_announcement, resolve_drop, springs,
 };
-use super::moves::{perform, zone_name};
+use super::moves::{canvas_payload, perform, zone_name};
 use super::zone_strip::zone_tab_dom_id;
 
 /// Pointer travel before a press becomes a drag.
@@ -50,8 +58,8 @@ const TOUCH_HOLD_MS: u64 = 350;
 /// and how fast it scrolls at the very edge, in pixels per frame.
 const AUTOSCROLL_EDGE_PX: f64 = 48.0;
 const AUTOSCROLL_MAX_STEP: f64 = 14.0;
-const TARGET_SELECTOR: &str =
-    "[data-zone-tab], [data-drop-new-zone], [data-pane-zone], [data-pane-unassigned]";
+const TARGET_SELECTOR: &str = "[data-zone-tab], [data-drop-new-zone], [data-pane-zone], \
+    [data-pane-unassigned], [data-studio-canvas]";
 
 /// Where focus goes once a menu move lands: the element that opened the
 /// move, or, when the move took that element away, the fallback. The
@@ -109,13 +117,20 @@ pub(crate) struct DragController {
     /// The pointer, in client pixels.
     pub pointer: RwSignal<(f64, f64)>,
     /// The target under the pointer, whether or not it takes the payload.
+    /// A canvas target's point lives in `canvas_point`.
     pub over: RwSignal<Option<DropTarget>>,
+    pub canvas_point: RwSignal<Option<NormalizedPosition>>,
+    /// The canvas viewport's client rect while a drag is live.
+    pub canvas_rect: RwSignal<Option<(f64, f64, f64, f64)>>,
     spring: StoredValue<SpringLoad>,
     /// The tab whose spring is charging, for its fill ring.
     pub charging: RwSignal<Option<String>>,
     /// The aria-live text.
     pub announcement: RwSignal<String>,
     pending_focus: RwSignal<Option<(u64, FocusReturn)>>,
+    /// Set when Escape cancels a canvas box drag that left the canvas, so
+    /// its release puts the box back instead of moving it.
+    canvas_escaped: StoredValue<bool>,
     /// Pixels per frame the pane scrolls while a drag rests near its edge,
     /// and whether the frame loop doing it is running.
     autoscroll: StoredValue<(f64, bool)>,
@@ -132,10 +147,13 @@ impl DragController {
             payload: RwSignal::new(None),
             pointer: RwSignal::new((0.0, 0.0)),
             over: RwSignal::new(None),
+            canvas_point: RwSignal::new(None),
+            canvas_rect: RwSignal::new(None),
             spring: StoredValue::new(SpringLoad::default()),
             charging: RwSignal::new(None),
             announcement: RwSignal::new(String::new()),
             pending_focus: RwSignal::new(None),
+            canvas_escaped: StoredValue::new(false),
             autoscroll: StoredValue::new((0.0, false)),
         };
 
@@ -184,6 +202,18 @@ impl DragController {
         });
         on_cleanup(move || escape.remove());
 
+        provide_context(CanvasDragOut {
+            hover: Callback::new(move |(x, y, ids): (f64, f64, Vec<String>)| {
+                drag.canvas_hover(x, y, &ids);
+            }),
+            release: Callback::new(move |(x, y, ids): (f64, f64, Vec<String>)| {
+                drag.canvas_release(x, y, &ids)
+            }),
+            cancel: Callback::new(move |()| {
+                drag.canvas_escaped.set_value(false);
+                drag.clear();
+            }),
+        });
         drag
     }
 
@@ -340,6 +370,14 @@ impl DragController {
 
     /// Drop the live drag without moving anything.
     pub fn cancel(self) {
+        let from_canvas = self.payload.with_untracked(|payload| {
+            payload
+                .as_ref()
+                .is_some_and(|payload| payload.source == DragSource::Canvas)
+        });
+        if from_canvas {
+            self.canvas_escaped.set_value(true);
+        }
         if let Some(state) = self
             .gesture
             .try_update_value(PointerGesture::abandon)
@@ -378,7 +416,12 @@ impl DragController {
         if !takes {
             return DropLook::Idle;
         }
-        if self.over.with(|over| over.as_ref() == Some(target)) {
+        let over = self.over.with(|over| match (over, target) {
+            (Some(DropTarget::Canvas { .. }), DropTarget::Canvas { .. }) => true,
+            (Some(over), target) => over == target,
+            (None, _) => false,
+        });
+        if over {
             DropLook::Over
         } else {
             DropLook::Candidate
@@ -407,8 +450,9 @@ impl DragController {
         let _ = root.set_pointer_capture(pointer_id);
         self.spring.set_value(SpringLoad::default());
         self.payload.set(Some(payload));
+        self.measure_canvas();
         // On a narrow viewport the pane is a drawer over the Stage; the
-        // drag needs the tabs it covers.
+        // drag needs the tabs and canvas it covers.
         if self.studio.pane_drawer.get_untracked() {
             self.studio.pane_drawer.set(false);
         }
@@ -417,9 +461,26 @@ impl DragController {
     fn track(self, x: f64, y: f64) {
         self.pointer.set((x, y));
         self.steer_autoscroll(x, y);
-        let kind = self.target_at(x, y);
+        let target = self.target_at(x, y);
+        let point = match &target {
+            Some(DropTarget::Canvas { point, .. }) => Some(*point),
+            _ => None,
+        };
+        let kind = target.map(|target| match target {
+            DropTarget::Canvas { zone_id, .. } => DropTarget::Canvas {
+                zone_id,
+                point: NormalizedPosition::new(0.5, 0.5),
+            },
+            other => other,
+        });
         if self.over.with_untracked(|over| *over != kind) {
             self.over.set(kind.clone());
+        }
+        if self
+            .canvas_point
+            .with_untracked(|current| *current != point)
+        {
+            self.canvas_point.set(point);
         }
         if !self
             .payload
@@ -529,6 +590,19 @@ impl DragController {
         self.charging.set(None);
         self.studio.selected_surface_id.set(Some(zone_id.clone()));
         self.announce(opened_announcement(&zone_name(self.studio, &zone_id)));
+        request_animation_frame(move || self.measure_canvas());
+    }
+
+    fn measure_canvas(self) {
+        let rect = document()
+            .query_selector("[data-studio-canvas]")
+            .ok()
+            .flatten()
+            .map(|element| {
+                let rect = element.get_bounding_client_rect();
+                (rect.left(), rect.top(), rect.width(), rect.height())
+            });
+        self.canvas_rect.try_set(rect);
     }
 
     /// The drop target under a client point.
@@ -545,16 +619,104 @@ impl DragController {
         if let Some(zone_id) = hit.get_attribute("data-pane-zone") {
             return Some(DropTarget::PaneZone(zone_id));
         }
-        hit.has_attribute("data-pane-unassigned")
-            .then_some(DropTarget::Unassigned)
+        if hit.has_attribute("data-pane-unassigned") {
+            return Some(DropTarget::Unassigned);
+        }
+        let zone_id = self.open_led_zone()?;
+        let rect = hit.get_bounding_client_rect();
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let point = NormalizedPosition::new(
+            ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f32,
+            ((y - rect.top()) / rect.height()).clamp(0.0, 1.0) as f32,
+        );
+        Some(DropTarget::Canvas { zone_id, point })
+    }
+
+    /// The open tab, when it is an LED zone.
+    fn open_led_zone(self) -> Option<String> {
+        let selected = self.studio.selected_surface_id.get_untracked()?;
+        self.studio.active_scene.with_untracked(|scene| {
+            scene.as_ref().and_then(|scene| {
+                scene
+                    .zones
+                    .iter()
+                    .any(|zone| zone.id.to_string() == selected && zone.role != ZoneRole::Display)
+                    .then_some(selected.clone())
+            })
+        })
     }
 
     /// End the drag's visuals.
     fn clear(self) {
+        self.lift();
+        self.canvas_rect.try_set(None);
+    }
+
+    fn lift(self) {
         self.spring.try_set_value(SpringLoad::default());
         self.payload.try_set(None);
         self.over.try_set(None);
+        self.canvas_point.try_set(None);
         self.charging.try_set(None);
+    }
+
+    /// A canvas box drag moved to a client point. Inside the canvas it is
+    /// the canvas's own drag; once it leaves, it carries a payload and the
+    /// tabs that would take it light up.
+    fn canvas_hover(self, x: f64, y: f64, ids: &[String]) {
+        if self.canvas_escaped.get_value() {
+            return;
+        }
+        if self.canvas_rect.with_untracked(Option::is_none) {
+            self.measure_canvas();
+        }
+        let inside = self.canvas_rect.with_untracked(|rect| {
+            rect.is_some_and(|(left, top, width, height)| {
+                x >= left && x <= left + width && y >= top && y <= top + height
+            })
+        });
+        if inside {
+            if self.payload.with_untracked(Option::is_some) {
+                self.lift();
+            }
+            return;
+        }
+        if self.payload.with_untracked(Option::is_none) {
+            let Some(zone_id) = self.open_led_zone() else {
+                return;
+            };
+            let Some(payload) = canvas_payload(self, &zone_id, ids) else {
+                return;
+            };
+            self.payload.set(Some(payload));
+        }
+        self.track(x, y);
+    }
+
+    /// A canvas box drag released at a client point. True when the
+    /// release landed on a target that took it; the canvas then puts the
+    /// box back and the move takes it away.
+    fn canvas_release(self, x: f64, y: f64, ids: &[String]) -> bool {
+        let target = self.target_at(x, y);
+        self.clear();
+        if self.canvas_escaped.get_value() {
+            self.canvas_escaped.set_value(false);
+            return true;
+        }
+        let Some(zone_id) = self.open_led_zone() else {
+            return false;
+        };
+        let Some(payload) = canvas_payload(self, &zone_id, ids) else {
+            return false;
+        };
+        let Some(action) = target.and_then(|target| resolve_drop(&payload, &target)) else {
+            return false;
+        };
+        perform(self, payload, action, None);
+        true
     }
 }
 
@@ -592,8 +754,8 @@ fn pane_scroller() -> Option<web_sys::Element> {
         .flatten()
 }
 
-/// The page-level drag furniture: the ghost under the pointer and the
-/// aria-live region.
+/// The page-level drag furniture: the ghost under the pointer, the canvas
+/// highlight, and the aria-live region.
 #[component]
 pub(crate) fn DragLayer() -> impl IntoView {
     let drag = expect_context::<DragController>();
@@ -606,12 +768,61 @@ pub(crate) fn DragLayer() -> impl IntoView {
             .as_ref()
             .and_then(|target| resolve_drop(&payload, target))
             .map(|action| action_hint(&action, |id| zone_name(studio, id)));
+        // A box dragged on its own canvas is its own ghost.
+        if payload.source == DragSource::Canvas && hint.is_none() {
+            return None;
+        }
         Some((payload, hint))
     });
+    let canvas_look = Memo::new(move |_| {
+        let rect = drag.canvas_rect.get()?;
+        let look = drag.look(&DropTarget::Canvas {
+            zone_id: String::new(),
+            point: NormalizedPosition::new(0.5, 0.5),
+        });
+        (look != DropLook::Idle).then_some((rect, look))
+    });
+
     view! {
         <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
             {move || drag.announcement.get()}
         </div>
+        {move || {
+            canvas_look
+                .get()
+                .map(|((left, top, width, height), look)| {
+                    let over = look == DropLook::Over;
+                    view! {
+                        <div
+                            class="pointer-events-none fixed z-[60] rounded-lg border-2 transition-colors duration-150"
+                            class=("border-accent", over)
+                            class=("bg-accent/10", over)
+                            class=("border-accent/50", !over)
+                            class=("border-dashed", !over)
+                            style=format!(
+                                "left: {left:.0}px; top: {top:.0}px; width: {width:.0}px; height: {height:.0}px",
+                            )
+                        >
+                            {move || {
+                                drag.canvas_point
+                                    .get()
+                                    .map(|point| {
+                                        view! {
+                                            <span
+                                                class="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent bg-surface-base"
+                                                style=format!(
+                                                    "left: {:.2}%; top: {:.2}%",
+                                                    point.x * 100.0,
+                                                    point.y * 100.0,
+                                                )
+                                            />
+                                        }
+                                    })
+                            }}
+                        </div>
+                    }
+                })
+        }}
         {move || {
             ghost
                 .get()

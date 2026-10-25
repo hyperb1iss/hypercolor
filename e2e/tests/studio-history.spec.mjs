@@ -340,3 +340,21 @@ test("Studio drags a device card onto another zone tab and can undo it", async (
   expect(fixture.rejected).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test("Studio drops an Unassigned device on the canvas at the drop point as one undo step", async ({ page }) => {
+  const fixture = await openHistory(page);
+  const canvas = page.locator("[data-studio-canvas]");
+  const source = page.locator('section[data-pane-unassigned] div.group\\/card').filter({ has: page.getByText("Laptop stand", { exact: true }) });
+  await dragTo(page, source.locator("button").first(), canvas, { toX: 0.75, toY: 0.25 });
+  await expect.poll(() => fixture.writes.length).toBe(2);
+  await expect.poll(() => fixture.assigned()).toEqual([{ zone: FIRST, id: "stand-output" }]);
+  const placed = fixture.scene.zones[0].layout.placements.find((placement) => placement.member === "stand-output");
+  expect(placed.position.x).toBeCloseTo(0.75, 1);
+  expect(placed.position.y).toBeCloseTo(0.25, 1);
+  await expect(fixture.undo).toBeEnabled();
+  await fixture.undo.click();
+  await expect.poll(() => fixture.assigned()).toEqual([]);
+  await expect(fixture.undo).toBeDisabled();
+  expect(fixture.rejected).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});

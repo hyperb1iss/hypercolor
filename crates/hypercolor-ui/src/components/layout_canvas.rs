@@ -115,6 +115,18 @@ fn zone_render_data(
     })
 }
 
+/// Lets the page around the canvas take a box drag that leaves it. While a
+/// box drags, `hover` hears the pointer's client position with the dragged
+/// output ids; `release` hears the release and returns true when it took
+/// the drop, in which case the boxes go back where they were; `cancel`
+/// hears a drag that ended any other way.
+#[derive(Clone, Copy)]
+pub struct CanvasDragOut {
+    pub hover: Callback<(f64, f64, Vec<String>)>,
+    pub release: Callback<(f64, f64, Vec<String>), bool>,
+    pub cancel: Callback<()>,
+}
+
 /// Throttle the in-drag preview push to the daemon. Matches the existing
 /// debounce we use outside drags so the spatial engine isn't recomputed at
 /// 60 Hz when a single coalesced 75 ms cadence is enough for a smooth feel.
@@ -144,6 +156,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     let devices_ctx = expect_context::<DevicesContext>();
     let zone_display_ctx =
         expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
+    let drag_out = use_context::<CanvasDragOut>();
 
     let ws = expect_context::<WsContext>();
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
@@ -538,9 +551,23 @@ pub fn LayoutCanvas() -> impl IntoView {
         let ended = drag_runtime
             .try_update_value(|g| g.end(pointer_id, how))
             .flatten();
-        if let Some((outcome, runtime)) = ended {
-            finish_interaction(outcome, runtime);
+        let Some((mut outcome, runtime)) = ended else {
+            return;
+        };
+        if let Some(out) = drag_out
+            && let Some(ids) = runtime.dragged_ids()
+        {
+            let taken = outcome == GestureEnd::Commit
+                && out
+                    .release
+                    .run((f64::from(ev.client_x()), f64::from(ev.client_y()), ids));
+            if taken {
+                outcome = GestureEnd::Cancel;
+            } else if outcome == GestureEnd::Cancel {
+                out.cancel.run(());
+            }
         }
+        finish_interaction(outcome, runtime);
     };
 
     // Claim the interaction for a press, or report that another pointer
@@ -617,6 +644,13 @@ pub fn LayoutCanvas() -> impl IntoView {
                 if !owns {
                     return;
                 }
+                if let Some(out) = drag_out
+                    && let Some(ids) = drag_runtime.with_value(|g| {
+                        g.state(ev.pointer_id()).and_then(DragRuntime::dragged_ids)
+                    })
+                {
+                    out.hover.run((f64::from(ev.client_x()), f64::from(ev.client_y()), ids));
+                }
                 pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
                 if let Some(scheduler) = scheduler_for_move.borrow().as_ref() {
                     scheduler.schedule();
@@ -632,6 +666,7 @@ pub fn LayoutCanvas() -> impl IntoView {
             <div class="absolute inset-0 flex items-start justify-center p-2 overflow-hidden">
                 <div
                     class="relative rounded-lg overflow-hidden bg-black"
+                    data-studio-canvas=""
                     node_ref=viewport_ref
                     style=move || viewport_style.get()
                     on:click=move |_| {
