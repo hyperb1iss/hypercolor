@@ -227,6 +227,7 @@ pub fn StudioDeviceCard(
         })
         .collect();
     let show_components = total_components > 1;
+    let channels_open = RwSignal::new(mode == CardMode::Placed);
 
     // Live component bindings for this device — fetched once per card
     // mount, shared via the Studio context cache so each row reads it
@@ -428,8 +429,36 @@ pub fn StudioDeviceCard(
             {show_components
                 .then(move || {
                     let scene_key = scene_key.clone();
+                    let channel_count = component_rows.len();
                     view! {
-                        <div class="space-y-0.5 border-t px-1.5 py-1.5" style=list_style>
+                        // An Unassigned card folds its channels away until
+                        // asked; they matter once the device is in a zone.
+                        {(mode == CardMode::Unassigned)
+                            .then(|| {
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="flex w-full items-center gap-1.5 border-t px-2.5 py-1 text-left text-[10px] text-fg-tertiary/80 transition-colors hover:text-fg-secondary"
+                                        style=list_style.clone()
+                                        aria-expanded=move || channels_open.get().to_string()
+                                        on:click=move |_| channels_open.update(|open| *open = !*open)
+                                    >
+                                        <Icon
+                                            icon=LuChevronRight
+                                            width="10px"
+                                            height="10px"
+                                            {..}
+                                            class=("rotate-90", move || channels_open.get())
+                                        />
+                                        {format!("{channel_count} channels")}
+                                    </button>
+                                }
+                            })}
+                        <div
+                            class="space-y-0.5 border-t px-1.5 py-1.5"
+                            class=("hidden", move || !channels_open.get())
+                            style=list_style.clone()
+                        >
                             {component_rows
                                 .into_iter()
                                 .map(|row| {
@@ -502,6 +531,11 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
         ops_open,
     } = args;
     let (identifying, set_identifying) = signal(false);
+    // Only an Unassigned card shows identify, and it carries the device.
+    let identify_label = add_device.as_ref().map_or_else(
+        || "Identify".to_owned(),
+        |device| format!("Identify {}", device.name),
+    );
     // Hide-all is only meaningful when the card sits in a real zone
     // (so it has a scene_key) and the device actually owns outputs
     // there (otherwise there is nothing to toggle).
@@ -574,6 +608,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                             type="button"
                             class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary disabled:cursor-wait disabled:opacity-60"
                             title="Identify (flash the hardware)"
+                            aria-label=identify_label.clone()
                             disabled=move || identifying.get()
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
@@ -614,6 +649,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                             type="button"
                             class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-accent transition-colors hover:bg-accent-subtle disabled:opacity-40"
                             title=format!("Add to {target}")
+                            aria-label=format!("Add {} to {target}", device.name)
                             disabled=move || studio.history.busy.get()
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
