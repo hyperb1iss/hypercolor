@@ -270,8 +270,8 @@ pub fn ScenePicker() -> impl IntoView {
         focus_trigger();
     };
 
-    // Close once a switch completes so the trigger's new name is visible;
-    // the row spinner has done its job by then.
+    // Close once the activation request settles; the trigger names the
+    // new scene as soon as the shared scene resource has refetched.
     Effect::new(move |previous: Option<Option<String>>| {
         let current = switching.get();
         if current.is_none() && previous.flatten().is_some() {
@@ -383,23 +383,33 @@ pub fn ScenePicker() -> impl IntoView {
         busy.set(true);
         spawn_local(async move {
             let created = match start {
-                NewSceneStart::Duplicate => api::duplicate_active_scene(&name).await,
+                NewSceneStart::Duplicate => api::snapshot_active_scene(&name).await,
                 NewSceneStart::Blank => api::create_scene(&name).await,
             };
-            let _ = busy.try_set(false);
-            match created {
-                Ok(summary) => {
-                    toasts::toast_success("Scene created");
-                    let _ = panel_view.try_set(PanelView::List);
-                    scenes_ctx.activate.run(summary.id);
-                }
+            let summary = match created {
+                Ok(summary) => summary,
                 Err(error) => {
-                    // A duplicate can fail after its copy is stored; the
-                    // refresh shows whatever landed.
-                    scenes_ctx.refresh.run(());
+                    let _ = busy.try_set(false);
                     toasts::toast_error(&format!("Couldn't create the scene: {error}"));
+                    return;
                 }
+            };
+            if start == NewSceneStart::Duplicate
+                && let Err(error) = api::unlock_scene(&summary.id).await
+            {
+                // The copy exists but refuses edits; show it in the list
+                // rather than switching into a scene that cannot change.
+                let _ = busy.try_set(false);
+                scenes_ctx.refresh.run(());
+                toasts::toast_error(&format!(
+                    "Created \"{name}\", but it is still snapshot-locked: {error}"
+                ));
+                return;
             }
+            let _ = busy.try_set(false);
+            toasts::toast_success("Scene created");
+            let _ = panel_view.try_set(PanelView::List);
+            scenes_ctx.activate.run(summary.id);
         });
     };
 
@@ -517,7 +527,10 @@ pub fn ScenePicker() -> impl IntoView {
                 class=("border-accent-muted", move || open.get())
                 aria-haspopup="listbox"
                 aria-expanded=move || open.get().to_string()
-                aria-controls=move || listbox_id.get_value()
+                aria-controls=move || {
+                    (open.get() && panel_view.with(|view| *view == PanelView::List))
+                        .then(|| listbox_id.get_value())
+                }
                 aria-activedescendant=move || {
                     (open.get() && panel_view.with(|view| *view == PanelView::List))
                         .then(|| highlighted.get().map(item_id))
@@ -641,8 +654,9 @@ pub fn ScenePicker() -> impl IntoView {
     }
 }
 
-/// The scene rows, a divider, and the actions. Every item carries an id
-/// so the trigger's `aria-activedescendant` can name the highlighted one.
+/// One listbox holding the scene rows and, after a divider, the actions,
+/// each group labelled. Every item is an option with an id, so the
+/// trigger's `aria-activedescendant` can name the highlighted one.
 #[component]
 fn SceneList(
     rows: Memo<Vec<SceneRow>>,
@@ -657,9 +671,9 @@ fn SceneList(
     let switching = scenes_ctx.switching;
 
     view! {
+        <div id=listbox_id role="listbox" aria-label="Scene picker" class="flex min-h-0 flex-1 flex-col">
         <div
-            id=listbox_id
-            role="listbox"
+            role="group"
             aria-label="Scenes"
             class="min-h-0 flex-1 overflow-y-auto py-1 scrollbar-dropdown"
         >
@@ -726,7 +740,7 @@ fn SceneList(
                     .collect_view()
             }}
         </div>
-        <div class="mx-2 h-px shrink-0 bg-edge-subtle/60" role="separator" />
+        <div class="mx-2 h-px shrink-0 bg-edge-subtle/60" aria-hidden="true" />
         <div class="shrink-0 py-1" role="group" aria-label="Scene actions">
             {move || {
                 let row_count = rows.with(Vec::len);
@@ -750,6 +764,8 @@ fn SceneList(
                             <button
                                 type="button"
                                 id=item_id.run(index)
+                                role="option"
+                                aria-selected="false"
                                 tabindex="-1"
                                 class=format!(
                                     "dropdown-option flex w-full items-center gap-2 px-3 py-[7px] text-left text-xs {tone}"
@@ -766,6 +782,7 @@ fn SceneList(
                     })
                     .collect_view()
             }}
+        </div>
         </div>
     }
 }

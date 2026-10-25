@@ -98,7 +98,7 @@ pub async fn list_scenes() -> ApiResult<Vec<SceneSummary>> {
         .map(|response| response.items)
 }
 
-/// Create a scene. The daemon seeds it with a Default zone (§5.2).
+/// Create a scene. The daemon seeds it with a primary zone (§5.2).
 pub async fn create_scene(name: &str) -> ApiResult<SceneSummary> {
     let request = CreateSceneRequest {
         name: name.to_owned(),
@@ -107,24 +107,24 @@ pub async fn create_scene(name: &str) -> ApiResult<SceneSummary> {
     client::post_json("/api/v1/scenes", &request).await
 }
 
-/// Save the running scene as a new scene the user can keep editing.
-///
-/// The snapshot route copies the live zones, layers, and layout, but it
-/// stores the copy snapshot-locked, and a locked scene refuses every
-/// runtime edit. A duplicate exists to be edited, so the copy is switched
-/// to live right after it is written. When that second write fails, the
-/// locked copy stays in the library and the error is returned.
-pub async fn duplicate_active_scene(name: &str) -> ApiResult<SceneSummary> {
+/// Save the running scene as a new scene through the snapshot route,
+/// which copies the live zones, layers, and layout. The daemon stores the
+/// copy snapshot-locked, and a locked scene refuses every runtime edit, so
+/// a duplicate meant for editing follows this with [`unlock_scene`].
+pub async fn snapshot_active_scene(name: &str) -> ApiResult<SceneSummary> {
     let request = SnapshotSceneRequest {
         name: name.to_owned(),
         description: None,
     };
-    let created: SceneSummary = client::post_json("/api/v1/scenes/snapshot", &request).await?;
-    replace_stored_scene(&created.id, |document| {
+    client::post_json("/api/v1/scenes/snapshot", &request).await
+}
+
+/// Switch a stored scene to live so it accepts runtime edits.
+pub async fn unlock_scene(scene_id: &str) -> ApiResult<()> {
+    replace_stored_scene(scene_id, |document| {
         document.mutation_mode = SceneMutationMode::Live;
     })
-    .await?;
-    Ok(created)
+    .await
 }
 
 /// Rename a scene through the guarded whole-document replacement route.
