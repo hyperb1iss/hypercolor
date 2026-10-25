@@ -160,7 +160,7 @@ pub fn CompactZoneTabs() -> impl IntoView {
                                                 backdrop-blur-sm transition-colors duration-150 btn-press \
                                                 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)] \
                                                 focus-visible:outline-none focus-visible:ring-1 \
-                                                focus-visible:ring-accent/60";
+                                                focus-visible:ring-[var(--accent)]";
                                     let state = if is_selected.get() {
                                         "border-[var(--accent)] bg-[var(--accent-muted)] \
                                          text-[var(--text-primary)] \
