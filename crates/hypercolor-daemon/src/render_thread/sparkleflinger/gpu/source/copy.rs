@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
+use crate::render_thread::sparkleflinger::gpu_buffer_init::create_buffer_with_contents;
 use hypercolor_types::canvas::BYTES_PER_PIXEL;
-use wgpu::util::DeviceExt;
 
 use super::super::super::{CompositionAdjust, CompositionPlan, CompositionTransform};
 use super::super::{
@@ -355,11 +355,12 @@ fn upload_frame_into_texture_with_encoder(
         }
         Cow::Owned(padded)
     };
-    let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("SparkleFlinger GPU source texture upload"),
-        contents: &contents,
-        usage: wgpu::BufferUsages::COPY_SRC,
-    });
+    let upload = create_buffer_with_contents(
+        device,
+        "SparkleFlinger GPU source texture upload",
+        &contents,
+        wgpu::BufferUsages::COPY_SRC,
+    );
     encoder.copy_buffer_to_texture(
         wgpu::TexelCopyBufferInfo {
             buffer: &upload,

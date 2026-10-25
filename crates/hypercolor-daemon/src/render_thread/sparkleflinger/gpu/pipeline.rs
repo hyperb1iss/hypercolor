@@ -1,4 +1,4 @@
-use wgpu::util::DeviceExt;
+use super::super::gpu_buffer_init::create_buffer_with_contents;
 
 use crate::render_thread::sparkleflinger::compile_compute_pipeline;
 use crate::startup::StartupProgress;
@@ -24,7 +24,7 @@ const PREVIEW_SCALE_PARAM_RING_SLOTS: u64 = 16;
 /// where no unsubmitted encoder exists (see
 /// `GpuSparkleFlinger::release_retired_uniform_slots`). If allocating the
 /// next slot would clobber a write at or after the watermark, the ring falls
-/// back to the pre-ring staging path: a one-shot `create_buffer_init` buffer
+/// back to the pre-ring staging path: a one-shot initialized upload buffer
 /// copied into a dedicated overflow slot inside the current encoder. Those
 /// copies travel with their encoder, so each dispatch reads the value its own
 /// encoder wrote regardless of submission order.
@@ -104,11 +104,12 @@ impl UniformParamsRing {
             // Overflow: the next ring slot may still be referenced by an
             // unsubmitted encoder, so stage the write through an encoder
             // copy into the dedicated overflow slot instead.
-            let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(self.label),
-                contents: params,
-                usage: wgpu::BufferUsages::COPY_SRC,
-            });
+            let upload = create_buffer_with_contents(
+                device,
+                self.label,
+                params,
+                wgpu::BufferUsages::COPY_SRC,
+            );
             encoder.copy_buffer_to_buffer(
                 &upload,
                 0,

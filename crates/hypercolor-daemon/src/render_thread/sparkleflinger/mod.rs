@@ -5,6 +5,8 @@ pub(crate) mod gpu;
 #[cfg(feature = "wgpu")]
 mod gpu_area_sat;
 #[cfg(feature = "wgpu")]
+mod gpu_buffer_init;
+#[cfg(feature = "wgpu")]
 mod gpu_sampling;
 mod transform;
 #[cfg(all(test, feature = "wgpu"))]

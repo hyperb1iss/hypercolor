@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 
 use super::compile_compute_pipeline;
+use super::gpu_buffer_init::create_buffer_with_contents;
 use super::gpu_sampling::{GpuSampleSource, GpuSamplingPreparationFailure};
 use crate::startup::StartupProgress;
 
@@ -318,23 +319,17 @@ impl GpuAreaResources {
             "SparkleFlinger GPU area vertical block sums",
             geometry.vertical_hierarchy,
         );
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU area SAT params"),
-            size: SAT_PARAM_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: true,
-        });
-        params
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("mapped-at-creation params buffer should map")
-            .copy_from_slice(&encode_params(
+        let params = create_buffer_with_contents(
+            device,
+            "SparkleFlinger GPU area SAT params",
+            &encode_params(
                 geometry.width,
                 geometry.height,
                 geometry.horizontal_block_count,
                 geometry.vertical_block_count,
-            ));
-        params.unmap();
+            ),
+            wgpu::BufferUsages::UNIFORM,
+        );
 
         Self {
             width: geometry.width,
@@ -410,18 +405,12 @@ impl GpuAreaHierarchy {
             .levels
             .into_iter()
             .map(|level| {
-                let params = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("SparkleFlinger GPU area hierarchy params"),
-                    size: HIERARCHY_PARAM_BYTES,
-                    usage: wgpu::BufferUsages::UNIFORM,
-                    mapped_at_creation: true,
-                });
-                params
-                    .slice(..)
-                    .get_mapped_range_mut()
-                    .expect("mapped-at-creation params buffer should map")
-                    .copy_from_slice(&encode_hierarchy_params(level));
-                params.unmap();
+                let params = create_buffer_with_contents(
+                    device,
+                    "SparkleFlinger GPU area hierarchy params",
+                    &encode_hierarchy_params(level),
+                    wgpu::BufferUsages::UNIFORM,
+                );
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("SparkleFlinger GPU area hierarchy bind group"),
                     layout,

@@ -1,11 +1,12 @@
 //! Device loss destroys every buffer the device owns, including readback
-//! buffers whose map already completed. These tests lose the device at
-//! that point and check that the compositor reports errors instead of
-//! panicking.
+//! buffers whose map already completed, and leaves every buffer created
+//! afterwards invalid and unmapped. These tests lose the device at those
+//! points and check that the compositor reports errors instead of panicking.
 
 use super::*;
 use crate::render_thread::sparkleflinger::gpu::display_finalize::GpuDisplayFinalizeDispatch;
 use crate::render_thread::sparkleflinger::gpu::readback::copy_mapped_readback_buffer_into_surface;
+use crate::render_thread::sparkleflinger::gpu_buffer_init::create_buffer_with_contents;
 
 #[test]
 fn yuv_display_readback_reports_a_buffer_lost_after_its_map_completed() {
@@ -80,4 +81,43 @@ fn surface_readback_reports_a_buffer_lost_after_its_map_completed() {
     )
     .expect_err("a readback destroyed after its map must report an error");
     assert!(error.to_string().contains("not mapped"), "{error:#}");
+}
+
+#[test]
+fn cpu_layer_uploads_after_device_loss_do_not_panic() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let plan = |color| {
+        CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                    4,
+                    4,
+                    Rgba::new(0, 0, 0, 255),
+                ))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas_with_size(4, 4, color)),
+                    0.5,
+                ),
+            ],
+        )
+    };
+    compositor
+        .compose(&plan(Rgba::new(255, 0, 0, 255)), false, None)
+        .expect("compose should succeed before the loss");
+
+    compositor.lose_device();
+
+    // Fresh layer content forces new upload buffers on the lost device.
+    let _ = compositor.compose(&plan(Rgba::new(0, 0, 255, 255)), false, None);
+    let upload = create_buffer_with_contents(
+        &compositor.device,
+        "SparkleFlinger device loss upload test",
+        &[1, 2, 3, 4, 5],
+        wgpu::BufferUsages::COPY_SRC,
+    );
+    assert_eq!(upload.size(), 8);
 }
