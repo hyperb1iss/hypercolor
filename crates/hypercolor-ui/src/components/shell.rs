@@ -16,6 +16,7 @@ use crate::components::mobile_nav::MobileNav;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::scene_picker::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
+use crate::components::zone_tabs::ZoneTabLabel;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_shortcut_path};
 use crate::zones::{ScenesContext, ZonesContext};
@@ -289,7 +290,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                     <input
                         node_ref=input_ref
                         type="text"
-                        placeholder="Search effects..."
+                        placeholder="Search effects and scenes..."
                         class="flex-1 bg-transparent text-sm text-fg-primary placeholder-fg-tertiary outline-none"
                         role="combobox"
                         aria-expanded="true"
@@ -341,22 +342,15 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                             .then(|| zones_ctx.target_zone())
                             .flatten()
                             .map(|zone| {
-                                let dot = zone
-                                    .color
-                                    .clone()
-                                    .unwrap_or_else(|| "var(--color-accent)".to_owned());
                                 view! {
                                     <span
-                                        class="inline-flex items-center gap-1.5 shrink-0 text-[9px] \
-                                               font-mono px-2 py-0.5 rounded-full border \
+                                        class="inline-flex max-w-[180px] min-w-0 items-center gap-1.5 shrink-0 \
+                                               text-[9px] font-mono px-2 py-0.5 rounded-full border \
                                                border-edge-subtle bg-surface-overlay/40 text-fg-tertiary"
                                         title="Effects apply to this zone"
                                     >
-                                        <span
-                                            class="w-1.5 h-1.5 rounded-full shrink-0"
-                                            style:background=dot
-                                        />
-                                        {format!("applies to: {}", zone.name)}
+                                        <span class="shrink-0">"applies to"</span>
+                                        <ZoneTabLabel zone=zone />
                                     </span>
                                 }
                             })
