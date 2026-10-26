@@ -1,4 +1,4 @@
-//! Name the daemon run that answered, on every `/api/v1` response.
+//! Name the daemon run that answered, on every HTTP response.
 //!
 //! Scene revisions are comparable only within one run, and an `ETag` or a
 //! `412` carries a revision with no other context. Stamping the run epoch

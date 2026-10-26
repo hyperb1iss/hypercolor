@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Response header naming the daemon run that answered, on every
-/// `/api/v1` response: the same opaque value as
+/// Response header naming the daemon run that answered, on every HTTP
+/// response the daemon serves: the same opaque value as
 /// [`SceneDocument::run_epoch`](crate::api::scene::SceneDocument::run_epoch).
 ///
 /// Scene revisions are comparable only within one run. A client that

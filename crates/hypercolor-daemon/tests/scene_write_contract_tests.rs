@@ -16,7 +16,8 @@ use http::{Request, StatusCode};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_daemon::domain::scene_run::{
-    CLOCK_BASE_CEILING, REVISION_RESERVATION_BLOCK, SCENE_REVISIONS_FILE, SceneRun,
+    CLOCK_BASE_CEILING, MAX_TRUSTED_FLOOR, REVISION_RESERVATION_BLOCK, SCENE_REVISIONS_FILE,
+    SceneRun,
 };
 use hypercolor_types::api::envelope::{
     IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MISMATCH_CODE, IDEMPOTENCY_REPLAYED_HEADER,
@@ -284,6 +285,27 @@ fn a_lost_or_corrupt_reservation_falls_back_to_the_clock() {
 }
 
 #[test]
+fn a_floor_beyond_any_real_ceiling_is_distrusted() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join(SCENE_REVISIONS_FILE),
+        json!({ "reserved_until": MAX_TRUSTED_FLOOR }).to_string(),
+    )
+    .expect("seed a bogus reservation");
+    let now = UNIX_EPOCH + Duration::from_hours(500_000);
+    let run = SceneRun::resume_at(tmp.path(), now);
+    assert_eq!(
+        run.start_revision(),
+        1_800_000_000 * 1_000_000,
+        "a floor no real run could reach falls back to the clock"
+    );
+    assert!(
+        SceneRun::resume_at(tmp.path(), now).start_revision() < MAX_TRUSTED_FLOOR,
+        "and the bogus file is replaced"
+    );
+}
+
+#[test]
 fn the_clock_term_stays_exact_as_a_json_double() {
     let tmp = tempfile::tempdir().expect("tempdir");
     // Year 2286: microseconds since the epoch pass 2^53 there.
@@ -326,6 +348,13 @@ async fn every_api_answer_names_the_run_that_gave_it() {
     let missing = send(&app, get("/api/v1/no-such-route")).await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     assert_eq!(run_epoch(&missing), epoch);
+
+    let document = send(&app, get("/api/v1/openapi.json")).await;
+    assert_eq!(
+        run_epoch(&document),
+        epoch,
+        "routes merged beside the API name the run too"
+    );
 }
 
 // ── Idempotency-Key ──────────────────────────────────────────────────────

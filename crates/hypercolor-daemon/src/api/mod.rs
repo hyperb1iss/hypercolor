@@ -256,16 +256,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(
             extract::API_BODY_LIMIT_BYTES,
         ));
-    let api = match HeaderValue::from_str(state.scene_manager.run_epoch()) {
-        Ok(epoch) => api.layer(axum::middleware::from_fn_with_state(
-            epoch,
-            run_epoch::stamp,
-        )),
-        Err(error) => {
-            warn!(%error, "Scene run epoch is not a valid header value; responses will not name it");
-            api
-        }
-    };
     let root = documented_root_routes();
     let (root, root_openapi) = root.split_for_parts();
     let document = root_openapi.nest("/api/v1", versioned_openapi);
@@ -290,7 +280,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         static_assets = security::StaticAssetSurface::mounted(dynamic_route_prefixes(&mcp_config));
     }
 
-    router
+    let router = router
         .layer(axum::middleware::from_fn_with_state(
             security_state
                 .with_static_assets(static_assets)
@@ -330,8 +320,20 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                     .then(|| crate::mcp::normalize_base_path(&mcp_config.base_path)),
             },
             access_log::log_access,
-        ))
-        .with_state(state)
+        ));
+    // Outermost, so every answer names the run, security refusals and
+    // routes merged beside the API included.
+    let router = match HeaderValue::from_str(state.scene_manager.run_epoch()) {
+        Ok(epoch) => router.layer(axum::middleware::from_fn_with_state(
+            epoch,
+            run_epoch::stamp,
+        )),
+        Err(error) => {
+            warn!(%error, "Scene run epoch is not a valid header value; responses will not name it");
+            router
+        }
+    };
+    router.with_state(state)
 }
 
 /// The prefixes this router answers from a handler that
