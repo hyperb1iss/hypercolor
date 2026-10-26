@@ -1038,7 +1038,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
 
         <WelcomeOverlay />
 
-        <leptoaster::Toaster />
+        <div class="toast-host">
+            <leptoaster::Toaster />
+        </div>
     }
 }
 

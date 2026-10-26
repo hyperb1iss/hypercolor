@@ -49,6 +49,28 @@
     --leptoaster-warn-text-color: #7d6600;
 }
 
+/* Toasts float at the bottom right of the content area, clear of the
+   sidebar on the left. The transform makes this host the containing block
+   for leptoaster's fixed containers, so on phones they sit above the
+   mobile tab bar instead of covering it. */
+.toast-host {
+    position: fixed;
+    inset: 0;
+    z-index: var(--leptoaster-z-index);
+    pointer-events: none;
+    transform: translateZ(0);
+}
+
+.toast-host > div {
+    pointer-events: auto;
+}
+
+@media (max-width: 767.98px) {
+    .toast-host {
+        bottom: calc(3.5rem + env(safe-area-inset-bottom));
+    }
+}
+
 /* ── Base Resets ─────────────────────────────────────────────────────────── */
 
 html {
