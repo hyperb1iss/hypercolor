@@ -15,6 +15,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
+use hypercolor_leptos_ext::events::document as browser_document;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::Output;
 
@@ -859,7 +860,12 @@ fn card_ops_menu(
                 disabled=move || studio.history.busy.get()
                 on:click=move |ev: web_sys::MouseEvent| {
                     ev.stop_propagation();
-                    let Some(element) = listener_element(&ev) else {
+                    // Hang the menu under the kebab: this drawer collapses as
+                    // the menu opens, so a menu hung from this row would
+                    // float over the next card.
+                    let kebab = browser_document()
+                        .and_then(|doc| doc.get_element_by_id(&kebab_id.get_value()));
+                    let Some(element) = kebab.or_else(|| listener_element(&ev)) else {
                         return;
                     };
                     let anchor = MoveMenuAnchor::below(
