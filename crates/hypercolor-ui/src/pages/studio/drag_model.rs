@@ -329,49 +329,6 @@ impl SpringLoad {
     }
 }
 
-/// One output's footprint on a zone canvas, normalized: its center and
-/// its drawn size.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Footprint {
-    pub center: NormalizedPosition,
-    pub size: NormalizedPosition,
-}
-
-/// The offset that centers a group of footprints on `point`, keeping the
-/// group's bounds on the canvas when it fits there (a group wider or taller
-/// than the canvas centers on that axis instead). `None` for no footprints.
-#[must_use]
-pub fn offset_to_center(footprints: &[Footprint], point: NormalizedPosition) -> Option<(f32, f32)> {
-    let first = footprints.first()?;
-    let half = |footprint: &Footprint| (footprint.size.x * 0.5, footprint.size.y * 0.5);
-    let (hx, hy) = half(first);
-    let mut bounds = (
-        first.center.x - hx,
-        first.center.y - hy,
-        first.center.x + hx,
-        first.center.y + hy,
-    );
-    for footprint in &footprints[1..] {
-        let (hx, hy) = half(footprint);
-        bounds.0 = bounds.0.min(footprint.center.x - hx);
-        bounds.1 = bounds.1.min(footprint.center.y - hy);
-        bounds.2 = bounds.2.max(footprint.center.x + hx);
-        bounds.3 = bounds.3.max(footprint.center.y + hy);
-    }
-    let axis = |min: f32, max: f32, target: f32| {
-        let extent = max - min;
-        if extent >= 1.0 {
-            return 0.5 - (min + max) * 0.5;
-        }
-        let start = (target - extent * 0.5).clamp(0.0, 1.0 - extent);
-        start - min
-    };
-    Some((
-        axis(bounds.0, bounds.2, point.x),
-        axis(bounds.1, bounds.3, point.y),
-    ))
-}
-
 /// What a zone made from a device is called: the device's name, numbered
 /// ("Razer Huntsman V2 2") when a zone already has it (compared
 /// case-insensitively). A device with no name falls back to "New zone".

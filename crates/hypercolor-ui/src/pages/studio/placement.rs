@@ -60,6 +60,18 @@ impl Footprint {
         output.orientation = self.orientation;
     }
 
+    /// The placement a seed carries.
+    #[must_use]
+    pub fn of_hint(hint: &MemberPlacementHint) -> Self {
+        Self {
+            position: hint.position,
+            size: hint.size,
+            rotation: hint.rotation,
+            scale: hint.scale,
+            orientation: hint.orientation,
+        }
+    }
+
     /// The seed the daemon applies to the output it mints for `segment`.
     #[must_use]
     pub fn hint(self, segment: Option<String>) -> MemberPlacementHint {
@@ -138,6 +150,35 @@ impl Bounds {
 
 fn union_of(bounds: impl IntoIterator<Item = Bounds>) -> Option<Bounds> {
     bounds.into_iter().reduce(Bounds::union)
+}
+
+/// The normalized offset that centers a group's drawn bounds (rotation and
+/// scale included) on `point`, keeping the group on the canvas when it fits
+/// there. A group wider or taller than the canvas centers on that axis
+/// instead. `None` for an empty group.
+#[must_use]
+pub fn offset_to_center(
+    footprints: impl IntoIterator<Item = Footprint>,
+    point: NormalizedPosition,
+    canvas: (u32, u32),
+) -> Option<(f32, f32)> {
+    let aspect = layout_geometry::canvas_pixel_aspect(canvas.0, canvas.1);
+    let bounds = union_of(
+        footprints
+            .into_iter()
+            .map(|footprint| footprint.bounds(aspect)),
+    )?;
+    let axis = |min: f32, max: f32, target: f32, span: f32| {
+        let extent = max - min;
+        if extent >= span {
+            return (span - min - max) * 0.5;
+        }
+        (target - extent * 0.5).clamp(0.0, span - extent) - min
+    };
+    Some((
+        axis(bounds.min_x, bounds.max_x, point.x * aspect, aspect) / aspect,
+        axis(bounds.min_y, bounds.max_y, point.y, 1.0),
+    ))
 }
 
 /// A uniform scale plus an offset, in canvas pixel proportions.

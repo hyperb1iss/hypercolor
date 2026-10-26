@@ -18,8 +18,8 @@ use super::device_card::{UNASSIGNED_KEY, device_card_dom_id};
 use super::device_pane::pane_zone_toggle_dom_id;
 use super::drag::{DragController, FocusReturn};
 use super::drag_model::{
-    DropAction, Footprint, MovePayload, Origin, moved_announcement, offset_to_center, origin_name,
-    placed_announcement, zone_name_for_device,
+    DropAction, MovePayload, Origin, moved_announcement, origin_name, placed_announcement,
+    zone_name_for_device,
 };
 use super::history::{EditDone, MovePlan, Moved, NewZone};
 use super::placement;
@@ -234,7 +234,7 @@ fn plan_move(
             .unwrap_or_default();
         // Hints already carry the geometry, so a drop point only moves
         // them; without hints the arrivals are placed once minted.
-        let point = point.filter(|point| !center_hints_on(&mut hints, *point));
+        let point = point.filter(|point| !center_hints_on(&mut hints, *point, canvas));
         return Planned::Write(MovePlan::Assign {
             device_id: payload.device_id.clone(),
             segments,
@@ -260,7 +260,7 @@ fn plan_move(
         })
         .collect();
     if let Some(point) = point {
-        center_on(&mut arriving, point);
+        center_on(&mut arriving, point, canvas);
     }
     let mut next_index = target.members.len();
     let changes: Vec<MemberEdit> = held
@@ -414,15 +414,13 @@ fn move_to_new_zone(drag: DragController, payload: MovePayload, focus: Option<Fo
 
 /// Center seeded placement hints on `point`, keeping their arrangement.
 /// False when there are none to move.
-fn center_hints_on(hints: &mut [MemberPlacementHint], point: NormalizedPosition) -> bool {
-    let footprints: Vec<Footprint> = hints
-        .iter()
-        .map(|hint| Footprint {
-            center: hint.position,
-            size: hint.size,
-        })
-        .collect();
-    let Some((dx, dy)) = offset_to_center(&footprints, point) else {
+fn center_hints_on(
+    hints: &mut [MemberPlacementHint],
+    point: NormalizedPosition,
+    canvas: (u32, u32),
+) -> bool {
+    let footprints = hints.iter().map(placement::Footprint::of_hint);
+    let Some((dx, dy)) = placement::offset_to_center(footprints, point, canvas) else {
         return false;
     };
     for hint in hints {
@@ -432,15 +430,9 @@ fn center_hints_on(hints: &mut [MemberPlacementHint], point: NormalizedPosition)
 }
 
 /// Center a group of outputs on `point`, keeping their arrangement.
-fn center_on(outputs: &mut [Output], point: NormalizedPosition) {
-    let footprints: Vec<Footprint> = outputs
-        .iter()
-        .map(|output| Footprint {
-            center: output.position,
-            size: output.size,
-        })
-        .collect();
-    let Some((dx, dy)) = offset_to_center(&footprints, point) else {
+fn center_on(outputs: &mut [Output], point: NormalizedPosition, canvas: (u32, u32)) {
+    let footprints = outputs.iter().map(placement::Footprint::of);
+    let Some((dx, dy)) = placement::offset_to_center(footprints, point, canvas) else {
         return;
     };
     for output in outputs {

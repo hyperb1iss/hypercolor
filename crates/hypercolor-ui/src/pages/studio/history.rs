@@ -10,8 +10,7 @@
 
 use std::collections::VecDeque;
 
-use super::drag_model::{Footprint as DropFootprint, offset_to_center};
-use super::placement::Footprint;
+use super::placement::{self, Footprint};
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint, PatchZoneRequest,
@@ -246,6 +245,8 @@ pub(crate) struct StudioHistory {
     generation: RwSignal<u64>,
     selected: RwSignal<Option<String>>,
     refresh: Callback<()>,
+    /// The canvas size drop points are measured against.
+    canvas: Memo<(u32, u32)>,
 }
 
 impl StudioHistory {
@@ -253,6 +254,7 @@ impl StudioHistory {
         scene: Signal<Option<api::SceneDocument>>,
         selected: RwSignal<Option<String>>,
         refresh: Callback<()>,
+        canvas: Memo<(u32, u32)>,
     ) -> Self {
         let journal = RwSignal::new(StudioJournal::default());
         let busy = RwSignal::new(false);
@@ -288,6 +290,7 @@ impl StudioHistory {
             generation,
             selected,
             refresh,
+            canvas,
             can_undo: Signal::derive(move || {
                 !busy.get() && journal.with(|j| j.undo_edit().is_some())
             }),
@@ -772,7 +775,10 @@ impl StudioHistory {
         };
         let mut landed = response.document.revision;
         let mut changes = response.changes.clone();
-        let placed = point.map_or_else(Vec::new, |point| center_arrivals(&response.changes, point));
+        let canvas = self.canvas.get_untracked();
+        let placed = point.map_or_else(Vec::new, |point| {
+            center_arrivals(&response.changes, point, canvas)
+        });
         self.accept(response);
         if !placed.is_empty() {
             let request = EditMembersRequest {
@@ -1038,19 +1044,17 @@ fn report_failure<T>(outcome: &api::ApiResult<api::zones::ZoneOutcome<T>>) {
 
 /// The placement edits that center an assignment's arrivals on `point`.
 /// Each arrival keeps its zone, index, and relation to the others.
-fn center_arrivals(changes: &[MemberEdit], point: NormalizedPosition) -> Vec<MemberEdit> {
+fn center_arrivals(
+    changes: &[MemberEdit],
+    point: NormalizedPosition,
+    canvas: (u32, u32),
+) -> Vec<MemberEdit> {
     let arrivals: Vec<_> = changes
         .iter()
         .filter_map(|change| change.after.clone())
         .collect();
-    let footprints: Vec<DropFootprint> = arrivals
-        .iter()
-        .map(|state| DropFootprint {
-            center: state.output.position,
-            size: state.output.size,
-        })
-        .collect();
-    let Some((dx, dy)) = offset_to_center(&footprints, point) else {
+    let footprints = arrivals.iter().map(|state| Footprint::of(&state.output));
+    let Some((dx, dy)) = placement::offset_to_center(footprints, point, canvas) else {
         return Vec::new();
     };
     if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
@@ -1192,6 +1196,7 @@ mod replay_tests {
             generation: RwSignal::new(1),
             selected: RwSignal::new(Some(selected.to_owned())),
             refresh: Callback::new(|()| {}),
+            canvas: Memo::new(|_| (640, 480)),
         }
     }
 

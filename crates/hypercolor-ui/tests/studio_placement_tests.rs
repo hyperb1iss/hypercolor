@@ -1,5 +1,5 @@
 //! Contract tests for where outputs land on a zone canvas: rig seeding,
-//! the first-arrival fit, and the Fit transform.
+//! the first-arrival fit, the Fit transform, and drop centering.
 
 use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::spatial::{
@@ -9,7 +9,7 @@ use hypercolor_types::spatial::{
 use hypercolor_ui::api::DeviceSummary;
 use hypercolor_ui::pages::studio::placement::{
     Arrival, FIT_MARGIN, Fallback, Footprint, assignment_hints, fit_outputs, move_edits,
-    place_arrivals, rig_footprint, rig_layouts,
+    offset_to_center, place_arrivals, rig_footprint, rig_layouts,
 };
 
 const CANVAS: (u32, u32) = (640, 480);
@@ -375,6 +375,73 @@ fn fit_frames_the_shown_boxes_and_carries_the_rest_along() {
 #[test]
 fn fit_on_an_empty_zone_reports_nothing_to_fit() {
     assert!(!fit_outputs(&mut [], CANVAS, |_| true));
+}
+
+// ── Drop centering ──────────────────────────────────────────────────────
+
+fn boxed(cx: f32, cy: f32, w: f32, h: f32, rotation: f32) -> Footprint {
+    Footprint {
+        position: NormalizedPosition::new(cx, cy),
+        size: NormalizedPosition::new(w, h),
+        rotation,
+        scale: 1.0,
+        orientation: None,
+    }
+}
+
+fn assert_offset(actual: Option<(f32, f32)>, x: f32, y: f32) {
+    let (dx, dy) = actual.expect("a group has bounds");
+    assert_close(dx, x);
+    assert_close(dy, y);
+}
+
+#[test]
+fn a_dropped_group_centers_on_the_point() {
+    let group = [
+        boxed(0.2, 0.2, 0.1, 0.1, 0.0),
+        boxed(0.4, 0.2, 0.1, 0.1, 0.0),
+    ];
+    // Bounds 0.15..0.45 by 0.15..0.25, centered on (0.3, 0.2).
+    let offset = offset_to_center(group, NormalizedPosition::new(0.5, 0.5), CANVAS);
+    assert_offset(offset, 0.2, 0.3);
+}
+
+#[test]
+fn a_group_dropped_near_an_edge_stays_on_the_canvas() {
+    let group = [boxed(0.5, 0.5, 0.4, 0.2, 0.0)];
+    let offset = offset_to_center(group, NormalizedPosition::new(0.95, 0.02), CANVAS);
+    // The box spans 0.4 by 0.2, so its center stops at 0.8 and 0.1.
+    assert_offset(offset, 0.3, -0.4);
+}
+
+#[test]
+fn a_rotated_box_is_kept_on_the_canvas_by_its_drawn_extent() {
+    // A quarter turn draws the 0.3 by 0.1 box 0.075 wide and 0.4 tall, so
+    // its center stops at 0.9625 and 0.2.
+    let group = [boxed(0.5, 0.5, 0.3, 0.1, std::f32::consts::FRAC_PI_2)];
+    let offset = offset_to_center(group, NormalizedPosition::new(0.99, 0.02), CANVAS);
+    assert_offset(offset, 0.4625, -0.3);
+}
+
+#[test]
+fn a_scaled_box_is_kept_on_the_canvas_by_its_drawn_extent() {
+    let mut scaled = boxed(0.5, 0.5, 0.2, 0.2, 0.0);
+    scaled.scale = 2.0;
+    let offset = offset_to_center([scaled], NormalizedPosition::new(0.0, 1.0), CANVAS);
+    assert_offset(offset, -0.3, 0.3);
+}
+
+#[test]
+fn a_group_larger_than_the_canvas_centers_on_that_axis() {
+    let group = [boxed(0.3, 0.3, 1.2, 0.2, 0.0)];
+    let offset = offset_to_center(group, NormalizedPosition::new(0.9, 0.6), CANVAS);
+    assert_offset(offset, 0.2, 0.3);
+}
+
+#[test]
+fn no_footprints_have_no_offset() {
+    let offset = offset_to_center([], NormalizedPosition::new(0.5, 0.5), CANVAS);
+    assert_eq!(offset, None);
 }
 
 // ── Assignment and move adapters ────────────────────────────────────────

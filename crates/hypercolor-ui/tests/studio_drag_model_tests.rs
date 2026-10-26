@@ -1,13 +1,12 @@
 //! Contract tests for Studio drag and drop: the drop table, the spring
-//! loaded tab, drop placement, new zone naming, and announcements.
+//! loaded tab, new zone naming, and announcements.
 
 use hypercolor_types::spatial::NormalizedPosition;
 
 use hypercolor_ui::pages::studio::drag_model::{
-    CANCELLED_ANNOUNCEMENT, DragSource, DropAction, DropTarget, Footprint, MovePayload, Origin,
-    SpringLoad, SpringPhase, action_hint, channel_label, moved_announcement, offset_to_center,
-    opened_announcement, origin_name, placed_announcement, resolve_drop, springs,
-    zone_name_for_device,
+    CANCELLED_ANNOUNCEMENT, DragSource, DropAction, DropTarget, MovePayload, Origin, SpringLoad,
+    SpringPhase, action_hint, channel_label, moved_announcement, opened_announcement, origin_name,
+    placed_announcement, resolve_drop, springs, zone_name_for_device,
 };
 
 const MAIN: &str = "main";
@@ -313,50 +312,6 @@ fn an_opened_tab_waits_for_the_pointer_to_leave_before_charging_again() {
         spring.hover(Some(KEYS), Some(MAIN), 1_400.0),
         SpringPhase::Charging(KEYS.to_owned())
     );
-}
-
-// ── Drop placement ────────────────────────────────────────────────────────
-
-fn footprint(cx: f32, cy: f32, w: f32, h: f32) -> Footprint {
-    Footprint {
-        center: point(cx, cy),
-        size: point(w, h),
-    }
-}
-
-fn close(actual: (f32, f32), expected: (f32, f32)) {
-    assert!(
-        (actual.0 - expected.0).abs() < 1e-5 && (actual.1 - expected.1).abs() < 1e-5,
-        "{actual:?} != {expected:?}"
-    );
-}
-
-#[test]
-fn a_group_centers_on_the_drop_point() {
-    let group = [footprint(0.2, 0.2, 0.1, 0.1), footprint(0.4, 0.2, 0.1, 0.1)];
-    // Bounds 0.15..0.45 by 0.15..0.25; center (0.3, 0.2).
-    let offset = offset_to_center(&group, point(0.5, 0.5));
-    close(offset.expect("a group has bounds"), (0.2, 0.3));
-}
-
-#[test]
-fn a_group_dropped_near_an_edge_stays_on_the_canvas() {
-    let group = [footprint(0.5, 0.5, 0.4, 0.2)];
-    let offset = offset_to_center(&group, point(0.95, 0.02)).expect("bounds");
-    // The box spans 0.4 by 0.2, so its center stops at 0.8 and 0.1.
-    close(offset, (0.3, -0.4));
-}
-
-#[test]
-fn a_group_larger_than_the_canvas_centers_on_that_axis() {
-    let group = [footprint(0.3, 0.3, 1.2, 0.2)];
-    let offset = offset_to_center(&group, point(0.9, 0.6)).expect("bounds");
-    close(offset, (0.2, 0.3));
-}
-
-#[test]
-fn no_footprints_have_no_offset() {
-    assert_eq!(offset_to_center(&[], point(0.5, 0.5)), None);
 }
 
 // ── New zone naming ───────────────────────────────────────────────────────

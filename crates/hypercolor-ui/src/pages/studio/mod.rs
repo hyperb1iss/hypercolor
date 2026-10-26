@@ -457,7 +457,12 @@ pub fn StudioPage() -> impl IntoView {
     let zone_rename_draft = RwSignal::new(None::<(String, String)>);
     let pointer_output_id = RwSignal::new(None::<String>);
 
-    let history = history::StudioHistory::new(active_scene, selected_surface_id, refresh_scene);
+    let history = history::StudioHistory::new(
+        active_scene,
+        selected_surface_id,
+        refresh_scene,
+        render_canvas_size,
+    );
     provide_context(history);
 
     let studio = StudioContext {
