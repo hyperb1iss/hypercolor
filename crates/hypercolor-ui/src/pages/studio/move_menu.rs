@@ -11,14 +11,14 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::app::CapabilitiesContext;
-use crate::components::zone_tabs::ZoneDot;
+use crate::components::zone_tabs::{ZoneDot, focus_soon};
 use crate::icons::*;
 use crate::pointer_gesture::listener_element;
 
 use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
 use super::moves::{canvas_payload, led_zones, perform};
-use super::zone_strip::{focus_first_item, focus_soon, menu_position, move_item_focus};
+use super::zone_strip::{focus_first_item, menu_position, move_item_focus};
 
 const ITEM_CLASS: &str = "dropdown-option flex w-full items-center gap-2.5 rounded-md px-2.5 \
     py-1.5 text-left text-[12px] text-fg-secondary transition-colors hover:text-fg-primary \

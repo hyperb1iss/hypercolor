@@ -126,8 +126,10 @@ pub fn next_tab(current: Option<usize>, len: usize, key: &str) -> Option<usize> 
     }
 }
 
-/// Focus the tab with element id `dom_id` once it has rendered.
-pub fn focus_tab_soon(dom_id: String) {
+/// Focus the element with id `dom_id` once it has rendered: a tab the
+/// keys just selected, or where a menu hands focus back. Looks the element
+/// up by id, so a frame that lands after its view is gone does nothing.
+pub fn focus_soon(dom_id: String) {
     request_animation_frame(move || {
         if let Some(tab) = browser_document()
             .and_then(|doc| doc.get_element_by_id(&dom_id))
@@ -263,7 +265,7 @@ pub fn CompactZoneTabs() -> impl IntoView {
         };
         let element_id = tab_id(&zone_id);
         select(zone_id);
-        focus_tab_soon(element_id);
+        focus_soon(element_id);
     };
 
     view! {

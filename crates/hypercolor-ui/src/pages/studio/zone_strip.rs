@@ -22,8 +22,7 @@ use wasm_bindgen::closure::Closure;
 
 use crate::app::{CapabilitiesContext, WsContext};
 use crate::components::zone_tabs::{
-    TabStatus, ZoneLabel, ZoneTabLabel, focus_tab_soon, next_tab, status_description,
-    surface_status,
+    TabStatus, ZoneLabel, ZoneTabLabel, focus_soon, next_tab, status_description, surface_status,
 };
 use crate::icons::*;
 use crate::pointer_gesture::{
@@ -322,7 +321,7 @@ pub fn ZoneStrip() -> impl IntoView {
             studio.selected_surface_id.set(Some(target));
             dom_id
         };
-        focus_tab_soon(dom_id);
+        focus_soon(dom_id);
         true
     };
 
@@ -1448,18 +1447,6 @@ pub(super) fn move_item_focus(menu_ref: NodeRef<html::Div>, key: &str) {
     if let Some(item) = items.get(next) {
         let _ = item.focus();
     }
-}
-
-/// Focus an element by id after the next render, once it exists.
-pub(super) fn focus_soon(dom_id: String) {
-    request_animation_frame(move || {
-        if let Some(element) = document()
-            .get_element_by_id(&dom_id)
-            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
-        {
-            let _ = element.focus();
-        }
-    });
 }
 
 /// Track an element's content width in `width` with a `ResizeObserver`.
