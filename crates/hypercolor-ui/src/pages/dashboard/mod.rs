@@ -407,8 +407,8 @@ pub fn DashboardPage() -> impl IntoView {
             >
                 <HeaderTrailing slot>
                     <ScenePicker />
-                    // Layout gear — opens the panel visibility / reset menu.
-                    // Coral dot badges the icon when one or more panels are hidden.
+                    // Layout gear: opens the panel visibility and reset menu.
+                    // An accent dot badges the icon when a panel is hidden.
                     <div class="layout-menu-anchor relative shrink-0">
                         <button
                             type="button"
@@ -420,11 +420,7 @@ pub fn DashboardPage() -> impl IntoView {
                         >
                             <Icon icon=LuLayoutDashboard width="15px" height="15px" />
                             {move || dash_layout.read().has_hidden().then(|| view! {
-                                <span
-                                    class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
-                                    style="background: var(--color-coral); \
-                                           box-shadow: 0 0 6px rgba(255, 106, 193, 0.9)"
-                                />
+                                <span class="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-accent" />
                             })}
                         </button>
                         <Show when=move || layout_menu_open.get()>

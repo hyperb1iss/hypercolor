@@ -278,7 +278,9 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
         <div class="relative rounded-xl border border-edge-subtle bg-surface-overlay/40 flex flex-col flex-1 min-h-0 overflow-hidden">
             <div class="shrink-0 px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuHeart width="14px" height="14px" style="color: var(--color-coral)" />
+                    <span class="flex text-accent">
+                        <Icon icon=LuHeart width="14px" height="14px" />
+                    </span>
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Favorites"</h2>
                 </div>
                 <div class="text-[10px] font-mono text-fg-tertiary/70 tabular-nums">
@@ -314,20 +316,13 @@ fn FavoritesEmpty() -> impl IntoView {
         <div class="flex flex-col items-center justify-center h-full py-10 text-center px-4 gap-3 animate-enter-fade">
             <div class="relative w-16 h-16 flex items-center justify-center">
                 <div
-                    class="absolute inset-0 rounded-full animate-breathe"
-                    style="--glow-rgb: 255, 106, 193; \
-                           border: 1px dashed rgba(255, 106, 193, 0.4); \
-                           background: radial-gradient(circle at center, \
-                             rgba(255, 106, 193, 0.12) 0%, transparent 65%)"
+                    class="absolute inset-0 rounded-full border border-dashed border-accent/40 animate-breathe"
+                    style="background: radial-gradient(circle at center, \
+                             color-mix(in oklab, var(--accent) 12%, transparent) 0%, transparent 65%)"
                 />
-                <Icon
-                    icon=LuHeart
-                    width="22px"
-                    height="22px"
-                    style="color: var(--color-coral); \
-                           opacity: 0.78; \
-                           filter: drop-shadow(0 0 10px rgba(255, 106, 193, 0.55))"
-                />
+                <span class="flex text-accent opacity-80">
+                    <Icon icon=LuHeart width="22px" height="22px" />
+                </span>
             </div>
             <div class="space-y-1">
                 <p class="text-[12px] font-medium text-fg-secondary">"Nothing pinned yet"</p>
