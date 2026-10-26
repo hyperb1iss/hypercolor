@@ -821,7 +821,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
 /// The Placed device card's operations menu, folded behind the card's
 /// kebab so the action cluster stays at two icons. Expands inline below
 /// the card body. "Move to" opens the shared menu of what moves and where;
-/// "Remove from zone" releases the whole device.
+/// "Remove from this zone" releases the whole device.
 fn card_ops_menu(
     studio: StudioContext,
     drag: DragController,
@@ -896,7 +896,7 @@ fn card_ops_menu(
                 }
             >
                 <Icon icon=LuTrash2 width="12px" height="12px" />
-                <span>"Remove from zone"</span>
+                <span>"Remove from this zone"</span>
             </button>
         </div>
     }

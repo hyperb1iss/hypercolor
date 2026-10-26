@@ -190,7 +190,7 @@ test("Studio removing and restoring a device keeps its committed placement", asy
   await expect.poll(() => stand.evaluate(geometry)).not.toEqual(original);
   const draft = await stand.evaluate(geometry);
   await standCard(page).getByTitle("Device options").click();
-  await standCard(page).getByRole("button", { name: "Remove from zone", exact: true }).click();
+  await standCard(page).getByRole("button", { name: "Remove from this zone", exact: true }).click();
   await expect.poll(() => fixture.assigned()).toEqual([]);
   await expect(stand).toHaveCount(0);
   await fixture.undo.click();
@@ -285,7 +285,7 @@ test("Studio pending assignment disables open device menus and Unassigned adds",
   const fixture = await openHistory(page, { beforeMemberReply: () => gate });
   await anchorCard(page).getByTitle("Device options", { exact: true }).click();
   const move = anchorCard(page).getByRole("button", { name: "Move to", exact: true });
-  const remove = anchorCard(page).getByRole("button", { name: "Remove from zone", exact: true });
+  const remove = anchorCard(page).getByRole("button", { name: "Remove from this zone", exact: true });
   await expect(move).toBeEnabled();
   await addStand(page);
   await expect.poll(() => fixture.writes.length).toBe(1);
