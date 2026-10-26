@@ -114,3 +114,48 @@ pub fn hug_cabinet(
     let height = ((width - chrome.width).max(1.0) / aspect + chrome.height).min(max_height);
     (width, height)
 }
+
+const PREVIEW_MIN_REQUEST_WIDTH: f64 = 480.0;
+const PREVIEW_MAX_REQUEST_WIDTH: f64 = 2560.0;
+const PREVIEW_INLINE_MAX_REQUEST_WIDTH: f64 = 704.0;
+const PREVIEW_REQUEST_QUANTUM: f64 = 64.0;
+const PREVIEW_INLINE_MAX_DPR: f64 = 1.25;
+const PREVIEW_FULLSCREEN_MAX_DPR: f64 = 1.5;
+
+/// Request enough pixels for the visible preview using the shared inline/fullscreen policy.
+pub fn preview_request_width(
+    preview_width_px: f64,
+    device_pixel_ratio: f64,
+    fullscreen: bool,
+) -> u32 {
+    let effective_dpr = if fullscreen {
+        device_pixel_ratio.min(PREVIEW_FULLSCREEN_MAX_DPR)
+    } else {
+        device_pixel_ratio.min(PREVIEW_INLINE_MAX_DPR)
+    };
+    let max_request_width = if fullscreen {
+        PREVIEW_MAX_REQUEST_WIDTH
+    } else {
+        PREVIEW_INLINE_MAX_REQUEST_WIDTH
+    };
+    let scaled_width =
+        (preview_width_px * effective_dpr).clamp(PREVIEW_MIN_REQUEST_WIDTH, max_request_width);
+    let quantized_width = (scaled_width / PREVIEW_REQUEST_QUANTUM).ceil() * PREVIEW_REQUEST_QUANTUM;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        quantized_width as u32
+    }
+}
+
+#[cfg(test)]
+mod request_width_tests {
+    use super::preview_request_width;
+
+    #[test]
+    fn inline_request_tracks_the_visible_box_and_display_density() {
+        assert_eq!(preview_request_width(620.0, 1.0, false), 640);
+        assert_eq!(preview_request_width(500.0, 1.0, false), 512);
+        assert_eq!(preview_request_width(620.0, 2.0, false), 704);
+        assert_eq!(preview_request_width(1920.0, 1.0, true), 1920);
+    }
+}

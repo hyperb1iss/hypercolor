@@ -86,12 +86,6 @@ const PRESET_STRIP_ESTIMATE_PX: f64 = 46.0;
 // the old squished layout would otherwise pin the preview at 460px.
 const PREVIEW_WIDTH_STORAGE_KEY: &str = "hc-dashboard-preview-width-v2";
 const DASHBOARD_PREVIEW_FPS_CAP: u32 = 60;
-const DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH: f64 = 480.0;
-const DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH: f64 = 2560.0;
-const DASHBOARD_PREVIEW_INLINE_MAX_REQUEST_WIDTH: f64 = 704.0;
-const DASHBOARD_PREVIEW_REQUEST_QUANTUM: f64 = 64.0;
-const DASHBOARD_PREVIEW_INLINE_MAX_DPR: f64 = 1.25;
-const DASHBOARD_PREVIEW_FULLSCREEN_MAX_DPR: f64 = 1.5;
 
 /// Practical upper bound for the draggable preview column: viewport width
 /// minus the reserve for sidebar, padding, handle, and favorites panel.
@@ -107,28 +101,6 @@ fn max_preview_width() -> f64 {
 /// and the cabinet spans the entire window.
 fn viewport_width_px() -> f64 {
     browser_viewport_width(1920.0)
-}
-
-fn dashboard_preview_request_width(preview_width_px: f64, fullscreen: bool) -> u32 {
-    let device_pixel_ratio = device_pixel_ratio(1.0);
-    let effective_dpr = if fullscreen {
-        device_pixel_ratio.min(DASHBOARD_PREVIEW_FULLSCREEN_MAX_DPR)
-    } else {
-        device_pixel_ratio.min(DASHBOARD_PREVIEW_INLINE_MAX_DPR)
-    };
-    let max_request_width = if fullscreen {
-        DASHBOARD_PREVIEW_MAX_REQUEST_WIDTH
-    } else {
-        DASHBOARD_PREVIEW_INLINE_MAX_REQUEST_WIDTH
-    };
-    let scaled_width = (preview_width_px * effective_dpr)
-        .clamp(DASHBOARD_PREVIEW_MIN_REQUEST_WIDTH, max_request_width);
-    let quantized_width = (scaled_width / DASHBOARD_PREVIEW_REQUEST_QUANTUM).ceil()
-        * DASHBOARD_PREVIEW_REQUEST_QUANTUM;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    {
-        quantized_width as u32
-    }
 }
 
 // ── Rolling metrics history ──────────────────────────────────────────
@@ -247,8 +219,9 @@ pub fn DashboardPage() -> impl IntoView {
             hero.get().0 - CABINET_BORDER_X_PX
         };
         ws.set_preview_width_cap
-            .set(dashboard_preview_request_width(
+            .set(crate::components::preview_box::preview_request_width(
                 effective_width,
+                device_pixel_ratio(1.0),
                 fullscreen.get(),
             ));
     });

@@ -140,9 +140,16 @@ pub fn EffectsPage() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
     let zones_ctx = expect_context::<ZonesContext>();
 
+    let preview_ref = NodeRef::<leptos::html::Div>::new();
+    let preview_size = leptos_use::use_element_size(preview_ref);
     Effect::new(move |_| {
         ws.set_preview_cap.set(EFFECTS_PREVIEW_FPS_CAP);
-        ws.set_preview_width_cap.set(0);
+        ws.set_preview_width_cap
+            .set(crate::components::preview_box::preview_request_width(
+                (preview_size.width.get() - 2.0).max(0.0),
+                hypercolor_leptos_ext::prelude::device_pixel_ratio(1.0),
+                false,
+            ));
     });
     on_cleanup(move || {
         ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP);
@@ -894,7 +901,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 // with the dashboard. The effects page owns no telemetry
                                 // reporting, so `report_telemetry` stays at its default
                                 // `false`; canvas sizes via its own aspect ratio here.
-                                <div class="shrink-0 pb-3">
+                                <div node_ref=preview_ref class="shrink-0 pb-3">
                                     <PreviewCabinet />
                                 </div>
 
