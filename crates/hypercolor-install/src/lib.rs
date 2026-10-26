@@ -6,7 +6,6 @@
 //! `macos` module a launchd agent. The raw `hypercolor __install-release`
 //! command is one host of this library; others (an update activator, a
 //! daemon that observes its own installation) link it directly.
-#![cfg(unix)]
 
 mod coordinator;
 #[cfg(unix)]
@@ -18,7 +17,12 @@ mod model;
 mod ownership;
 #[cfg(unix)]
 mod payload;
+#[cfg(unix)]
 mod store;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+use windows::store;
 
 pub use coordinator::{
     InstallCoordinator, InstallCoordinatorError, InstallPlatform, InstallPlatformError,

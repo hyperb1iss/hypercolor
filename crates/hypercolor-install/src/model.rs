@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::Arc;
 
@@ -512,6 +514,24 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl InstallJournalV1 {
+    /// Every unit the journal names: both sides and every platform state.
+    pub(crate) fn named_units(&self) -> Vec<UnitId> {
+        let mut units = vec![self.candidate_unit.clone()];
+        units.extend(self.prior_active_unit.clone());
+        for state in [&self.prior_platform, &self.target_platform] {
+            units.extend(
+                [
+                    state.layout_unit.clone(),
+                    state.launcher_unit.clone(),
+                    state.running_unit.clone(),
+                ]
+                .into_iter()
+                .flatten(),
+            );
+        }
+        units
+    }
+
     pub fn new(
         transaction_id: InstallTransactionId,
         prior_active_unit: Option<UnitId>,
@@ -873,6 +893,7 @@ pub enum InstallModelError {
     InvalidAbandonment,
 }
 
+#[cfg(unix)]
 pub(crate) fn active_target(unit: &UnitId) -> PathBuf {
     Path::new("units").join(unit.as_str())
 }
