@@ -56,7 +56,7 @@ Your **Main** zone still holds everything. Making a zone never moves devices on 
 The keyboard is still in Main. Pick whichever route suits you; each one is a single move.
 
 - **Drag it.** Under **Other zones**, find the keyboard in the Main row and drag it onto the Keyboard canvas. It lands centered where you drop it.
-- **Use the menu.** Click the keyboard's row under **Other zones** and choose **Move to**, then **Keyboard**.
+- **Use the menu.** Click the keyboard's row under **Other zones** to open **Move to**, then choose **Keyboard**.
 - **From the Main tab.** Open the keyboard's card, click **⋯**, then **Move to** and **Keyboard**. You can also drag the card straight onto the **Keyboard** tab. Hold it over the tab for about half a second and the tab springs open, so you can keep dragging onto its canvas.
 - **From Unassigned.** A device no zone claims has a **+** on its card that adds it to the open tab's zone.
 
@@ -70,7 +70,7 @@ Screen readers hear the move announced, for example "Moved Razer Huntsman V2 to 
 
 The keyboard arrives fitted to the Keyboard canvas: a zone's first devices scale up to fill it, keeping their physical arrangement, so the zone's effect covers them completely.
 
-Bring in a second device, a mouse or a headset stand, and it lands where it sits relative to the keyboard in your rig, carried onto the canvas at the same scale. Nothing piles up in a corner. (A device your rig does not place lands at the daemon's default spot instead; drag it where it belongs.)
+Bring in a second device, a mouse or a headset stand, and it lands where it sits relative to the keyboard in your rig, carried onto the canvas at the same scale. Nothing piles up in a corner. (A later device your rig does not place lands at its own built-in footprint, or at the daemon's default spot; drag it where it belongs.)
 
 To tidy up by hand:
 
@@ -116,9 +116,9 @@ Every zone setting lives on its tab. Right-click a tab, or click the **⋯** on 
 
 Studio commits every step as you take it, so undo is how you back out.
 
-- **Device moves and canvas edits:** press `Ctrl+Z`, or click **Undo** in the Stage header. Each move, drop, **+**, resize, and **Fit** is one step, in the order you made them. `Ctrl+Shift+Z` or **Redo** steps forward again. Undoing a move puts the device back where it was, in its old zone.
-- **A deleted zone:** deleting a zone shows a **Deleted** bar with an **Undo** button for eight seconds. Undo brings the zone back with its name, color, place among the tabs, and devices. Its layers do not come back, so add them again.
-- **Names, colors, pauses, and order:** these are not in the undo history. Change them back from the same tab menu.
+- **Device moves and canvas edits:** press `Ctrl+Z`, or use the **Undo** arrow button in the Stage header. Each move, drop, Unassigned **+**, resize, and **Fit** is one step, in the order you made them. `Ctrl+Shift+Z` or **Redo** steps forward again. Undoing a move puts the device back where it was, in its old zone.
+- **A deleted zone:** deleting a zone shows a **Deleted** bar with an **Undo** button for eight seconds. Undo brings the zone back with its name, color, paused state, place among the tabs, and devices. Its layers do not come back, so add them again.
+- **New zones, names, colors, pauses, and order:** these are not in the undo history. Delete a zone you made by mistake, and change the rest back from the same tab menu. Undoing a **Move to** ▸ **New zone** puts the device back but leaves the new zone, empty.
 
 The undo history lasts while you stay in Studio on this scene. Switching scenes or leaving Studio starts it fresh.
 

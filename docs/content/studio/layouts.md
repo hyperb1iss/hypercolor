@@ -39,7 +39,7 @@ Your **rig** is the active named layout: the record of where your hardware physi
 - **A zone's first devices** fit the canvas together, keeping their physical arrangement, so the zone's effect covers them completely.
 - **Later arrivals** keep their physical relation to what is already there. They are carried onto the canvas with the same scale and offset as the zone's current devices, so a fan that sits above a strip in your case lands above it here.
 - **A device dropped on the canvas** is centered on the drop point.
-- **A device the rig does not place** lands at the daemon's default placement; one moved from another zone keeps the spot it had.
+- **A device the rig does not place** still joins the fit when it is among a zone's first devices. Arriving later, it takes the device's own built-in footprint when it has one (a Push 2 does), and otherwise the daemon's default placement. One moved from another zone keeps the spot it had.
 
 Nothing lands off the canvas. Arrivals that would overflow it shrink and slide until they fit.
 

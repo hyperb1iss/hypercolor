@@ -113,13 +113,13 @@ Every zone keeps its own canvas, and an arriving device is placed from your rig,
 - **A zone's first devices** fit the canvas together, keeping their physical arrangement, so an effect covers them completely.
 - **Later arrivals** keep their physical relation to the devices already in the zone: a fan that sits above the strip in your case lands above it on the canvas.
 - **A drop on the canvas** centers the arrival on the drop point instead.
-- **A device your rig does not place** lands at the daemon's default placement. One moved from another zone keeps the spot it had.
+- **A device your rig does not place** still joins the fit when it is among a zone's first devices. Arriving later, it takes the device's own built-in footprint when it has one (a Push 2 does), and otherwise the daemon's default placement. One moved from another zone keeps the spot it had.
 
 To rescale everything afterward, click **Fit** in the Stage header. See [Layouts](@/studio/layouts.md) for placement and the canvas editor.
 
 ## Undo and announcements
 
-Every move is one step in Studio's undo history: a menu choice, a drop, a **+**, or a **Remove from zone**. Press `Ctrl+Z` to undo and `Ctrl+Shift+Z` to redo, or use **Undo** and **Redo** in the Stage header. Undo puts the outputs back in their old zone at the placement they had, unless you have moved them on that canvas since. Device moves and canvas edits share the one history, in the order you made them. It belongs to the current Studio visit and resets when you switch scenes or leave Studio.
+Every move is one step in Studio's undo history: a menu choice, a drop, a **+**, or a **Remove from zone**. Press `Ctrl+Z` to undo and `Ctrl+Shift+Z` to redo, or use the **Undo** and **Redo** arrow buttons in the Stage header. Undo puts the outputs back in their old zone at the placement they had, unless you have moved them on that canvas since. Device moves and canvas edits share the one history, in the order you made them. It belongs to the current Studio visit and resets when you switch scenes or leave Studio.
 
 Moves save as you make them, and a toast confirms each one. While a move is saving, the canvas holds still for a moment so the next edit lands on the updated zone.
 
