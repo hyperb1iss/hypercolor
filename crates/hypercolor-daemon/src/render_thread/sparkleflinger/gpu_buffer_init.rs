@@ -12,6 +12,14 @@ use anyhow::{Result, bail};
 /// success path costs nothing extra. wgpu treats a buffer allocation that
 /// runs out of memory as recoverable, so callers must not record the upload
 /// as done when this fails: the next frame has to retry it.
+///
+/// The check only sees failures the backend reports. The Vulkan, DX12, and
+/// Metal backends report a failed allocation, but wgpu-hal 30.0.1's GLES
+/// backend calls `glBufferStorage` / `glBufferData` in `create_buffer`
+/// without checking for an allocation error (wgpu-hal `src/gles/device.rs`),
+/// and a mapped-at-creation buffer there can map a separate staging
+/// allocation. On GL a destination buffer that failed to allocate can
+/// therefore still come back with a mapping and pass this check.
 pub(super) fn create_buffer_with_contents(
     device: &wgpu::Device,
     label: &str,
