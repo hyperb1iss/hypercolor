@@ -234,6 +234,7 @@ The live tree embeds the ids a client needs for every follow-up:
     "unassigned_behavior": "off",
     "layout_id": null,
     "revision": 42,
+    "run_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
     "zones": [
       {
         "id": "84b20af9-0700-4b82-8488-88314b87fb5c",
@@ -293,6 +294,28 @@ No resource-specific version counters exist on the REST wire. Internal
 bookkeeping may use more detail, but clients coordinate through the one
 document revision.
 
+A read serves the revision its contents were committed at. The daemon reads
+the document and its `ETag` together, so a client never pairs one commit's
+fields with a later commit's revision.
+
+### Revisions across daemon restarts
+
+Revisions never repeat, even across restarts. The daemon keeps a reservation
+ceiling in `scene-revisions.json` in its state directory, and every run starts
+above the previous run's ceiling, so a fence a client kept from before a
+restart can never pass. Every run also starts at or above the wall clock in
+microseconds, which covers a reservation that cannot be read. Expect a jump: the first revision of a new run can
+sit far above the last one the old run served. The daemon keeps revisions
+below 2^53, so they stay exact in a JSON double.
+
+Each run also has an opaque `run_epoch`. The live document carries it, every
+HTTP response repeats it in the `hypercolor-run-epoch` header (zone write
+replies, `412` refusals, and `401` refusals included), and the WebSocket
+`hello` reports it in `state.scene` beside the revision it read. A stored-scene
+`PUT` accepts the echoed field, so a read still writes back unchanged. Compare epochs for equality only.
+When the epoch changes, the daemon restarted: read `/scene` again and fence
+from that read, never from a revision the old run handed out.
+
 ### Structural preconditions
 
 Send the last revision when overwriting a stale structure would be harmful:
@@ -332,6 +355,45 @@ delete, and reorder, scene clear, stored-scene replacement, and both effect
 apply forms. After a `412`, read `/scene`, rebase the intended edit, and retry
 with the new revision. Membership edits also validate their `before` states;
 rebuild those states from the current document when rebasing.
+
+### Retrying a write whose reply was lost
+
+A write whose reply never arrived may still have committed, and a read only
+proves it has not committed yet. Send an `Idempotency-Key` on the write and
+retry with the same key until an answer arrives:
+
+```http
+PUT /api/v1/scene/zones/84b20af9-0700-4b82-8488-88314b87fb5c/layout HTTP/1.1
+If-Match: "42"
+Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"
+Content-Type: application/json
+```
+
+The key is a client-generated opaque string, typically a UUID: visible ASCII
+with no spaces or quotes, at most 255 characters, sent bare or quoted. Keys are
+scoped per credential, so two clients that pick the same key never see each
+other's answers. These routes honor it:
+`PATCH /scene`, `POST /scene/clear`, zone create, patch, and delete, zone
+layout replacement, `POST /scene/members/edit`, member assignment and removal,
+and layer create, reorder, replace, and delete. The control patch, effect
+apply, and stored-scene routes do not. The OpenAPI document lists the header
+on exactly the routes that honor it, and every other route ignores it.
+
+- **First request with a key:** applied normally. The daemon finishes it even
+  when the client disconnects, then stores the status, headers, and body.
+- **Same key, same request:** not applied again. The stored answer comes back
+  with `Idempotency-Replayed: true`, including a stored `412`. A repeat that
+  arrives while the original is still running waits for it.
+- **Same key, different request:** a different method, path, `If-Match`, or
+  body is refused with `422 idempotency_key_mismatch`. Use a new key for a new
+  write.
+- **No key:** the request behaves exactly as it always has.
+
+Keys live in memory for one daemon run. The daemon keeps up to the newest 1024
+answers and 32 MiB in total, each for at most one hour, and always keeps the
+newest answer even when it alone is larger. Past that, a reused key starts a
+new write, and an `If-Match` fence still refuses a resend of a write that
+landed. A new `run_epoch` means every key from the old run is gone.
 
 ### Control values never use `If-Match`
 
