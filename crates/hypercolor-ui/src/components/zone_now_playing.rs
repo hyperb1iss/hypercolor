@@ -69,10 +69,9 @@ pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool)
     });
 }
 
-/// The sidebar's per-zone now-playing list — one compact row per LED
-/// zone (capped, with an overflow link to Studio). Rendered inside the
-/// Now Playing panel, so the `--np-*` palette variables are in scope
-/// for the swatch fallback.
+/// The sidebar's per-zone now-playing list: one compact row per LED zone,
+/// capped, with an overflow link to Studio. Rendered inside the Now
+/// Playing panel, whose `--np-*` palette tints each row's effect label.
 #[component]
 pub fn SidebarZoneRows() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
@@ -92,7 +91,7 @@ pub fn SidebarZoneRows() -> impl IntoView {
                             attr:class="flex items-center gap-1.5 px-1.5 py-1 rounded-md \
                                         text-[10px] text-fg-tertiary hover:text-fg-primary \
                                         hover:bg-surface-hover/30 transition-colors duration-200"
-                            attr:title="Open Studio to see every zone"
+                            attr:title="Open Studio, where every zone has a tab"
                         >
                             <Icon icon=LuChevronRight width="10px" height="10px" />
                             {format!(
