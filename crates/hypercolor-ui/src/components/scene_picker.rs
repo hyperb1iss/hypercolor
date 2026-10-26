@@ -309,11 +309,12 @@ pub fn ScenePicker() -> impl IntoView {
     });
 
     // The list takes focus as it opens, so its keys and its active item
-    // belong to the menu rather than to the trigger.
+    // belong to the menu rather than to the trigger. The frame can land
+    // after the page has torn the picker down, so its read is fallible.
     Effect::new(move |_| {
         if open.get() && panel_view.with(|view| *view == PanelView::List) {
             request_animation_frame(move || {
-                if let Some(menu) = menu_ref.get_untracked() {
+                if let Some(menu) = menu_ref.try_get_untracked().flatten() {
                     let _ = menu.focus();
                 }
             });

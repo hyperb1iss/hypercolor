@@ -107,9 +107,9 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
     Effect::new(move |_| {
         if open.get() {
             request_animation_frame(move || {
-                if let Some(panel) = menu_ref.get_untracked() {
+                if let Some(panel) = menu_ref.try_get_untracked().flatten() {
                     let rect = panel.get_bounding_client_rect();
-                    size.set((rect.width(), rect.height()));
+                    let _ = size.try_set((rect.width(), rect.height()));
                 }
                 focus_first_item(menu_ref);
             });

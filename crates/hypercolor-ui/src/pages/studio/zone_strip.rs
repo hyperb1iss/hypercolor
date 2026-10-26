@@ -811,7 +811,7 @@ fn TabRenameField(zone_id: String, dom_id: String) -> impl IntoView {
     Effect::new(move |_| {
         if input_ref.get().is_some() {
             request_animation_frame(move || {
-                if let Some(input) = input_ref.get_untracked() {
+                if let Some(input) = input_ref.try_get_untracked().flatten() {
                     let _ = input.focus();
                     let end =
                         u32::try_from(input.value().encode_utf16().count()).unwrap_or(u32::MAX);
@@ -887,9 +887,9 @@ fn ZoneTabMenu(handles: StripHandles) -> impl IntoView {
         if menu.get().is_some() {
             colors_open.set(false);
             request_animation_frame(move || {
-                if let Some(panel) = menu_ref.get_untracked() {
+                if let Some(panel) = menu_ref.try_get_untracked().flatten() {
                     let rect = panel.get_bounding_client_rect();
-                    size.set((rect.width(), rect.height()));
+                    let _ = size.try_set((rect.width(), rect.height()));
                 }
                 focus_first_item(menu_ref);
             });
@@ -1159,7 +1159,7 @@ fn DeleteZoneConfirm(
     Effect::new(move |_| {
         if confirm.with(Option::is_some) {
             request_animation_frame(move || {
-                if let Some(keep) = keep_ref.get_untracked() {
+                if let Some(keep) = keep_ref.try_get_untracked().flatten() {
                     let _ = keep.focus();
                 }
             });
@@ -1409,7 +1409,9 @@ pub(super) fn menu_position(x: f64, y: f64, width: f64, height: f64) -> String {
 }
 
 fn menu_items(menu_ref: NodeRef<html::Div>) -> Vec<web_sys::HtmlElement> {
-    let Some(menu) = menu_ref.get_untracked() else {
+    // Menus read this from a deferred frame, which can land after the
+    // menu's view is gone.
+    let Some(menu) = menu_ref.try_get_untracked().flatten() else {
         return Vec::new();
     };
     let Ok(nodes) = menu.query_selector_all(
