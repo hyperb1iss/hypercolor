@@ -498,9 +498,16 @@ impl CommitLane {
         Some(pending)
     }
 
-    /// The commit in flight finished, landed or not.
-    fn settled(&mut self) {
-        self.in_flight = None;
+    /// The commit `scene_id`'s drain had in flight finished, landed or not.
+    /// Another scene's drain keeps its own.
+    fn settled(&mut self, scene_id: hypercolor_types::scene::SceneId) {
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(scene, _)| *scene == scene_id)
+        {
+            self.in_flight = None;
+        }
     }
 
     /// The commit in flight for `zone_id` of `scene_id`, if one is.
@@ -1003,7 +1010,7 @@ pub(crate) fn ZoneLayoutProvider(
                     break;
                 };
                 commit_zone(pending, Some(generation), scene_id, shared.clone()).await;
-                with_lane(&shared, CommitLane::settled);
+                with_lane(&shared, |lane| lane.settled(scene_id));
             }
             with_lane(&shared, |lane| {
                 if lane.draining.is_some_and(|(owner, _)| owner == generation) {
@@ -1032,7 +1039,7 @@ pub(crate) fn ZoneLayoutProvider(
         leptos::task::spawn_local(async move {
             while let Some(pending) = with_lane(&shared, |lane| lane.pop_for(scene_id)) {
                 commit_zone(pending, None, scene_id, shared.clone()).await;
-                with_lane(&shared, CommitLane::settled);
+                with_lane(&shared, |lane| lane.settled(scene_id));
             }
         });
     });
