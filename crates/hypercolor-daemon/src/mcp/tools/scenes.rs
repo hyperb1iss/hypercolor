@@ -12,7 +12,7 @@ use crate::mcp::results::{
 };
 use crate::mcp::selector::SelectorCandidate;
 use crate::resource_summary::scene_summary;
-use hypercolor_types::api::scene::{PatchControlsRequest, SceneDocument};
+use hypercolor_types::api::scene::{PatchControlsRequest, SceneDocument, SceneFence};
 use hypercolor_types::api::scenes::ActivatedSceneRef;
 use hypercolor_types::control::control_value_json_schema;
 use hypercolor_types::scene::ZoneRole;
@@ -237,7 +237,7 @@ pub(super) async fn handle_clear_zone_with_state(
             &state.domains.scene_tree,
             ClearScene {
                 zone: None,
-                expected_revision: None,
+                fence: None,
             },
         )
         .await?;
@@ -273,7 +273,7 @@ pub(super) async fn handle_clear_zone_with_state(
                 &state.domains.scene_tree,
                 ClearScene {
                     zone: Some(zone_id),
-                    expected_revision: Some(expected_revision),
+                    fence: Some(SceneFence::revision_only(expected_revision)),
                 },
             )
             .await
@@ -339,7 +339,7 @@ pub(super) async fn handle_adjust_controls_with_state(
                         layer_id,
                         values,
                         clear_bindings,
-                        expected_revision: Some(expected_revision),
+                        fence: Some(SceneFence::revision_only(expected_revision)),
                     },
                     MutationContext::mcp(),
                 )

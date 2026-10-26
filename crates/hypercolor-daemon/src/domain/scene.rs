@@ -29,7 +29,7 @@ use hypercolor_core::scene::{
     ZoneMutationError, default_primary_zone,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::api::scene::SideEffectOutcome;
+use hypercolor_types::api::scene::{SceneFence, SideEffectOutcome};
 use hypercolor_types::api::scenes::{
     MediaLayerDetail, MediaProducerCaps, MediaProducerCounts, MediaProducerLayers,
     ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest,
@@ -1794,7 +1794,10 @@ impl SceneMutation {
         target: super::runtime_zone::RuntimeZoneTarget,
         color: hypercolor_color::Rgb,
     ) -> Result<Zone, DomainError> {
-        super::scene_tree::check_scene_revision(self, Some(target.revision))?;
+        super::scene_tree::check_scene_fence(
+            self,
+            Some(&SceneFence::revision_only(target.revision)),
+        )?;
         let scene_id = self.active_scene_for_runtime_mutation("setting a zone color")?;
         if scene_id != target.scene_id {
             return Err(DomainError::conflict(
@@ -2744,8 +2747,8 @@ pub struct ReplaceScene {
     /// Complete replacement document. Server-owned fields it echoes from
     /// a read are checked against the stored scene, never written.
     pub document: ReplaceSceneRequest,
-    /// Optional scene commit generation from `If-Match`.
-    pub expected_revision: Option<u64>,
+    /// Optional scene fence from `If-Match`.
+    pub fence: Option<SceneFence>,
 }
 
 /// The outcome of a scene library mutation.
@@ -2904,11 +2907,17 @@ pub async fn replace_scene(
 
     let default_layout = ctx.layout.current();
     let mut mutation = ctx.scene.begin_mutation().await;
-    // A read-back body echoes the revision it was read at. That echo is a
-    // precondition in its own right, so a request carrying both it and
-    // `If-Match` lands only when each one is current.
-    crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, command.document.revision)?;
+    // A read-back body echoes the fence it was read at, run included. That
+    // echo is a precondition in its own right, so a request carrying both
+    // it and `If-Match` lands only when each one is current, and a document
+    // read in another daemon run is stale whatever its revision.
+    let document = &command.document;
+    let body_fence = document.revision.map(|revision| SceneFence {
+        run_epoch: document.run_epoch.clone().filter(|epoch| !epoch.is_empty()),
+        revision,
+    });
+    crate::domain::scene_tree::check_scene_fence(&mutation, command.fence.as_ref())?;
+    crate::domain::scene_tree::check_scene_fence(&mutation, body_fence.as_ref())?;
     let existing = mutation
         .scenes()
         .get(&command.scene_id)

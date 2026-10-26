@@ -200,9 +200,8 @@ pub async fn apply_effect(
     let transition = match request.transition.unwrap_or_default() {
         TransitionType::Cut => RequestedTransition::cut(),
     };
-    let expected_revision = match crate::api::scene::parse_if_match(&headers, &state.domains.scene)
-    {
-        Ok(revision) => revision,
+    let fence = match crate::api::scene::parse_if_match(&headers) {
+        Ok(fence) => fence,
         Err(error) => return error.into_response(),
     };
 
@@ -276,7 +275,7 @@ pub async fn apply_effect(
             controls,
             preset_id: resolved_preset.as_ref().map(|preset| preset.id),
             target_zone: request.zone,
-            expected_revision,
+            fence,
             transition,
             wake_output: true,
         },

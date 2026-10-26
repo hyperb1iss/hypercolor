@@ -279,7 +279,7 @@ mod renderable {
             &second.domains.scene_tree,
             ClearScene {
                 zone: None,
-                expected_revision: None,
+                fence: None,
             },
         )
         .await

@@ -6,7 +6,7 @@ use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail};
 use hypercolor_types::api::scene::SceneFence;
 
 use super::envelope::response_meta;
-use crate::domain::{DomainError, DomainErrorDetails};
+use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
 
 const fn status(error: &DomainError) -> StatusCode {
     match error {
@@ -159,9 +159,11 @@ impl IntoResponse for DomainError {
             meta: response_meta(),
         };
         let mut response = (status, axum::Json(body)).into_response();
-        // The refusal names the fence to rebase onto, epoch-qualified for
-        // scene revisions exactly as a successful read serves it.
+        // A stale scene fence names the fence to rebase onto, epoch-qualified
+        // exactly as a successful read serves it. No other counter is ever
+        // served as the scene's `ETag`.
         if let Self::PreconditionFailed {
+            resource: ResourceKind::Scene,
             current,
             current_epoch,
             ..
@@ -209,8 +211,44 @@ mod tests {
         }
     }
 
+    fn etag(response: &Response) -> Option<&str> {
+        response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+    }
+
     #[tokio::test]
     async fn precondition_failure_renders_412_with_etag_and_details() {
+        let response = DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: 4,
+            current: 7,
+            expected_epoch: Some(std::sync::Arc::from("old-run")),
+            current_epoch: Some(std::sync::Arc::from("run")),
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(etag(&response), Some("\"run:7\""));
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["details"]["expected"], 4);
+        assert_eq!(json["error"]["details"]["current"], 7);
+        assert_eq!(json["error"]["details"]["expected_epoch"], "old-run");
+        assert_eq!(json["error"]["details"]["current_epoch"], "run");
+
+        let bare = DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: 4,
+            current: 7,
+            expected_epoch: None,
+            current_epoch: None,
+        }
+        .into_response();
+        assert_eq!(etag(&bare), Some("\"7\""));
+    }
+
+    #[tokio::test]
+    async fn only_a_scene_refusal_serves_the_scene_fence() {
         let response = DomainError::PreconditionFailed {
             resource: ResourceKind::Zone,
             expected: 4,
@@ -220,15 +258,8 @@ mod tests {
         }
         .into_response();
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::ETAG)
-                .and_then(|value| value.to_str().ok()),
-            Some("\"7\"")
-        );
+        assert_eq!(etag(&response), None);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["details"]["expected"], 4);
         assert_eq!(json["error"]["details"]["current"], 7);
     }
 

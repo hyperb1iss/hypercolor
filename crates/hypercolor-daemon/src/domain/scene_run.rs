@@ -9,7 +9,7 @@
 //! persisted for this, and nothing near a commit does I/O.
 //!
 //! Revisions still start at the wall clock in microseconds since the Unix
-//! epoch, clamped below 2^52, so a bare numeric fence from an earlier run
+//! epoch, clamped to at most 2^52, so a bare numeric fence from an earlier run
 //! is practically unreachable too: that run started earlier and would need
 //! more than one commit per microsecond to climb past now. Only a clock
 //! that jumped backwards breaks that, which is why the epoch-qualified
@@ -21,8 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::commit::SceneRevision;
 
-/// Upper bound for a run's starting revision, kept below 2^53 so the
-/// revision survives a trip through an IEEE double.
+/// Upper bound for a run's starting revision. It leaves 2^52 commits of
+/// headroom below 2^53, so revisions survive a trip through an IEEE double.
 pub const CLOCK_BASE_CEILING: u64 = 1 << 52;
 
 /// The identity and starting point of one daemon run's scene revisions.

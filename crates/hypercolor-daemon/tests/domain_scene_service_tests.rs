@@ -188,7 +188,7 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
         &state.domains.scene_tree,
         ClearScene {
             zone: Some(zone_id),
-            expected_revision: None,
+            fence: None,
         },
     )
     .await
@@ -229,7 +229,7 @@ async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
             layer_id: SceneLayerId::new(),
             values: HashMap::from([("speed".to_owned(), ControlValue::Float(1.0))]),
             clear_bindings: Vec::new(),
-            expected_revision: Some(stale.revision),
+            fence: Some(stale.revision.into()),
         },
         MutationContext::mcp(),
     )
@@ -462,7 +462,7 @@ async fn apply_command(state: &AppState, effect: &EffectMetadata) -> ApplyEffect
         controls: HashMap::new(),
         preset_id: None,
         target_zone: None,
-        expected_revision: None,
+        fence: None,
         transition: RequestedTransition::cut(),
         wake_output: true,
     }

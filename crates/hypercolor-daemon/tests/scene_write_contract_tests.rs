@@ -9,10 +9,11 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use http::{Request, StatusCode};
+use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_daemon::domain::scene_run::{CLOCK_BASE_CEILING, SceneRun};
@@ -21,6 +22,10 @@ use hypercolor_types::api::envelope::{
     RUN_EPOCH_HEADER,
 };
 use hypercolor_types::api::scene::SceneFence;
+use hypercolor_types::effect::{
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState, PresetTemplate,
+};
+use hypercolor_types::library::PresetId;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -848,4 +853,235 @@ async fn a_stored_scene_read_in_another_run_is_refused_on_write_back() {
         StatusCode::OK,
         "the same body from this run lands"
     );
+}
+
+/// An effect with one preset, registered so the effect routes reach their
+/// scene commit instead of answering 404.
+async fn register_sweep_effect(state: &Arc<AppState>) -> EffectId {
+    let id = EffectId::new(uuid::Uuid::now_v7());
+    let metadata = EffectMetadata {
+        id,
+        name: "Sweep".to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: "Sweep description".to_owned(),
+        category: EffectCategory::Ambient,
+        tags: Vec::new(),
+        controls: Vec::new(),
+        presets: vec![PresetTemplate {
+            id: PresetId::stable("sweep"),
+            name: "Sweep".to_owned(),
+            description: None,
+            controls: std::collections::HashMap::new(),
+        }],
+        audio_reactive: false,
+        screen_reactive: false,
+        input_reactive: false,
+        source: EffectSource::Native {
+            path: "builtin/sweep".into(),
+        },
+        license: None,
+    };
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
+            metadata,
+            source_path: "/tmp/sweep.rs".into(),
+            modified: SystemTime::now(),
+            state: EffectState::Loading,
+        })
+        .await;
+    id
+}
+
+fn with_if_match(mut request: Request<Body>, fence: &str) -> Request<Body> {
+    request.headers_mut().append(
+        http::header::IF_MATCH,
+        http::HeaderValue::from_str(fence).expect("valid fence"),
+    );
+    request
+}
+
+/// Every route that documents `If-Match`, sent a well-formed request at
+/// the current revision under another run's epoch: each answers 412
+/// naming the current fence, and none commits.
+#[tokio::test]
+async fn no_fenced_route_takes_a_fence_from_another_run() {
+    let (state, app) = isolated();
+    let effect_id = register_sweep_effect(&state).await;
+    let created = send(
+        &app,
+        json_request("POST", "/api/v1/scenes", &json!({ "name": "Swept" })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let scene_id = body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("scene id")
+        .to_owned();
+    let stored =
+        body_json(send(&app, get(format!("/api/v1/scenes/{scene_id}"))).await).await["data"]
+            .clone();
+    let document: serde_json::Value = serde_json::from_str(
+        &api::openapi::document_json_pretty().expect("OpenAPI document renders"),
+    )
+    .expect("OpenAPI document parses");
+
+    let mut swept = Vec::new();
+    for (path, item) in document["paths"].as_object().expect("paths") {
+        for (method, operation) in item.as_object().expect("path item") {
+            let declares = operation["parameters"]
+                .as_array()
+                .is_some_and(|parameters| {
+                    parameters
+                        .iter()
+                        .any(|parameter| parameter["name"] == "If-Match")
+                });
+            if !declares {
+                continue;
+            }
+            let name = operation["operationId"]
+                .as_str()
+                .expect("operation id")
+                .to_owned();
+            let (revision, epoch, zone_id) = live_scene(&app).await;
+            let id = if path.starts_with("/api/v1/scenes/") {
+                scene_id.clone()
+            } else {
+                effect_id.to_string()
+            };
+            let uri = path
+                .replace("{id}", &id)
+                .replace("{preset}", &PresetId::stable("sweep").to_string())
+                .replace("{zone}", &zone_id)
+                .replace("{layer}", "0198c5b6-1111-7000-8000-00000000bbbb")
+                .replace("{member}", "no-such-member");
+            let body = match name.as_str() {
+                "update_scene" => stored.clone(),
+                "create_live_zone" | "patch_live_zone" => json!({ "name": "Swept" }),
+                "put_live_zone_layout" => json!({ "placements": [] }),
+                "reorder_live_zone_layers" => json!({ "order": [] }),
+                "create_live_zone_layer" | "replace_live_zone_layer" => json!({
+                    "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
+                }),
+                "assign_live_zone_members" => json!({ "device_id": "mock:none" }),
+                "edit_live_scene_members" => json!({
+                    "scene_id": stored["id"],
+                    "assignment": { "zone_id": zone_id, "device_id": "mock:none" }
+                }),
+                _ => json!({}),
+            };
+            let foreign = SceneFence::new("an-earlier-run", revision).to_etag();
+            let answered = send(
+                &app,
+                with_if_match(
+                    json_request(&method.to_ascii_uppercase(), &uri, &body),
+                    &foreign,
+                ),
+            )
+            .await;
+            assert_eq!(
+                answered.status(),
+                StatusCode::PRECONDITION_FAILED,
+                "{name} took another run's fence"
+            );
+            assert_eq!(
+                served_fence(&answered),
+                SceneFence::new(epoch.as_str(), revision),
+                "{name} names the fence to rebase onto"
+            );
+            assert_eq!(
+                state.scene_manager.revision(),
+                revision,
+                "{name} committed under another run's fence"
+            );
+            swept.push(name);
+        }
+    }
+    assert_eq!(swept.len(), 16, "{swept:?}");
+}
+
+#[tokio::test]
+async fn a_refusal_without_the_fence_outranks_a_fence_from_another_run() {
+    let (state, app) = isolated();
+    let stored = send(
+        &app,
+        json_request("POST", "/api/v1/scenes", &json!({ "name": "Stored" })),
+    )
+    .await;
+    let scene_id = body_json(stored).await["data"]["id"]
+        .as_str()
+        .expect("scene id")
+        .to_owned();
+    let document =
+        body_json(send(&app, get(format!("/api/v1/scenes/{scene_id}"))).await).await["data"]
+            .clone();
+    let (revision, _, _) = live_scene(&app).await;
+    let foreign = SceneFence::new("an-earlier-run", revision).to_etag();
+
+    let unknown_effect = send(
+        &app,
+        with_if_match(
+            json_request("POST", "/api/v1/effects/no-such-effect/apply", &json!({})),
+            &foreign,
+        ),
+    )
+    .await;
+    assert_eq!(unknown_effect.status(), StatusCode::NOT_FOUND);
+
+    let unknown_scene = send(
+        &app,
+        with_if_match(
+            json_request(
+                "PUT",
+                "/api/v1/scenes/0198c5b6-1111-7000-8000-00000000cccc",
+                &document,
+            ),
+            &foreign,
+        ),
+    )
+    .await;
+    assert_eq!(unknown_scene.status(), StatusCode::NOT_FOUND);
+    assert_eq!(state.scene_manager.revision(), revision);
+}
+
+#[tokio::test]
+async fn if_match_is_one_fence_never_a_list() {
+    let (state, app) = isolated();
+    let (revision, epoch, zone_id) = live_scene(&app).await;
+    let current = SceneFence::new(epoch.as_str(), revision).to_etag();
+
+    let split = with_if_match(
+        with_if_match(patch_zone_fenced(&zone_id, "Never", "*"), &current),
+        &current,
+    );
+    assert_eq!(
+        split
+            .headers()
+            .get_all(http::header::IF_MATCH)
+            .iter()
+            .count(),
+        3
+    );
+    let refused = send(&app, split).await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a wildcard line never waves through the lines after it"
+    );
+    let joined = send(
+        &app,
+        patch_zone_fenced(&zone_id, "Never", &format!("{current}, {current}")),
+    )
+    .await;
+    assert_eq!(joined.status(), StatusCode::BAD_REQUEST);
+    for padded in [
+        format!("\"{epoch}:0{revision}\""),
+        format!("\"{epoch}:+{revision}\""),
+    ] {
+        let refused = send(&app, patch_zone_fenced(&zone_id, "Never", &padded)).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{padded}");
+    }
+    assert_eq!(state.scene_manager.revision(), revision);
 }

@@ -4,12 +4,13 @@ use std::collections::HashSet;
 
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, MemberAssignmentTarget, MemberEdit, MemberState,
+    SceneFence,
 };
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use super::{
     AssignMembersRequest, DomainError, Output, OutputPlacement, ResourceKind, Scene,
-    SceneTreeContext, ZoneRole, active_scene, check_scene_revision, ensure_live_zone_mutable,
+    SceneTreeContext, ZoneRole, active_scene, check_scene_fence, ensure_live_zone_mutable,
     member_placement, mint_missing_outputs, reconcile_member_exclusions, scene_document,
     zone_layout_error,
 };
@@ -22,7 +23,7 @@ use super::{
 pub async fn edit_members(
     ctx: &SceneTreeContext,
     mut request: EditMembersRequest,
-    expected_revision: u64,
+    fence: SceneFence,
 ) -> Result<EditMembersResponse, DomainError> {
     if request.changes.is_empty() == request.assignment.is_none() {
         return Err(DomainError::validation(
@@ -42,7 +43,7 @@ pub async fn edit_members(
         Vec::new()
     };
     let mut mutation = ctx.scene.begin_mutation().await;
-    check_scene_revision(&mutation, Some(expected_revision))?;
+    check_scene_fence(&mutation, Some(&fence))?;
     let scene_id = mutation.active_scene_for_runtime_mutation("editing zone memberships")?;
     if scene_id != request.scene_id {
         return Err(DomainError::conflict("the active scene changed"));
@@ -53,7 +54,11 @@ pub async fn edit_members(
         request.changes = assignment_changes(&previous, &assignment, minted)?;
         if request.changes.is_empty() {
             return Ok(EditMembersResponse {
-                document: scene_document(&previous, expected_revision, ctx.scene.run_epoch()),
+                document: scene_document(
+                    &previous,
+                    mutation.base_revision(),
+                    ctx.scene.run_epoch(),
+                ),
                 changes: Vec::new(),
             });
         }

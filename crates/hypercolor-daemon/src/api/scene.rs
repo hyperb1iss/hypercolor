@@ -6,9 +6,10 @@
 //! transport adapter and nothing more — it parses, calls one service,
 //! and renders the canonical envelope.
 //!
-//! Concurrency is one token. `GET /scene` serves the commit generation
-//! as `ETag`; structural mutations honor an optional `If-Match` against
-//! it and answer 412 with the current revision. Control-value writes
+//! Concurrency is one token. `GET /scene` serves the commit generation,
+//! qualified by the daemon run, as `ETag` (`"<run_epoch>:<revision>"`);
+//! structural mutations honor an optional `If-Match` against it and
+//! answer 412 with the current fence. Control-value writes
 //! take no token at all: the layer-identity lifecycle (§1.4) already
 //! fences staleness, because a replaced layer answers 404 rather than
 //! absorbing a patch meant for the effect it replaced.
@@ -32,7 +33,6 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use crate::api::envelope;
 use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
-use crate::domain::context::SceneContext;
 use crate::domain::scene_tree::{
     AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
     ZoneWritten,
@@ -62,7 +62,7 @@ pub async fn patch_scene(
     headers: HeaderMap,
     ApiJson(body): ApiJson<ScenePatchRequest>,
 ) -> Response {
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
@@ -73,7 +73,7 @@ pub async fn patch_scene(
             PatchScene {
                 name: body.name,
                 unassigned_behavior: body.unassigned_behavior,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -94,7 +94,7 @@ pub async fn clear_scene(
     headers: HeaderMap,
     body: Option<ApiJson<ClearSceneRequest>>,
 ) -> Response {
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
@@ -105,7 +105,7 @@ pub async fn clear_scene(
             &state.domains.scene_tree,
             ClearScene {
                 zone,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -133,7 +133,7 @@ pub async fn create_zone(
         .into_response();
     }
 
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
@@ -150,7 +150,7 @@ pub async fn create_zone(
             name: body.name,
             color: body.color,
             fallback_canvas: canvas,
-            expected_revision: expected,
+            fence: expected,
         },
     )
     .await;
@@ -198,7 +198,7 @@ pub async fn patch_zone(
     headers: HeaderMap,
     ApiJson(body): ApiJson<PatchZoneRequest>,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers, &state.domains.scene) {
+    let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -216,7 +216,7 @@ pub async fn patch_zone(
                 make_primary: None,
                 index: body.index,
             },
-            expected_revision: expected,
+            fence: expected,
         },
     )
     .await
@@ -236,7 +236,7 @@ pub async fn delete_zone(
     ApiPath(zone): ApiPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers, &state.domains.scene) {
+    let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -245,7 +245,7 @@ pub async fn delete_zone(
         &state.domains.scene,
         crate::domain::zone::DeleteZone {
             zone_id,
-            expected_revision: expected,
+            fence: expected,
         },
     )
     .await
@@ -279,7 +279,7 @@ pub async fn put_zone_layout(
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
@@ -307,7 +307,7 @@ pub async fn assign_members(
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
@@ -319,7 +319,7 @@ pub async fn assign_members(
             AssignMembers {
                 zone_id,
                 request: body,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -336,7 +336,7 @@ pub async fn unassign_member(
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
@@ -361,7 +361,7 @@ pub async fn edit_members(
     headers: HeaderMap,
     ApiJson(body): ApiJson<hypercolor_types::api::scene::EditMembersRequest>,
 ) -> Response {
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(Some(expected)) => expected,
         Ok(None) => {
             return DomainError::validation("If-Match is required for membership edits")
@@ -415,7 +415,7 @@ pub async fn create_layer(
     headers: HeaderMap,
     ApiJson(body): ApiJson<CreateLayerRequest>,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers, &state.domains.scene) {
+    let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -452,7 +452,7 @@ pub async fn reorder_layers(
     headers: HeaderMap,
     ApiJson(body): ApiJson<ReorderLayersRequest>,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers, &state.domains.scene) {
+    let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -483,7 +483,7 @@ pub async fn replace_layer(
         Ok(layer_id) => layer_id,
         Err(error) => return error.into_response(),
     };
-    let expected = match parse_if_match(&headers, &state.domains.scene) {
+    let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
@@ -499,7 +499,7 @@ pub async fn replace_layer(
                 zone_id,
                 layer_id,
                 layer: replacement,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -512,7 +512,7 @@ pub async fn delete_layer(
     ApiPath((zone, layer)): ApiPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let (zone_id, expected) = match zone_request(&zone, &headers, &state.domains.scene) {
+    let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
@@ -554,7 +554,7 @@ pub async fn patch_layer_controls(
                 layer_id,
                 values,
                 clear_bindings: body.clear_bindings,
-                expected_revision: None,
+                fence: None,
             },
             MutationContext::api(),
         )
@@ -611,21 +611,27 @@ pub(crate) fn with_revision(run_epoch: &str, response: Response, revision: u64) 
     response
 }
 
-/// Parse the optional structural precondition and check the run it names.
+/// Parse the optional structural precondition.
 ///
 /// The fence is `"<run_epoch>:<revision>"` as served in `ETag`, or a bare
-/// revision from an older client, which checks the revision alone. A fence
-/// naming another daemon run is refused here, whatever its revision; the
-/// revision part goes to the domain, which checks it against the commit.
-/// `*` means "any current state", which is what a caller sends when it
-/// wants the write to land regardless, so it reads as no precondition.
-pub(crate) fn parse_if_match(
-    headers: &HeaderMap,
-    scenes: &SceneContext,
-) -> Result<Option<u64>, DomainError> {
-    let Some(value) = headers.get(header::IF_MATCH) else {
+/// revision from an older client, which checks the revision alone. The
+/// domain checks both parts against the commit candidate, so a refusal
+/// the request would earn without the header (an unknown effect or
+/// scene) still wins over a stale fence. `*` means "any current state",
+/// which is what a caller sends when it wants the write to land
+/// regardless, so it reads as no precondition. A list, whether
+/// comma-joined or split over several `If-Match` lines, is malformed:
+/// the daemon serves one tag and checks one.
+pub(crate) fn parse_if_match(headers: &HeaderMap) -> Result<Option<SceneFence>, DomainError> {
+    let mut lines = headers.get_all(header::IF_MATCH).iter();
+    let Some(value) = lines.next() else {
         return Ok(None);
     };
+    if lines.next().is_some() {
+        return Err(DomainError::malformed(
+            "If-Match must be one scene fence, not a list",
+        ));
+    }
     let raw = value
         .to_str()
         .map_err(|_| DomainError::malformed("If-Match must be ASCII"))?
@@ -633,12 +639,11 @@ pub(crate) fn parse_if_match(
     if raw == "*" {
         return Ok(None);
     }
-    let fence = SceneFence::parse(raw).map_err(|_| {
+    SceneFence::parse(raw).map(Some).map_err(|_| {
         DomainError::malformed(
             "If-Match must be a scene fence: \"<run_epoch>:<revision>\" or a bare revision",
         )
-    })?;
-    scene_tree::check_scene_fence(scenes, Some(&fence))
+    })
 }
 
 /// The two transport details every zone-scoped mutation parses before
@@ -646,10 +651,9 @@ pub(crate) fn parse_if_match(
 fn zone_request(
     zone: &str,
     headers: &HeaderMap,
-    scenes: &SceneContext,
-) -> Result<(ZoneId, Option<u64>), DomainError> {
+) -> Result<(ZoneId, Option<SceneFence>), DomainError> {
     let zone_id = parse_zone_id(zone)?;
-    let expected = parse_if_match(headers, scenes)?;
+    let expected = parse_if_match(headers)?;
     Ok((zone_id, expected))
 }
 

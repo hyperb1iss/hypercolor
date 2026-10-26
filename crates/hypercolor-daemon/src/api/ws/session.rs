@@ -2437,7 +2437,7 @@ mod zone_layout_preview_race_tests {
                 name: "temporary".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
-                expected_revision: None,
+                fence: None,
             },
         )
         .await
@@ -2466,7 +2466,7 @@ mod zone_layout_preview_race_tests {
                 &delete_state.domains.scene,
                 DeleteZone {
                     zone_id,
-                    expected_revision: None,
+                    fence: None,
                 },
             )
             .await

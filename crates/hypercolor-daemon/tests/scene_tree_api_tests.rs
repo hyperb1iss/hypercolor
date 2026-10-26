@@ -2911,7 +2911,7 @@ async fn membership_edit_domain_rejects_nonfinite_topology_coordinates() {
                     }),
                 }],
             },
-            revision,
+            revision.into(),
         )
         .await;
         assert!(matches!(

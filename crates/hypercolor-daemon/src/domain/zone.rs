@@ -7,12 +7,13 @@
 //! it validates and commits.
 
 use hypercolor_core::scene::{ZoneMetaPatch, ZoneMutationError};
+use hypercolor_types::api::scene::SceneFence;
 use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId, ZoneRole};
 
 use crate::domain::commit::{SceneCommit, SceneRevision};
 use crate::domain::context::SceneContext;
 use crate::domain::scene::SceneMutation;
-use crate::domain::scene_tree::check_scene_revision;
+use crate::domain::scene_tree::check_scene_fence;
 use crate::domain::{DomainError, ResourceKind};
 
 // ── Commands ─────────────────────────────────────────────────────────────
@@ -26,8 +27,8 @@ pub struct CreateZone {
     pub color: Option<String>,
     /// Canvas dimensions the new zone's empty layout inherits.
     pub fallback_canvas: (u32, u32),
-    /// The scene `revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller last saw, when it sent one.
+    pub fence: Option<SceneFence>,
 }
 
 /// Patch a zone's presentation metadata and its place in the zone order.
@@ -37,8 +38,8 @@ pub struct UpdateZone {
     pub zone_id: ZoneId,
     /// The fields to change; `None` fields keep their current values.
     pub patch: ZoneMetaPatch,
-    /// The scene `revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller last saw, when it sent one.
+    pub fence: Option<SceneFence>,
 }
 
 /// Remove a custom zone from a scene.
@@ -46,8 +47,8 @@ pub struct UpdateZone {
 pub struct DeleteZone {
     /// Which zone to remove.
     pub zone_id: ZoneId,
-    /// The scene `revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller last saw, when it sent one.
+    pub fence: Option<SceneFence>,
 }
 
 // ── Outcomes ─────────────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ pub async fn create_zone(
 
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a zone")?;
-    check_scene_revision(&mutation, command.expected_revision)?;
+    check_scene_fence(&mutation, command.fence.as_ref())?;
 
     let zone_id = mutation
         .create_zone(
@@ -142,7 +143,7 @@ pub async fn update_zone(
 ) -> Result<ZoneUpdated, DomainError> {
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("updating a zone")?;
-    check_scene_revision(&mutation, command.expected_revision)?;
+    check_scene_fence(&mutation, command.fence.as_ref())?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let before = scene_zones(&mutation, scene_id).cloned();
@@ -180,7 +181,7 @@ pub async fn delete_zone(
 ) -> Result<ZoneRemoved, DomainError> {
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("deleting a zone")?;
-    check_scene_revision(&mutation, command.expected_revision)?;
+    check_scene_fence(&mutation, command.fence.as_ref())?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let zone = zone_in_scene(&mutation, scene_id, command.zone_id)?;
