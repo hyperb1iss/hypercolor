@@ -40,6 +40,7 @@ Because the scene projection is shared and WebSocket-fresh, a structural change 
 - `led_zones`: LED-role zones only; what effect application targets.
 - `multi_zone`: whether the scene has more than one LED zone. This is the trigger for every per-zone affordance outside Studio.
 - `scene_resolved`: whether the active scene has been read for this connection, so `multi_zone` describes the scene rather than an empty page still loading.
+- `active_scene_connection`: the socket connection the latest scene read was started on. The layout ledgers use it to refuse a document read before the socket last opened.
 - `focused_zone: RwSignal<Option<String>>`: the target zone.
 
 ### One target zone
@@ -213,6 +214,8 @@ The canvas shows confirmed with every pending intent applied in order. A write c
 - **Unknown** (the reply was lost): the zone is read afresh first. If the scene is still at the write's fence, nothing landed and the write goes out again. Past the fence, the write is taken as landed and its intents retire, because resending could undo a later remote write; when the fresh zone does not hold what it carried, a toast says so.
 
 Between clients the daemon's order decides: a remote write that lands after ours wins, and a local intent that reaches the daemon later wins. Undo and redo are edits like any other and make intents the same way.
+
+Revisions compare only within one daemon run, and a restarted daemon starts them over. The page cannot yet tell a restart from a socket that dropped for a moment, so every time the socket opens again the ledgers re-anchor. From then on a read started on an earlier connection is never taken in, even the shared document Studio still holds while its refetch is out. The next read started on the new connection becomes confirmed whatever its revision, and pending intents stay. No write goes out fenced at an earlier revision until that read arrives, and when an edit is waiting on it the writer reads the scene itself. A write that was out when the socket opened again is not settled by its reply, which may come from the run that ended. A fresh read settles it, the same way it settles a lost reply.
 
 The ledgers and the writer that sends them (`components/layout_builder/writer.rs`) live for the page, not for a Studio mount, in one queue for the active scene. An edit made just before Studio closes still lands, and a Studio opened again reads the ledgers its predecessor left. Selecting another scene drops them. While a Studio canvas is mounted it lends the writer `WriterHooks`, so each write claims the scene through `StudioHistory::begin_commit`, records what landed, and redraws the canvas. When a write fails, the scene cannot be read to settle one, or three stale rejections or lost replies come in a row, the writer pauses with a toast instead of retrying in a loop; a new edit or a reopened socket resumes it. The ledger's rules are tested from `tests/studio_layout_ledger_tests.rs`.
 
