@@ -22,6 +22,7 @@ use crate::channel_names;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
+use crate::components::zone_tabs::ZoneDot;
 use crate::icons::*;
 use crate::pointer_gesture::listener_element;
 use crate::toasts;
@@ -288,11 +289,7 @@ fn ActiveZoneSection(
                             .get()
                             .map(|surface| {
                                 view! {
-                                    <span
-                                        class="h-2 w-2 shrink-0 rounded-full bg-fg-tertiary/45"
-                                        style:background-color=surface.color.clone()
-                                        aria-hidden="true"
-                                    />
+                                    <ZoneDot color=Signal::stored(surface.color.clone()) />
                                     <span class=format!(
                                         "{} min-w-0 truncate",
                                         label_class(LabelSize::Small, LabelTone::Default),
@@ -509,11 +506,7 @@ fn OtherZoneRow(
                     class="shrink-0 text-fg-tertiary transition-transform duration-150"
                     class=("rotate-90", move || expanded.get())
                 />
-                <span
-                    class="h-2 w-2 shrink-0 rounded-full bg-fg-tertiary/45"
-                    style:background-color=color
-                    aria-hidden="true"
-                />
+                <ZoneDot color=Signal::stored(color) />
                 <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-fg-secondary">
                     {name}
                 </span>
