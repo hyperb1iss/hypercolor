@@ -671,19 +671,22 @@ input[type="range"].slider-silk::-moz-range-track {
 
 /* ── Animation Utility Classes ───────────────────────────────────────────── */
 
-.animate-enter-up       { animation: enter-up 0.35s var(--ease-silk) both; }
-.animate-enter-fade     { animation: enter-fade 0.25s var(--ease-silk) both; }
-.animate-enter-right    { animation: enter-right 0.35s var(--ease-silk) both; }
-.animate-enter-left     { animation: enter-left 0.35s var(--ease-silk) both; }
-.animate-enter-scale    { animation: enter-scale 0.25s var(--ease-spring) both; }
+/* Hold the entrance pose during stagger delays, then release its transform
+   and opacity so settled content no longer retains compositor layers. */
+
+.animate-enter-up       { animation: enter-up 0.35s var(--ease-silk) backwards; }
+.animate-enter-fade     { animation: enter-fade 0.25s var(--ease-silk) backwards; }
+.animate-enter-right    { animation: enter-right 0.35s var(--ease-silk) backwards; }
+.animate-enter-left     { animation: enter-left 0.35s var(--ease-silk) backwards; }
+.animate-enter-scale    { animation: enter-scale 0.25s var(--ease-spring) backwards; }
 .animate-picker-in      { animation: pickerIn 0.2s var(--ease-spring) both; }
-.animate-enter-pop      { animation: enter-pop 0.35s var(--ease-spring) both; }
-.animate-enter-down     { animation: enter-down 0.3s var(--ease-silk) both; }
+.animate-enter-pop      { animation: enter-pop 0.35s var(--ease-spring) backwards; }
+.animate-enter-down     { animation: enter-down 0.3s var(--ease-silk) backwards; }
 .animate-breathe        { animation: breathe 3s ease-in-out infinite; will-change: opacity, transform; }
 .animate-border-glow    { animation: borderGlow 2s ease-in-out infinite; }
 .animate-edge-shimmer   { animation: edgeShimmer 3s ease-in-out infinite; }
 .animate-glow-reveal    { animation: glowReveal 0.5s var(--ease-silk) both; }
-.animate-swap-in        { animation: swapIn 0.22s var(--ease-silk) both; }
+.animate-swap-in        { animation: swapIn 0.22s var(--ease-silk) backwards; }
 .animate-spring-fill    { animation: spring-fill 0.5s linear both; }
 
 /* Effect-swap stagger — three variants with cascading delays so the
