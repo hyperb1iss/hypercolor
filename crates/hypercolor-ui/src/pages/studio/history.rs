@@ -1,5 +1,6 @@
-//! One chronological journal for Studio placements and persisted assignments,
-//! plus the multi-step zone delete and its undo.
+//! One chronological journal for Studio: layout placements, membership,
+//! and zone structure (create, rename and the other zone fields, delete),
+//! each undone and redone in order.
 //!
 //! Every write is fenced by the scene revision, so one operation runs at a
 //! time. `busy` marks a membership or zone operation or a layout replay in
@@ -7,13 +8,13 @@
 //! draining, which leaves editing alone. An operation asked for while
 //! either runs waits its turn in order instead of being dropped.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use super::drag_model::{Footprint as DropFootprint, offset_to_center};
 use super::placement::Footprint;
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
-    EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint,
+    EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint, PatchZoneRequest,
 };
 use hypercolor_types::spatial::NormalizedPosition;
 use leptos::prelude::*;
@@ -26,6 +27,11 @@ use leptos::reactive::owner::LocalStorage;
 /// unsettled, since nothing is left to hear it.
 pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 
+mod zones;
+
+pub use zones::{DeletedZone, zone_patch_before};
+pub(crate) use zones::{Moved, NewZone};
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum StudioEdit {
     Layout {
@@ -34,6 +40,21 @@ pub enum StudioEdit {
         after: Box<LayoutEditorSnapshot>,
     },
     Members(Vec<MemberEdit>),
+    /// A zone Studio made, with the move that filled it as it was made.
+    ZoneCreated {
+        zone_id: String,
+        name: String,
+        color: Option<String>,
+        filled: Vec<MemberEdit>,
+    },
+    /// A rename, recolor, pause or resume, or reorder: the changed fields
+    /// as they were and as they became.
+    ZonePatched {
+        zone_id: String,
+        before: PatchZoneRequest,
+        after: PatchZoneRequest,
+    },
+    ZoneDeleted(Box<DeletedZone>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -65,6 +86,51 @@ impl StudioJournal {
     pub fn recorded(&self) -> u64 {
         self.recorded
     }
+    /// Point every entry that names the zone `old` at `new`, once a
+    /// restore or redo has made that zone again under a new id.
+    pub fn remap_zone(&mut self, old: &str, new: hypercolor_types::scene::ZoneId) {
+        let remap_changes = |changes: &mut Vec<MemberEdit>| {
+            for state in changes
+                .iter_mut()
+                .flat_map(|change| change.before.iter_mut().chain(change.after.iter_mut()))
+            {
+                if state.zone_id.to_string() == old {
+                    state.zone_id = new;
+                }
+            }
+        };
+        let new_key = new.to_string();
+        for entry in &mut self.entries {
+            match entry {
+                StudioEdit::Layout { zone_id, .. } | StudioEdit::ZonePatched { zone_id, .. } => {
+                    if zone_id == old {
+                        zone_id.clone_from(&new_key);
+                    }
+                }
+                StudioEdit::Members(changes) => remap_changes(changes),
+                StudioEdit::ZoneCreated {
+                    zone_id, filled, ..
+                } => {
+                    if zone_id == old {
+                        zone_id.clone_from(&new_key);
+                    }
+                    remap_changes(filled);
+                }
+                StudioEdit::ZoneDeleted(record) => {
+                    if record.zone_id == old {
+                        record.zone_id.clone_from(&new_key);
+                    }
+                }
+            }
+        }
+    }
+    /// The index of the deletion `token` names while it can still be
+    /// undone.
+    pub fn undoable_deletion(&self, token: u64) -> Option<usize> {
+        self.entries[..self.cursor].iter().position(
+            |entry| matches!(entry, StudioEdit::ZoneDeleted(record) if record.token == token),
+        )
+    }
     pub fn complete(&mut self, redo: bool) {
         if redo && self.cursor < self.entries.len() {
             self.cursor += 1;
@@ -87,10 +153,7 @@ enum Waiting {
     /// An undo (`false`) or redo (`true`), with the journal's recorded
     /// count it expects to find: the count when it was asked for, plus the
     /// edits queued ahead of it.
-    Replay {
-        redo: bool,
-        recorded: u64,
-    },
+    Replay { redo: bool, recorded: u64 },
     /// An assignment; with a `point`, its arrivals center on it.
     Assign {
         zone_id: String,
@@ -109,7 +172,6 @@ enum Waiting {
         select_after: Option<String>,
         deleted: Callback<DeletedZone>,
     },
-    RestoreZone(DeletedZone),
     /// A flow that claims the scene itself once it is free.
     Run(Box<dyn FnOnce()>),
 }
@@ -126,6 +188,33 @@ impl Waiting {
             settle(done, None);
         }
     }
+}
+
+/// How a membership write came out.
+enum Sent {
+    /// It landed: the receipt to journal and the revision it reached.
+    Landed {
+        changes: Vec<MemberEdit>,
+        revision: u64,
+    },
+    /// It did not apply; the failure is already reported.
+    Failed,
+    /// A scene switch overtook it; nothing may consume the reply.
+    Superseded,
+}
+
+/// What a move into a zone sends.
+pub(crate) enum MovePlan {
+    /// Assign a device in no zone, centering its arrivals on `point` when
+    /// one is given.
+    Assign {
+        device_id: String,
+        segments: Vec<String>,
+        placements: Vec<MemberPlacementHint>,
+        point: Option<NormalizedPosition>,
+    },
+    /// Move existing outputs; each change's after state names the zone.
+    Edit(Vec<MemberEdit>),
 }
 
 /// How the history reaches the layout editor: its commit queue, which
@@ -149,8 +238,8 @@ pub(crate) struct StudioHistory {
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
     waiting: StoredValue<VecDeque<Waiting>, LocalStorage>,
-    /// Set while a flow hands the scene straight to its follow-up edit.
-    handing_over: StoredValue<bool>,
+    /// Hands out deletion tokens.
+    tokens: StoredValue<u64>,
     editor: StoredValue<Option<EditorHooks>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
@@ -191,7 +280,7 @@ impl StudioHistory {
             busy,
             committing,
             waiting,
-            handing_over: StoredValue::new(false),
+            tokens: StoredValue::new(0),
             editor: StoredValue::new(None),
             pending_layout,
             scene,
@@ -321,20 +410,14 @@ impl StudioHistory {
     }
 
     /// Run `operation` now when nothing holds the scene, otherwise after
-    /// everything already waiting. A flow handing the scene over runs its
-    /// follow-up first.
+    /// everything already waiting.
     fn when_free(self, operation: Waiting) {
-        let handing_over = self.handing_over.try_get_value().unwrap_or(false);
         let queued = self
             .waiting
             .try_with_value(|waiting| !waiting.is_empty())
             .unwrap_or(false);
-        let free = self.is_free() && !self.held_by_gesture(&operation);
-        if free && (handing_over || !queued) {
+        if self.is_free() && !queued && !self.held_by_gesture(&operation) {
             self.run(operation);
-        } else if handing_over {
-            self.waiting
-                .try_update_value(|waiting| waiting.push_front(operation));
         } else {
             self.waiting
                 .try_update_value(|waiting| waiting.push_back(operation));
@@ -342,23 +425,9 @@ impl StudioHistory {
     }
 
     /// Run `flow` once nothing holds the scene. The flow claims it with
-    /// [`Self::begin`] and releases it with [`Self::finish`] or
-    /// [`Self::hand_over`].
+    /// [`Self::begin`] and releases it with [`Self::finish`].
     pub fn run_when_free(self, flow: impl FnOnce() + 'static) {
         self.when_free(Waiting::Run(Box::new(flow)));
-    }
-
-    /// Release the scene a flow holds straight to `follow`, so the edit it
-    /// asks for runs before anything else that waited.
-    pub fn hand_over(self, generation: u64, follow: impl FnOnce()) {
-        if !self.is_current(generation) {
-            return;
-        }
-        self.busy.set(false);
-        self.handing_over.try_set_value(true);
-        follow();
-        self.handing_over.try_set_value(false);
-        self.next_waiting();
     }
 
     /// Pick the queue up again after a canvas gesture ends.
@@ -425,7 +494,6 @@ impl StudioHistory {
                 select_after,
                 deleted,
             } => self.delete_zone_now(zone_id, select_after, deleted),
-            Waiting::RestoreZone(record) => self.restore_zone_now(record),
         }
     }
 
@@ -548,57 +616,7 @@ impl StudioHistory {
             settle(done, None);
             return;
         };
-        let Some(generation) = self.begin() else {
-            settle(done, None);
-            return;
-        };
-        leptos::task::spawn_local(async move {
-            let result = api::zones::edit_members(&request, scene.revision).await;
-            if !self.is_current(generation) {
-                self.settle_superseded(done);
-                return;
-            }
-            let assigned = match result {
-                Ok(api::zones::ZoneOutcome::Applied(response)) => response,
-                outcome => {
-                    report_failure(&outcome);
-                    self.close(generation, done, None);
-                    return;
-                }
-            };
-            let mut applied = assigned.document.revision;
-            let mut changes = assigned.changes.clone();
-            let placed = center_arrivals(&assigned.changes, point);
-            self.accept(assigned);
-            if !placed.is_empty() {
-                let request = EditMembersRequest {
-                    scene_id: scene.id,
-                    changes: placed,
-                    assignment: None,
-                };
-                let result = api::zones::edit_members(&request, applied).await;
-                if !self.is_current(generation) {
-                    self.settle_superseded(done);
-                    return;
-                }
-                match result {
-                    Ok(api::zones::ZoneOutcome::Applied(response)) => {
-                        applied = response.document.revision;
-                        fold_placements(&mut changes, &response.changes);
-                        self.accept(response);
-                    }
-                    _ => toasts::toast_info(
-                        "Assigned, but it could not be placed where you dropped it",
-                    ),
-                }
-            }
-            if !changes.is_empty() {
-                self.journal
-                    .update(|j| j.record(StudioEdit::Members(changes)));
-            }
-            toasts::toast_success("Assignment saved");
-            self.close(generation, done, Some(applied));
-        });
+        self.submit_with(request, scene.revision, Some(point), done);
     }
 
     fn assignment(
@@ -688,55 +706,146 @@ impl StudioHistory {
     }
 
     fn submit(self, request: EditMembersRequest, revision: u64, done: Option<EditDone>) {
+        self.submit_with(request, revision, None, done);
+    }
+
+    /// Send a membership write as one operation and journal what landed.
+    fn submit_with(
+        self,
+        request: EditMembersRequest,
+        revision: u64,
+        point: Option<NormalizedPosition>,
+        done: Option<EditDone>,
+    ) {
         let Some(generation) = self.begin() else {
             settle(done, None);
             return;
         };
         leptos::task::spawn_local(async move {
-            let result = api::zones::edit_members(&request, revision).await;
-            // Disposed owners and superseded operations cannot consume a reply.
-            if !self.is_current(generation) {
-                self.settle_superseded(done);
-                return;
-            }
-            let applied = match result {
-                Ok(api::zones::ZoneOutcome::Applied(response)) => {
-                    if !response.changes.is_empty() {
+            let applied = match self
+                .send_members(generation, request, revision, point)
+                .await
+            {
+                Sent::Superseded => {
+                    self.settle_superseded(done);
+                    return;
+                }
+                Sent::Failed => None,
+                Sent::Landed { changes, revision } => {
+                    if !changes.is_empty() {
                         self.journal
-                            .update(|j| j.record(StudioEdit::Members(response.changes.clone())));
+                            .update(|j| j.record(StudioEdit::Members(changes)));
                     }
-                    let revision = response.document.revision;
-                    self.accept(response);
                     toasts::toast_success("Assignment saved");
                     Some(revision)
-                }
-                outcome => {
-                    report_failure(&outcome);
-                    None
                 }
             };
             self.close(generation, done, applied);
         });
     }
 
-    /// End a membership write: refresh the scene, release the history,
-    /// and tell the caller the revision it landed at, if it applied.
+    /// Send one membership write; for an assignment with a `point`, follow
+    /// it with the write that centers its arrivals there, folded into one
+    /// receipt so one undo takes back both. A stale reply resyncs the
+    /// scene before reporting, so whatever waits next reads it fresh.
+    async fn send_members(
+        self,
+        generation: u64,
+        request: EditMembersRequest,
+        revision: u64,
+        point: Option<NormalizedPosition>,
+    ) -> Sent {
+        let scene_id = request.scene_id;
+        let result = api::zones::edit_members(&request, revision).await;
+        if !self.is_current(generation) {
+            return Sent::Superseded;
+        }
+        let response = match result {
+            Ok(api::zones::ZoneOutcome::Applied(response)) => response,
+            outcome => {
+                report_failure(&outcome);
+                if matches!(outcome, Ok(api::zones::ZoneOutcome::Stale { .. })) {
+                    self.resync(generation).await;
+                }
+                return Sent::Failed;
+            }
+        };
+        let mut landed = response.document.revision;
+        let mut changes = response.changes.clone();
+        let placed = point.map_or_else(Vec::new, |point| center_arrivals(&response.changes, point));
+        self.accept(response);
+        if !placed.is_empty() {
+            let request = EditMembersRequest {
+                scene_id,
+                changes: placed,
+                assignment: None,
+            };
+            let result = api::zones::edit_members(&request, landed).await;
+            if !self.is_current(generation) {
+                return Sent::Superseded;
+            }
+            match result {
+                Ok(api::zones::ZoneOutcome::Applied(response)) => {
+                    landed = response.document.revision;
+                    fold_placements(&mut changes, &response.changes);
+                    self.accept(response);
+                }
+                _ => {
+                    toasts::toast_info("Assigned, but it could not be placed where you dropped it")
+                }
+            }
+        }
+        Sent::Landed {
+            changes,
+            revision: landed,
+        }
+    }
+
+    /// Read the live scene after a stale reply, so the next operation does
+    /// not fail against the same old revision.
+    async fn resync(self, generation: u64) {
+        if let Ok(live) = api::fetch_active_scene().await
+            && self.is_current(generation)
+        {
+            self.adopt(live);
+        }
+    }
+
+    /// End a membership write: tell the caller the revision it landed at,
+    /// if it applied, then refresh the scene and release the history. The
+    /// caller hears first, so results announce in the order they land.
     fn close(self, generation: u64, done: Option<EditDone>, applied: Option<u64>) {
+        settle(done, applied);
         self.refresh.run(());
         self.finish(generation);
-        settle(done, applied);
+    }
+
+    /// Whether Studio is still there to hear an outcome.
+    fn alive(self) -> bool {
+        self.generation.try_get_untracked().is_some()
     }
 
     /// Settle a write a scene switch overtook, while Studio is still
     /// there to hear it.
     fn settle_superseded(self, done: Option<EditDone>) {
-        if self.generation.try_get_untracked().is_some() {
+        if self.alive() {
             settle(done, None);
         }
     }
 
     fn accept(self, response: EditMembersResponse) {
         self.latest.set(Some(response.document));
+    }
+
+    /// The journal index an undo (`false`) or redo (`true`) replays.
+    fn replay_index(self, redo: bool) -> usize {
+        self.journal.with_untracked(|j| {
+            if redo {
+                j.cursor
+            } else {
+                j.cursor.saturating_sub(1)
+            }
+        })
     }
 
     pub fn replay(self, redo: bool) {
@@ -803,6 +912,29 @@ impl StudioHistory {
                     previous: if redo { *before } else { *after },
                     redo,
                 }));
+            }
+            StudioEdit::Members(changes) if changes.is_empty() => {
+                self.journal.update(|j| j.complete(redo));
+            }
+            StudioEdit::ZoneCreated {
+                zone_id,
+                name,
+                color,
+                filled,
+            } => {
+                let index = self.replay_index(redo);
+                self.replay_zone_created(index, redo, zone_id, name, color, filled);
+            }
+            StudioEdit::ZonePatched {
+                zone_id,
+                before,
+                after,
+            } => {
+                self.replay_zone_patched(redo, zone_id, if redo { after } else { before });
+            }
+            StudioEdit::ZoneDeleted(record) => {
+                let index = self.replay_index(redo);
+                self.replay_zone_deleted_step(index, redo, *record);
             }
             StudioEdit::Members(changes) => {
                 let Some(scene) = self.current_scene() else {
@@ -955,298 +1087,6 @@ fn fold_placements(changes: &mut [MemberEdit], placed: &[MemberEdit]) {
     }
 }
 
-/// What a zone delete removed, kept so its undo can rebuild the zone.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DeletedZone {
-    pub name: String,
-    pub color: Option<String>,
-    pub enabled: bool,
-    /// The zone's position in the scene's full zone order.
-    pub index: usize,
-    /// Complete snapshots of the outputs the zone held, in zone order.
-    pub outputs: Vec<hypercolor_types::spatial::Output>,
-}
-
-/// The live scene's revision, read fresh between the steps of a
-/// multi-request zone operation.
-async fn live_revision() -> Option<u64> {
-    api::fetch_active_scene()
-        .await
-        .ok()
-        .map(|scene| scene.revision)
-}
-
-impl StudioHistory {
-    /// Delete a zone. Its outputs leave first, through one membership
-    /// transaction whose receipt holds their complete snapshots, so an
-    /// undo can put them back exactly; then the empty zone goes.
-    /// `select_after` takes the selection when the deleted zone held it.
-    /// `deleted` runs with the restore record once the zone is gone.
-    pub fn delete_zone(
-        self,
-        zone_id: String,
-        select_after: Option<String>,
-        deleted: Callback<DeletedZone>,
-    ) {
-        self.when_free(Waiting::DeleteZone {
-            zone_id,
-            select_after,
-            deleted,
-        });
-    }
-
-    fn delete_zone_now(
-        self,
-        zone_id: String,
-        select_after: Option<String>,
-        deleted: Callback<DeletedZone>,
-    ) {
-        use hypercolor_types::api::scene::MemberState;
-        let Some(scene) = self.current_scene() else {
-            return;
-        };
-        let Some((index, zone)) = scene
-            .zones
-            .iter()
-            .enumerate()
-            .find(|(_, zone)| zone.id.to_string() == zone_id)
-        else {
-            return;
-        };
-        let Some(generation) = self.begin() else {
-            return;
-        };
-        let zone_key = zone.id;
-        let changes: Vec<MemberEdit> = api::zone_outputs(zone)
-            .into_iter()
-            .enumerate()
-            .map(|(index, output)| MemberEdit {
-                before: Some(MemberState {
-                    zone_id: zone_key,
-                    output,
-                    index,
-                }),
-                after: None,
-            })
-            .collect();
-        let mut record = DeletedZone {
-            name: zone.name.clone(),
-            color: zone.color.clone(),
-            enabled: zone.enabled,
-            index,
-            outputs: Vec::new(),
-        };
-        leptos::task::spawn_local(async move {
-            let mut revision = scene.revision;
-            if !changes.is_empty() {
-                let request = EditMembersRequest {
-                    scene_id: scene.id,
-                    changes,
-                    assignment: None,
-                };
-                match api::zones::edit_members(&request, revision).await {
-                    Ok(api::zones::ZoneOutcome::Applied(response)) => {
-                        revision = response.document.revision;
-                        let mut released: Vec<_> = response
-                            .changes
-                            .into_iter()
-                            .filter_map(|change| change.before)
-                            .collect();
-                        released.sort_by_key(|state| state.index);
-                        record.outputs = released.into_iter().map(|state| state.output).collect();
-                    }
-                    Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                        toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
-                        self.refresh.run(());
-                        self.finish(generation);
-                        return;
-                    }
-                    Err(error) => {
-                        toasts::toast_error(&format!("Zone delete failed: {error}"));
-                        self.refresh.run(());
-                        self.finish(generation);
-                        return;
-                    }
-                }
-            }
-            match api::zones::delete_zone(&zone_id, revision).await {
-                Ok(api::zones::ZoneOutcome::Applied(())) => {
-                    if self.is_current(generation) {
-                        if self.selected.get_untracked().as_deref() == Some(zone_id.as_str()) {
-                            self.selected.set(select_after);
-                        }
-                        let _ = deleted.try_run(record);
-                    }
-                }
-                outcome => {
-                    // The outputs already left; put them back so a failed
-                    // delete never strands the zone's devices.
-                    if !record.outputs.is_empty()
-                        && let Some(revision) = live_revision().await
-                    {
-                        let _ =
-                            restore_outputs(scene.id, zone_key, &record.outputs, revision).await;
-                    }
-                    match outcome {
-                        Err(error) => toasts::toast_error(&format!("Zone delete failed: {error}")),
-                        _ => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
-                    }
-                }
-            }
-            self.refresh.run(());
-            self.finish(generation);
-        });
-    }
-
-    /// Rebuild a deleted zone: its name, color, and paused state, its
-    /// outputs (those still unclaimed), and, best effort, its position.
-    pub fn restore_zone(self, record: DeletedZone) {
-        self.when_free(Waiting::RestoreZone(record));
-    }
-
-    fn restore_zone_now(self, record: DeletedZone) {
-        let Some(scene) = self.current_scene() else {
-            return;
-        };
-        let Some(generation) = self.begin() else {
-            return;
-        };
-        leptos::task::spawn_local(async move {
-            let created =
-                api::zones::create_zone(&record.name, record.color.as_deref(), scene.revision)
-                    .await;
-            let zone = match created {
-                Ok(api::zones::ZoneOutcome::Applied(zone)) => zone,
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                    toasts::toast_error("Scene changed elsewhere; the zone was not restored.");
-                    self.refresh.run(());
-                    self.finish(generation);
-                    return;
-                }
-                Err(error) => {
-                    toasts::toast_error(&format!("Zone restore failed: {error}"));
-                    self.refresh.run(());
-                    self.finish(generation);
-                    return;
-                }
-            };
-            let zone_id = zone.id;
-            let mut problems = Vec::new();
-
-            if let Ok(live) = api::fetch_active_scene().await {
-                let claimed: HashSet<&str> = live
-                    .zones
-                    .iter()
-                    .flat_map(|zone| zone.members.iter())
-                    .map(|member| member.id.0.as_str())
-                    .collect();
-                let free: Vec<_> = record
-                    .outputs
-                    .iter()
-                    .filter(|output| !claimed.contains(output.id.as_str()))
-                    .cloned()
-                    .collect();
-                let moved_on = record.outputs.len() - free.len();
-                if !free.is_empty()
-                    && restore_outputs(live.id, zone_id, &free, live.revision)
-                        .await
-                        .is_err()
-                {
-                    problems.push("its devices could not be put back");
-                } else if moved_on > 0 {
-                    problems.push("devices you moved since stayed where they are");
-                }
-            }
-
-            let zone_key = zone_id.to_string();
-            if !record.enabled
-                && !patch_zone(
-                    &zone_key,
-                    api::zones::PatchZoneRequest {
-                        enabled: Some(false),
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
-                problems.push("it could not be paused again");
-            }
-            let index = api::fetch_active_scene().await.ok().and_then(|live| {
-                let current = live.zones.iter().position(|zone| zone.id == zone_id)?;
-                (current != record.index).then_some(record.index)
-            });
-            if let Some(index) = index
-                && !patch_zone(
-                    &zone_key,
-                    api::zones::PatchZoneRequest {
-                        index: Some(index),
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
-                problems.push("it kept its new place at the end of the tabs");
-            }
-
-            if self.is_current(generation) {
-                self.selected.set(Some(zone_key));
-            }
-            if problems.is_empty() {
-                toasts::toast_success(&format!("Restored {}", record.name));
-            } else {
-                toasts::toast_info(&format!(
-                    "Restored {}, but {}",
-                    record.name,
-                    problems.join(" and ")
-                ));
-            }
-            self.refresh.run(());
-            self.finish(generation);
-        });
-    }
-}
-
-/// Put complete output snapshots back into a zone in one transaction.
-async fn restore_outputs(
-    scene_id: hypercolor_types::scene::SceneId,
-    zone_id: hypercolor_types::scene::ZoneId,
-    outputs: &[hypercolor_types::spatial::Output],
-    revision: u64,
-) -> Result<(), ()> {
-    use hypercolor_types::api::scene::MemberState;
-    let request = EditMembersRequest {
-        scene_id,
-        changes: outputs
-            .iter()
-            .enumerate()
-            .map(|(index, output)| MemberEdit {
-                before: None,
-                after: Some(MemberState {
-                    zone_id,
-                    output: output.clone(),
-                    index,
-                }),
-            })
-            .collect(),
-        assignment: None,
-    };
-    match api::zones::edit_members(&request, revision).await {
-        Ok(api::zones::ZoneOutcome::Applied(_)) => Ok(()),
-        _ => Err(()),
-    }
-}
-
-/// Patch one zone against the live revision. Reports whether it applied.
-async fn patch_zone(zone_id: &str, request: api::zones::PatchZoneRequest) -> bool {
-    let Some(revision) = live_revision().await else {
-        return false;
-    };
-    matches!(
-        api::zones::update_zone(zone_id, &request, revision).await,
-        Ok(api::zones::ZoneOutcome::Applied(_))
-    )
-}
-
 /// Read each change's preconditions from the live scene: where the output
 /// sits now and at what index. Ownership and binding must still match.
 /// The changes' outcomes are left as asked.
@@ -1342,7 +1182,7 @@ mod replay_tests {
             busy: RwSignal::new(busy),
             committing: RwSignal::new(false),
             waiting: StoredValue::new_local(VecDeque::new()),
-            handing_over: StoredValue::new(false),
+            tokens: StoredValue::new(0),
             editor: StoredValue::new(None),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),

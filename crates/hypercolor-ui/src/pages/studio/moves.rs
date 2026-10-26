@@ -9,9 +9,7 @@ use hypercolor_types::api::scene::{MemberEdit, MemberPlacementHint, MemberState}
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{NormalizedPosition, Output};
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::api::zones::ZoneOutcome;
 use crate::api::{self, DeviceSummary};
 use crate::toasts;
 
@@ -23,7 +21,7 @@ use super::drag_model::{
     DropAction, Footprint, MovePayload, Origin, moved_announcement, offset_to_center, origin_name,
     placed_announcement, zone_name_for_device,
 };
-use super::history::EditDone;
+use super::history::{EditDone, MovePlan, Moved, NewZone};
 use super::placement;
 use super::surface::{SurfaceKind, surfaces_from_zones};
 
@@ -62,7 +60,7 @@ pub(crate) fn perform(
             let text = moved_announcement(&payload.label, "Unassigned", &from);
             unassign(studio, &payload, announce_after(drag, text, focus));
         }
-        DropAction::NewZone => move_to_new_zone(drag, payload),
+        DropAction::NewZone => move_to_new_zone(drag, payload, focus),
     }
 }
 
@@ -166,10 +164,7 @@ fn announce_after(drag: DragController, text: String, focus: Option<FocusReturn>
 
 /// The outputs `payload` names as they stand in the live scene, each with
 /// the zone and index that hold it.
-fn held_outputs(studio: StudioContext, payload: &MovePayload) -> Vec<MemberState> {
-    let Some(scene) = studio.history.current_scene() else {
-        return Vec::new();
-    };
+fn held_outputs(scene: &api::SceneDocument, payload: &MovePayload) -> Vec<MemberState> {
     scene
         .zones
         .iter()
@@ -189,31 +184,34 @@ fn held_outputs(studio: StudioContext, payload: &MovePayload) -> Vec<MemberState
         .collect()
 }
 
-/// Move `payload` into `zone_id`. Outputs land per the zone's arrival
-/// rule ([`placement`]): where they sit in the rig, carried into the zone
-/// alongside its members, or fitted to an empty zone. With a `point`, the
-/// arriving group then centers on it: the drop point decides where, the
-/// arrival rule still decides how large.
-fn move_into(
+/// What moving a payload into a zone comes to.
+enum Planned {
+    Write(MovePlan),
+    /// Everything already sits where the move would put it.
+    Unchanged,
+    /// The zone is gone or is a Screen.
+    Failed,
+}
+
+/// Plan moving `payload` into `zone_id`, a zone of `scene`. Outputs land
+/// per the zone's arrival rule ([`placement`]): where they sit in the rig,
+/// carried into the zone alongside its members, or fitted to an empty
+/// zone. With a `point`, the arriving group then centers on it: the drop
+/// point decides where, the arrival rule still decides how large.
+fn plan_move(
     drag: DragController,
     payload: &MovePayload,
+    scene: &api::SceneDocument,
     zone_id: &str,
     point: Option<NormalizedPosition>,
-    settle: Settle,
-) {
+) -> Planned {
     let studio = drag.studio;
-    let history = studio.history;
-    let Some(scene) = history.current_scene() else {
-        (settle.done)(None);
-        return;
-    };
     let Some(target) = scene
         .zones
         .iter()
         .find(|zone| zone.id.to_string() == zone_id && zone.role != ZoneRole::Display)
     else {
-        (settle.done)(None);
-        return;
+        return Planned::Failed;
     };
 
     let canvas = studio.render_canvas_size.get_untracked();
@@ -224,7 +222,7 @@ fn move_into(
             .map(|device| {
                 studio.rig_layout.with_untracked(|rig| {
                     placement::assignment_hints(
-                        &scene,
+                        scene,
                         rig.as_ref(),
                         &device,
                         zone_id,
@@ -237,31 +235,19 @@ fn move_into(
         // Hints already carry the geometry, so a drop point only moves
         // them; without hints the arrivals are placed once minted.
         let point = point.filter(|point| !center_hints_on(&mut hints, *point));
-        match point {
-            Some(point) => history.assign_device_at(
-                zone_id.to_owned(),
-                payload.device_id.clone(),
-                segments,
-                hints,
-                point,
-                Some(settle.done),
-            ),
-            None => history.assign_device(
-                zone_id.to_owned(),
-                payload.device_id.clone(),
-                segments,
-                hints,
-                Some(settle.done),
-            ),
-        }
-        return;
+        return Planned::Write(MovePlan::Assign {
+            device_id: payload.device_id.clone(),
+            segments,
+            placements: hints,
+            point,
+        });
     }
 
-    let held = held_outputs(studio, payload);
+    let held = held_outputs(scene, payload);
     // Outputs from other zones land per the arrival rule; outputs the zone
     // already holds stay where they are until a point moves them.
     let landings = studio.rig_layout.with_untracked(|rig| {
-        placement::move_edits(&scene, rig.as_ref(), zone_id, &payload.outputs, canvas)
+        placement::move_edits(scene, rig.as_ref(), zone_id, &payload.outputs, canvas)
     });
     let mut arriving: Vec<Output> = held
         .iter()
@@ -300,15 +286,64 @@ fn move_into(
         .filter(|change| change.before != change.after)
         .collect();
     if changes.is_empty() {
-        (settle.unchanged)();
-        return;
+        Planned::Unchanged
+    } else {
+        Planned::Write(MovePlan::Edit(changes))
     }
-    history.edit_members(changes, Some(settle.done));
+}
+
+/// Move `payload` into `zone_id` per [`plan_move`], through Studio history.
+fn move_into(
+    drag: DragController,
+    payload: &MovePayload,
+    zone_id: &str,
+    point: Option<NormalizedPosition>,
+    settle: Settle,
+) {
+    let history = drag.studio.history;
+    let Some(scene) = history.current_scene() else {
+        (settle.done)(None);
+        return;
+    };
+    match plan_move(drag, payload, &scene, zone_id, point) {
+        Planned::Failed => (settle.done)(None),
+        Planned::Unchanged => (settle.unchanged)(),
+        Planned::Write(MovePlan::Assign {
+            device_id,
+            segments,
+            placements,
+            point: Some(point),
+        }) => history.assign_device_at(
+            zone_id.to_owned(),
+            device_id,
+            segments,
+            placements,
+            point,
+            Some(settle.done),
+        ),
+        Planned::Write(MovePlan::Assign {
+            device_id,
+            segments,
+            placements,
+            point: None,
+        }) => history.assign_device(
+            zone_id.to_owned(),
+            device_id,
+            segments,
+            placements,
+            Some(settle.done),
+        ),
+        Planned::Write(MovePlan::Edit(changes)) => history.edit_members(changes, Some(settle.done)),
+    }
 }
 
 /// Release `payload`'s outputs from their zones.
 fn unassign(studio: StudioContext, payload: &MovePayload, settle: Settle) {
-    let changes: Vec<MemberEdit> = held_outputs(studio, payload)
+    let Some(scene) = studio.history.current_scene() else {
+        (settle.done)(None);
+        return;
+    };
+    let changes: Vec<MemberEdit> = held_outputs(&scene, payload)
         .into_iter()
         .map(|before| MemberEdit {
             before: Some(before),
@@ -323,19 +358,11 @@ fn unassign(studio: StudioContext, payload: &MovePayload, settle: Settle) {
 }
 
 /// Make a zone named after the device, move the payload in, then open its
-/// tab with the name selected for typing over.
-fn move_to_new_zone(drag: DragController, payload: MovePayload) {
-    // Wait out any write in flight, then hold the scene until the zone
-    // exists and the move into it goes first, so no other edit slips in.
-    drag.studio
-        .history
-        .run_when_free(move || create_zone_and_move(drag, payload));
-}
-
-fn create_zone_and_move(drag: DragController, payload: MovePayload) {
+/// tab with the name selected for typing over. The zone and the move are
+/// one undo step. A zone that could not be made hands focus back.
+fn move_to_new_zone(drag: DragController, payload: MovePayload, focus: Option<FocusReturn>) {
     let studio = drag.studio;
-    let history = studio.history;
-    let Some(scene) = history.current_scene() else {
+    let Some(scene) = studio.history.current_scene() else {
         toasts::toast_error("No active scene is available");
         return;
     };
@@ -351,71 +378,38 @@ fn create_zone_and_move(drag: DragController, payload: MovePayload) {
         .collect();
     let name = zone_name_for_device(&payload.device_name, &names);
     let from = origin_name(&payload.origin, |id| zone_name(studio, id));
-    let revision = scene.revision;
-    let Some(generation) = history.begin() else {
-        toasts::toast_info("Still saving the last change");
-        return;
-    };
-    spawn_local(async move {
-        let created = api::zones::create_zone(&name, None, revision).await;
-        if !history.is_current(generation) {
-            return;
-        }
-        let zone = match created {
-            Ok(ZoneOutcome::Applied(zone)) => zone,
-            Ok(ZoneOutcome::Stale { .. }) => {
-                toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
-                studio.refresh_scene.run(());
-                history.finish(generation);
-                return;
+    let label = payload.label.clone();
+    studio.history.create_zone_filled(
+        name,
+        None,
+        Box::new(move |live, zone| {
+            match plan_move(drag, &payload, live, &zone.id.to_string(), None) {
+                Planned::Write(plan) => Some(plan),
+                Planned::Unchanged | Planned::Failed => None,
             }
-            Err(error) => {
-                toasts::toast_error(&format!("Zone create failed: {error}"));
-                history.finish(generation);
-                return;
+        }),
+        Box::new(move |outcome| match outcome {
+            NewZone::NotCreated => {
+                if let Some(focus) = focus {
+                    drag.focus_after(0, focus);
+                }
             }
-        };
-        let live = api::fetch_active_scene().await;
-        if !history.is_current(generation) {
-            return;
-        }
-        match live {
-            Ok(live) => history.adopt(live),
-            Err(error) => {
-                toasts::toast_error(&format!("Created {name}, but the move failed: {error}"));
-                studio.refresh_scene.run(());
-                history.finish(generation);
-                return;
-            }
-        }
-        let zone_id = zone.id.to_string();
-        let text = moved_announcement(&payload.label, &zone.name, &from);
-        // The new tab opens with its name selected, whatever the move did.
-        let open_tab = {
-            let (zone_id, zone_name) = (zone_id.clone(), zone.name.clone());
-            move || {
+            NewZone::Created { zone, moved } => {
+                match moved {
+                    Moved::Landed => drag.announce(moved_announcement(&label, &zone.name, &from)),
+                    Moved::Failed => drag.announce("The move did not apply".to_owned()),
+                    Moved::Unchanged => {}
+                }
+                // The new tab opens with its name selected, whatever the
+                // move did.
+                let zone_id = zone.id.to_string();
                 studio
                     .zone_rename_draft
-                    .try_set(Some((zone_id.clone(), zone_name)));
+                    .try_set(Some((zone_id.clone(), zone.name)));
                 studio.selected_surface_id.try_set(Some(zone_id));
             }
-        };
-        let quiet_open = open_tab.clone();
-        let settle = Settle {
-            done: Box::new(move |applied| {
-                drag.announce(if applied.is_some() {
-                    text
-                } else {
-                    "The move did not apply".to_owned()
-                });
-                open_tab();
-            }),
-            unchanged: Box::new(quiet_open),
-        };
-        history.hand_over(generation, move || {
-            move_into(drag, &payload, &zone_id, None, settle);
-        });
-    });
+        }),
+    );
 }
 
 /// Center seeded placement hints on `point`, keeping their arrangement.

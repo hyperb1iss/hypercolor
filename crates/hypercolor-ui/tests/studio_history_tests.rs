@@ -1,7 +1,10 @@
-use hypercolor_types::api::scene::{MemberEdit, MemberState, SceneDocument};
+use hypercolor_types::api::scene::{MemberEdit, MemberState, PatchZoneRequest, SceneDocument};
+use hypercolor_types::scene::ZoneId;
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
-use hypercolor_ui::pages::studio::history::{StudioEdit, StudioJournal, prepare_members_replay};
+use hypercolor_ui::pages::studio::history::{
+    DeletedZone, StudioEdit, StudioJournal, prepare_members_replay, zone_patch_before,
+};
 use std::collections::HashSet;
 
 fn snapshot() -> LayoutEditorSnapshot {
@@ -161,4 +164,71 @@ fn removed_output_restoration_keeps_recorded_snapshot_without_live_hardware() {
         prepare_members_replay(&scene, vec![change.clone()]).expect("server validates restore"),
         vec![change]
     );
+}
+
+#[test]
+fn a_zone_patch_remembers_only_the_fields_it_changes() {
+    let mut scene = scene();
+    scene.zones[0].color = Some("#ff00aa".to_owned());
+    let zone = &scene.zones[0];
+    let rename = PatchZoneRequest {
+        name: Some("Desk".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(
+        zone_patch_before(zone, 2, &rename),
+        PatchZoneRequest {
+            name: Some("Case".to_owned()),
+            ..Default::default()
+        }
+    );
+    let restyle = PatchZoneRequest {
+        color: Some(None),
+        enabled: Some(false),
+        index: Some(0),
+        ..Default::default()
+    };
+    assert_eq!(
+        zone_patch_before(zone, 2, &restyle),
+        PatchZoneRequest {
+            color: Some(Some("#ff00aa".to_owned())),
+            enabled: Some(true),
+            index: Some(2),
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn a_deletion_is_undoable_once_and_follows_its_zone_to_a_new_id() {
+    let scene = scene();
+    let zone = &scene.zones[0];
+    let old = zone.id.to_string();
+    let mut journal = StudioJournal::default();
+    journal.record(StudioEdit::ZonePatched {
+        zone_id: old.clone(),
+        before: PatchZoneRequest::default(),
+        after: PatchZoneRequest::default(),
+    });
+    journal.record(StudioEdit::ZoneDeleted(Box::new(DeletedZone::of(
+        zone, 0, 3,
+    ))));
+    assert_eq!(journal.undoable_deletion(3), Some(1));
+    assert_eq!(journal.undoable_deletion(4), None);
+
+    // Undoing the deletion steps past it; it can no longer be undone.
+    journal.complete(false);
+    assert_eq!(journal.undoable_deletion(3), None);
+
+    // The restore made the zone again under a new id; older entries follow.
+    let new = ZoneId::new();
+    journal.remap_zone(&old, new);
+    match journal.undo_edit() {
+        Some(StudioEdit::ZonePatched { zone_id, .. }) => assert_eq!(*zone_id, new.to_string()),
+        other => panic!("expected the rename, found {other:?}"),
+    }
+    match journal.redo_edit() {
+        Some(StudioEdit::ZoneDeleted(record)) => assert_eq!(record.zone_id, new.to_string()),
+        other => panic!("expected the deletion, found {other:?}"),
+    }
 }

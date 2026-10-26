@@ -59,12 +59,27 @@ pub fn UndoNoticeHost() -> impl IntoView {
         });
     });
 
+    // The notice and Ctrl+Z share one journal entry, so whichever restores
+    // the zone first, the other no longer can; the notice leaves once its
+    // deletion is no longer undoable.
+    let journal = studio.history.journal;
+    Effect::new(move |_| {
+        let Some(token) =
+            notice.with(|current| current.as_ref().map(|current| current.restore.token))
+        else {
+            return;
+        };
+        if journal.with(|journal| journal.undoable_deletion(token).is_none()) {
+            notice.set(None);
+        }
+    });
+
     let undo = move |_| {
         let Some(current) = notice.get_untracked() else {
             return;
         };
         notice.set(None);
-        studio.history.restore_zone(current.restore);
+        studio.history.undo_deletion(current.restore.token);
     };
 
     view! {

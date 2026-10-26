@@ -6,26 +6,19 @@
 //! against the fresh revision rather than clobbering a concurrent edit.
 //! Nothing here edits local state ahead of the daemon: the tab strip
 //! re-renders from the refreshed scene, so a rejected write leaves the
-//! strip exactly as it was.
+//! strip exactly as it was. Each change runs through Studio history, so
+//! Ctrl+Z takes it back.
 
 use std::collections::HashSet;
 
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
 use crate::api;
-use crate::api::zones::ZoneOutcome;
 use crate::toasts;
 
 use super::StudioContext;
 use super::device_pane::other_led_zone_ids;
-use super::tab_model::{ReorderTarget, describe_zone_failure, next_zone_name, zone_move_index};
-
-fn scene_revision(studio: StudioContext) -> Option<u64> {
-    studio
-        .active_scene
-        .with_untracked(|scene| scene.as_ref().map(|scene| scene.revision))
-}
+use super::tab_model::{ReorderTarget, next_zone_name, zone_move_index};
 
 /// Create a zone under a fresh default name, open its tab, and put its
 /// name into rename mode so the user can type over it. The pane opens
@@ -40,36 +33,31 @@ pub fn create_zone(studio: StudioContext, pending: RwSignal<bool>) {
     let names: Vec<&str> = scene.zones.iter().map(|zone| zone.name.as_str()).collect();
     let name = next_zone_name(&names);
     let others = other_led_zone_ids(&scene.zones);
-    let revision = scene.revision;
     pending.set(true);
-    spawn_local(async move {
-        let outcome = api::zones::create_zone(&name, None, revision).await;
-        pending.try_set(false);
-        match outcome {
-            Ok(ZoneOutcome::Applied(zone)) => {
-                let id = zone.id.to_string();
-                // Open the rows that were closed, and remember them as
-                // opened for this zone alone.
-                let opened: HashSet<String> = studio
-                    .pane_expanded
-                    .with_untracked(|expanded| others.difference(expanded).cloned().collect());
-                studio
-                    .pane_expanded
-                    .update(|expanded| expanded.extend(opened.iter().cloned()));
-                studio.pane_auto_expanded.set(Some((id.clone(), opened)));
-                studio
-                    .zone_rename_draft
-                    .set(Some((id.clone(), zone.name.clone())));
-                studio.selected_surface_id.set(Some(id));
-                studio.refresh_scene.run(());
-            }
-            Ok(ZoneOutcome::Stale { .. }) => {
-                toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
-                studio.refresh_scene.run(());
-            }
-            Err(error) => toasts::toast_error(&format!("Zone create failed: {error}")),
-        }
-    });
+    studio.history.create_zone(
+        name,
+        None,
+        Box::new(move |zone| {
+            pending.try_set(false);
+            let Some(zone) = zone else {
+                return;
+            };
+            let id = zone.id.to_string();
+            // Open the rows that were closed, and remember them as opened
+            // for this zone alone.
+            let opened: HashSet<String> = studio
+                .pane_expanded
+                .with_untracked(|expanded| others.difference(expanded).cloned().collect());
+            studio
+                .pane_expanded
+                .update(|expanded| expanded.extend(opened.iter().cloned()));
+            studio.pane_auto_expanded.set(Some((id.clone(), opened)));
+            studio
+                .zone_rename_draft
+                .set(Some((id.clone(), zone.name.clone())));
+            studio.selected_surface_id.set(Some(id));
+        }),
+    );
 }
 
 /// Rename a zone. A blank or unchanged name sends nothing.
@@ -136,19 +124,7 @@ fn apply_zone_update(
     request: api::zones::PatchZoneRequest,
     failure: &'static str,
 ) {
-    let Some(revision) = scene_revision(studio) else {
-        toasts::toast_error("No active scene is available");
-        return;
-    };
-    let zone_id = zone_id.to_owned();
-    spawn_local(async move {
-        match api::zones::update_zone(&zone_id, &request, revision).await {
-            Ok(ZoneOutcome::Applied(_)) => studio.refresh_scene.run(()),
-            Ok(ZoneOutcome::Stale { .. }) => {
-                toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
-                studio.refresh_scene.run(());
-            }
-            Err(error) => toasts::toast_error(&describe_zone_failure(failure, &error)),
-        }
-    });
+    studio
+        .history
+        .patch_zone(zone_id.to_owned(), request, failure);
 }
