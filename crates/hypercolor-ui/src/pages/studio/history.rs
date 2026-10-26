@@ -406,9 +406,10 @@ impl StudioHistory {
             if !history.has_unresolved() {
                 return;
             }
+            let started = history.next_token();
             leptos::task::spawn_local(async move {
                 if let Ok(live) = api::fetch_active_scene().await {
-                    history.resolve_unresolved(&live);
+                    history.resolve_unresolved(&live, started);
                 }
             });
         });
@@ -1733,9 +1734,14 @@ mod replay_tests {
                 });
                 journal.record(StudioEdit::Members(Vec::new()));
             });
+            // A read started before the delete was held cannot settle it.
+            let early = history.next_token();
             history.hold_unresolved(scene.id, gone, Vec::new());
             assert!(history.has_unresolved());
-            history.resolve_unresolved(&after);
+            history.resolve_unresolved(&after, early);
+            assert!(history.has_unresolved(), "an earlier read settles nothing");
+            let started = history.next_token();
+            history.resolve_unresolved(&after, started);
             assert!(!history.has_unresolved());
             history.journal.with_untracked(|journal| {
                 assert_eq!(journal.cursor, 2, "settling neither adds nor moves a step");

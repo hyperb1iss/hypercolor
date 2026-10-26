@@ -219,6 +219,9 @@ pub(super) struct Unresolved {
     pub scene_id: SceneId,
     pub record: DeletedZone,
     pub release: Vec<MemberEdit>,
+    /// When it was held, on history's clock: only a read started after
+    /// this can say what the delete did.
+    pub held_at: u64,
 }
 
 /// What a delete whose outcome was unknown turned out to be, judged from a
@@ -258,7 +261,9 @@ fn flip(change: MemberEdit) -> MemberEdit {
 }
 
 impl StudioHistory {
-    fn next_token(self) -> u64 {
+    /// History's clock: tokens for deletions, and the order of holds and
+    /// reads.
+    pub(super) fn next_token(self) -> u64 {
         let token = self.tokens.get_value().wrapping_add(1);
         self.tokens.set_value(token);
         token
@@ -288,11 +293,13 @@ impl StudioHistory {
         record: DeletedZone,
         release: Vec<MemberEdit>,
     ) {
+        let held_at = self.next_token();
         self.unresolved.try_update_value(|held| {
             held.push(Unresolved {
                 scene_id,
                 record,
                 release,
+                held_at,
             });
         });
     }
@@ -304,20 +311,24 @@ impl StudioHistory {
             .unwrap_or(false)
     }
 
-    /// Settle the unknown deletes of `scene` from a read of it taken after
-    /// they failed: each one's place in the journal becomes the entry that
-    /// undoes what it really did.
-    pub(super) fn resolve_unresolved(self, scene: &api::SceneDocument) {
-        let settled = self
-            .unresolved
-            .try_update_value(|held| {
-                let (now, later): (Vec<_>, Vec<_>) = std::mem::take(held)
-                    .into_iter()
-                    .partition(|item: &Unresolved| item.scene_id == scene.id);
-                *held = later;
-                now
-            })
-            .unwrap_or_default();
+    /// Settle the unknown deletes of `scene` from a read of it that started
+    /// at `started` on history's clock: only those held before the read
+    /// began, since an earlier read cannot know what a later delete did.
+    /// Each one's place in the journal becomes the entry that undoes what
+    /// it really did.
+    pub(super) fn resolve_unresolved(self, scene: &api::SceneDocument, started: u64) {
+        let settled =
+            self.unresolved
+                .try_update_value(|held| {
+                    let (now, later): (Vec<_>, Vec<_>) = std::mem::take(held)
+                        .into_iter()
+                        .partition(|item: &Unresolved| {
+                            item.scene_id == scene.id && item.held_at < started
+                        });
+                    *held = later;
+                    now
+                })
+                .unwrap_or_default();
         for item in settled {
             let entry = resolve_deletion(scene, &item.record, &item.release);
             self.journal
