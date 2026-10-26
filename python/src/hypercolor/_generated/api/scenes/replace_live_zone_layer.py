@@ -19,9 +19,13 @@ def _get_kwargs(
     layer: str,
     *,
     body: ReplaceLayerRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
     if not isinstance(idempotency_key, Unset):
         headers["Idempotency-Key"] = idempotency_key
 
@@ -117,6 +121,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReplaceLiveZoneLayerResponse200]:
     """Replace a live zone layer
@@ -124,6 +129,7 @@ def sync_detailed(
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
@@ -143,6 +149,7 @@ def sync_detailed(
         zone=zone,
         layer=layer,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -159,6 +166,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReplaceLiveZoneLayerResponse200 | None:
     """Replace a live zone layer
@@ -166,6 +174,7 @@ def sync(
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
@@ -186,6 +195,7 @@ def sync(
         layer=layer,
         client=client,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     ).parsed
 
@@ -196,6 +206,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReplaceLiveZoneLayerResponse200]:
     """Replace a live zone layer
@@ -203,6 +214,7 @@ async def asyncio_detailed(
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
@@ -222,6 +234,7 @@ async def asyncio_detailed(
         zone=zone,
         layer=layer,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -236,6 +249,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReplaceLiveZoneLayerResponse200 | None:
     """Replace a live zone layer
@@ -243,6 +257,7 @@ async def asyncio(
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
@@ -264,6 +279,7 @@ async def asyncio(
             layer=layer,
             client=client,
             body=body,
+            if_match=if_match,
             idempotency_key=idempotency_key,
         )
     ).parsed

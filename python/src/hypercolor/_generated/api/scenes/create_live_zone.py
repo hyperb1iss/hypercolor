@@ -14,9 +14,13 @@ from ...types import UNSET, Response, Unset
 def _get_kwargs(
     *,
     body: CreateZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
     if not isinstance(idempotency_key, Unset):
         headers["Idempotency-Key"] = idempotency_key
 
@@ -107,11 +111,13 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: CreateZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | CreateLiveZoneResponse201]:
     """Create a live scene zone
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (CreateZoneRequest): `POST /scene/zones` — create a zone.
 
@@ -125,6 +131,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -139,11 +146,13 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: CreateZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | CreateLiveZoneResponse201 | None:
     """Create a live scene zone
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (CreateZoneRequest): `POST /scene/zones` — create a zone.
 
@@ -158,6 +167,7 @@ def sync(
     return sync_detailed(
         client=client,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     ).parsed
 
@@ -166,11 +176,13 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: CreateZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | CreateLiveZoneResponse201]:
     """Create a live scene zone
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (CreateZoneRequest): `POST /scene/zones` — create a zone.
 
@@ -184,6 +196,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -196,11 +209,13 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: CreateZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | CreateLiveZoneResponse201 | None:
     """Create a live scene zone
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (CreateZoneRequest): `POST /scene/zones` — create a zone.
 
@@ -216,6 +231,7 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             body=body,
+            if_match=if_match,
             idempotency_key=idempotency_key,
         )
     ).parsed

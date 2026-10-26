@@ -328,6 +328,40 @@ async def test_stale_revision_raises_precondition_error(client: HypercolorClient
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_stale_revision_reads_an_epoch_qualified_etag(client: HypercolorClient) -> None:
+    respx.post("http://hyperia.test:9420/api/v1/scene/zones").mock(
+        return_value=httpx.Response(
+            412,
+            headers={"ETag": '"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:14"'},
+            content=msgspec.json.encode(
+                {
+                    "error": {
+                        "code": "precondition_failed",
+                        "message": "version mismatch: expected 12, current 0b6f2b57:14",
+                        "details": {
+                            "expected": 12,
+                            "current": 14,
+                            "current_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
+                        },
+                    },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_stale_epoch",
+                        "timestamp": "2026-08-19T00:00:00Z",
+                    },
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorPreconditionError) as excinfo:
+        await client.create_zone("Desk", if_match=12)
+
+    assert excinfo.value.current_revision == 14
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_update_zone_distinguishes_clear_from_unset(client: HypercolorClient) -> None:
     route = respx.patch(f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}").mock(
         return_value=httpx.Response(200, content=_envelope(ZONE))

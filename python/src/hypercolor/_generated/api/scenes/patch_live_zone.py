@@ -16,9 +16,13 @@ def _get_kwargs(
     zone: str,
     *,
     body: PatchZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
     if not isinstance(idempotency_key, Unset):
         headers["Idempotency-Key"] = idempotency_key
 
@@ -112,12 +116,14 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PatchZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | PatchLiveZoneResponse200]:
     """Patch a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (PatchZoneRequest): `PATCH /scene/zones/{zone}` — name and structural fields.
 
@@ -132,6 +138,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -147,12 +154,14 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: PatchZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | PatchLiveZoneResponse200 | None:
     """Patch a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (PatchZoneRequest): `PATCH /scene/zones/{zone}` — name and structural fields.
 
@@ -168,6 +177,7 @@ def sync(
         zone=zone,
         client=client,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     ).parsed
 
@@ -177,12 +187,14 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: PatchZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | PatchLiveZoneResponse200]:
     """Patch a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (PatchZoneRequest): `PATCH /scene/zones/{zone}` — name and structural fields.
 
@@ -197,6 +209,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -210,12 +223,14 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: PatchZoneRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | PatchLiveZoneResponse200 | None:
     """Patch a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (PatchZoneRequest): `PATCH /scene/zones/{zone}` — name and structural fields.
 
@@ -232,6 +247,7 @@ async def asyncio(
             zone=zone,
             client=client,
             body=body,
+            if_match=if_match,
             idempotency_key=idempotency_key,
         )
     ).parsed

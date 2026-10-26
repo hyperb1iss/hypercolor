@@ -578,6 +578,8 @@ mod tests {
                                 resource: ResourceKind::Scene,
                                 expected: 1,
                                 current: 2,
+                                expected_epoch: None,
+                                current_epoch: None,
                             })
                         } else {
                             Err(DomainError::not_found(ResourceKind::Zone, target))
@@ -642,6 +644,8 @@ mod tests {
                                 resource: ResourceKind::Scene,
                                 expected: 1,
                                 current: 2,
+                                expected_epoch: None,
+                                current_epoch: None,
                             })
                         } else {
                             Err(DomainError::not_found(ResourceKind::Layer, target))

@@ -18,9 +18,13 @@ def _get_kwargs(
     zone: str,
     *,
     body: AssignMembersRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
     if not isinstance(idempotency_key, Unset):
         headers["Idempotency-Key"] = idempotency_key
 
@@ -114,12 +118,14 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AssignMembersRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | AssignLiveZoneMembersResponse200]:
     """Assign members to a live zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (AssignMembersRequest): `POST /scene/zones/{zone}/members` — assign device segments.
 
@@ -137,6 +143,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -152,12 +159,14 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: AssignMembersRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | AssignLiveZoneMembersResponse200 | None:
     """Assign members to a live zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (AssignMembersRequest): `POST /scene/zones/{zone}/members` — assign device segments.
 
@@ -176,6 +185,7 @@ def sync(
         zone=zone,
         client=client,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     ).parsed
 
@@ -185,12 +195,14 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AssignMembersRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | AssignLiveZoneMembersResponse200]:
     """Assign members to a live zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (AssignMembersRequest): `POST /scene/zones/{zone}/members` — assign device segments.
 
@@ -208,6 +220,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -221,12 +234,14 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: AssignMembersRequest,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | AssignLiveZoneMembersResponse200 | None:
     """Assign members to a live zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (AssignMembersRequest): `POST /scene/zones/{zone}/members` — assign device segments.
 
@@ -246,6 +261,7 @@ async def asyncio(
             zone=zone,
             client=client,
             body=body,
+            if_match=if_match,
             idempotency_key=idempotency_key,
         )
     ).parsed

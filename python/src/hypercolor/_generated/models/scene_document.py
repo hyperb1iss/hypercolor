@@ -31,10 +31,9 @@ class SceneDocument:
                 renamed or deleted.
             kind (str):
             name (str):
-            revision (int): The commit generation. Served as `ETag`; the one wire version
-                token (Spec 78 §1.6). Strictly increasing within a daemon run and
-                never repeated across runs, so a fence kept from an earlier run
-                can never pass.
+            revision (int): The commit generation, strictly increasing within a daemon run
+                (Spec 78 §1.6). Served with `run_epoch` as the epoch-qualified
+                `ETag`, `"<run_epoch>:<revision>"`; see [`SceneFence`].
             zones (list[ZoneResource]): Every authored zone with its full stack, declaration order.
             activation_brightness (float | None | Unset):
             description (None | str | Unset):
@@ -45,9 +44,9 @@ class SceneDocument:
             priority (int | Unset):
             run_epoch (str | Unset): Opaque identity of the daemon run `revision` belongs to, also
                 served on every response as the `hypercolor-run-epoch` header.
-                Compare by equality only: a change means the daemon restarted, and
-                a client re-anchors on a fresh read before fencing again. Empty
-                from daemons that predate it.
+                Compare by equality only: a change means the daemon restarted.
+                A fence that names another run is always stale. Empty from daemons
+                that predate it.
             transition (SceneDocumentTransition | Unset):
             unassigned_behavior (str | Unset):
     """

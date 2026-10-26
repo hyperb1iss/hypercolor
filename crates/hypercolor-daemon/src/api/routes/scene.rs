@@ -22,6 +22,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Patch live scene metadata",
                 )
                 .body::<hypercolor_types::api::scene::ScenePatchRequest>()
+                .fenced()
                 .idempotent(),
             ],
         ))
@@ -46,6 +47,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Clear live scene layers",
                 )
                 .optional_body::<hypercolor_types::api::scene::ClearSceneRequest>()
+                .fenced()
                 .idempotent(),
             ],
         ))
@@ -60,6 +62,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                 )
                 .body::<hypercolor_types::api::scene::CreateZoneRequest>()
                 .status("201")
+                .fenced()
                 .idempotent(),
             ],
         ))
@@ -80,12 +83,14 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Patch a live scene zone",
                 )
                 .body::<hypercolor_types::api::scene::PatchZoneRequest>()
+                .fenced()
                 .idempotent(),
                 OperationDoc::delete::<hypercolor_types::api::scene::SceneDocument>(
                     "delete_live_zone",
                     "scenes",
                     "Delete a live scene zone",
                 )
+                .fenced()
                 .idempotent(),
             ],
         ))
@@ -99,6 +104,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Replace a live zone layout",
                 )
                 .body::<hypercolor_types::api::scene::ZoneLayoutRequest>()
+                .fenced()
                 .idempotent(),
             ],
         ))
@@ -112,10 +118,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Atomically edit live scene memberships",
                 )
                 .body::<hypercolor_types::api::scene::EditMembersRequest>()
-                .required_header(
-                    "If-Match",
-                    "Last observed scene revision, as a quoted or bare integer. The wildcard * is not accepted.",
-                )
+                .requires_fence()
                 .idempotent(),
             ],
         ))
@@ -129,20 +132,22 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Assign members to a live zone",
                 )
                 .body::<hypercolor_types::api::scene::AssignMembersRequest>()
+                .fenced()
                 .idempotent(),
             ],
         ))
         .routes(openapi::documented_route(
             "/scene/zones/{zone}/members/{member}",
             axum::routing::delete(scene::unassign_member),
-            [OperationDoc::delete::<
-                hypercolor_types::api::scene::ZoneResource,
-            >(
-                "unassign_live_zone_member",
-                "scenes",
-                "Unassign a live zone member",
-            )
-            .idempotent()],
+            [
+                OperationDoc::delete::<hypercolor_types::api::scene::ZoneResource>(
+                    "unassign_live_zone_member",
+                    "scenes",
+                    "Unassign a live zone member",
+                )
+                .fenced()
+                .idempotent(),
+            ],
         ))
         .routes(openapi::documented_route(
             "/scene/zones/{zone}/layers",
@@ -160,6 +165,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                 )
                 .body::<hypercolor_types::api::scene::CreateLayerRequest>()
                 .status("201")
+                .fenced()
                 .idempotent(),
             ],
         ))
@@ -173,6 +179,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Reorder live zone layers",
                 )
                 .body::<hypercolor_types::api::scene::ReorderLayersRequest>()
+                .fenced()
                 .idempotent(),
             ],
         ))
@@ -186,12 +193,14 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Replace a live zone layer",
                 )
                 .body::<hypercolor_types::api::scene::ReplaceLayerRequest>()
+                .fenced()
                 .idempotent(),
                 OperationDoc::delete::<hypercolor_types::api::scene::ZoneResource>(
                     "delete_live_zone_layer",
                     "scenes",
                     "Delete a live zone layer",
                 )
+                .fenced()
                 .idempotent(),
             ],
         ))

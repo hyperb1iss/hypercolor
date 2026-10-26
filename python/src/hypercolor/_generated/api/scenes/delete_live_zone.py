@@ -14,9 +14,13 @@ from ...types import UNSET, Response, Unset
 def _get_kwargs(
     zone: str,
     *,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
     if not isinstance(idempotency_key, Unset):
         headers["Idempotency-Key"] = idempotency_key
 
@@ -105,12 +109,14 @@ def sync_detailed(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | DeleteLiveZoneResponse200]:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -123,6 +129,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         zone=zone,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -137,12 +144,14 @@ def sync(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | DeleteLiveZoneResponse200 | None:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -156,6 +165,7 @@ def sync(
     return sync_detailed(
         zone=zone,
         client=client,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     ).parsed
 
@@ -164,12 +174,14 @@ async def asyncio_detailed(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | DeleteLiveZoneResponse200]:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -182,6 +194,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         zone=zone,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -194,12 +207,14 @@ async def asyncio(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | DeleteLiveZoneResponse200 | None:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -214,6 +229,7 @@ async def asyncio(
         await asyncio_detailed(
             zone=zone,
             client=client,
+            if_match=if_match,
             idempotency_key=idempotency_key,
         )
     ).parsed

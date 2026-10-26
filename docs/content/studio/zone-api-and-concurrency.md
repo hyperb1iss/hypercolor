@@ -10,8 +10,9 @@ Fine-grained writes stay under that same root. Stored scenes remain a collection
 under `/api/v1/scenes`, but they do not expose a second nested zone API.
 
 The live document also carries the only concurrency token on the REST wire:
-`revision`. Structural writes generally accept optional `If-Match`; atomic
-membership edits require a numeric revision. Control
+`revision`, qualified by the `run_epoch` it belongs to. Structural writes
+generally accept optional `If-Match`; atomic membership edits require one.
+Control
 values are unguarded and target a real layer id from the document. A replaced
 layer has a new id, so a stale control write cannot reach the replacement.
 
@@ -57,7 +58,8 @@ activate it and edit the live tree, or replace the stored scene document with
 
 {% <api_endpoint method="GET" path="/api/v1/scene"> %}
 Return the complete live scene document. An active scene always exists, so this
-route always returns `200`. The JSON `revision` is also served as `ETag`.
+route always returns `200`. The JSON `run_epoch` and `revision` are also
+served together as the `ETag`, `"<run_epoch>:<revision>"`.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/scene"> %}
@@ -132,7 +134,7 @@ fitted to the zone's canvas together, and later arrivals keep their physical
 relation to the devices already there. A move between zones sends explicit
 `changes` instead, with the arrival geometry already in each `after` state.
 
-A numeric `If-Match` is required. Omitting it or sending `*` is rejected.
+An `If-Match` fence is required. Omitting it or sending `*` is rejected.
 All changes validate before any commit, so a failed transaction makes no
 partial assignment changes. The response contains the committed `document`
 and canonical `changes` receipts, with complete output snapshots for undo
@@ -283,14 +285,19 @@ current daemon run, so a client must not persist them.
 
 ### One token: `revision`
 
-The live scene's `revision` is the commit generation. A successful read or
-mutation returns it in the resource and quotes it in the response header:
+The live scene's `revision` is the commit generation, strictly increasing
+within one daemon run. A successful read or mutation returns it in the resource
+and serves it, qualified by the run it belongs to, as the response's entity
+tag:
 
 ```http
-ETag: "42"
+ETag: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42"
 ```
 
-No resource-specific version counters exist on the REST wire. Internal
+That tag is the fence: send it back unchanged as `If-Match`. It is the opaque
+`run_epoch`, a colon, and the revision, so a client that keeps the scene
+document can also build it from `run_epoch` and `revision`. No
+resource-specific version counters exist on the REST wire. Internal
 bookkeeping may use more detail, but clients coordinate through the one
 document revision.
 
@@ -320,34 +327,43 @@ Each run also has an opaque `run_epoch`. The live document carries it, every
 HTTP response repeats it in the `hypercolor-run-epoch` header (zone write
 replies, `412` refusals, and `401` refusals included), and the WebSocket
 `hello` reports it in `state.scene` beside the revision it read. A stored-scene
-`PUT` accepts the echoed field, so a read still writes back unchanged. Compare epochs for equality only.
-When the epoch changes, the daemon restarted: read `/scene` again and fence
-from that read, never from a revision the old run handed out.
+`PUT` checks the echoed field as part of its body fence (below). Compare epochs
+for equality only. A fence that names another run is always stale, whatever
+its revision, so a write fenced before a restart can never land after it. When
+the epoch changes, read `/scene` again and fence from that read.
 
 ### Structural preconditions
 
-Send the last revision when overwriting a stale structure would be harmful:
+Send the last fence when overwriting a stale structure would be harmful:
 
 ```http
 PATCH /api/v1/scene/zones/84b20af9-0700-4b82-8488-88314b87fb5c HTTP/1.1
-If-Match: "42"
+If-Match: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42"
 Content-Type: application/json
 
 { "name": "Desk halo", "color": "#7c5cff" }
 ```
 
-Most structural routes accept a quoted integer, a bare integer, or `*`.
-Omitting the header, or sending `*`, applies without a precondition on those
-routes. The exception is `POST /scene/members/edit`: it requires a quoted or
-bare numeric revision and rejects both missing headers and `*`. A stale
-integer returns the canonical `412 Precondition Failed` envelope:
+The epoch-qualified fence passes only while both the run and the revision are
+current. A bare revision, `"42"` or `42`, is still accepted for older clients
+and checks the revision alone, which is not safe across a restart: prefer the
+epoch-qualified form. Omitting the header, or sending `*`, applies without a
+precondition on most structural routes. The exception is
+`POST /scene/members/edit`, which requires a fence and rejects both a missing
+header and `*`. Anything else in `If-Match` is `400 malformed_request`. A stale
+fence returns the canonical `412 Precondition Failed` envelope, whose `ETag` is
+the current fence to rebase onto:
 
 ```json
 {
   "error": {
     "code": "precondition_failed",
-    "message": "version mismatch: expected 42, current 43",
-    "details": { "expected": 42, "current": 43 }
+    "message": "version mismatch: expected 42, current 0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:43",
+    "details": {
+      "expected": 42,
+      "current": 43,
+      "current_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+    }
   },
   "meta": {
     "api_version": "1.0",
@@ -357,12 +373,20 @@ integer returns the canonical `412 Precondition Failed` envelope:
 }
 ```
 
+A fence that named another run also carries `details.expected_epoch`, and the
+refusal can show equal revisions: the run is what was stale.
+
 Structural writes include scene metadata, zone create, patch, and delete, zone
 layout replacement, member assignment and removal, layer create, replace,
 delete, and reorder, scene clear, stored-scene replacement, and both effect
 apply forms. After a `412`, read `/scene`, rebase the intended edit, and retry
-with the new revision. Membership edits also validate their `before` states;
+with the new fence. Membership edits also validate their `before` states;
 rebuild those states from the current document when rebasing.
+
+`PUT /scenes/{id}` also takes a fence in its body: a stored-scene document read
+back echoes `revision` and `run_epoch`, and together they must be current
+exactly as `If-Match` must. A document read in another run is refused. No
+other body field or query parameter carries a scene fence.
 
 ### Retrying a write whose reply was lost
 
@@ -502,13 +526,13 @@ sequenceDiagram
     participant Bus as Event bus
     participant Other as Other clients
 
-    UI->>API: PATCH /scene/zones/{zone} with If-Match "42"
-    alt revision is 42
+    UI->>API: PATCH /scene/zones/{zone} with If-Match "epoch:42"
+    alt run and revision are current
         API->>API: commit scene revision 43
-        API-->>UI: 200 with ETag "43"
+        API-->>UI: 200 with ETag "epoch:43"
         API->>Bus: publish scene event
         Bus-->>Other: refetch live scene
-    else revision changed
+    else run or revision changed
         API-->>UI: 412 with details.current
         UI->>API: GET /scene
         UI->>UI: rebase and retry

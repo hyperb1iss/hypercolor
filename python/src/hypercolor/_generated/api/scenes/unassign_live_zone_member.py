@@ -17,9 +17,13 @@ def _get_kwargs(
     zone: str,
     member: str,
     *,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
     if not isinstance(idempotency_key, Unset):
         headers["Idempotency-Key"] = idempotency_key
 
@@ -110,6 +114,7 @@ def sync_detailed(
     member: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | UnassignLiveZoneMemberResponse200]:
     """Unassign a live zone member
@@ -117,6 +122,7 @@ def sync_detailed(
     Args:
         zone (str):
         member (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -130,6 +136,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         member=member,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -145,6 +152,7 @@ def sync(
     member: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | UnassignLiveZoneMemberResponse200 | None:
     """Unassign a live zone member
@@ -152,6 +160,7 @@ def sync(
     Args:
         zone (str):
         member (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -166,6 +175,7 @@ def sync(
         zone=zone,
         member=member,
         client=client,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     ).parsed
 
@@ -175,6 +185,7 @@ async def asyncio_detailed(
     member: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | UnassignLiveZoneMemberResponse200]:
     """Unassign a live zone member
@@ -182,6 +193,7 @@ async def asyncio_detailed(
     Args:
         zone (str):
         member (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -195,6 +207,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         member=member,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -208,6 +221,7 @@ async def asyncio(
     member: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | UnassignLiveZoneMemberResponse200 | None:
     """Unassign a live zone member
@@ -215,6 +229,7 @@ async def asyncio(
     Args:
         zone (str):
         member (str):
+        if_match (str | Unset):
         idempotency_key (str | Unset):
 
     Raises:
@@ -230,6 +245,7 @@ async def asyncio(
             zone=zone,
             member=member,
             client=client,
+            if_match=if_match,
             idempotency_key=idempotency_key,
         )
     ).parsed

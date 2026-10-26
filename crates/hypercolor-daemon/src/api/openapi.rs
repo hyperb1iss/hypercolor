@@ -270,16 +270,18 @@ impl OperationDoc {
         self
     }
 
-    pub(crate) fn required_header(mut self, name: &'static str, description: &'static str) -> Self {
-        self.headers.push(
-            ParameterBuilder::new()
-                .name(name)
-                .parameter_in(ParameterIn::Header)
-                .required(Required::True)
-                .description(Some(description))
-                .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
-                .build(),
-        );
+    /// Document the optional scene fence this operation honors as
+    /// `If-Match`.
+    pub(crate) fn fenced(mut self) -> Self {
+        self.headers
+            .push(fence_header(Required::False, OPTIONAL_FENCE));
+        self
+    }
+
+    /// Document the scene fence this operation requires as `If-Match`.
+    pub(crate) fn requires_fence(mut self) -> Self {
+        self.headers
+            .push(fence_header(Required::True, REQUIRED_FENCE));
         self
     }
 
@@ -318,6 +320,30 @@ impl OperationDoc {
         self.additional_schemas.push(register_schema::<T>);
         self
     }
+}
+
+/// What an optional scene `If-Match` fence is and how it is checked.
+const OPTIONAL_FENCE: &str = "Scene fence guarding the write: the ETag a read or a write served, \
+\"<run_epoch>:<revision>\". It passes only while both the daemon run and the scene revision are \
+current, so a fence from an earlier daemon run is always stale. A bare revision (\"42\" or 42) \
+is still accepted and checks the revision alone; only the epoch-qualified form is safe across \
+daemon restarts. `*` or no header applies without a precondition.";
+
+/// [`OPTIONAL_FENCE`], for an operation that cannot run unfenced.
+const REQUIRED_FENCE: &str = "Scene fence guarding the write: the ETag a read or a write served, \
+\"<run_epoch>:<revision>\". It passes only while both the daemon run and the scene revision are \
+current, so a fence from an earlier daemon run is always stale. A bare revision (\"42\" or 42) \
+is still accepted and checks the revision alone; only the epoch-qualified form is safe across \
+daemon restarts. Required; the wildcard * is not accepted.";
+
+fn fence_header(required: Required, description: &'static str) -> Parameter {
+    ParameterBuilder::new()
+        .name("If-Match")
+        .parameter_in(ParameterIn::Header)
+        .required(required)
+        .description(Some(description))
+        .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+        .build()
 }
 
 pub(crate) fn documented_route<S, const N: usize>(

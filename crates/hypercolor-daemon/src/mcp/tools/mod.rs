@@ -662,6 +662,7 @@ impl From<DomainError> for ToolError {
                 resource,
                 expected,
                 current,
+                ..
             } => Self::Conflict(format!(
                 "{resource} version mismatch: expected {expected}, current {current}"
             )),
@@ -758,6 +759,8 @@ mod tests {
             resource: ResourceKind::Scene,
             expected: 1,
             current: 2,
+            expected_epoch: None,
+            current_epoch: None,
         }
         .into();
         assert_eq!(precondition.error_code(), -32000);

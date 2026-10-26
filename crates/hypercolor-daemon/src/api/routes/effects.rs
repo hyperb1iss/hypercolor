@@ -78,7 +78,8 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "effects",
                     "Apply effect",
                 )
-                .optional_body::<hypercolor_types::api::scene::ApplyEffectRequest>(),
+                .optional_body::<hypercolor_types::api::scene::ApplyEffectRequest>()
+                .fenced(),
             ],
         ))
         .routes(openapi::documented_route(
@@ -99,7 +100,8 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "effects",
                     "Apply effect preset",
                 )
-                .optional_body::<hypercolor_types::api::scene::ApplyEffectRequest>(),
+                .optional_body::<hypercolor_types::api::scene::ApplyEffectRequest>()
+                .fenced(),
             ],
         ))
 }

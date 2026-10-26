@@ -8,9 +8,10 @@
 //! Layer identity is contractual (Spec 78 §1.4): every layer id is
 //! minted at creation, replacement mints a fresh id, and only control
 //! patches and reorders mutate in place. The document carries one wire
-//! version — `revision`, the commit generation — served as `ETag` and
-//! honored via optional `If-Match` on structural mutations (§1.6), beside
-//! the `run_epoch` that names the daemon run the revision belongs to.
+//! version, the commit generation `revision`, beside the `run_epoch`
+//! that names the daemon run the revision belongs to. Together they are
+//! served as an epoch-qualified `ETag` ([`SceneFence`]) and honored via
+//! optional `If-Match` on structural mutations (§1.6).
 //!
 //! OpenAPI derives are available behind the crate's `schema` feature. The
 //! daemon enables that feature and registers these types through its
@@ -31,6 +32,90 @@ use crate::scene::{
 };
 use crate::spatial::{LedTopology, NormalizedPosition, Orientation};
 use serde::{Deserialize, Serialize};
+
+/// A scene revision fence as it travels in `ETag` and `If-Match`.
+///
+/// The daemon serves `"<run_epoch>:<revision>"`, for example
+/// `"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"`: the opaque run
+/// epoch and the revision within that run, joined by a colon, as one strong
+/// entity tag. Sent back as `If-Match`, it passes only when both the run
+/// and the revision are current, so a fence from an earlier daemon run is
+/// always stale. A bare numeric fence (`"42"` or `42`) is still accepted
+/// for older clients and checks the revision alone; only the
+/// epoch-qualified form is safe across daemon restarts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneFence {
+    /// The run the revision belongs to; `None` for a bare numeric fence.
+    pub run_epoch: Option<String>,
+    /// The scene revision within that run.
+    pub revision: u64,
+}
+
+/// Why a string is not a scene fence.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a scene fence is \"<run_epoch>:<revision>\" or a bare revision: {0}")]
+pub struct SceneFenceParseError(String);
+
+impl SceneFence {
+    /// The fence for `revision` in the run named `run_epoch`.
+    #[must_use]
+    pub fn new(run_epoch: impl Into<String>, revision: u64) -> Self {
+        Self {
+            run_epoch: Some(run_epoch.into()),
+            revision,
+        }
+    }
+
+    /// A bare numeric fence, which checks the revision alone.
+    #[must_use]
+    pub const fn revision_only(revision: u64) -> Self {
+        Self {
+            run_epoch: None,
+            revision,
+        }
+    }
+
+    /// The quoted entity tag the daemon serves as `ETag`.
+    #[must_use]
+    pub fn to_etag(&self) -> String {
+        match &self.run_epoch {
+            Some(run_epoch) => format!("\"{run_epoch}:{}\"", self.revision),
+            None => format!("\"{}\"", self.revision),
+        }
+    }
+
+    /// Parse an `ETag` or `If-Match` value: the epoch-qualified form or a
+    /// bare revision, quoted or not. Weak tags and `*` are not fences.
+    ///
+    /// # Errors
+    ///
+    /// [`SceneFenceParseError`] when the value is neither form.
+    pub fn parse(value: &str) -> Result<Self, SceneFenceParseError> {
+        let trimmed = value.trim();
+        let tag = trimmed
+            .strip_prefix('"')
+            .and_then(|inner| inner.strip_suffix('"'))
+            .unwrap_or(trimmed);
+        let invalid = || SceneFenceParseError(trimmed.to_owned());
+        let (run_epoch, revision) = match tag.rsplit_once(':') {
+            Some((run_epoch, revision)) => (Some(run_epoch), revision),
+            None => (None, tag),
+        };
+        if run_epoch.is_some_and(|run_epoch| {
+            run_epoch.is_empty()
+                || !run_epoch
+                    .bytes()
+                    .all(|byte| byte.is_ascii_graphic() && byte != b'"')
+        }) {
+            return Err(invalid());
+        }
+        let revision = revision.parse::<u64>().map_err(|_| invalid())?;
+        Ok(Self {
+            run_epoch: run_epoch.map(str::to_owned),
+            revision,
+        })
+    }
+}
 
 /// The `GET /scene` document: the full live tree.
 ///
@@ -72,16 +157,15 @@ pub struct SceneDocument {
     #[serde(default)]
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub mutation_mode: SceneMutationMode,
-    /// The commit generation. Served as `ETag`; the one wire version
-    /// token (Spec 78 §1.6). Strictly increasing within a daemon run and
-    /// never repeated across runs, so a fence kept from an earlier run
-    /// can never pass.
+    /// The commit generation, strictly increasing within a daemon run
+    /// (Spec 78 §1.6). Served with `run_epoch` as the epoch-qualified
+    /// `ETag`, `"<run_epoch>:<revision>"`; see [`SceneFence`].
     pub revision: u64,
     /// Opaque identity of the daemon run `revision` belongs to, also
     /// served on every response as the `hypercolor-run-epoch` header.
-    /// Compare by equality only: a change means the daemon restarted, and
-    /// a client re-anchors on a fresh read before fencing again. Empty
-    /// from daemons that predate it.
+    /// Compare by equality only: a change means the daemon restarted.
+    /// A fence that names another run is always stale. Empty from daemons
+    /// that predate it.
     #[serde(default)]
     pub run_epoch: String,
     /// Every authored zone with its full stack, declaration order.

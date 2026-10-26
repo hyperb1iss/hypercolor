@@ -253,7 +253,10 @@ pub enum DomainError {
     #[error("this Idempotency-Key was already used for a different request")]
     IdempotencyKeyMismatch,
     /// An If-Match / version precondition failed.
-    #[error("version mismatch: expected {expected}, current {current}")]
+    #[error(
+        "{}",
+        precondition_message(expected_epoch.as_deref(), *expected, current_epoch.as_deref(), *current)
+    )]
     PreconditionFailed {
         /// What kind of resource carries the version.
         resource: ResourceKind,
@@ -261,6 +264,11 @@ pub enum DomainError {
         expected: u64,
         /// The version the resource holds.
         current: u64,
+        /// The daemon run the caller's fence named, when it named one.
+        expected_epoch: Option<std::sync::Arc<str>>,
+        /// The daemon run the current version belongs to, for scene
+        /// revisions, so the refusal can name the fence to rebase onto.
+        current_epoch: Option<std::sync::Arc<str>>,
     },
     /// The device exists but cannot serve the request.
     #[error("device {device_id} unavailable: {reason}")]
@@ -282,6 +290,28 @@ pub enum DomainError {
     /// the full chain goes to tracing.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
+}
+
+/// `expected 4, current 7`, with each side epoch-qualified when it names a
+/// run, so a fence from another run reads as such even when the revision
+/// numbers agree.
+fn precondition_message(
+    expected_epoch: Option<&str>,
+    expected: u64,
+    current_epoch: Option<&str>,
+    current: u64,
+) -> String {
+    let fence = |epoch: Option<&str>, revision: u64| {
+        epoch.map_or_else(
+            || revision.to_string(),
+            |epoch| format!("{epoch}:{revision}"),
+        )
+    };
+    format!(
+        "version mismatch: expected {}, current {}",
+        fence(expected_epoch, expected),
+        fence(current_epoch, current)
+    )
 }
 
 fn payload_too_large_message(limit_bytes: Option<u64>) -> String {

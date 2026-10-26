@@ -14,9 +14,13 @@ from ...types import UNSET, Response, Unset
 def _get_kwargs(
     *,
     body: ClearSceneRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
     if not isinstance(idempotency_key, Unset):
         headers["Idempotency-Key"] = idempotency_key
 
@@ -108,11 +112,13 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ClearSceneRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ClearSceneResponse200]:
     """Clear live scene layers
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ClearSceneRequest | Unset): `POST /scene/clear` — the "stop" gesture (Spec 78 §1.2).
 
@@ -126,6 +132,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -140,11 +147,13 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ClearSceneRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ClearSceneResponse200 | None:
     """Clear live scene layers
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ClearSceneRequest | Unset): `POST /scene/clear` — the "stop" gesture (Spec 78 §1.2).
 
@@ -159,6 +168,7 @@ def sync(
     return sync_detailed(
         client=client,
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     ).parsed
 
@@ -167,11 +177,13 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ClearSceneRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ClearSceneResponse200]:
     """Clear live scene layers
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ClearSceneRequest | Unset): `POST /scene/clear` — the "stop" gesture (Spec 78 §1.2).
 
@@ -185,6 +197,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        if_match=if_match,
         idempotency_key=idempotency_key,
     )
 
@@ -197,11 +210,13 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ClearSceneRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
     idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ClearSceneResponse200 | None:
     """Clear live scene layers
 
     Args:
+        if_match (str | Unset):
         idempotency_key (str | Unset):
         body (ClearSceneRequest | Unset): `POST /scene/clear` — the "stop" gesture (Spec 78 §1.2).
 
@@ -217,6 +232,7 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             body=body,
+            if_match=if_match,
             idempotency_key=idempotency_key,
         )
     ).parsed

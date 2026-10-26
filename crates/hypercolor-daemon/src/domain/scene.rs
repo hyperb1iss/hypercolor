@@ -462,6 +462,7 @@ impl SceneService {
         SceneMutation {
             candidate: manager.clone(),
             base_revision: self.0.commits.revision(),
+            run_epoch: Arc::clone(&self.0.run_epoch),
             events: Vec::new(),
             persists_scene_content: false,
             preview_scenes_to_clear: HashSet::new(),
@@ -745,6 +746,7 @@ impl SceneService {
         let SceneMutation {
             candidate,
             base_revision,
+            run_epoch: _,
             events,
             persists_scene_content,
             preview_scenes_to_clear,
@@ -1320,6 +1322,9 @@ impl AdmittedSceneEffectIdMigration {
 pub struct SceneMutation {
     candidate: SceneManager,
     base_revision: SceneRevision,
+    /// The run `base_revision` belongs to, so a stale fence refusal can
+    /// name the fence to rebase onto.
+    run_epoch: Arc<str>,
     events: Vec<HypercolorEvent>,
     persists_scene_content: bool,
     preview_scenes_to_clear: HashSet<SceneId>,
@@ -1379,6 +1384,12 @@ impl SceneMutation {
     #[must_use]
     pub const fn base_revision(&self) -> SceneRevision {
         self.base_revision
+    }
+
+    /// The daemon run [`base_revision`](Self::base_revision) belongs to.
+    #[must_use]
+    pub fn run_epoch(&self) -> &str {
+        &self.run_epoch
     }
 
     /// Read the candidate. Every intent method's effect is visible here

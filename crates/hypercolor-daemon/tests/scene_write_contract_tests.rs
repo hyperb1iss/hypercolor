@@ -23,6 +23,7 @@ use hypercolor_types::api::envelope::{
     IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MISMATCH_CODE, IDEMPOTENCY_REPLAYED_HEADER,
     RUN_EPOCH_HEADER,
 };
+use hypercolor_types::api::scene::SceneFence;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -63,7 +64,8 @@ fn etag_revision(response: &axum::response::Response) -> u64 {
         .headers()
         .get(http::header::ETAG)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim_matches('"').parse().ok())
+        .and_then(|value| hypercolor_types::api::scene::SceneFence::parse(value).ok())
+        .map(|fence| fence.revision)
         .expect("response should carry the scene revision as ETag")
 }
 
@@ -235,6 +237,16 @@ async fn a_fence_from_a_previous_daemon_run_never_passes() {
             "a refused fence names the run too"
         );
     }
+
+    // The epoch-qualified fence is safe whatever the revisions do: one that
+    // names the previous run is stale even at the new run's own revision.
+    let numeric_match = SceneFence::new(first_epoch.as_str(), restarted).to_etag();
+    let response = send(
+        &app,
+        patch_zone_fenced(&restarted_zone, "stale", &numeric_match),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
 }
 
 #[test]
@@ -743,4 +755,152 @@ async fn the_same_bytes_under_another_content_type_are_another_request() {
     );
     let repeat = send(&app, clear(Some("application/json"))).await;
     assert!(replayed(&repeat), "the original request still replays");
+}
+
+// ── Epoch-qualified fences ───────────────────────────────────────────────
+
+fn served_fence(response: &axum::response::Response) -> SceneFence {
+    let etag = response
+        .headers()
+        .get(http::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("scene responses carry their fence as ETag");
+    SceneFence::parse(etag).expect("the ETag is a scene fence")
+}
+
+fn patch_zone_fenced(zone_id: &str, name: &str, fence: &str) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/scene/zones/{zone_id}"))
+        .header("content-type", "application/json")
+        .header(http::header::IF_MATCH, fence)
+        .body(Body::from(json!({ "name": name }).to_string()))
+        .expect("request should build")
+}
+
+#[tokio::test]
+async fn the_etag_is_the_fence_and_round_trips_as_if_match() {
+    let (state, app) = isolated();
+    let read = send(&app, get("/api/v1/scene")).await;
+    let fence = served_fence(&read);
+    let etag = fence.to_etag();
+    let document = body_json(read).await;
+    assert_eq!(
+        fence.run_epoch.as_deref(),
+        Some(state.scene_manager.run_epoch())
+    );
+    assert_eq!(
+        document["data"]["run_epoch"],
+        state.scene_manager.run_epoch()
+    );
+    assert_eq!(document["data"]["revision"], fence.revision);
+    let zone_id = primary_zone(&document)["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+
+    let written = send(&app, patch_zone_fenced(&zone_id, "Fenced", &etag)).await;
+    assert_eq!(written.status(), StatusCode::OK);
+    assert_eq!(
+        served_fence(&written),
+        SceneFence::new(state.scene_manager.run_epoch(), fence.revision + 1),
+        "the write answers with the fence for its own commit"
+    );
+
+    let replayed_fence = send(&app, patch_zone_fenced(&zone_id, "Again", &etag)).await;
+    assert_eq!(
+        replayed_fence.status(),
+        StatusCode::PRECONDITION_FAILED,
+        "the consumed fence is stale"
+    );
+}
+
+#[tokio::test]
+async fn a_fence_from_another_run_is_stale_even_when_the_revision_matches() {
+    let (state, app) = isolated();
+    let (revision, epoch, zone_id) = live_scene(&app).await;
+    let foreign = SceneFence::new("an-earlier-run", revision).to_etag();
+
+    let refused = send(&app, patch_zone_fenced(&zone_id, "Overwritten", &foreign)).await;
+    assert_eq!(refused.status(), StatusCode::PRECONDITION_FAILED);
+    assert_eq!(
+        served_fence(&refused),
+        SceneFence::new(epoch.as_str(), revision),
+        "the refusal names the fence to rebase onto"
+    );
+    let body = body_json(refused).await;
+    assert_eq!(body["error"]["details"]["expected"], revision);
+    assert_eq!(body["error"]["details"]["current"], revision);
+    assert_eq!(body["error"]["details"]["expected_epoch"], "an-earlier-run");
+    assert_eq!(body["error"]["details"]["current_epoch"], epoch.as_str());
+    assert_eq!(
+        state.scene_manager.revision(),
+        revision,
+        "nothing committed"
+    );
+}
+
+#[tokio::test]
+async fn a_bare_revision_fence_still_checks_the_revision_within_a_run() {
+    let (state, app) = isolated();
+    let (revision, epoch, zone_id) = live_scene(&app).await;
+
+    let bare = send(&app, patch_zone(&zone_id, "Bare", revision)).await;
+    assert_eq!(bare.status(), StatusCode::OK);
+    let stale = send(&app, patch_zone(&zone_id, "Stale", revision)).await;
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+    assert_eq!(
+        served_fence(&stale),
+        SceneFence::new(epoch.as_str(), revision + 1),
+        "a bare fence's refusal still names the epoch-qualified fence"
+    );
+    assert_eq!(state.scene_manager.revision(), revision + 1);
+}
+
+#[tokio::test]
+async fn a_fence_that_is_not_a_fence_is_malformed() {
+    let (state, app) = isolated();
+    let (revision, _, zone_id) = live_scene(&app).await;
+    let refused = send(&app, patch_zone_fenced(&zone_id, "Never", "\"run:abc\"")).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(state.scene_manager.revision(), revision);
+}
+
+#[tokio::test]
+async fn a_stored_scene_read_in_another_run_is_refused_on_write_back() {
+    let (_state, app) = isolated();
+    let created = send(
+        &app,
+        json_request("POST", "/api/v1/scenes", &json!({ "name": "Stored" })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let scene_id = body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("scene id")
+        .to_owned();
+    let read = send(&app, get(format!("/api/v1/scenes/{scene_id}"))).await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let mut document = body_json(read).await["data"].clone();
+
+    let put = |document: &serde_json::Value| {
+        json_request("PUT", &format!("/api/v1/scenes/{scene_id}"), document)
+    };
+    let mut foreign = document.clone();
+    foreign["run_epoch"] = json!("an-earlier-run");
+    foreign["name"] = json!("Overwritten");
+    let refused = send(&app, put(&foreign)).await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::PRECONDITION_FAILED,
+        "a body read in another run is stale whatever its revision"
+    );
+
+    document["name"] = json!("Renamed");
+    let written = send(&app, put(&document)).await;
+    assert_eq!(
+        written.status(),
+        StatusCode::OK,
+        "the same body from this run lands"
+    );
 }

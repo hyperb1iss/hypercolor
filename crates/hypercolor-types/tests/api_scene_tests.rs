@@ -13,8 +13,8 @@ use hypercolor_types::api::output::{OutputPatchRequest, OutputResource};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ApplyEffectResponse, AssignMembersRequest, ClearSceneRequest,
     CreateLayerRequest, CreateZoneRequest, PatchControlsRequest, PatchZoneRequest,
-    ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, SideEffectOutcome,
-    TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
+    ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, SceneFence, ScenePatchRequest,
+    SideEffectOutcome, TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
 use hypercolor_types::api::scenes::{ReplaceSceneRequest, SnapshotSceneRequest};
 use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority};
@@ -361,4 +361,50 @@ fn membership_edit_contract_round_trips_offline_restore_receipts() {
     let mut unknown = request;
     unknown["replace_layers"] = json!(true);
     assert!(serde_json::from_value::<EditMembersRequest>(unknown).is_err());
+}
+
+#[test]
+fn a_scene_fence_round_trips_as_an_entity_tag() {
+    let fence = SceneFence::new(
+        "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
+        1_798_012_345_678_901,
+    );
+    let etag = fence.to_etag();
+    assert_eq!(
+        etag,
+        "\"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901\""
+    );
+    assert_eq!(SceneFence::parse(&etag), Ok(fence.clone()));
+    assert_eq!(
+        SceneFence::parse("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"),
+        Ok(fence),
+        "unquoted is the same fence"
+    );
+}
+
+#[test]
+fn a_bare_revision_is_still_a_fence_without_a_run() {
+    assert_eq!(
+        SceneFence::parse("\"42\""),
+        Ok(SceneFence::revision_only(42))
+    );
+    assert_eq!(SceneFence::parse(" 42 "), Ok(SceneFence::revision_only(42)));
+    assert_eq!(SceneFence::revision_only(42).to_etag(), "\"42\"");
+}
+
+#[test]
+fn anything_else_is_not_a_scene_fence() {
+    for invalid in [
+        "",
+        "\"\"",
+        "*",
+        "W/\"42\"",
+        ":42",
+        "run:",
+        "run:abc",
+        "run epoch:42",
+        "-1",
+    ] {
+        assert!(SceneFence::parse(invalid).is_err(), "{invalid:?} parsed");
+    }
 }

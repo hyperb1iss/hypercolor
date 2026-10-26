@@ -171,11 +171,18 @@ def _with_if_match(kwargs: dict[str, Any], revision: int | None) -> dict[str, An
 
 
 def _etag_revision(response: httpx.Response) -> int | None:
+    """Read the scene revision from an ``ETag``.
+
+    The daemon serves ``"<run_epoch>:<revision>"``; older daemons served a
+    bare ``"<revision>"``. Either way the revision is the part after the last
+    colon.
+    """
     etag = response.headers.get("etag")
     if etag is None:
         return None
+    _, _, revision = etag.strip().strip('"').rpartition(":")
     try:
-        return int(etag.strip().strip('"'))
+        return int(revision)
     except ValueError:
         return None
 

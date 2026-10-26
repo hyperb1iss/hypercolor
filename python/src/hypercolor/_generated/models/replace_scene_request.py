@@ -44,10 +44,10 @@ class ReplaceSceneRequest:
             revision (int | None | Unset): The scene `revision` this replacement was built from. When
                 present, a stale value is refused with `412 precondition_failed`,
                 exactly as a stale `If-Match` is.
-            run_epoch (None | str | Unset): Echo of the daemon run the read came from, accepted so a read can
-                be written back as it arrived. Never checked: revisions never
-                repeat across runs, so a `revision` from an earlier run is already
-                refused.
+            run_epoch (None | str | Unset): Echo of the daemon run the read came from. Together with
+                `revision` it is the body's fence: a document read in another
+                daemon run is refused with `412 precondition_failed` whatever its
+                revision. Without `revision` it is not checked.
             unassigned_behavior (str | Unset):
             zones (list[ReplaceZoneRequest] | Unset):
     """

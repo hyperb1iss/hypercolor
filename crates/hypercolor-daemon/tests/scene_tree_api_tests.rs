@@ -94,13 +94,22 @@ fn if_match(mut request: Request<Body>, revision: u64) -> Request<Body> {
     request
 }
 
+/// The response's scene fence, checked to be epoch-qualified and returned
+/// as the quoted revision, so assertions compare revisions while every
+/// served ETag is held to the `"<run_epoch>:<revision>"` form.
 fn response_etag(response: &axum::response::Response) -> String {
-    response
+    let etag = response
         .headers()
         .get(http::header::ETAG)
         .and_then(|value| value.to_str().ok())
-        .expect("response should include ETag")
-        .to_owned()
+        .expect("response should include ETag");
+    let fence = hypercolor_types::api::scene::SceneFence::parse(etag)
+        .expect("the ETag should be a scene fence");
+    assert!(
+        fence.run_epoch.is_some(),
+        "scene ETags name their run: {etag}"
+    );
+    format!("\"{}\"", fence.revision)
 }
 
 fn sample_effect(name: &str) -> EffectMetadata {

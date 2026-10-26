@@ -31,11 +31,16 @@ fn membership_edit_declares_its_required_revision_header() {
         .expect("required If-Match header is discoverable by generated clients");
     assert_eq!(header["required"], true);
     assert_eq!(header["schema"]["type"], "string");
+    let description = header["description"]
+        .as_str()
+        .expect("header format is described");
     assert!(
-        header["description"]
-            .as_str()
-            .expect("header format is described")
-            .contains("quoted or bare integer")
+        description.contains("<run_epoch>:<revision>"),
+        "the epoch-qualified fence is documented: {description}"
+    );
+    assert!(
+        description.contains("bare revision"),
+        "the bare numeric fence is documented: {description}"
     );
     assert_eq!(
         operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],

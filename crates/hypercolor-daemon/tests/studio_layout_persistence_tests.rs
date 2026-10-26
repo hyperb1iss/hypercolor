@@ -178,7 +178,8 @@ fn etag_revision(response: &axum::response::Response) -> u64 {
         .headers()
         .get(header::ETAG)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim_matches('"').parse().ok())
+        .and_then(|value| hypercolor_types::api::scene::SceneFence::parse(value).ok())
+        .map(|fence| fence.revision)
         .expect("mutation responses carry the scene revision")
 }
 

@@ -64,6 +64,7 @@ pub async fn get_scene(
     };
 
     crate::api::scene::with_revision(
+        state.scene_manager.run_epoch(),
         envelope::ok(crate::domain::scene_tree::scene_document(
             scene,
             revision,
@@ -125,10 +126,24 @@ pub async fn update_scene(
     headers: HeaderMap,
     ApiJson(body): ApiJson<ReplaceSceneRequest>,
 ) -> Response {
-    let expected_revision = match crate::api::scene::parse_if_match(&headers) {
+    let expected_revision = match crate::api::scene::parse_if_match(&headers, &state.domains.scene)
+    {
         Ok(revision) => revision,
         Err(error) => return error.into_response(),
     };
+    // A read-back body echoes the fence it was read at, run included, so a
+    // document read in another daemon run is stale whatever its revision.
+    if let Some(revision) = body.revision
+        && let Err(error) = crate::domain::scene_tree::check_scene_fence(
+            &state.domains.scene,
+            Some(&hypercolor_types::api::scene::SceneFence {
+                run_epoch: body.run_epoch.clone().filter(|epoch| !epoch.is_empty()),
+                revision,
+            }),
+        )
+    {
+        return error.into_response();
+    }
     let manager = state.scene_manager.snapshot().await;
     let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
@@ -158,6 +173,7 @@ pub async fn update_scene(
 
     let revision = updated.commit.revision();
     crate::api::scene::with_revision(
+        state.scene_manager.run_epoch(),
         envelope::ok(crate::domain::scene_tree::scene_document(
             &updated.scene,
             revision,

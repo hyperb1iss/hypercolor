@@ -19,8 +19,8 @@
 use std::collections::HashMap;
 
 use hypercolor_types::api::scene::{
-    AssignMembersRequest, MemberPlacement, SceneDocument, ZoneLayoutResource, ZoneMember,
-    ZoneMemberId, ZoneResource,
+    AssignMembersRequest, MemberPlacement, SceneDocument, SceneFence, ZoneLayoutResource,
+    ZoneMember, ZoneMemberId, ZoneResource,
 };
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
@@ -223,7 +223,40 @@ pub fn check_scene_revision(
         resource: ResourceKind::Scene,
         expected,
         current,
+        expected_epoch: None,
+        current_epoch: Some(std::sync::Arc::from(mutation.run_epoch())),
     })
+}
+
+/// Refuse a fence that names another daemon run.
+///
+/// Revisions are comparable only within one run, so a fence from another
+/// run is stale however its revision compares. Transport adapters check
+/// the epoch part here and hand the revision part to
+/// [`check_scene_revision`], which the commit checks under its own
+/// candidate.
+///
+/// # Errors
+///
+/// [`DomainError::PreconditionFailed`] naming both runs when the fence
+/// names another.
+pub fn check_scene_fence(
+    scenes: &SceneContext,
+    fence: Option<&SceneFence>,
+) -> Result<Option<u64>, DomainError> {
+    let Some(fence) = fence else {
+        return Ok(None);
+    };
+    match fence.run_epoch.as_deref() {
+        Some(epoch) if epoch != scenes.run_epoch() => Err(DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: fence.revision,
+            current: scenes.revision(),
+            expected_epoch: Some(std::sync::Arc::from(epoch)),
+            current_epoch: Some(std::sync::Arc::from(scenes.run_epoch())),
+        }),
+        _ => Ok(Some(fence.revision)),
+    }
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────
@@ -941,6 +974,8 @@ pub(crate) fn layer_error(
             resource: ResourceKind::Scene,
             expected,
             current,
+            expected_epoch: None,
+            current_epoch: None,
         },
         LayerMutationError::InvalidLayer { errors } => DomainError::validation_details(
             "Layer payload is invalid",

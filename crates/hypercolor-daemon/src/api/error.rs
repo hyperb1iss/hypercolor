@@ -3,6 +3,7 @@
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail};
+use hypercolor_types::api::scene::SceneFence;
 
 use super::envelope::response_meta;
 use crate::domain::{DomainError, DomainErrorDetails};
@@ -90,8 +91,21 @@ pub(crate) fn client_details(error: &DomainError) -> Option<serde_json::Value> {
         | DomainError::ServiceUnavailable { details, .. } => details.as_ref().map(details_json),
         DomainError::ControlBound { keys } => Some(serde_json::json!({ "bound": keys })),
         DomainError::PreconditionFailed {
-            expected, current, ..
-        } => Some(serde_json::json!({ "expected": expected, "current": current })),
+            expected,
+            current,
+            expected_epoch,
+            current_epoch,
+            ..
+        } => {
+            let mut details = serde_json::json!({ "expected": expected, "current": current });
+            if let Some(epoch) = expected_epoch {
+                details["expected_epoch"] = serde_json::json!(epoch.as_ref());
+            }
+            if let Some(epoch) = current_epoch {
+                details["current_epoch"] = serde_json::json!(epoch.as_ref());
+            }
+            Some(details)
+        }
         DomainError::PayloadTooLarge {
             limit_bytes: Some(limit_bytes),
         } => Some(serde_json::json!({ "limit_bytes": limit_bytes })),
@@ -145,10 +159,21 @@ impl IntoResponse for DomainError {
             meta: response_meta(),
         };
         let mut response = (status, axum::Json(body)).into_response();
-        if let Self::PreconditionFailed { current, .. } = &self
-            && let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\""))
+        // The refusal names the fence to rebase onto, epoch-qualified for
+        // scene revisions exactly as a successful read serves it.
+        if let Self::PreconditionFailed {
+            current,
+            current_epoch,
+            ..
+        } = &self
         {
-            response.headers_mut().insert(header::ETAG, etag);
+            let fence = match current_epoch {
+                Some(epoch) => SceneFence::new(epoch.as_ref(), *current),
+                None => SceneFence::revision_only(*current),
+            };
+            if let Ok(etag) = HeaderValue::from_str(&fence.to_etag()) {
+                response.headers_mut().insert(header::ETAG, etag);
+            }
         }
         response
     }
@@ -190,6 +215,8 @@ mod tests {
             resource: ResourceKind::Zone,
             expected: 4,
             current: 7,
+            expected_epoch: None,
+            current_epoch: None,
         }
         .into_response();
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
