@@ -6,8 +6,8 @@ use hypercolor_types::scene::ZoneId;
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, StudioEdit, StudioJournal, prepare_members_replay, restore_layer_requests,
-    zone_patch_before,
+    DeletedZone, StudioEdit, StudioJournal, light_neighbor, prepare_members_replay,
+    restore_layer_requests, zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -274,4 +274,45 @@ fn a_deletion_is_undoable_once_and_follows_its_zone_to_a_new_id() {
         Some(StudioEdit::ZoneDeleted(record)) => assert_eq!(record.zone_id, new.to_string()),
         other => panic!("expected the deletion, found {other:?}"),
     }
+}
+
+fn zones_scene(zones: &[(&str, &str)]) -> SceneDocument {
+    let zones: Vec<_> = zones
+        .iter()
+        .map(|(id, role)| {
+            serde_json::json!({ "id": id, "name": id, "role": role, "enabled": true,
+                "brightness": 1, "members": [], "layers": [] })
+        })
+        .collect();
+    serde_json::from_value(serde_json::json!({
+        "id": "33333333-3333-4333-8333-333333333333", "name": "Desk", "kind": "named",
+        "is_default": false, "revision": 3, "zones": zones,
+    }))
+    .expect("valid scene fixture")
+}
+
+const ZONE_A: &str = "11111111-1111-4111-8111-111111111111";
+const ZONE_B: &str = "22222222-2222-4222-8222-222222222222";
+const ZONE_C: &str = "44444444-4444-4444-8444-444444444444";
+const SCREEN: &str = "55555555-5555-4555-8555-555555555555";
+
+#[test]
+fn a_removed_zone_hands_the_selection_to_the_light_tab_beside_it() {
+    let scene = zones_scene(&[
+        (ZONE_A, "primary"),
+        (SCREEN, "display"),
+        (ZONE_B, "custom"),
+        (ZONE_C, "custom"),
+    ]);
+    // The tab before it, skipping Screens; the first tab falls to the next.
+    assert_eq!(light_neighbor(&scene, ZONE_B).as_deref(), Some(ZONE_A));
+    assert_eq!(light_neighbor(&scene, ZONE_C).as_deref(), Some(ZONE_B));
+    assert_eq!(light_neighbor(&scene, ZONE_A).as_deref(), Some(ZONE_B));
+}
+
+#[test]
+fn the_only_light_zone_or_an_unknown_one_has_no_neighbor() {
+    let scene = zones_scene(&[(ZONE_A, "primary"), (SCREEN, "display")]);
+    assert_eq!(light_neighbor(&scene, ZONE_A), None);
+    assert_eq!(light_neighbor(&scene, ZONE_C), None);
 }

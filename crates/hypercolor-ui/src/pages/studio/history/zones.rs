@@ -8,7 +8,7 @@ use hypercolor_types::api::scene::{
     CreateLayerRequest, EditMembersRequest, MemberEdit, MemberState, PatchZoneRequest,
 };
 use hypercolor_types::layer::SceneLayer;
-use hypercolor_types::scene::{SceneId, ZoneId};
+use hypercolor_types::scene::{SceneId, ZoneId, ZoneRole};
 use hypercolor_types::spatial::Output;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -82,6 +82,24 @@ pub fn zone_patch_before(
         color: after.color.as_ref().map(|_| zone.color.clone()),
         index: after.index.map(|_| index),
     }
+}
+
+/// The tab that takes the selection when the light zone `zone_id` goes:
+/// the one before it, else the one after. `None` when it is the only one.
+#[must_use]
+pub fn light_neighbor(scene: &api::SceneDocument, zone_id: &str) -> Option<String> {
+    let lights: Vec<String> = scene
+        .zones
+        .iter()
+        .filter(|zone| zone.role != ZoneRole::Display)
+        .map(|zone| zone.id.to_string())
+        .collect();
+    let index = lights.iter().position(|id| id == zone_id)?;
+    index
+        .checked_sub(1)
+        .and_then(|before| lights.get(before))
+        .or_else(|| lights.get(index + 1))
+        .cloned()
 }
 
 /// How creating a zone, and the move into it, came out.
@@ -204,6 +222,14 @@ impl StudioHistory {
     fn overtaken(self, outcome: Box<dyn FnOnce(NewZone)>) {
         if self.alive() {
             outcome(NewZone::NotCreated);
+        }
+    }
+
+    /// Move the selection to `next` when it is on `zone_id`, a zone
+    /// history just removed, so nothing goes on reading a zone that is gone.
+    fn select_away(self, zone_id: &str, next: Option<String>) {
+        if self.selected.get_untracked().as_deref() == Some(zone_id) {
+            self.selected.set(next);
         }
     }
 
@@ -786,15 +812,18 @@ impl StudioHistory {
         mut record: DeletedZone,
         settle: Settle,
     ) {
-        let Some(scene_id) = self.current_scene().map(|scene| scene.id) else {
+        let Some(scene) = self.current_scene() else {
             return;
         };
+        let scene_id = scene.id;
+        let neighbor = light_neighbor(&scene, &record.zone_id);
         let Some(generation) = self.begin() else {
             return;
         };
         spawn_local(async move {
             if redo {
                 if self.take_down_zone(scene_id, &mut record).await && self.is_current(generation) {
+                    self.select_away(&record.zone_id, neighbor);
                     self.settle_zone_entry(
                         index,
                         redo,
@@ -853,9 +882,11 @@ impl StudioHistory {
         color: Option<String>,
         filled: Vec<MemberEdit>,
     ) {
-        let Some(scene_id) = self.current_scene().map(|scene| scene.id) else {
+        let Some(scene) = self.current_scene() else {
             return;
         };
+        let scene_id = scene.id;
+        let neighbor = light_neighbor(&scene, &zone_id);
         let Some(generation) = self.begin() else {
             return;
         };
@@ -866,7 +897,7 @@ impl StudioHistory {
                     .await
                     .map(|(entry, remade)| (entry, Some(remade)))
             } else {
-                self.uncreate_zone(generation, scene_id, zone_id, name, color, filled)
+                self.uncreate_zone(generation, scene_id, zone_id, neighbor, name, color, filled)
                     .await
                     .map(|entry| (entry, None))
             };
@@ -884,18 +915,23 @@ impl StudioHistory {
 
     /// The undo of a zone's creation. `None` leaves the entry where it is,
     /// for a step that changed nothing; otherwise the entry the journal
-    /// keeps in its place.
+    /// keeps in its place. The selection follows the devices back to the
+    /// zone they came from, or moves to `neighbor` when the zone goes and
+    /// nothing went back into a zone.
+    #[allow(clippy::too_many_arguments)]
     async fn uncreate_zone(
         self,
         generation: u64,
         scene_id: SceneId,
         zone_id: String,
+        neighbor: Option<String>,
         name: String,
         color: Option<String>,
         filled: Vec<MemberEdit>,
     ) -> Option<StudioEdit> {
         let moves_out = !filled.is_empty();
         let mut filled_now = filled.clone();
+        let mut home = None;
         if moves_out {
             let scene = match live_scene(scene_id).await {
                 Ok(scene) => scene,
@@ -919,6 +955,10 @@ impl StudioHistory {
                 .await
             {
                 Sent::Landed { changes, .. } => {
+                    home = changes
+                        .iter()
+                        .find_map(|change| change.after.as_ref())
+                        .map(|state| state.zone_id.to_string());
                     filled_now = changes.into_iter().map(flip).collect();
                 }
                 Sent::Failed | Sent::Superseded => return None,
@@ -945,6 +985,13 @@ impl StudioHistory {
                 },
             },
         };
+        if self.is_current(generation) {
+            match (&home, &removal) {
+                (Some(home), _) => self.selected.set(Some(home.clone())),
+                (None, Removal::Removed) => self.select_away(&zone_id, neighbor),
+                (None, _) => {}
+            }
+        }
         match removal {
             Removal::Removed => Some(StudioEdit::ZoneCreated {
                 zone_id,
