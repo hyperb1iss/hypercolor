@@ -71,9 +71,12 @@ fn hsl_to_rgb_triplet(h: f32, s: f32, l: f32) -> String {
     format!("{}, {}, {}", rgb.r, rgb.g, rgb.b)
 }
 
-/// Compact preset toolbar for the effect detail sidebar.
+/// Compact preset toolbar for the preview cabinet's preset strip.
 ///
-/// Single line: `[Preset dropdown] [Save] [+] [···]`
+/// Single line: `[Preset dropdown] [Save] [+] [···]`. The strip is dark in
+/// both themes and scopes the dark tokens, so the toolbar reads semantic
+/// variables (`var(--text-tertiary)`) rather than Tailwind's root-resolved
+/// color aliases.
 #[component]
 pub fn PresetToolbar(
     /// The active effect's ID.
@@ -833,14 +836,14 @@ fn DropdownItem(
             class="preset-option w-full text-left pl-4 pr-3 py-[9px] text-xs cursor-pointer \
                    flex items-center gap-2.5"
             class=("preset-option-active", move || is_selected.get())
-            class=("text-fg-tertiary", move || !is_selected.get())
+            class=("text-[var(--text-tertiary)]", move || !is_selected.get())
             style=format!("--item-rgb: {swatch_rgb}")
             on:click=move |_| on_click.run(val.clone())
         >
             <span class="flex-1 min-w-0">
                 <span class="block truncate">{label}</span>
                 {has_description.then(|| view! {
-                    <span class="block text-[10px] leading-relaxed text-fg-tertiary/70 mt-0.5 whitespace-normal">
+                    <span class="block text-[10px] leading-relaxed text-[var(--text-tertiary)]/70 mt-0.5 whitespace-normal">
                         {description.clone()}
                     </span>
                 })}

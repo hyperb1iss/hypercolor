@@ -471,8 +471,14 @@ pub fn PreviewCabinet(
             // layer over whatever sits below. `rounded-b-xl` clips the
             // gradient background to match the cabinet's bottom silhouette
             // without clipping descendant elements.
+            //
+            // The cabinet is black in both themes, so the strip takes the
+            // dark theme's tokens. Tailwind's color aliases resolve at the
+            // document root, so everything inside reads the semantic
+            // variables directly to pick up this scope.
             <div
                 class="shrink-0 relative z-50 rounded-b-xl"
+                data-theme="dark"
                 style=move || {
                     let rgb = accent_rgb.get();
                     format!(
@@ -532,7 +538,7 @@ pub fn PreviewCabinet(
                             }.into_any()
                         } else {
                             view! {
-                                <div class="flex items-center h-[30px] text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary/60">
+                                <div class="flex items-center h-[30px] text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--text-tertiary)]/60">
                                     "Pick an effect to load presets"
                                 </div>
                             }.into_any()
