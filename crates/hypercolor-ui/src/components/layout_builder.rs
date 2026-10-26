@@ -133,10 +133,18 @@ impl LayoutWriteHandle {
         self.set_layout.update(f);
     }
 
+    /// Replace the editor's layout. A gesture under way ends with it, and
+    /// Studio history picks up what waited for that gesture on the next
+    /// tick.
     pub fn set(self, value: Option<SpatialLayout>) {
+        let ended_gesture = self.interaction_start.with_untracked(Option::is_some);
         self.interaction_start.set(None);
         self.set_layout.set(value);
         self.set_dirty.set(false);
+        if ended_gesture {
+            let history = self.studio_history;
+            leptos::task::spawn_local(async move { history.resume() });
+        }
     }
 
     pub fn begin_interaction(self) {
