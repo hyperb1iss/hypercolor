@@ -490,12 +490,12 @@ impl StudioHistory {
         self.editor.try_get_value().flatten()
     }
 
-    /// Whether `operation` must hold back for a canvas gesture.
-    fn held_by_gesture(self, operation: &Waiting) -> bool {
-        matches!(operation, Waiting::Replay { .. })
-            && self
-                .editor_hooks()
-                .is_some_and(|editor| editor.gesture_active.run(()))
+    /// Whether a canvas gesture is running. Every operation waits it out:
+    /// one that took the scene mid-gesture would lock the canvas, and the
+    /// gesture's release could no longer commit.
+    fn gesture_running(self) -> bool {
+        self.editor_hooks()
+            .is_some_and(|editor| editor.gesture_active.try_run(()).unwrap_or(false))
     }
 
     /// Run `operation` now when nothing holds the scene, otherwise after
@@ -505,7 +505,7 @@ impl StudioHistory {
             .waiting
             .try_with_value(|waiting| !waiting.is_empty())
             .unwrap_or(false);
-        if self.is_free() && !queued && !self.held_by_gesture(&operation) {
+        if self.is_free() && !queued && !self.gesture_running() {
             self.run(operation);
         } else {
             self.waiting
@@ -532,15 +532,7 @@ impl StudioHistory {
                     return;
                 }
             }
-            let held = self
-                .waiting
-                .try_with_value(|waiting| {
-                    waiting
-                        .front()
-                        .is_some_and(|operation| self.held_by_gesture(operation))
-                })
-                .unwrap_or(false);
-            if held {
+            if self.gesture_running() {
                 return;
             }
             let Some(operation) = self.waiting.try_update_value(VecDeque::pop_front).flatten()
@@ -1568,6 +1560,32 @@ mod replay_tests {
         history.prepare_words(&StudioEdit::Members(Vec::new()), false);
         history.announce_replay();
         assert!(!history.is_current(1));
+    }
+
+    #[test]
+    fn every_operation_waits_for_a_canvas_gesture_to_end() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let history = history(None, false, None, zone);
+            let dragging = RwSignal::new(true);
+            history.attach_editor(Some(EditorHooks {
+                commits_pending: Callback::new(|()| false),
+                drain_commits: Callback::new(|()| {}),
+                gesture_active: Callback::new(move |()| dragging.get_untracked()),
+            }));
+            history.delete_zone(zone.to_owned(), Callback::new(|_| {}));
+            history.undo_deletion(1);
+            assert!(
+                history.waiting.with_value(|waiting| waiting.len() == 2),
+                "a delete and a restore wait out the drag"
+            );
+            assert!(!history.busy.get_untracked(), "the canvas stays editable");
+            dragging.set(false);
+            history.resume();
+            assert!(history.waiting.with_value(VecDeque::is_empty));
+        });
+        owner.cleanup();
     }
 
     #[test]
