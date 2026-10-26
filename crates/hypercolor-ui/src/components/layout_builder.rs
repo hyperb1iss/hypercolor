@@ -463,6 +463,27 @@ pub(crate) struct ZoneCanvasActions {
     pub has_layout: Signal<bool>,
 }
 
+/// The zone layout commits a Studio canvas owes the daemon, shared with
+/// the task writing them: a commit needs no canvas to land, so what is
+/// still queued when the canvas goes is written anyway.
+#[derive(Default)]
+struct CommitLane {
+    /// The scene the queued commits belong to.
+    scene_id: Option<hypercolor_types::scene::SceneId>,
+    queue: commit::CommitQueue,
+    /// Whether a task is writing the queue now.
+    draining: bool,
+}
+
+type SharedLane = std::sync::Arc<std::sync::Mutex<CommitLane>>;
+
+fn with_lane<T>(lane: &SharedLane, f: impl FnOnce(&mut CommitLane) -> T) -> T {
+    let mut lane = lane
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut lane)
+}
+
 /// What a queued commit would write against one scene document.
 enum PreparedCommit {
     Write(SpatialLayout),
@@ -757,14 +778,19 @@ pub(crate) fn ZoneLayoutProvider(
         snapshot
     });
 
-    let commit_queue = StoredValue::new(commit::CommitQueue::default());
+    let lane = StoredValue::new(SharedLane::default());
     // Edits queued against one scene cannot land in the next.
     let committed_scene = studio_history.scene_id();
     Effect::new(
         move |previous: Option<Option<hypercolor_types::scene::SceneId>>| {
             let current = committed_scene.get();
-            if previous.is_some_and(|previous| previous != current) {
-                commit_queue.set_value(commit::CommitQueue::default());
+            if previous.is_some_and(|previous| previous != current)
+                && let Some(shared) = lane.try_get_value()
+            {
+                with_lane(&shared, |lane| {
+                    lane.queue = commit::CommitQueue::default();
+                    lane.scene_id = None;
+                });
             }
             current
         },
@@ -790,7 +816,9 @@ pub(crate) fn ZoneLayoutProvider(
                 selected_zone_id.get_untracked().as_deref(),
                 active_preview_key.get_value().as_deref(),
                 zone_id,
-                !commit_queue.with_value(|queue| queue.holds(zone_id)),
+                !lane
+                    .try_get_value()
+                    .is_some_and(|shared| with_lane(&shared, |lane| lane.queue.holds(zone_id))),
             );
             if completion.update_editor {
                 let clean = layout.with_untracked(|layout| {
@@ -813,10 +841,25 @@ pub(crate) fn ZoneLayoutProvider(
     // Write one zone's edit. A stale revision means another client moved
     // the scene on: the edit is laid over the live scene and written once
     // more. An edit that still cannot land stays on the canvas, says so,
-    // and rides along with the zone's next commit.
-    let commit_zone = move |pending: commit::PendingCommit, generation: u64| async move {
-        let Some(mut scene) = studio_history.current_scene() else {
-            return;
+    // and rides along with the zone's next commit. A commit whose canvas
+    // has gone (`generation` is `None`) still lands; it only tells no one.
+    let commit_zone = move |pending: commit::PendingCommit,
+                            generation: Option<u64>,
+                            scene_id: hypercolor_types::scene::SceneId,
+                            shared: SharedLane| async move {
+        let shown =
+            move || generation.is_some_and(|generation| studio_history.is_current(generation));
+        let overtaken =
+            move || generation.is_some_and(|generation| studio_history.is_superseded(generation));
+        let cached = studio_history
+            .current_scene()
+            .filter(|scene| scene.id == scene_id);
+        let mut scene = match cached {
+            Some(scene) => scene,
+            None => match api::fetch_active_scene().await {
+                Ok(live) if live.id == scene_id => live,
+                _ => return,
+            },
         };
         let zone_id = pending.zone_id.clone();
         for rebased in [false, true] {
@@ -824,7 +867,7 @@ pub(crate) fn ZoneLayoutProvider(
                 PreparedCommit::Write(layout) => layout,
                 PreparedCommit::Unchanged => return,
                 PreparedCommit::Missing => {
-                    if studio_history.is_current(generation) {
+                    if shown() {
                         toasts::toast_error("Layout change not saved: its zone no longer exists");
                     }
                     return;
@@ -833,8 +876,8 @@ pub(crate) fn ZoneLayoutProvider(
             let revision = scene.revision;
             match api::zones::update_zone_layout(&zone_id, &layout, revision).await {
                 Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
-                    commit_queue.update_value(|queue| queue.landed(&pending));
-                    if studio_history.is_current(generation) {
+                    with_lane(&shared, |lane| lane.queue.landed(&pending));
+                    if shown() {
                         let landed = landed.unwrap_or_else(|| revision.saturating_add(1));
                         acknowledge(&scene, &zone_id, zone, landed);
                     }
@@ -842,24 +885,24 @@ pub(crate) fn ZoneLayoutProvider(
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) if !rebased => {
                     let live = api::fetch_active_scene().await;
-                    if !studio_history.is_current(generation) {
+                    if overtaken() {
                         return;
                     }
                     match live {
-                        Ok(live) if live.id == scene.id => scene = live,
+                        Ok(live) if live.id == scene_id => scene = live,
                         _ => break,
                     }
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => break,
                 Err(error) => {
-                    if studio_history.is_current(generation) {
+                    if shown() {
                         toasts::toast_error(&format!("Layout change not saved: {error}"));
                     }
                     return;
                 }
             }
         }
-        if studio_history.is_current(generation) {
+        if shown() {
             toasts::toast_error(
                 "Layout change not saved: the scene changed elsewhere. Your next edit retries it.",
             );
@@ -868,27 +911,50 @@ pub(crate) fn ZoneLayoutProvider(
     };
 
     // Writes are revision-fenced, so the queue drains one zone at a time
-    // while editing carries on.
+    // while editing carries on. A scene switch stops the drain; the canvas
+    // going away does not.
     let drain = move || {
-        if commit_queue.with_value(commit::CommitQueue::is_empty) {
+        let Some(shared) = lane.try_get_value() else {
             return;
-        }
+        };
+        let (empty, scene_id) = with_lane(&shared, |lane| (lane.queue.is_empty(), lane.scene_id));
+        let (false, Some(scene_id)) = (empty, scene_id) else {
+            return;
+        };
         let Some(generation) = studio_history.begin_commit() else {
             return;
         };
+        with_lane(&shared, |lane| lane.draining = true);
         leptos::task::spawn_local(async move {
-            while studio_history.is_current(generation) {
-                let Some(pending) = commit_queue
-                    .try_update_value(commit::CommitQueue::pop)
-                    .flatten()
-                else {
+            while !studio_history.is_superseded(generation) {
+                let Some(pending) = with_lane(&shared, |lane| lane.queue.pop()) else {
                     break;
                 };
-                commit_zone(pending, generation).await;
+                commit_zone(pending, Some(generation), scene_id, shared.clone()).await;
             }
+            with_lane(&shared, |lane| lane.draining = false);
             studio_history.end_commit(generation);
         });
     };
+
+    // Commits still queued with no drain running, because a structural
+    // operation held the scene, go out when the canvas goes.
+    on_cleanup(move || {
+        let Some(shared) = lane.try_get_value() else {
+            return;
+        };
+        let (idle, scene_id) = with_lane(&shared, |lane| {
+            (!lane.draining && !lane.queue.is_empty(), lane.scene_id)
+        });
+        let (true, Some(scene_id)) = (idle, scene_id) else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            while let Some(pending) = with_lane(&shared, |lane| lane.queue.pop()) {
+                commit_zone(pending, None, scene_id, shared.clone()).await;
+            }
+        });
+    });
 
     set_layout
         .on_commit
@@ -903,7 +969,15 @@ pub(crate) fn ZoneLayoutProvider(
             let baseline = saved_layout
                 .with_untracked(|saved| saved.as_ref().map(|saved| saved.zones.clone()))
                 .unwrap_or_default();
-            commit_queue.update_value(|queue| queue.push(zone_id, baseline, edited));
+            let Some(scene_id) = studio_history.current_scene().map(|scene| scene.id) else {
+                return;
+            };
+            if let Some(shared) = lane.try_get_value() {
+                with_lane(&shared, |lane| {
+                    lane.scene_id = Some(scene_id);
+                    lane.queue.push(zone_id, baseline, edited);
+                });
+            }
             drain();
         })));
 
@@ -911,9 +985,8 @@ pub(crate) fn ZoneLayoutProvider(
     // the scene, and holds a waiting undo or redo until a gesture ends.
     studio_history.attach_editor(Some(crate::pages::studio::history::EditorHooks {
         commits_pending: Callback::new(move |()| {
-            !commit_queue
-                .try_with_value(commit::CommitQueue::is_empty)
-                .unwrap_or(true)
+            lane.try_get_value()
+                .is_some_and(|shared| !with_lane(&shared, |lane| lane.queue.is_empty()))
         }),
         drain_commits: Callback::new(move |()| drain()),
         gesture_active: Callback::new(move |()| set_layout.in_interaction()),
