@@ -1,4 +1,5 @@
 use super::*;
+use crate::render_thread::sparkleflinger::gpu::display_finalize::DisplayFinalizeRoute;
 
 #[test]
 fn gpu_display_finalize_applies_replace_brightness_and_circular_mask() {
@@ -156,6 +157,7 @@ fn gpu_display_finalize_copies_imported_face_into_owned_source_texture() {
     let surfaces = compositor
         .display_finalize_surfaces
         .get(&params.cache_key)
+        .and_then(DisplayFinalizeRoute::surfaces)
         .expect("display finalize surfaces should remain cached");
     let face_source = surfaces
         .face_source
@@ -322,9 +324,11 @@ fn display_finalize_surfaces_that_fail_to_allocate_are_rebuilt_on_retry() {
         "{error:#}"
     );
     assert!(
-        !compositor
+        compositor
             .display_finalize_surfaces
-            .contains_key(&params.cache_key),
+            .get(&params.cache_key)
+            .and_then(DisplayFinalizeRoute::surfaces)
+            .is_none(),
         "the failed surface set must not be cached for the route"
     );
 
@@ -363,6 +367,7 @@ fn display_source_textures_that_fail_to_allocate_are_rebuilt_on_retry() {
     let surfaces = compositor
         .display_finalize_surfaces
         .get(&params.cache_key)
+        .and_then(DisplayFinalizeRoute::surfaces)
         .expect("the route's surfaces were allocated by the first finalization");
     assert!(
         surfaces.face_source.is_none(),

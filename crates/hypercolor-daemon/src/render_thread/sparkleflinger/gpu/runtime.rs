@@ -134,7 +134,6 @@ impl GpuSparkleFlinger {
             compositor_surface_cache: HashMap::new(),
             display_finalize_surfaces: HashMap::new(),
             display_finalize_generation: 0,
-            display_finalize_admission_retries: HashMap::new(),
             admission_clock: super::admission::AdmissionClock::default(),
             preview_surfaces: None,
             media_texture_pools: HashMap::new(),

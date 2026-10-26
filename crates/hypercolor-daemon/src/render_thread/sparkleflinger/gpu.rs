@@ -55,6 +55,8 @@ use compositor::{
 };
 #[cfg(test)]
 use display_finalize::DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
+use display_finalize::DisplayFinalizeRoute;
+#[cfg(test)]
 use display_finalize::GpuDisplayFinalizeSurfaceSet;
 pub(crate) use display_finalize::{
     GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, PendingGpuDisplayFinalize,
@@ -258,11 +260,8 @@ pub(crate) struct GpuSparkleFlinger {
     opaque_black_texture: Option<GpuCompositorTexture>,
     surfaces: Option<GpuCompositorSurfaceSet>,
     compositor_surface_cache: HashMap<(u32, u32), Option<GpuCompositorSurfaceSet>>,
-    display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, GpuDisplayFinalizeSurfaceSet>,
+    display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, DisplayFinalizeRoute>,
     display_finalize_generation: u64,
-    /// Retry schedules for display routes whose surfaces failed admission.
-    display_finalize_admission_retries:
-        HashMap<ZoneId, admission::AdmissionRetry<DisplayFinalizeCacheKey>>,
     admission_clock: admission::AdmissionClock,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
@@ -413,6 +412,7 @@ impl GpuSparkleFlinger {
     pub(crate) fn display_finalize_readback_slots_in_use(&self) -> usize {
         self.display_finalize_surfaces
             .values()
+            .filter_map(DisplayFinalizeRoute::surfaces)
             .map(GpuDisplayFinalizeSurfaceSet::readback_slots_in_use)
             .sum()
     }
@@ -423,7 +423,11 @@ impl GpuSparkleFlinger {
             GpuPreviewSurfaceSet::surface_pool_counts,
         );
         let mut compositor = self.sampling_latch.surface_pool_counts();
-        for surfaces in self.display_finalize_surfaces.values_mut() {
+        for surfaces in self
+            .display_finalize_surfaces
+            .values_mut()
+            .filter_map(DisplayFinalizeRoute::surfaces_mut)
+        {
             compositor = merge_surface_state_counts(compositor, surfaces.surface_pool_counts());
         }
         SparkleFlingerSurfacePoolCounts {

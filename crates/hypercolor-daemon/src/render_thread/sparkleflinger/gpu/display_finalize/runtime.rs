@@ -29,8 +29,8 @@ use super::readback::{
 };
 use super::shader::{create_display_finalize_bind_group, encode_display_finalize_params};
 use super::{
-    GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFormat, GpuDisplayFinalizeFrame,
-    GpuDisplayFinalizeSurfaceSet, PendingGpuDisplayFinalize,
+    DisplayFinalizeRoute, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFormat,
+    GpuDisplayFinalizeFrame, GpuDisplayFinalizeSurfaceSet, PendingGpuDisplayFinalize,
 };
 use crate::render_thread::producer_queue::ProducerFrame;
 
@@ -122,6 +122,7 @@ impl GpuSparkleFlinger {
         let surfaces = self
             .display_finalize_surfaces
             .get_mut(&params.cache_key)
+            .and_then(DisplayFinalizeRoute::surfaces_mut)
             .expect("display finalize surfaces should exist after allocation");
         let surface_generation = surfaces.generation;
         let Some((readback_slot, readback_buffer)) = surfaces.next_readback_buffer(format) else {
@@ -464,6 +465,7 @@ impl GpuSparkleFlinger {
                 let Some(surfaces) = self
                     .display_finalize_surfaces
                     .get_mut(&pending.cache_key)
+                    .and_then(DisplayFinalizeRoute::surfaces_mut)
                     .filter(|surfaces| surfaces.generation == pending.surface_generation)
                 else {
                     pending.unmap();
@@ -499,34 +501,36 @@ impl GpuSparkleFlinger {
     /// the route retries on a backoff schedule instead of every tick, and
     /// returns `false` while it waits. Existing surfaces skip all of this.
     fn ensure_display_finalize_surfaces(&mut self, key: DisplayFinalizeCacheKey) -> Result<bool> {
-        if self.display_finalize_surfaces.contains_key(&key) {
-            return Ok(true);
-        }
+        let retry = match self.display_finalize_surfaces.get(&key) {
+            Some(DisplayFinalizeRoute::Admitted(_)) => return Ok(true),
+            Some(DisplayFinalizeRoute::Backoff(retry)) => Some(*retry),
+            None => None,
+        };
         let now = self.admission_clock.now();
-        let retry = self
-            .display_finalize_admission_retries
-            .get(&key.zone_id)
-            .copied();
-        if !AdmissionRetry::allows(retry.as_ref(), key, now) {
+        if !AdmissionRetry::allows(retry.as_ref(), (), now) {
             return Ok(false);
         }
         let generation = self.display_finalize_generation.saturating_add(1);
-        match GpuDisplayFinalizeSurfaceSet::try_new(&self.device, generation, key.width, key.height)
-        {
+        let route = match GpuDisplayFinalizeSurfaceSet::try_new(
+            &self.device,
+            generation,
+            key.width,
+            key.height,
+        ) {
             Ok(surfaces) => {
-                self.display_finalize_admission_retries.remove(&key.zone_id);
                 record_gpu_display_finalize_surface_realloc();
                 self.display_finalize_generation = generation;
-                self.display_finalize_surfaces.insert(key, surfaces);
-                Ok(true)
+                DisplayFinalizeRoute::Admitted(surfaces)
             }
             Err(error) => {
-                let retry = AdmissionRetry::after_failure(retry.as_ref(), key, now);
-                self.display_finalize_admission_retries
-                    .insert(key.zone_id, retry);
-                Err(error)
+                let retry = AdmissionRetry::after_failure(retry.as_ref(), (), now);
+                self.display_finalize_surfaces
+                    .insert(key, DisplayFinalizeRoute::Backoff(retry));
+                return Err(error);
             }
-        }
+        };
+        self.display_finalize_surfaces.insert(key, route);
+        Ok(true)
     }
 
     fn retain_current_display_finalize_route(&mut self, key: DisplayFinalizeCacheKey) {
@@ -537,8 +541,6 @@ impl GpuSparkleFlinger {
     pub(crate) fn retain_display_finalize_zones(&mut self, active_zone_ids: &[ZoneId]) {
         self.display_finalize_surfaces
             .retain(|key, _| active_zone_ids.contains(&key.zone_id));
-        self.display_finalize_admission_retries
-            .retain(|zone_id, _| active_zone_ids.contains(zone_id));
     }
 
     fn release_display_finalize_slot(
@@ -547,7 +549,10 @@ impl GpuSparkleFlinger {
         surface_generation: u64,
         slot: usize,
     ) {
-        if let Some(surfaces) = self.display_finalize_surfaces.get_mut(&key)
+        if let Some(surfaces) = self
+            .display_finalize_surfaces
+            .get_mut(&key)
+            .and_then(DisplayFinalizeRoute::surfaces_mut)
             && surfaces.generation == surface_generation
         {
             surfaces.release_readback_slot(slot);

@@ -15,6 +15,32 @@ mod surfaces;
 
 pub(super) const DISPLAY_FINALIZE_READBACK_SLOT_COUNT: usize = 3;
 
+/// A display route's cached GPU resources: its admitted surfaces, or the
+/// retry schedule of a surface set that failed admission. Keeping both in
+/// the one per-route map means pruning routes prunes their schedules too,
+/// with no separate bookkeeping on healthy frames.
+pub(super) enum DisplayFinalizeRoute {
+    Admitted(GpuDisplayFinalizeSurfaceSet),
+    Backoff(super::admission::AdmissionRetry<()>),
+}
+
+impl DisplayFinalizeRoute {
+    #[cfg(test)]
+    pub(super) const fn surfaces(&self) -> Option<&GpuDisplayFinalizeSurfaceSet> {
+        match self {
+            Self::Admitted(surfaces) => Some(surfaces),
+            Self::Backoff(_) => None,
+        }
+    }
+
+    pub(super) const fn surfaces_mut(&mut self) -> Option<&mut GpuDisplayFinalizeSurfaceSet> {
+        match self {
+            Self::Admitted(surfaces) => Some(surfaces),
+            Self::Backoff(_) => None,
+        }
+    }
+}
+
 pub(super) struct GpuDisplayFinalizeSurfaceSet {
     pub(super) generation: u64,
     pub(super) padded_bytes_per_row: u32,
