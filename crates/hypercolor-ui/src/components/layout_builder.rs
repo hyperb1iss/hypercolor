@@ -48,7 +48,10 @@ fn zone_save_completion(
 ) -> ZoneSaveCompletion {
     let active_preview_matches = active_preview_key == Some(saved_zone_id);
     ZoneSaveCompletion {
-        update_editor: is_latest_save && selected_zone_id == Some(saved_zone_id),
+        // Every landing is the selected zone's new baseline, newer edits
+        // queued or not: an edit still waiting then reads as a change from
+        // what landed, as it is, instead of snapping back to it.
+        update_editor: selected_zone_id == Some(saved_zone_id),
         clear_preview: is_latest_save || !active_preview_matches,
         clear_active_preview: is_latest_save && active_preview_matches,
     }
@@ -800,47 +803,54 @@ pub(crate) fn ZoneLayoutProvider(
         },
     );
 
-    // A landed commit becomes the editor's baseline, and its preview
-    // retires unless newer edits for the zone are still queued.
-    let acknowledge =
-        move |base: &api::SceneDocument, zone_id: &str, zone: api::ZoneResource, revision: u64| {
-            let scene_id = base.id;
-            let (width, height) = render_canvas_size.get_untracked();
-            let mut acknowledged = editor_layout_for_zone(&zone);
-            acknowledged.canvas_width = width;
-            acknowledged.canvas_height = height;
-            let acknowledged = layout_geometry::normalize_layout_for_editor(acknowledged);
-            drafts.update_value(|drafts| {
-                if let Some(draft) = drafts.get_mut(&(scene_id, zone_id.to_owned())) {
-                    draft.baseline = acknowledged.clone();
-                }
-            });
-            studio_history.record_saved_zone(base, zone, revision);
-            let completion = zone_save_completion(
-                selected_zone_id.get_untracked().as_deref(),
-                active_preview_key.get_value().as_deref(),
-                zone_id,
-                !lane
-                    .try_get_value()
-                    .is_some_and(|shared| with_lane(&shared, |lane| lane.queue.holds(zone_id))),
-            );
-            if completion.update_editor {
-                let clean = layout.with_untracked(|layout| {
-                    layout
-                        .as_ref()
-                        .is_some_and(|layout| layout.zones == acknowledged.zones)
-                });
-                set_saved_layout.set(Some(acknowledged));
-                set_layout.set_dirty.set(!clean);
-            }
-            if completion.clear_preview {
-                ws_ctx.clear_zone_layout_preview.run(zone_id.to_owned());
-            }
-            if completion.clear_active_preview {
-                active_preview_key.set_value(None);
-            }
-            refresh_scene.run(());
+    // A landed commit moves the editor's baseline on by what it wrote,
+    // and its preview retires unless newer edits for the zone are still
+    // queued. Only the write's own changes move it: a change from another
+    // client in the same reply arrives through the scene refresh, where the
+    // editor takes it in, and folding it in here would make the editor's
+    // copy of it read as a local edit.
+    let acknowledge = move |base: &api::SceneDocument,
+                            pending: &commit::PendingCommit,
+                            zone: api::ZoneResource,
+                            revision: u64| {
+        let zone_id = pending.zone_id.as_str();
+        let advance = |layout: &mut SpatialLayout| {
+            commit::rebase_onto(&mut layout.zones, &pending.baseline, &pending.edited);
         };
+        drafts.update_value(|drafts| {
+            if let Some(draft) = drafts.get_mut(&(base.id, zone_id.to_owned())) {
+                advance(&mut draft.baseline);
+            }
+        });
+        studio_history.record_saved_zone(base, zone, revision);
+        let completion = zone_save_completion(
+            selected_zone_id.get_untracked().as_deref(),
+            active_preview_key.get_value().as_deref(),
+            zone_id,
+            !lane
+                .try_get_value()
+                .is_some_and(|shared| with_lane(&shared, |lane| lane.queue.holds(zone_id))),
+        );
+        if completion.update_editor
+            && let Some(mut saved) = saved_layout.get_untracked()
+        {
+            advance(&mut saved);
+            let clean = layout.with_untracked(|layout| {
+                layout
+                    .as_ref()
+                    .is_some_and(|layout| layout.zones == saved.zones)
+            });
+            set_saved_layout.set(Some(saved));
+            set_layout.set_dirty.set(!clean);
+        }
+        if completion.clear_preview {
+            ws_ctx.clear_zone_layout_preview.run(zone_id.to_owned());
+        }
+        if completion.clear_active_preview {
+            active_preview_key.set_value(None);
+        }
+        refresh_scene.run(());
+    };
 
     // Write one zone's edit. A stale revision means another client moved
     // the scene on: the edit is laid over the live scene and written once
@@ -887,7 +897,7 @@ pub(crate) fn ZoneLayoutProvider(
                     with_lane(&shared, |lane| lane.queue.landed(&pending));
                     if shown() {
                         let landed = landed.unwrap_or_else(|| revision.saturating_add(1));
-                        acknowledge(&scene, &zone_id, zone, landed);
+                        acknowledge(&scene, &pending, zone, landed);
                     }
                     return;
                 }
@@ -1111,10 +1121,20 @@ mod zone_save_tests {
 
     #[test]
     fn superseded_save_does_not_clear_the_newer_preview() {
+        let completion = zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", false);
+        assert!(!completion.clear_preview);
+        assert!(!completion.clear_active_preview);
+    }
+
+    #[test]
+    fn a_save_with_newer_edits_queued_still_becomes_the_selected_zones_baseline() {
+        // Moved 0.2 to 0.4, then back to 0.2 while the first write was in
+        // flight: once 0.4 lands it is the baseline the return is an edit
+        // from, or the canvas snaps back to 0.4.
         assert_eq!(
             zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", false),
             ZoneSaveCompletion {
-                update_editor: false,
+                update_editor: true,
                 clear_preview: false,
                 clear_active_preview: false,
             }
