@@ -357,6 +357,8 @@ pub(crate) struct StudioHistory {
     replay_words: StoredValue<Option<String>>,
     /// Writes whose outcome a lost connection hid, until they settle.
     unresolved: StoredValue<Vec<held::Unresolved>>,
+    /// Whether the held writes are being settled.
+    settling: StoredValue<held::Settling>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
     /// The daemon run the socket last named, when there is a socket.
@@ -415,6 +417,7 @@ impl StudioHistory {
             announcer: StoredValue::new(None),
             replay_words: StoredValue::new(None),
             unresolved,
+            settling: StoredValue::new(held::Settling::Idle),
             pending_layout,
             scene,
             latest,
@@ -1517,6 +1520,7 @@ mod replay_tests {
             announcer: StoredValue::new(None),
             replay_words: StoredValue::new(None),
             unresolved: StoredValue::new(Vec::new()),
+            settling: StoredValue::new(held::Settling::Idle),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),
             can_redo: Signal::stored(false),
@@ -1874,12 +1878,26 @@ mod replay_tests {
                 .zones
                 .iter()
                 .any(|zone| zone.id.to_string() == gone.zone_id);
-            history.settle_held(&item, resolve_deletion(gone_now, &gone, &[]));
+            // Other operations claiming the scene meanwhile change nothing
+            // about what is held.
+            assert!(history.begin_commit().is_some());
+            assert!(history.settle_if_held(&item, resolve_deletion(gone_now, &gone, &[])));
+            assert!(!history.has_unresolved());
             history.journal.with_untracked(|journal| {
                 assert_eq!(journal.cursor, 2, "settling neither adds nor moves a step");
                 assert!(matches!(journal.entries[0], StudioEdit::ZoneDeleted(_)));
                 assert!(matches!(journal.entries[1], StudioEdit::Members(_)));
             });
+            // A scene switch while a held write settles drops it with the
+            // journal that held its place; its answer settles nothing.
+            history.hold(scene.id, 7, item.pending.clone());
+            history.unresolved.set_value(Vec::new());
+            let switched = held::Unresolved {
+                scene_id: scene.id,
+                token: 7,
+                pending: item.pending.clone(),
+            };
+            assert!(!history.settle_if_held(&switched, None));
         });
         owner.cleanup();
     }

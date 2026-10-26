@@ -51,6 +51,16 @@ pub(super) struct Pending {
     pub write: HeldWrite,
 }
 
+/// Whether held writes are being settled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Settling {
+    #[default]
+    Idle,
+    Running,
+    /// Running, and asked to go round once more when it is done.
+    Again,
+}
+
 /// A held write and its place in the journal.
 #[derive(Clone, Debug)]
 pub(super) struct Unresolved {
@@ -143,31 +153,63 @@ impl StudioHistory {
     /// Settle the held writes, now the connection may be back (see
     /// [`settles_by_key`]). Each one's place in the journal becomes the
     /// entry that undoes what it really did; one that still cannot be
-    /// told, or whose scene is not active, waits for the next try.
+    /// told, or whose scene is not active, stays held for the next try.
+    /// One settling runs at a time: a call while it runs has it go round
+    /// once more instead.
     pub(super) async fn resolve_unresolved(self) {
-        let Some(generation) = self.generation.try_get_untracked() else {
+        let started = self.settling.try_update_value(|settling| match settling {
+            Settling::Idle => {
+                *settling = Settling::Running;
+                true
+            }
+            Settling::Running | Settling::Again => {
+                *settling = Settling::Again;
+                false
+            }
+        });
+        if started != Some(true) {
             return;
-        };
-        // Taken out while they settle, so a second try meanwhile finds none.
-        let held = self
-            .unresolved
-            .try_update_value(std::mem::take)
-            .unwrap_or_default();
-        let mut waiting = Vec::new();
-        for item in held {
-            let settled = self.what_it_did(&item).await;
-            // A scene switch meanwhile dropped every held write of the old
-            // scene, along with the journal that held their places.
-            if self.generation.try_get_untracked() != Some(generation) {
+        }
+        loop {
+            let held = self
+                .unresolved
+                .try_with_value(Clone::clone)
+                .unwrap_or_default();
+            for item in held {
+                if let Some(entry) = self.what_it_did(&item).await {
+                    self.settle_if_held(&item, entry);
+                }
+            }
+            let again = self.settling.try_update_value(|settling| {
+                let again = *settling == Settling::Again;
+                *settling = if again {
+                    Settling::Running
+                } else {
+                    Settling::Idle
+                };
+                again
+            });
+            if again != Some(true) {
                 return;
             }
-            match settled {
-                Some(entry) => self.settle_held(&item, entry),
-                None => waiting.push(item),
-            }
         }
-        self.unresolved
-            .try_update_value(|unresolved| unresolved.extend(waiting));
+    }
+
+    /// Settle `item` with `entry`, while it is still held: a scene switch
+    /// meanwhile dropped every held write of the old scene, along with the
+    /// journal that held their places. Reports whether it settled.
+    pub(super) fn settle_if_held(self, item: &Unresolved, entry: Option<StudioEdit>) -> bool {
+        let held = self
+            .unresolved
+            .try_update_value(|unresolved| {
+                let index = unresolved.iter().position(|held| held.token == item.token);
+                index.map(|index| unresolved.remove(index)).is_some()
+            })
+            .unwrap_or(false);
+        if held {
+            self.settle_held(item, entry);
+        }
+        held
     }
 
     /// The entry that undoes what a held write did (`None` for nothing),
@@ -220,12 +262,14 @@ impl StudioHistory {
                 })
                 .await
                 {
+                    // The receipt, possibly a replay of the first answer:
+                    // layout edits made since stand, so nothing is forgotten.
                     Answer::Final {
                         outcome: Ok(api::zones::ZoneOutcome::Applied(response)),
                         ..
                     } => {
-                        let changes = response.changes.clone();
-                        self.accept(response);
+                        let changes = response.changes;
+                        self.adopt(response.document);
                         Some((!changes.is_empty()).then_some(StudioEdit::Members(changes)))
                     }
                     Answer::Final { .. } => Some(None),
