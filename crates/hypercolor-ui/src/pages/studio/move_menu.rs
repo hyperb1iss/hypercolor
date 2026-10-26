@@ -276,15 +276,18 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
                                 {rows}
                                 {unassign}
                                 <Show when=move || can_create.get()>
+                                    // Distinct from any zone the strip's "+" named "New zone",
+                                    // which this menu also lists as a destination.
                                     <button
                                         type="button"
                                         role="menuitem"
                                         class=ITEM_CLASS
+                                        aria-label="Move to a new zone"
                                         disabled=busy
                                         on:click=move |_| choose(DropAction::NewZone)
                                     >
                                         <Icon icon=LuPlus width="12px" height="12px" />
-                                        "New zone"
+                                        "A new zone"
                                     </button>
                                 </Show>
                             }
