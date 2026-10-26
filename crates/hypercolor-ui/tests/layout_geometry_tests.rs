@@ -6,7 +6,7 @@ use hypercolor_types::spatial::{
 };
 use hypercolor_types::spatial::{StripDirection, ZoneShape};
 use hypercolor_ui::api::{SegmentSummary, SegmentTopologySummary};
-use hypercolor_ui::layout_geometry::{self, ResizeHandle, SizeAxis};
+use hypercolor_ui::layout_geometry::{self, ResizeHandle, ResizeStart, SizeAxis};
 
 fn zone_summary(
     name: &str,
@@ -483,13 +483,17 @@ fn editor_normalization_gives_vertical_strips_visible_width() {
 #[test]
 fn locked_resize_keeps_original_aspect_ratio() {
     let (position, size) = layout_geometry::resize_zone_from_handle(
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(0.2, 0.1),
-        NormalizedPosition::new(0.6, 0.55),
-        ResizeHandle::SouthEast,
+        ResizeStart {
+            center: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(0.2, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            mouse: NormalizedPosition::new(0.6, 0.55),
+            handle: ResizeHandle::SouthEast,
+        },
         NormalizedPosition::new(0.72, 0.66),
         true,
-        0.0,
+        1.0,
     );
 
     let aspect = size.x / size.y;
@@ -540,13 +544,17 @@ fn free_height_input_on_long_strip_can_stay_thin() {
 #[test]
 fn locked_resize_can_shrink_long_strip_below_old_aspect_floor() {
     let (_, size) = layout_geometry::resize_zone_from_handle(
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(0.24, 0.004),
-        NormalizedPosition::new(0.62, 0.502),
-        ResizeHandle::SouthEast,
+        ResizeStart {
+            center: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(0.24, 0.004),
+            rotation: 0.0,
+            scale: 1.0,
+            mouse: NormalizedPosition::new(0.62, 0.502),
+            handle: ResizeHandle::SouthEast,
+        },
         NormalizedPosition::new(0.43, 0.498_833_33),
         true,
-        0.0,
+        1.0,
     );
 
     assert!((size.x - 0.05).abs() < 0.001);
@@ -561,13 +569,17 @@ fn resizing_a_flush_edge_box_below_the_floor_does_not_panic() {
     let start_center = NormalizedPosition::new(0.01, 0.5);
     let start_size = NormalizedPosition::new(0.02, 0.02);
     let (position, size) = layout_geometry::resize_zone_from_handle(
-        start_center,
-        start_size,
-        NormalizedPosition::new(0.0, 0.49),
-        ResizeHandle::NorthWest,
+        ResizeStart {
+            center: start_center,
+            size: start_size,
+            rotation: 0.0,
+            scale: 1.0,
+            mouse: NormalizedPosition::new(0.0, 0.49),
+            handle: ResizeHandle::NorthWest,
+        },
         NormalizedPosition::new(0.05, 0.52),
         false,
-        0.0,
+        1.0,
     );
     assert!(size.x > 0.0 && size.y > 0.0);
     assert!((0.0..=1.0).contains(&position.x));
@@ -596,13 +608,17 @@ fn resizing_a_rotated_box_keeps_the_opposite_corner_anchored() {
     let current_mouse = world(NormalizedPosition::new(0.7, 0.6), start_center);
 
     let (position, size) = layout_geometry::resize_zone_from_handle(
-        start_center,
-        start_size,
-        start_mouse,
-        ResizeHandle::SouthEast,
+        ResizeStart {
+            center: start_center,
+            size: start_size,
+            rotation,
+            scale: 1.0,
+            mouse: start_mouse,
+            handle: ResizeHandle::SouthEast,
+        },
         current_mouse,
         false,
-        rotation,
+        1.0,
     );
     let new_local_nw =
         NormalizedPosition::new(position.x - size.x * 0.5, position.y - size.y * 0.5);

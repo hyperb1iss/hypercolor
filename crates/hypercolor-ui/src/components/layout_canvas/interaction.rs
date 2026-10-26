@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use crate::layout_geometry::{self, ResizeHandle};
+use crate::layout_geometry::{self, ResizeHandle, ResizeStart};
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 /// Drag/resize runtime — non-reactive state machine for an in-flight pointer
@@ -157,13 +157,17 @@ impl DragRuntime {
                 let force_locked =
                     layout_geometry::is_circular_zone(zone.shape.as_ref(), &zone.topology);
                 let (position, size) = layout_geometry::resize_zone_from_handle(
-                    *start_center,
-                    *start_size,
-                    *start_mouse,
-                    *handle,
+                    ResizeStart {
+                        center: *start_center,
+                        size: *start_size,
+                        rotation: *rotation,
+                        scale: zone.scale,
+                        mouse: *start_mouse,
+                        handle: *handle,
+                    },
                     mouse,
                     *keep_aspect_ratio || force_locked,
-                    *rotation,
+                    layout_geometry::canvas_pixel_aspect(self.canvas.0, self.canvas.1),
                 );
                 let changed = zone.position != position || zone.size != size;
                 if changed {

@@ -9,7 +9,7 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, Winding, ZoneShape,
 };
-use hypercolor_ui::layout_geometry;
+use hypercolor_ui::layout_geometry::{self, ResizeHandle, ResizeStart};
 
 const RIG_CANVAS: (u32, u32) = (640, 630);
 const WIDE_CANVAS: (u32, u32) = (640, 480);
@@ -254,4 +254,172 @@ fn a_strip_beside_an_edge_keeps_its_length_through_editor_normalization() {
 
     assert!(approx(size.x, 0.3), "{size:?}");
     assert!(size.x / size.y <= 8.01, "{size:?}");
+}
+
+/// Where a box's corner draws, in normalized canvas units. `signs` picks
+/// the corner in the box's own frame: (1, -1) is its north-east corner.
+fn drawn_corner(
+    center: NormalizedPosition,
+    size: NormalizedPosition,
+    rotation: f32,
+    aspect: f32,
+    signs: (f32, f32),
+) -> NormalizedPosition {
+    let local = (signs.0 * size.x * aspect * 0.5, signs.1 * size.y * 0.5);
+    let (sin, cos) = rotation.sin_cos();
+    let turned = (local.0 * cos - local.1 * sin, local.0 * sin + local.1 * cos);
+    NormalizedPosition::new((center.x * aspect + turned.0) / aspect, center.y + turned.1)
+}
+
+fn press(fan: &Output, handle: ResizeHandle, aspect: f32) -> ResizeStart {
+    let signs = match handle {
+        ResizeHandle::NorthWest => (-1.0, -1.0),
+        ResizeHandle::NorthEast => (1.0, -1.0),
+        ResizeHandle::SouthWest => (-1.0, 1.0),
+        ResizeHandle::SouthEast => (1.0, 1.0),
+    };
+    ResizeStart {
+        center: fan.position,
+        size: fan.size,
+        rotation: fan.rotation,
+        scale: fan.scale,
+        mouse: drawn_corner(fan.position, fan.size, fan.rotation, aspect, signs),
+        handle,
+    }
+}
+
+#[test]
+fn a_turned_box_at_the_edge_keeps_its_width_when_a_handle_moves() {
+    let aspect = 640.0 / 630.0;
+    let fan = rear_fan();
+    let start = press(&fan, ResizeHandle::NorthEast, aspect);
+    let anchor_before = drawn_corner(fan.position, fan.size, fan.rotation, aspect, (-1.0, 1.0));
+
+    // Turned three quarters, the box's width runs up the screen: nudging
+    // its north-east handle up grows the width by exactly the nudge.
+    let nudged = NormalizedPosition::new(start.mouse.x, start.mouse.y - 0.003);
+    let (center, size) = layout_geometry::resize_zone_from_handle(start, nudged, false, aspect);
+
+    assert!(approx(size.x, 0.25105 + 0.003 / aspect), "{size:?}");
+    assert!(approx(size.y, 0.08493), "{size:?}");
+    let anchor_after = drawn_corner(center, size, fan.rotation, aspect, (-1.0, 1.0));
+    assert!(approx(anchor_after.x, anchor_before.x), "{anchor_after:?}");
+    assert!(approx(anchor_after.y, anchor_before.y), "{anchor_after:?}");
+}
+
+#[test]
+fn growing_a_turned_box_toward_the_edge_stops_where_it_draws_against_it() {
+    let aspect = 640.0 / 630.0;
+    let fan = rear_fan();
+    let start = press(&fan, ResizeHandle::SouthEast, aspect);
+    let left_before = fan.position.x - layout_geometry::drawn_extent(&fan, aspect).x * 0.5;
+
+    // Its height runs to the right, toward the edge it already sits by.
+    let past_edge = NormalizedPosition::new(start.mouse.x + 0.2, start.mouse.y);
+    let (center, size) = layout_geometry::resize_zone_from_handle(start, past_edge, false, aspect);
+
+    let mut grown = rear_fan();
+    grown.position = center;
+    grown.size = size;
+    let extent = layout_geometry::drawn_extent(&grown, aspect);
+    assert!(
+        approx(center.x + extent.x * 0.5, 1.0),
+        "{center:?} {extent:?}"
+    );
+    assert!(
+        approx(center.x - extent.x * 0.5, left_before),
+        "{center:?} {extent:?}"
+    );
+    assert!(approx(size.x, 0.25105), "{size:?}");
+}
+
+#[test]
+fn an_unrotated_box_still_stops_at_the_edge_on_a_wide_canvas() {
+    let aspect = 640.0 / 480.0;
+    let start = ResizeStart {
+        center: NormalizedPosition::new(0.8, 0.5),
+        size: NormalizedPosition::new(0.2, 0.1),
+        rotation: 0.0,
+        scale: 1.0,
+        mouse: NormalizedPosition::new(0.9, 0.55),
+        handle: ResizeHandle::SouthEast,
+    };
+
+    let (center, size) = layout_geometry::resize_zone_from_handle(
+        start,
+        NormalizedPosition::new(1.2, 0.6),
+        false,
+        aspect,
+    );
+
+    assert!(approx(size.x, 0.3), "{size:?}");
+    assert!(approx(size.y, 0.15), "{size:?}");
+    assert!(approx(center.x, 0.85), "{center:?}");
+    assert!(approx(center.y, 0.525), "{center:?}");
+}
+
+#[test]
+fn a_locked_resize_of_a_tilted_box_stays_on_the_canvas() {
+    let aspect = 640.0 / 480.0;
+    let tilted = output("tilted", (0.7, 0.5), (0.2, 0.1), FRAC_PI_4);
+    let start = press(&tilted, ResizeHandle::SouthEast, aspect);
+
+    let far = NormalizedPosition::new(start.mouse.x + 0.5, start.mouse.y + 0.5);
+    let (center, size) = layout_geometry::resize_zone_from_handle(start, far, true, aspect);
+
+    assert!((size.x / size.y - 2.0).abs() < 1e-3, "{size:?}");
+    let mut grown = tilted.clone();
+    grown.position = center;
+    grown.size = size;
+    let extent = layout_geometry::drawn_extent(&grown, aspect);
+    let tolerance = 1e-4;
+    assert!(
+        center.x - extent.x * 0.5 >= -tolerance,
+        "{center:?} {extent:?}"
+    );
+    assert!(
+        center.x + extent.x * 0.5 <= 1.0 + tolerance,
+        "{center:?} {extent:?}"
+    );
+    assert!(
+        center.y - extent.y * 0.5 >= -tolerance,
+        "{center:?} {extent:?}"
+    );
+    assert!(
+        center.y + extent.y * 0.5 <= 1.0 + tolerance,
+        "{center:?} {extent:?}"
+    );
+    // It grew until a drawn corner met an edge.
+    assert!(
+        approx(center.x + extent.x * 0.5, 1.0) || approx(center.y + extent.y * 0.5, 1.0),
+        "{center:?} {extent:?}"
+    );
+}
+
+#[test]
+fn a_scaled_box_resizes_by_the_corners_it_draws() {
+    let mut big = output("big", (0.5, 0.5), (0.1, 0.1), 0.0);
+    big.scale = 2.0;
+    let start = ResizeStart {
+        center: big.position,
+        size: big.size,
+        rotation: 0.0,
+        scale: 2.0,
+        mouse: NormalizedPosition::new(0.6, 0.6),
+        handle: ResizeHandle::SouthEast,
+    };
+
+    let (center, size) = layout_geometry::resize_zone_from_handle(
+        start,
+        NormalizedPosition::new(0.7, 0.6),
+        false,
+        1.0,
+    );
+
+    // The drawn box grows from 0.2 to 0.3 wide around its fixed north-west
+    // corner at (0.4, 0.4); its unscaled width follows at half that.
+    assert!(approx(size.x, 0.15), "{size:?}");
+    assert!(approx(size.y, 0.1), "{size:?}");
+    assert!(approx(center.x, 0.55), "{center:?}");
+    assert!(approx(center.y, 0.5), "{center:?}");
 }
