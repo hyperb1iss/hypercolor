@@ -219,10 +219,11 @@ pub fn ScenePicker() -> impl IntoView {
     let new_start = RwSignal::new(NewSceneStart::default());
     let busy = RwSignal::new(false);
     let trigger_ref = NodeRef::<leptos::html::Button>::new();
+    let menu_ref = NodeRef::<leptos::html::Div>::new();
 
     let picker_id = next_scene_picker_id();
     let marker = StoredValue::new(format!("scene-picker-{picker_id}"));
-    let listbox_id = StoredValue::new(format!("scene-picker-{picker_id}-listbox"));
+    let menu_id = StoredValue::new(format!("scene-picker-{picker_id}-menu"));
     let item_id = move |index: usize| format!("scene-picker-{picker_id}-item-{index}");
 
     let rows = Memo::new(move |_| {
@@ -274,8 +275,8 @@ pub fn ScenePicker() -> impl IntoView {
     // new scene as soon as the shared scene resource has refetched.
     Effect::new(move |previous: Option<Option<String>>| {
         let current = switching.get();
-        if current.is_none() && previous.flatten().is_some() {
-            set_open.set(false);
+        if current.is_none() && previous.flatten().is_some() && open.get_untracked() {
+            close();
         }
         current
     });
@@ -303,6 +304,18 @@ pub fn ScenePicker() -> impl IntoView {
         });
         if stale {
             panel_view.set(PanelView::List);
+        }
+    });
+
+    // The list takes focus as it opens, so its keys and its active item
+    // belong to the menu rather than to the trigger.
+    Effect::new(move |_| {
+        if open.get() && panel_view.with(|view| *view == PanelView::List) {
+            request_animation_frame(move || {
+                if let Some(menu) = menu_ref.get_untracked() {
+                    let _ = menu.focus();
+                }
+            });
         }
     });
 
@@ -470,34 +483,43 @@ pub fn ScenePicker() -> impl IntoView {
 
     let on_trigger_keydown = move |ev: KeyboardEvent| {
         let key = ev.key();
-        let is_open = open.get_untracked();
-        let in_list = panel_view.with_untracked(|view| *view == PanelView::List);
         match key.as_str() {
-            "Escape" if is_open => {
+            "Escape" if open.get_untracked() => {
                 ev.prevent_default();
                 set_open.set(false);
             }
-            "ArrowDown" | "ArrowUp" | "Home" | "End" if !is_open || in_list => {
+            "ArrowDown" | "ArrowUp" | "Home" | "End" if !open.get_untracked() => {
                 ev.prevent_default();
-                if is_open {
-                    highlighted.set(next_highlight(
-                        highlighted.get_untracked(),
-                        item_count(),
-                        &key,
-                    ));
-                } else {
-                    set_open.set(true);
-                    highlighted.set(active_row_index().or(Some(0)));
-                }
+                set_open.set(true);
+                highlighted.set(active_row_index().or(Some(0)));
             }
-            // Enter on a button also synthesizes a click, which would
-            // reopen the panel right after it closes.
-            "Enter" if is_open && in_list => {
+            _ => {}
+        }
+    };
+
+    // Keys on the open list. Escape belongs to the panel, which closes
+    // the list or backs out of a form.
+    let on_menu_keydown = move |ev: KeyboardEvent| {
+        let key = ev.key();
+        match key.as_str() {
+            "ArrowDown" | "ArrowUp" | "Home" | "End" => {
+                ev.prevent_default();
+                highlighted.set(next_highlight(
+                    highlighted.get_untracked(),
+                    item_count(),
+                    &key,
+                ));
+            }
+            "Enter" | " " => {
                 ev.prevent_default();
                 match highlighted.get_untracked() {
                     Some(index) => activate_item(index),
-                    None => set_open.set(false),
+                    None => close(),
                 }
+            }
+            "Tab" => {
+                ev.prevent_default();
+                close();
             }
             _ => {}
         }
@@ -525,16 +547,11 @@ pub fn ScenePicker() -> impl IntoView {
                        border-edge-subtle bg-surface-sunken px-2.5 py-1.5 text-left \
                        transition-colors duration-150 hover:border-edge-strong btn-press"
                 class=("border-accent-muted", move || open.get())
-                aria-haspopup="listbox"
+                aria-haspopup="menu"
                 aria-expanded=move || open.get().to_string()
                 aria-controls=move || {
                     (open.get() && panel_view.with(|view| *view == PanelView::List))
-                        .then(|| listbox_id.get_value())
-                }
-                aria-activedescendant=move || {
-                    (open.get() && panel_view.with(|view| *view == PanelView::List))
-                        .then(|| highlighted.get().map(item_id))
-                        .flatten()
+                        .then(|| menu_id.get_value())
                 }
                 title="Switch scene"
                 on:click=move |_| {
@@ -605,7 +622,9 @@ pub fn ScenePicker() -> impl IntoView {
                                         rows=rows
                                         actions=actions
                                         highlighted=highlighted
-                                        listbox_id=listbox_id.get_value()
+                                        menu_id=menu_id.get_value()
+                                        menu_ref=menu_ref
+                                        on_keydown=Callback::new(on_menu_keydown)
                                         item_id=Callback::new(item_id)
                                         on_choose=Callback::new(choose_row)
                                         on_action=Callback::new(run_action)
@@ -654,15 +673,18 @@ pub fn ScenePicker() -> impl IntoView {
     }
 }
 
-/// One listbox holding the scene rows and, after a divider, the actions,
-/// each group labelled. Every item is an option with an id, so the
-/// trigger's `aria-activedescendant` can name the highlighted one.
+/// One menu holding the scene rows (radio items, the active scene
+/// checked) and, after a divider, the actions, each group labelled. The
+/// menu holds focus while open and names the highlighted item through
+/// `aria-activedescendant`, so every item carries an id.
 #[component]
 fn SceneList(
     rows: Memo<Vec<SceneRow>>,
     actions: Memo<Vec<SceneAction>>,
     highlighted: RwSignal<Option<usize>>,
-    listbox_id: String,
+    menu_id: String,
+    menu_ref: NodeRef<leptos::html::Div>,
+    on_keydown: Callback<KeyboardEvent>,
     item_id: Callback<usize, String>,
     on_choose: Callback<SceneRow>,
     on_action: Callback<SceneAction>,
@@ -671,7 +693,16 @@ fn SceneList(
     let switching = scenes_ctx.switching;
 
     view! {
-        <div id=listbox_id role="listbox" aria-label="Scene picker" class="flex min-h-0 flex-1 flex-col">
+        <div
+            id=menu_id
+            node_ref=menu_ref
+            role="menu"
+            aria-label="Scene picker"
+            tabindex="-1"
+            aria-activedescendant=move || highlighted.get().map(|index| item_id.run(index))
+            class="flex min-h-0 flex-1 flex-col outline-none"
+            on:keydown=move |ev| on_keydown.run(ev)
+        >
         <div
             role="group"
             aria-label="Scenes"
@@ -694,8 +725,8 @@ fn SceneList(
                             <button
                                 type="button"
                                 id=item_id.run(index)
-                                role="option"
-                                aria-selected=is_active.to_string()
+                                role="menuitemradio"
+                                aria-checked=is_active.to_string()
                                 tabindex="-1"
                                 class="dropdown-option flex w-full items-center gap-2 px-3 py-[7px] \
                                        text-left text-xs text-fg-secondary \
@@ -764,8 +795,7 @@ fn SceneList(
                             <button
                                 type="button"
                                 id=item_id.run(index)
-                                role="option"
-                                aria-selected="false"
+                                role="menuitem"
                                 tabindex="-1"
                                 class=format!(
                                     "dropdown-option flex w-full items-center gap-2 px-3 py-[7px] text-left text-xs {tone}"
