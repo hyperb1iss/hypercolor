@@ -206,6 +206,8 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
         .find(|zone| zone.role == ZoneRole::Primary)
         .expect("primary zone");
     assert_eq!(primary.layout, named_layout);
+    // The imported primary zone is born like any scene's: named Main.
+    assert_eq!(primary.name, "Main");
     assert_eq!(primary.layers.len(), 1);
     assert!(matches!(
         &primary.layers[0].source,

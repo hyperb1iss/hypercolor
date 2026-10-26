@@ -38,8 +38,10 @@ use hypercolor_types::scene::{
 };
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
-const DEFAULT_ZONE_NAME: &str = "Main";
-const DEFAULT_ZONE_DESCRIPTION: &str = "The scene's main zone.";
+/// The name a scene's primary zone is born with.
+pub const DEFAULT_ZONE_NAME: &str = "Main";
+/// The description a scene's primary zone is born with.
+pub const DEFAULT_ZONE_DESCRIPTION: &str = "The scene's main zone.";
 
 /// Error variants for precondition-checked layer mutations.
 #[derive(Debug, Clone, PartialEq, Eq)]
