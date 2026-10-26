@@ -538,8 +538,8 @@ pub(crate) fn ZoneLayoutProvider(
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
     selected_zone_id: Signal<Option<String>>,
-    /// Re-fetch the active scene after a commit so the tree and Stage pick
-    /// up the new scene revision.
+    /// Re-fetch the active scene after a commit so the device pane and
+    /// Stage pick up the new scene revision.
     refresh_scene: Callback<()>,
     children: Children,
 ) -> impl IntoView {
