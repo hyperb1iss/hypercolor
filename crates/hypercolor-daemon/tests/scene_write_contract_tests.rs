@@ -18,7 +18,10 @@ use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_daemon::domain::scene_run::{
     CLOCK_BASE_CEILING, REVISION_RESERVATION_BLOCK, SCENE_REVISIONS_FILE, SceneRun,
 };
-use hypercolor_types::api::envelope::RUN_EPOCH_HEADER;
+use hypercolor_types::api::envelope::{
+    IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MISMATCH_CODE, IDEMPOTENCY_REPLAYED_HEADER,
+    RUN_EPOCH_HEADER,
+};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -323,4 +326,277 @@ async fn every_api_answer_names_the_run_that_gave_it() {
     let missing = send(&app, get("/api/v1/no-such-route")).await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     assert_eq!(run_epoch(&missing), epoch);
+}
+
+// ── Idempotency-Key ──────────────────────────────────────────────────────
+
+fn keyed(mut request: Request<Body>, key: &str) -> Request<Body> {
+    request.headers_mut().insert(
+        IDEMPOTENCY_KEY_HEADER,
+        http::HeaderValue::from_str(key).expect("valid key"),
+    );
+    request
+}
+
+fn json_request(method: &str, uri: &str, body: &serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request should build")
+}
+
+fn fenced(mut request: Request<Body>, revision: u64) -> Request<Body> {
+    request.headers_mut().insert(
+        http::header::IF_MATCH,
+        http::HeaderValue::from_str(&format!("\"{revision}\"")).expect("valid fence"),
+    );
+    request
+}
+
+fn replayed(response: &axum::response::Response) -> bool {
+    response
+        .headers()
+        .get(IDEMPOTENCY_REPLAYED_HEADER)
+        .is_some_and(|value| value == "true")
+}
+
+fn create_zone(name: &str, revision: u64) -> Request<Body> {
+    fenced(
+        json_request("POST", "/api/v1/scene/zones", &json!({ "name": name })),
+        revision,
+    )
+}
+
+async fn zone_names(app: &axum::Router) -> Vec<String> {
+    let document = body_json(send(app, get("/api/v1/scene")).await).await;
+    document["data"]["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .map(|zone| zone["name"].as_str().expect("name").to_owned())
+        .collect()
+}
+
+fn isolated() -> (Arc<AppState>, axum::Router) {
+    let state = Arc::new(AppState::new());
+    let app = api::build_router(Arc::clone(&state), None);
+    (state, app)
+}
+
+#[tokio::test]
+async fn a_retried_zone_create_replays_instead_of_creating_twice() {
+    let (state, app) = isolated();
+    let revision = state.scene_manager.revision();
+    let key = "6f9b0b1e-2c4d-4d7e-9a0b-1c2d3e4f5a6b";
+
+    let created = send(&app, keyed(create_zone("Desk", revision), key)).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert!(
+        !replayed(&created),
+        "the first attempt is applied, not replayed"
+    );
+    let landed = etag_revision(&created);
+    let original = body_json(created).await;
+
+    let retried = send(&app, keyed(create_zone("Desk", revision), key)).await;
+    assert_eq!(retried.status(), StatusCode::CREATED);
+    assert!(replayed(&retried));
+    assert_eq!(etag_revision(&retried), landed);
+    assert_eq!(
+        body_json(retried).await,
+        original,
+        "the stored answer, byte for byte"
+    );
+
+    assert_eq!(
+        state.scene_manager.revision(),
+        landed,
+        "nothing applied twice"
+    );
+    assert_eq!(
+        zone_names(&app)
+            .await
+            .iter()
+            .filter(|name| *name == "Desk")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_duplicates_apply_once() {
+    let (state, app) = isolated();
+    let (revision, _, zone_id) = live_scene(&app).await;
+    let key = "5d3c1a7e-0000-4000-8000-00000000c0de";
+
+    let (left, right) = tokio::join!(
+        send(&app, keyed(patch_zone(&zone_id, "Twice?", revision), key)),
+        send(&app, keyed(patch_zone(&zone_id, "Twice?", revision), key)),
+    );
+    assert_eq!(left.status(), StatusCode::OK);
+    assert_eq!(right.status(), StatusCode::OK);
+    assert_eq!(
+        u8::from(replayed(&left)) + u8::from(replayed(&right)),
+        1,
+        "one attempt applies and its duplicate replays it"
+    );
+    assert_eq!(etag_revision(&left), revision + 1);
+    assert_eq!(etag_revision(&right), revision + 1);
+    assert_eq!(body_json(left).await, body_json(right).await);
+    assert_eq!(state.scene_manager.revision(), revision + 1);
+}
+
+#[tokio::test]
+async fn a_key_reused_for_a_different_request_is_refused() {
+    let (state, app) = isolated();
+    let (revision, _, zone_id) = live_scene(&app).await;
+    let key = "reused-key";
+
+    let first = send(&app, keyed(patch_zone(&zone_id, "First", revision), key)).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let landed = etag_revision(&first);
+
+    for different in [
+        patch_zone(&zone_id, "Second", revision),
+        patch_zone(&zone_id, "First", landed),
+    ] {
+        let refused = send(&app, keyed(different, key)).await;
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(refused).await;
+        assert_eq!(body["error"]["code"], IDEMPOTENCY_KEY_MISMATCH_CODE);
+    }
+    assert_eq!(state.scene_manager.revision(), landed);
+    let zone = body_json(send(&app, get(format!("/api/v1/scene/zones/{zone_id}"))).await).await;
+    assert_eq!(zone["data"]["name"], "First");
+}
+
+#[tokio::test]
+async fn a_refused_fence_is_a_definitive_answer_too() {
+    let (_state, app) = isolated();
+    let (revision, _, zone_id) = live_scene(&app).await;
+    let moved = send(&app, patch_zone(&zone_id, "Moved on", revision)).await;
+    assert_eq!(moved.status(), StatusCode::OK);
+
+    let key = "stale-fence";
+    let refused = send(&app, keyed(patch_zone(&zone_id, "Stale", revision), key)).await;
+    assert_eq!(refused.status(), StatusCode::PRECONDITION_FAILED);
+    let retried = send(&app, keyed(patch_zone(&zone_id, "Stale", revision), key)).await;
+    assert_eq!(retried.status(), StatusCode::PRECONDITION_FAILED);
+    assert!(replayed(&retried));
+}
+
+#[tokio::test]
+async fn a_retried_delete_answers_with_the_original_document() {
+    let (state, app) = isolated();
+    let revision = state.scene_manager.revision();
+    let created = send(&app, create_zone("Doomed", revision)).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let landed = etag_revision(&created);
+    let zone_id = body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+
+    let delete = || {
+        fenced(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/scene/zones/{zone_id}"))
+                .body(Body::empty())
+                .expect("request should build"),
+            landed,
+        )
+    };
+    let key = "lost-delete";
+    let deleted = send(&app, keyed(delete(), key)).await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let original = body_json(deleted).await;
+
+    // Without the key this retry would 404 or 412 and leave the client
+    // guessing whether its delete landed.
+    let retried = send(&app, keyed(delete(), key)).await;
+    assert_eq!(retried.status(), StatusCode::OK);
+    assert!(replayed(&retried));
+    assert_eq!(body_json(retried).await, original);
+}
+
+#[tokio::test]
+async fn requests_without_a_key_behave_as_before() {
+    let (state, app) = isolated();
+    let start = state.scene_manager.revision();
+    for _ in 0..2 {
+        let created = send(
+            &app,
+            json_request("POST", "/api/v1/scene/zones", &json!({ "name": "Twin" })),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert!(!replayed(&created));
+    }
+    assert_eq!(state.scene_manager.revision(), start + 2);
+    assert_eq!(
+        zone_names(&app)
+            .await
+            .iter()
+            .filter(|name| *name == "Twin")
+            .count(),
+        2,
+        "unkeyed writes apply every time"
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_key_is_refused_before_anything_applies() {
+    let (state, app) = isolated();
+    let revision = state.scene_manager.revision();
+    let refused = send(&app, keyed(create_zone("Never", revision), "two words")).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(state.scene_manager.revision(), revision);
+}
+
+#[test]
+fn every_scene_tree_write_documents_the_key() {
+    let document: serde_json::Value = serde_json::from_str(
+        &api::openapi::document_json_pretty().expect("OpenAPI document renders"),
+    )
+    .expect("OpenAPI document parses");
+    let mut documented = Vec::new();
+    for (path, item) in document["paths"].as_object().expect("paths") {
+        for (method, operation) in item.as_object().expect("path item") {
+            let declares = operation["parameters"]
+                .as_array()
+                .is_some_and(|parameters| {
+                    parameters.iter().any(|parameter| {
+                        parameter["in"] == "header"
+                            && parameter["name"].as_str().is_some_and(|name| {
+                                name.eq_ignore_ascii_case(IDEMPOTENCY_KEY_HEADER)
+                            })
+                            && parameter["required"] != true
+                    })
+                });
+            if declares {
+                documented.push(format!("{} {path}", method.to_ascii_uppercase()));
+            }
+        }
+    }
+    documented.sort();
+    let mut expected = vec![
+        "PATCH /api/v1/scene",
+        "POST /api/v1/scene/clear",
+        "POST /api/v1/scene/members/edit",
+        "POST /api/v1/scene/zones",
+        "PATCH /api/v1/scene/zones/{zone}",
+        "DELETE /api/v1/scene/zones/{zone}",
+        "PUT /api/v1/scene/zones/{zone}/layout",
+        "POST /api/v1/scene/zones/{zone}/members",
+        "DELETE /api/v1/scene/zones/{zone}/members/{member}",
+        "POST /api/v1/scene/zones/{zone}/layers",
+        "PATCH /api/v1/scene/zones/{zone}/layers/order",
+        "PUT /api/v1/scene/zones/{zone}/layers/{layer}",
+        "DELETE /api/v1/scene/zones/{zone}/layers/{layer}",
+    ];
+    expected.sort_unstable();
+    assert_eq!(documented, expected);
 }

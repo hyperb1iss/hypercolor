@@ -10,7 +10,9 @@ use crate::domain::{DomainError, DomainErrorDetails};
 const fn status(error: &DomainError) -> StatusCode {
     match error {
         DomainError::NotFound { .. } => StatusCode::NOT_FOUND,
-        DomainError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        DomainError::Validation { .. } | DomainError::IdempotencyKeyMismatch => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         DomainError::Malformed { .. } => StatusCode::BAD_REQUEST,
         DomainError::Conflict { .. } | DomainError::ControlBound { .. } => StatusCode::CONFLICT,
         DomainError::Unauthorized { .. } => StatusCode::UNAUTHORIZED,

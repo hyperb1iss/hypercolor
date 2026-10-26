@@ -10,16 +10,20 @@ from ...models.edit_live_scene_members_response_200 import (
     EditLiveSceneMembersResponse200,
 )
 from ...models.edit_members_request import EditMembersRequest
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     *,
     body: EditMembersRequest,
     if_match: str,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
     headers["If-Match"] = if_match
+
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "post",
@@ -109,11 +113,13 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
     if_match: str,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | EditLiveSceneMembersResponse200]:
     """Atomically edit live scene memberships
 
     Args:
         if_match (str):
+        idempotency_key (str | Unset):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -128,6 +134,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         body=body,
         if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -142,11 +149,13 @@ def sync(
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
     if_match: str,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | EditLiveSceneMembersResponse200 | None:
     """Atomically edit live scene memberships
 
     Args:
         if_match (str):
+        idempotency_key (str | Unset):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -162,6 +171,7 @@ def sync(
         client=client,
         body=body,
         if_match=if_match,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -170,11 +180,13 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
     if_match: str,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | EditLiveSceneMembersResponse200]:
     """Atomically edit live scene memberships
 
     Args:
         if_match (str):
+        idempotency_key (str | Unset):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -189,6 +201,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         body=body,
         if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -201,11 +214,13 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
     if_match: str,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | EditLiveSceneMembersResponse200 | None:
     """Atomically edit live scene memberships
 
     Args:
         if_match (str):
+        idempotency_key (str | Unset):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -222,5 +237,6 @@ async def asyncio(
             client=client,
             body=body,
             if_match=if_match,
+            idempotency_key=idempotency_key,
         )
     ).parsed

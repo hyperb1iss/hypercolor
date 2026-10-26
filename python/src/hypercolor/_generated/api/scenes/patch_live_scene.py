@@ -8,14 +8,17 @@ from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
 from ...models.patch_live_scene_response_200 import PatchLiveSceneResponse200
 from ...models.scene_patch_request import ScenePatchRequest
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     *,
     body: ScenePatchRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "patch",
@@ -104,10 +107,12 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ScenePatchRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | PatchLiveSceneResponse200]:
     """Patch live scene metadata
 
     Args:
+        idempotency_key (str | Unset):
         body (ScenePatchRequest): `PATCH /scene` — scene-level fields only (Spec 78 §1.2).
 
     Raises:
@@ -120,6 +125,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -133,10 +139,12 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ScenePatchRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | PatchLiveSceneResponse200 | None:
     """Patch live scene metadata
 
     Args:
+        idempotency_key (str | Unset):
         body (ScenePatchRequest): `PATCH /scene` — scene-level fields only (Spec 78 §1.2).
 
     Raises:
@@ -150,6 +158,7 @@ def sync(
     return sync_detailed(
         client=client,
         body=body,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -157,10 +166,12 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ScenePatchRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | PatchLiveSceneResponse200]:
     """Patch live scene metadata
 
     Args:
+        idempotency_key (str | Unset):
         body (ScenePatchRequest): `PATCH /scene` — scene-level fields only (Spec 78 §1.2).
 
     Raises:
@@ -173,6 +184,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -184,10 +196,12 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ScenePatchRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | PatchLiveSceneResponse200 | None:
     """Patch live scene metadata
 
     Args:
+        idempotency_key (str | Unset):
         body (ScenePatchRequest): `PATCH /scene` — scene-level fields only (Spec 78 §1.2).
 
     Raises:
@@ -202,5 +216,6 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             body=body,
+            idempotency_key=idempotency_key,
         )
     ).parsed

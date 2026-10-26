@@ -5,7 +5,10 @@
 //! transition vocabulary, and the document's decode of a
 //! representative daemon-shaped payload.
 
-use hypercolor_types::api::envelope::RUN_EPOCH_HEADER;
+use hypercolor_types::api::envelope::{
+    IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MISMATCH_CODE, IDEMPOTENCY_REPLAYED_HEADER,
+    RUN_EPOCH_HEADER,
+};
 use hypercolor_types::api::output::{OutputPatchRequest, OutputResource};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ApplyEffectResponse, AssignMembersRequest, ClearSceneRequest,
@@ -106,9 +109,18 @@ fn a_scene_read_is_still_its_own_replacement_body() {
 }
 
 #[test]
-fn the_run_epoch_header_is_a_lowercase_wire_name() {
+fn the_write_contract_headers_are_lowercase_wire_names() {
     assert_eq!(RUN_EPOCH_HEADER, "hypercolor-run-epoch");
-    assert_eq!(RUN_EPOCH_HEADER, RUN_EPOCH_HEADER.to_ascii_lowercase());
+    assert_eq!(IDEMPOTENCY_KEY_HEADER, "idempotency-key");
+    assert_eq!(IDEMPOTENCY_REPLAYED_HEADER, "idempotency-replayed");
+    for name in [
+        RUN_EPOCH_HEADER,
+        IDEMPOTENCY_KEY_HEADER,
+        IDEMPOTENCY_REPLAYED_HEADER,
+    ] {
+        assert_eq!(name, name.to_ascii_lowercase());
+    }
+    assert_eq!(IDEMPOTENCY_KEY_MISMATCH_CODE, "idempotency_key_mismatch");
 }
 
 #[test]

@@ -236,6 +236,10 @@ pub struct AppState {
     /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
     pub security_state: crate::api::security::SecurityState,
 
+    /// This run's record of `Idempotency-Key` writes, shared by every router
+    /// built from this state, so REST and WebSocket command dispatch agree.
+    pub(crate) idempotency: crate::api::idempotency::IdempotencyStore,
+
     /// Persistent trail of state-changing requests. Isolated test states
     /// leave it unset, so their requests reach tracing only.
     pub audit_log: Option<Arc<crate::audit_log::AuditLog>>,
@@ -707,6 +711,7 @@ impl AppState {
             },
             server_session_id: None,
             security_state: crate::api::security::SecurityState::unserved(),
+            idempotency: crate::api::idempotency::IdempotencyStore::default(),
             audit_log: None,
             _temporary_directory: temporary_directory,
         }
@@ -808,6 +813,7 @@ impl AppState {
             server_identity: daemon.server_identity.clone(),
             server_session_id: None,
             security_state: crate::api::security::SecurityState::unserved(),
+            idempotency: crate::api::idempotency::IdempotencyStore::default(),
             audit_log: daemon.audit_log.clone(),
             _temporary_directory: None,
         }

@@ -280,6 +280,34 @@ impl OperationDoc {
         self
     }
 
+    /// Honor an optional `Idempotency-Key` on this operation. Declaring the
+    /// header here is what turns the behavior on (`api::idempotency`), so
+    /// the document and the router cannot disagree about which writes
+    /// replay instead of applying twice.
+    pub(crate) fn idempotent(mut self) -> Self {
+        self.headers.push(
+            ParameterBuilder::new()
+                .name(super::idempotency::DOCUMENTED_HEADER)
+                .parameter_in(ParameterIn::Header)
+                .required(Required::False)
+                .description(Some(
+                    "Client-generated opaque key (a UUID) naming one logical write. A repeat \
+                     with the same key and the same request is not applied again: it answers \
+                     with the stored status and body plus `Idempotency-Replayed: true`, waiting \
+                     for the original when it is still running. The same key on a different \
+                     request answers 422 `idempotency_key_mismatch`. Keys are kept in memory \
+                     for one daemon run, which the `hypercolor-run-epoch` response header names.",
+                ))
+                .schema(Some(
+                    ObjectBuilder::new()
+                        .schema_type(Type::String)
+                        .max_length(Some(super::idempotency::IDEMPOTENCY_KEY_MAX_LEN)),
+                ))
+                .build(),
+        );
+        self
+    }
+
     pub(crate) fn component<T: utoipa::ToSchema>(mut self) -> Self {
         self.additional_schemas.push(register_schema::<T>);
         self

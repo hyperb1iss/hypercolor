@@ -248,6 +248,10 @@ pub enum DomainError {
         /// Seconds until the budget refills.
         retry_after_secs: u64,
     },
+    /// An `Idempotency-Key` already names a different request: another
+    /// method, path, `If-Match`, or body than the one it first arrived on.
+    #[error("this Idempotency-Key was already used for a different request")]
+    IdempotencyKeyMismatch,
     /// An If-Match / version precondition failed.
     #[error("version mismatch: expected {expected}, current {current}")]
     PreconditionFailed {
@@ -434,6 +438,9 @@ impl DomainError {
             Self::PayloadTooLarge { .. } => "payload_too_large",
             Self::UnsupportedMediaType { .. } => "unsupported_media_type",
             Self::RateLimited { .. } => "rate_limited",
+            Self::IdempotencyKeyMismatch => {
+                hypercolor_types::api::envelope::IDEMPOTENCY_KEY_MISMATCH_CODE
+            }
             Self::PreconditionFailed { .. } => "precondition_failed",
             Self::DeviceUnavailable { .. } => "device_unavailable",
             Self::ServiceUnavailable { .. } => "service_unavailable",

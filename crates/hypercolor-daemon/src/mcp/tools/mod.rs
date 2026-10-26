@@ -642,7 +642,9 @@ impl From<DomainError> for ToolError {
                 param: "request".to_owned(),
                 reason: message,
             },
-            error @ DomainError::ControlBound { .. } => Self::Conflict(error.to_string()),
+            error @ (DomainError::ControlBound { .. } | DomainError::IdempotencyKeyMismatch) => {
+                Self::Conflict(error.to_string())
+            }
             DomainError::Conflict { message, .. }
             | DomainError::Unauthorized { message }
             | DomainError::Forbidden { message, .. }

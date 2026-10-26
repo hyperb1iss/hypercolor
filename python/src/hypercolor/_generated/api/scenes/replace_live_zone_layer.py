@@ -11,7 +11,7 @@ from ...models.replace_layer_request import ReplaceLayerRequest
 from ...models.replace_live_zone_layer_response_200 import (
     ReplaceLiveZoneLayerResponse200,
 )
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
@@ -19,8 +19,11 @@ def _get_kwargs(
     layer: str,
     *,
     body: ReplaceLayerRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "put",
@@ -114,12 +117,14 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReplaceLiveZoneLayerResponse200]:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
             Replacement is creation: every successful `PUT` mints a fresh layer
@@ -138,6 +143,7 @@ def sync_detailed(
         zone=zone,
         layer=layer,
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -153,12 +159,14 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReplaceLiveZoneLayerResponse200 | None:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
             Replacement is creation: every successful `PUT` mints a fresh layer
@@ -178,6 +186,7 @@ def sync(
         layer=layer,
         client=client,
         body=body,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -187,12 +196,14 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReplaceLiveZoneLayerResponse200]:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
             Replacement is creation: every successful `PUT` mints a fresh layer
@@ -211,6 +222,7 @@ async def asyncio_detailed(
         zone=zone,
         layer=layer,
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -224,12 +236,14 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ReplaceLayerRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReplaceLiveZoneLayerResponse200 | None:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        idempotency_key (str | Unset):
         body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
             Replacement is creation: every successful `PUT` mints a fresh layer
@@ -250,5 +264,6 @@ async def asyncio(
             layer=layer,
             client=client,
             body=body,
+            idempotency_key=idempotency_key,
         )
     ).parsed

@@ -8,12 +8,17 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
 from ...models.delete_live_zone_response_200 import DeleteLiveZoneResponse200
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     zone: str,
+    *,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "delete",
@@ -22,6 +27,7 @@ def _get_kwargs(
         ),
     }
 
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -99,11 +105,13 @@ def sync_detailed(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | DeleteLiveZoneResponse200]:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -115,6 +123,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         zone=zone,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -128,11 +137,13 @@ def sync(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | DeleteLiveZoneResponse200 | None:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -145,6 +156,7 @@ def sync(
     return sync_detailed(
         zone=zone,
         client=client,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -152,11 +164,13 @@ async def asyncio_detailed(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | DeleteLiveZoneResponse200]:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -168,6 +182,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         zone=zone,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -179,11 +194,13 @@ async def asyncio(
     zone: str,
     *,
     client: AuthenticatedClient | Client,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | DeleteLiveZoneResponse200 | None:
     """Delete a live scene zone
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -197,5 +214,6 @@ async def asyncio(
         await asyncio_detailed(
             zone=zone,
             client=client,
+            idempotency_key=idempotency_key,
         )
     ).parsed

@@ -16,6 +16,21 @@ use serde::{Deserialize, Serialize};
 /// names compare case-insensitively.
 pub const RUN_EPOCH_HEADER: &str = "hypercolor-run-epoch";
 
+/// Request header naming one logical write, so a retry of a request whose
+/// answer was lost is never applied twice (IETF httpapi idempotency-key
+/// draft). A client-generated opaque string, typically a UUID, sent bare
+/// or as a quoted structured-field string. Routes that honor it declare it
+/// in the OpenAPI document; elsewhere it is ignored.
+pub const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+
+/// Response header set to `true` on an answer replayed for a repeated
+/// [`IDEMPOTENCY_KEY_HEADER`] instead of produced by applying the request.
+pub const IDEMPOTENCY_REPLAYED_HEADER: &str = "idempotency-replayed";
+
+/// Error code for a key reused on a request whose method, path,
+/// `If-Match`, or body differs from the request it first named (`422`).
+pub const IDEMPOTENCY_KEY_MISMATCH_CODE: &str = "idempotency_key_mismatch";
+
 /// Response metadata included in every envelope.
 ///
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

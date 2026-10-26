@@ -11,15 +11,18 @@ from ...models.reorder_layers_request import ReorderLayersRequest
 from ...models.reorder_live_zone_layers_response_200 import (
     ReorderLiveZoneLayersResponse200,
 )
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     zone: str,
     *,
     body: ReorderLayersRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "patch",
@@ -111,11 +114,13 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReorderLiveZoneLayersResponse200]:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -132,6 +137,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -146,11 +152,13 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReorderLiveZoneLayersResponse200 | None:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -168,6 +176,7 @@ def sync(
         zone=zone,
         client=client,
         body=body,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -176,11 +185,13 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReorderLiveZoneLayersResponse200]:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -197,6 +208,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -209,11 +221,13 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReorderLiveZoneLayersResponse200 | None:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -232,5 +246,6 @@ async def asyncio(
             zone=zone,
             client=client,
             body=body,
+            idempotency_key=idempotency_key,
         )
     ).parsed
