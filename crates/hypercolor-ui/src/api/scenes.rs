@@ -154,7 +154,7 @@ async fn replace_stored_scene(
         HttpMethod::Put,
         &url,
         Some(&request),
-        Some(document.revision),
+        Some(&client::Fence::of(&document)),
     )
     .await?
     {

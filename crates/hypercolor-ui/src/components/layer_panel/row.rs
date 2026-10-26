@@ -67,7 +67,7 @@ pub fn LayerRow(
     layer: Signal<SceneLayer>,
     stack_index: Signal<usize>,
     stack: Signal<Vec<SceneLayer>>,
-    revision: Signal<u64>,
+    fence: Signal<crate::api::Fence>,
     media_names: Memo<HashMap<String, String>>,
     effect_names: Memo<HashMap<String, String>>,
     effect_cache: super::LayerEffectCache,
@@ -135,7 +135,7 @@ pub fn LayerRow(
                                         up_stack.get_untracked(),
                                         stack_index.get_untracked(),
                                         1,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     )
                                 >
@@ -151,7 +151,7 @@ pub fn LayerRow(
                                         down_stack.get_untracked(),
                                         stack_index.get_untracked(),
                                         -1,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     )
                                 >
@@ -169,7 +169,7 @@ pub fn LayerRow(
                             move |_| delete_layer(
                                 zone_id.clone(),
                                 layer_id.clone(),
-                                revision.get_untracked(),
+                                fence.get_untracked(),
                                 on_layers_mutated,
                             )
                         }
@@ -193,7 +193,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -228,7 +228,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -264,7 +264,7 @@ pub fn LayerRow(
                                 <MediaPlaybackSection
                                     zone_id=zone_id.clone()
                                     layer=layer
-                                    revision=revision
+                                    fence=fence
                                     on_layers_mutated=on_layers_mutated
                                 />
                             </div>
@@ -300,7 +300,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -323,7 +323,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -343,7 +343,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -363,7 +363,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -383,7 +383,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -403,7 +403,7 @@ pub fn LayerRow(
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision.get_untracked(),
+                                        fence.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }

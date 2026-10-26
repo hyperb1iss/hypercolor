@@ -219,7 +219,7 @@ pub fn CalibrationGuide(
                                 return;
                             };
                             let target_zone = zones_ctx.focused_zone_id_untracked();
-                            let Some((observed_target, expected_revision)) = zones_ctx
+                            let Some((observed_target, fence)) = zones_ctx
                                 .effect_target_untracked(
                                     &active_effect_id,
                                     target_zone.as_deref(),
@@ -235,7 +235,7 @@ pub fn CalibrationGuide(
                                     &active_effect_id,
                                     &preset_id,
                                     Some(&observed_target.zone_id),
-                                    expected_revision,
+                                    &fence,
                                 )
                                 .await
                                 {

@@ -821,7 +821,7 @@ where
     Ok(())
 }
 
-/// Send a JSON mutation guarded by an optional `If-Match` version
+/// Send a JSON mutation guarded by an optional [`Fence`] as its `If-Match`
 /// precondition, classifying a `412` reply as [`MutationOutcome::Stale`].
 ///
 /// On success the envelope's inner data is returned as
@@ -833,7 +833,7 @@ pub async fn send_json_versioned<Req, Res>(
     method: HttpMethod,
     url: &str,
     body: Option<&Req>,
-    if_match: Option<u64>,
+    if_match: Option<&Fence>,
 ) -> ApiResult<MutationOutcome<Res>>
 where
     Req: Serialize + ?Sized,
@@ -853,19 +853,13 @@ pub async fn send_json_versioned_with_revision<Req, Res>(
     method: HttpMethod,
     url: &str,
     body: Option<&Req>,
-    if_match: Option<u64>,
+    if_match: Option<&Fence>,
 ) -> ApiResult<MutationOutcome<(Res, Option<u64>)>>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    // A fence named by its revision alone, from a caller that does not
-    // track the daemon's run.
-    let fence = if_match.map(|revision| Fence {
-        revision,
-        run: String::new(),
-    });
-    let resp = send_request(method, url, body, fence.as_ref(), None, None).await?;
+    let resp = send_request(method, url, body, if_match, None, None).await?;
     versioned_outcome(&resp)
 }
 
@@ -1354,6 +1348,24 @@ mod tests {
             run: String::new(),
         };
         assert_eq!(bare.if_match(), "\"42\"");
+    }
+
+    #[test]
+    fn a_scene_s_fence_names_its_run_so_another_run_s_never_matches() {
+        let scene = |run: &str| -> hypercolor_types::api::scene::SceneDocument {
+            serde_json::from_value(serde_json::json!({
+                "id": "33333333-3333-4333-8333-333333333333", "name": "Desk",
+                "kind": "named", "is_default": false, "revision": 42,
+                "run_epoch": run, "zones": [],
+            }))
+            .expect("a scene document")
+        };
+        let fence = Fence::of(&scene("run-a"));
+        assert_eq!(fence.if_match(), "\"run-a:42\"");
+        // Same number, another run: not the same fence, so a check of one
+        // against the other fails, as the daemon's does.
+        assert_ne!(Fence::of(&scene("run-b")), fence);
+        assert_eq!(Fence::of(&scene("run-a")).at(43).if_match(), "\"run-a:43\"");
     }
 
     #[test]

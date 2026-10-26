@@ -175,7 +175,7 @@ pub fn EffectControlsSection(
 pub fn MediaPlaybackSection(
     zone_id: String,
     layer: Signal<SceneLayer>,
-    revision: Signal<u64>,
+    fence: Signal<crate::api::Fence>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     let LayerSource::Media { playback, .. } = layer.get_untracked().source else {
@@ -196,7 +196,7 @@ pub fn MediaPlaybackSection(
             update_layer(
                 zone_id.clone(),
                 next,
-                revision.get_untracked(),
+                fence.get_untracked(),
                 on_layers_mutated,
             );
         }

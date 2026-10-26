@@ -138,7 +138,10 @@ fn injected_transport_preserves_the_logical_http_contract() {
         HttpMethod::Patch,
         "/api/v1/example",
         Some(&serde_json::json!({ "enabled": true })),
-        Some(16),
+        Some(&Fence {
+            revision: 16,
+            run: "run-a".to_owned(),
+        }),
     ))
     .expect("412 response classifies");
     assert_eq!(stale, MutationOutcome::Stale { current: 17 });
@@ -227,7 +230,7 @@ fn injected_transport_preserves_the_logical_http_contract() {
         header.name.eq_ignore_ascii_case("content-type") && header.value == "application/json"
     }));
     assert!(requests[2].headers.iter().any(|header| {
-        header.name.eq_ignore_ascii_case("if-match") && header.value == "\"16\""
+        header.name.eq_ignore_ascii_case("if-match") && header.value == "\"run-a:16\""
     }));
     assert_eq!(requests[7].method, HttpMethod::Head);
     assert_eq!(requests[7].path, "/api/v1/example/cover");

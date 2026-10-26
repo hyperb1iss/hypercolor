@@ -11,9 +11,10 @@
 //! - **Surface identity:** `active_scene` + `selected_zone_id` name the
 //!   `(scene id, zone id)` pair every mutation is addressed to. The panel
 //!   never displays the ids.
-//! - **Scene revision** — read from `layers_resource`; threaded as the
-//!   `If-Match` precondition on every mutation. A stale write is reported
-//!   and the stack refetched, never silently lost.
+//! - **Scene fence:** the stack's revision from `layers_resource`, in the
+//!   daemon run of the active scene; threaded as the `If-Match`
+//!   precondition on every mutation. A stale write is reported and the
+//!   stack refetched, never silently lost.
 //! - **Add-layer picker** — Add-layer opens [`picker::AddLayerPicker`],
 //!   covering effects/faces plus media assets.
 //! - **One mutation callback** — `on_layers_mutated: Callback<()>` fires
@@ -125,7 +126,21 @@ pub fn LayerPanel(
             .map(|scene| scene.id.to_string())
             .unwrap_or_default()
     });
-    let revision = Signal::derive(move || scene_revision.get().unwrap_or_default());
+    // The daemon run the stack's revision belongs to. A stack and a scene
+    // read in different runs make a fence the daemon refuses, never one it
+    // takes wrongly.
+    let run = Signal::derive(move || {
+        active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .map(|scene| scene.run_epoch.clone())
+                .unwrap_or_default()
+        })
+    });
+    let fence = Signal::derive(move || api::Fence {
+        revision: scene_revision.get().unwrap_or_default(),
+        run: run.get(),
+    });
     let row_keys = Memo::new(move |_| {
         let scene = scene_id.get();
         let zone = selected_zone_id.get().unwrap_or_default();
@@ -194,6 +209,7 @@ pub fn LayerPanel(
             return;
         }
         let expected_revision = scene_revision.get_untracked();
+        let run = run.get_untracked();
         let existing_layer_count = layers_resource
             .get_untracked()
             .and_then(Result::ok)
@@ -202,12 +218,18 @@ pub fn LayerPanel(
         leptos::task::spawn_local(async move {
             let mut applied = 0_usize;
             let mut failed = 0_usize;
-            let mut revision = expected_revision;
+            let mut fence = expected_revision.map(|revision| api::Fence {
+                revision,
+                run: run.clone(),
+            });
             for (index, target) in targets.iter().enumerate() {
-                match api::create_layer(target, &request, revision).await {
+                match api::create_layer(target, &request, fence.as_ref()).await {
                     Ok(api::LayerStackOutcome::Applied(stack)) => {
                         applied += 1;
-                        revision = Some(stack.revision);
+                        fence = Some(api::Fence {
+                            revision: stack.revision,
+                            run: run.clone(),
+                        });
                     }
                     Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => {
                         failed += targets.len() - index;
@@ -316,7 +338,7 @@ pub fn LayerPanel(
                                     layer=current_layer.into()
                                     stack_index=stack_index
                                     stack=layers.into()
-                                    revision=revision
+                                    fence=fence
                                     media_names=media_names
                                     effect_names=effect_names
                                     effect_cache=effect_cache
@@ -362,13 +384,13 @@ fn LayerLoadingSkeleton() -> impl IntoView {
 fn update_layer(
     zone_id: String,
     layer: SceneLayer,
-    revision: u64,
+    fence: api::Fence,
     on_layers_mutated: Callback<()>,
 ) {
     let layer_id = layer.id.to_string();
     let request = api::update_request_from_layer(&layer);
     leptos::task::spawn_local(async move {
-        match api::update_layer(&zone_id, &layer_id, &request, Some(revision)).await {
+        match api::update_layer(&zone_id, &layer_id, &request, Some(&fence)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());
@@ -380,9 +402,14 @@ fn update_layer(
 }
 
 /// Remove a layer, guarded by the `If-Match` precondition.
-fn delete_layer(zone_id: String, layer_id: String, revision: u64, on_layers_mutated: Callback<()>) {
+fn delete_layer(
+    zone_id: String,
+    layer_id: String,
+    fence: api::Fence,
+    on_layers_mutated: Callback<()>,
+) {
     leptos::task::spawn_local(async move {
-        match api::delete_layer(&zone_id, &layer_id, Some(revision)).await {
+        match api::delete_layer(&zone_id, &layer_id, Some(&fence)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => {
                 on_layers_mutated.run(());
                 toasts::toast_success("Layer removed");
@@ -402,7 +429,7 @@ fn reorder_layer(
     stack: Vec<SceneLayer>,
     index: usize,
     delta: isize,
-    revision: u64,
+    fence: api::Fence,
     on_layers_mutated: Callback<()>,
 ) {
     let Some(target) = index.checked_add_signed(delta) else {
@@ -415,7 +442,7 @@ fn reorder_layer(
     let mut layer_ids = stack.iter().map(|layer| layer.id).collect::<Vec<_>>();
     layer_ids.swap(index, target);
     leptos::task::spawn_local(async move {
-        match api::reorder_layers(&zone_id, layer_ids, Some(revision)).await {
+        match api::reorder_layers(&zone_id, layer_ids, Some(&fence)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());

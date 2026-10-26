@@ -56,9 +56,9 @@ pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool)
         toasts::toast_error("No active scene is available");
         return;
     };
-    let revision = scene.revision;
+    let fence = api::Fence::of(&scene);
     spawn_local(async move {
-        match api::zones::update_zone(&zone_id, &request, revision).await {
+        match api::zones::update_zone(&zone_id, &request, &fence).await {
             Ok(ZoneOutcome::Applied(_)) => zones_ctx.refresh.run(()),
             Ok(ZoneOutcome::Stale { .. }) => {
                 zones_ctx.refresh.run(());

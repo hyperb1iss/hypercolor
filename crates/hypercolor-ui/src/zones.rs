@@ -94,7 +94,7 @@ impl ZonesContext {
         &self,
         effect_id: &str,
         zone_id: Option<&str>,
-    ) -> Option<(api::EffectLayerTarget, u64)> {
+    ) -> Option<(api::EffectLayerTarget, api::Fence)> {
         self.active_scene
             .with_untracked(|scene| effect_target_in_scene(scene.as_ref()?, effect_id, zone_id))
     }
@@ -104,7 +104,7 @@ fn effect_target_in_scene(
     scene: &api::SceneDocument,
     effect_id: &str,
     zone_id: Option<&str>,
-) -> Option<(api::EffectLayerTarget, u64)> {
+) -> Option<(api::EffectLayerTarget, api::Fence)> {
     let zone = match zone_id {
         Some(zone_id) => scene
             .zones
@@ -136,7 +136,7 @@ fn effect_target_in_scene(
             zone_id: zone.id.to_string(),
             layer_id: layer.id.to_string(),
         },
-        scene.revision,
+        api::Fence::of(scene),
     ))
 }
 

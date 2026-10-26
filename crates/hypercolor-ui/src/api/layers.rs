@@ -43,13 +43,13 @@ pub type LayerStackOutcome = MutationOutcome<LayerStackResponse>;
 pub async fn create_layer(
     zone_id: &str,
     request: &CreateLayerRequest,
-    expected_revision: Option<u64>,
+    fence: Option<&Fence>,
 ) -> ApiResult<LayerStackOutcome> {
     let outcome = client::send_json_versioned_with_revision::<_, ZoneResource>(
         HttpMethod::Post,
         &format!("/api/v1/scene/zones/{zone_id}/layers"),
         Some(request),
-        expected_revision,
+        fence,
     )
     .await?;
     stack_outcome(outcome).await
@@ -90,13 +90,13 @@ pub async fn update_layer(
     zone_id: &str,
     layer_id: &str,
     request: &ReplaceLayerRequest,
-    expected_revision: Option<u64>,
+    fence: Option<&Fence>,
 ) -> ApiResult<LayerStackOutcome> {
     let outcome = client::send_json_versioned_with_revision::<_, ZoneResource>(
         HttpMethod::Put,
         &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}"),
         Some(request),
-        expected_revision,
+        fence,
     )
     .await?;
     stack_outcome(outcome).await
@@ -105,13 +105,13 @@ pub async fn update_layer(
 pub async fn delete_layer(
     zone_id: &str,
     layer_id: &str,
-    expected_revision: Option<u64>,
+    fence: Option<&Fence>,
 ) -> ApiResult<LayerStackOutcome> {
     let outcome = client::send_json_versioned_with_revision::<(), ZoneResource>(
         HttpMethod::Delete,
         &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}"),
         None,
-        expected_revision,
+        fence,
     )
     .await?;
     stack_outcome(outcome).await
@@ -163,14 +163,14 @@ pub fn control_patch_request(
 pub async fn reorder_layers(
     zone_id: &str,
     layer_ids: Vec<SceneLayerId>,
-    expected_revision: Option<u64>,
+    fence: Option<&Fence>,
 ) -> ApiResult<LayerStackOutcome> {
     let request = ReorderLayersRequest { order: layer_ids };
     let outcome = client::send_json_versioned_with_revision::<_, ZoneResource>(
         HttpMethod::Patch,
         &format!("/api/v1/scene/zones/{zone_id}/layers/order"),
         Some(&request),
-        expected_revision,
+        fence,
     )
     .await?;
     stack_outcome(outcome).await

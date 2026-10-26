@@ -61,13 +61,13 @@ pub async fn create_zone(
 pub async fn update_zone(
     zone_id: &str,
     request: &PatchZoneRequest,
-    expected_revision: u64,
+    fence: &Fence,
 ) -> ApiResult<ZoneOutcome<ZoneResource>> {
     client::send_json_versioned::<_, ZoneResource>(
         HttpMethod::Patch,
         &format!("/api/v1/scene/zones/{}", path_segment(zone_id)),
         Some(request),
-        Some(expected_revision),
+        Some(fence),
     )
     .await
 }
