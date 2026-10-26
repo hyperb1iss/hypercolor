@@ -153,8 +153,11 @@ pub struct StudioContext {
     /// editor so the rail can softly highlight the card that owns it.
     pub pointer_output_id: RwSignal<Option<String>>,
     /// The active named layout: where the rig's hardware physically sits.
-    /// Outputs joining a zone are placed from it.
+    /// Outputs joining a zone are placed from it, and the device pane
+    /// lists saved controllers from it.
     pub rig_layout: Signal<Option<hypercolor_types::spatial::SpatialLayout>>,
+    /// Re-fetch [`Self::rig_layout`] after a write that changes it.
+    pub refresh_rig_layout: Callback<()>,
 }
 
 /// A local open/closed signal whose truth lives in a shared keyed slot,
@@ -398,15 +401,31 @@ pub fn StudioPage() -> impl IntoView {
     });
 
     let render_canvas_size = crate::render_canvas::use_render_canvas_size();
-    // Layout events and scene switches can both change the active layout.
-    let active_scene_id =
-        Memo::new(move |_| active_scene.with(|scene| scene.as_ref().map(|scene| scene.id)));
+    // Layout events, device events, and membership changes (a primary
+    // zone that follows the active layout writes through to it) can all
+    // change the active layout.
+    let scene_members = Memo::new(move |_| {
+        active_scene.with(|scene| {
+            scene.as_ref().map(|scene| {
+                (
+                    scene.id,
+                    scene
+                        .zones
+                        .iter()
+                        .map(|zone| (zone.id, zone.members.clone()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+        })
+    });
     let rig_layout_resource = api::daemon_resource(move || {
+        let _ = scene_members.get();
         let _ = ws.layout_generation.get();
-        let _ = active_scene_id.get();
+        let _ = ws.last_device_event.get();
         async move { api::fetch_active_layout().await.ok() }
     });
     let rig_layout = Signal::derive(move || rig_layout_resource.get().flatten());
+    let refresh_rig_layout = Callback::new(move |()| rig_layout_resource.refetch());
     let rail_disclosure = RwSignal::new(None::<String>);
     let zone_rename_draft = RwSignal::new(None::<(String, String)>);
     let pointer_output_id = RwSignal::new(None::<String>);
@@ -435,6 +454,7 @@ pub fn StudioPage() -> impl IntoView {
         pane_drawer: tree_drawer,
         pointer_output_id,
         rig_layout,
+        refresh_rig_layout,
     };
     provide_context(studio);
     let root_ref = NodeRef::<leptos::html::Div>::new();

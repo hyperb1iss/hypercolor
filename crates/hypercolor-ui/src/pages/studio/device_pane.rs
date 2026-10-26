@@ -19,7 +19,7 @@ use hypercolor_types::scene::ZoneRole;
 
 use crate::api::zones::ZoneOutcome;
 use crate::api::{self, DeviceSummary};
-use crate::app::{CapabilitiesContext, DevicesContext, WsContext};
+use crate::app::{CapabilitiesContext, DevicesContext};
 use crate::channel_names;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -80,7 +80,6 @@ pub fn DevicePane() -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let drag = expect_context::<DragController>();
     let devices = expect_context::<DevicesContext>();
-    let ws = expect_context::<WsContext>();
     let search = RwSignal::new(String::new());
     let query = Memo::new(move |_| normalize_search(&search.get()));
     let on_screens = Memo::new(move |_| {
@@ -95,26 +94,8 @@ pub fn DevicePane() -> impl IntoView {
         })
     });
 
-    let scene_members = Memo::new(move |_| {
-        studio.active_scene.get().map(|scene| {
-            (
-                scene.id,
-                scene
-                    .zones
-                    .into_iter()
-                    .map(|zone| (zone.id, zone.members))
-                    .collect::<Vec<_>>(),
-            )
-        })
-    });
-    let saved_layout = api::daemon_resource(move || {
-        let _ = scene_members.get();
-        let _ = ws.layout_generation.get();
-        let _ = ws.last_device_event.get();
-        async move { api::fetch_active_layout().await }
-    });
     provide_context(super::offline_device_card::SavedControllersRefresh(
-        Callback::new(move |()| saved_layout.refetch()),
+        studio.refresh_rig_layout,
     ));
 
     let registry = Memo::new(move |_| {
@@ -191,14 +172,15 @@ pub fn DevicePane() -> impl IntoView {
                 total_leds: device.total_leds,
             })
             .collect();
-        let saved_only = match saved_layout.get() {
-            Some(Ok(layout)) => saved_only_device_rows(
-                &scene.zones,
-                registry_ready.get().then_some(metas.as_slice()),
-                &layout.zones,
-            ),
-            _ => Vec::new(),
-        };
+        let saved_only = studio.rig_layout.with(|layout| {
+            layout.as_ref().map_or_else(Vec::new, |layout| {
+                saved_only_device_rows(
+                    &scene.zones,
+                    registry_ready.get().then_some(metas.as_slice()),
+                    &layout.zones,
+                )
+            })
+        });
         let active = studio.selected_surface_id.get().unwrap_or_default();
         search_terms.with(|terms| {
             build_pane(PaneInputs {
