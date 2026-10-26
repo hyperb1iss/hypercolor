@@ -384,6 +384,10 @@ async fn write_config_key(
                 .capture
                 .validate()
                 .map_err(|error| DomainError::validation(error.to_string()))?;
+            candidate
+                .daemon
+                .validate_canvas()
+                .map_err(|error| DomainError::validation(format!("render resolution: {error}")))?;
             Ok(candidate)
         })();
         match candidate {
