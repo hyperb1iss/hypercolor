@@ -8,6 +8,7 @@ use hypercolor_types::api::scene::{
     CreateLayerRequest, EditMembersRequest, MemberEdit, MemberState, PatchZoneRequest,
 };
 use hypercolor_types::layer::SceneLayer;
+use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::Output;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -27,6 +28,7 @@ pub struct DeletedZone {
     pub name: String,
     pub color: Option<String>,
     pub enabled: bool,
+    pub brightness: f32,
     /// The zone's position in the scene's full zone order.
     pub index: usize,
     /// Complete snapshots of the outputs the zone held, in zone order.
@@ -46,6 +48,7 @@ impl DeletedZone {
             name: zone.name.clone(),
             color: zone.color.clone(),
             enabled: zone.enabled,
+            brightness: zone.brightness,
             index,
             outputs: Vec::new(),
             layers: zone.layers.clone(),
@@ -83,7 +86,8 @@ pub fn zone_patch_before(
 
 /// How creating a zone, and the move into it, came out.
 pub(crate) enum NewZone {
-    /// The zone was not made; nothing moved.
+    /// The zone was not made, or a scene switch overtook it: there is
+    /// nothing in this scene to show.
     NotCreated,
     /// The zone exists. The move landed, failed, or had nothing to change.
     Created {
@@ -111,19 +115,21 @@ enum Settle {
     Remove,
 }
 
-/// The live scene's revision, read fresh between the steps of a
-/// multi-request zone operation.
-async fn live_revision() -> Option<u64> {
-    api::fetch_active_scene()
-        .await
-        .ok()
-        .map(|scene| scene.revision)
+/// The live scene, read fresh between the steps of a multi-request zone
+/// operation. A scene activated elsewhere since the operation began is
+/// refused, so no step lands outside the scene it started in.
+async fn live_scene(scene_id: SceneId) -> Result<api::SceneDocument, &'static str> {
+    match api::fetch_active_scene().await {
+        Ok(scene) if scene.id == scene_id => Ok(scene),
+        Ok(_) => Err("another scene is active now"),
+        Err(_) => Err("the scene could not be read"),
+    }
 }
 
 /// Put complete output snapshots back into a zone in one transaction.
 async fn restore_outputs(
-    scene_id: hypercolor_types::scene::SceneId,
-    zone_id: hypercolor_types::scene::ZoneId,
+    scene_id: SceneId,
+    zone_id: ZoneId,
     outputs: &[Output],
     revision: u64,
 ) -> Result<(), ()> {
@@ -149,15 +155,25 @@ async fn restore_outputs(
     }
 }
 
-/// Patch one zone against the live revision. Reports whether it applied.
-async fn patch_live_zone(zone_id: &str, request: &PatchZoneRequest) -> bool {
-    let Some(revision) = live_revision().await else {
+/// Patch one zone of the scene `scene_id` against its live revision.
+/// Reports whether it applied.
+async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRequest) -> bool {
+    let Ok(live) = live_scene(scene_id).await else {
         return false;
     };
     matches!(
-        api::zones::update_zone(zone_id, request, revision).await,
+        api::zones::update_zone(zone_id, request, live.revision).await,
         Ok(api::zones::ZoneOutcome::Applied(_))
     )
+}
+
+/// Why undoing a zone's creation left the zone in place.
+enum Removal {
+    Removed,
+    /// The zone holds something new, so it stays for good.
+    Kept(&'static str),
+    /// The delete did not go through; trying again may.
+    Failed(String),
 }
 
 fn flip(change: MemberEdit) -> MemberEdit {
@@ -172,6 +188,23 @@ impl StudioHistory {
         let token = self.tokens.get_value().wrapping_add(1);
         self.tokens.set_value(token);
         token
+    }
+
+    /// Release the scene after a zone write. Zone replies carry no
+    /// revision, so the scene is read back first, and whatever waits next
+    /// writes against the scene as this left it.
+    async fn release(self, generation: u64) {
+        self.resync(generation).await;
+        self.refresh.run(());
+        self.finish(generation);
+    }
+
+    /// Tell a zone create a scene switch overtook, while Studio is still
+    /// there to hear it.
+    fn overtaken(self, outcome: Box<dyn FnOnce(NewZone)>) {
+        if self.alive() {
+            outcome(NewZone::NotCreated);
+        }
     }
 
     /// Write a replayed zone step's new state into its journal entry and
@@ -204,18 +237,16 @@ impl StudioHistory {
         color: Option<String>,
         created: Box<dyn FnOnce(Option<api::ZoneResource>)>,
     ) {
-        self.run_when_free(move || {
-            self.create_zone_now(
-                name,
-                color,
-                None,
-                Box::new(move |outcome| {
-                    created(match outcome {
-                        NewZone::Created { zone, .. } => Some(zone),
-                        NewZone::NotCreated => None,
-                    });
-                }),
-            );
+        self.when_free(super::Waiting::CreateZone {
+            name,
+            color,
+            plan: None,
+            outcome: Box::new(move |outcome| {
+                created(match outcome {
+                    NewZone::Created { zone, .. } => Some(zone),
+                    NewZone::NotCreated => None,
+                });
+            }),
         });
     }
 
@@ -229,10 +260,15 @@ impl StudioHistory {
         plan: PlanMove,
         outcome: Box<dyn FnOnce(NewZone)>,
     ) {
-        self.run_when_free(move || self.create_zone_now(name, color, Some(plan), outcome));
+        self.when_free(super::Waiting::CreateZone {
+            name,
+            color,
+            plan: Some(plan),
+            outcome,
+        });
     }
 
-    fn create_zone_now(
+    pub(super) fn create_zone_now(
         self,
         name: String,
         color: Option<String>,
@@ -250,9 +286,7 @@ impl StudioHistory {
         spawn_local(async move {
             let created = api::zones::create_zone(&name, color.as_deref(), scene.revision).await;
             if !self.is_current(generation) {
-                if self.alive() {
-                    outcome(NewZone::NotCreated);
-                }
+                self.overtaken(outcome);
                 return;
             }
             let zone = match created {
@@ -260,23 +294,22 @@ impl StudioHistory {
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => {
                     toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                     outcome(NewZone::NotCreated);
-                    self.refresh.run(());
-                    self.finish(generation);
+                    self.release(generation).await;
                     return;
                 }
                 Err(error) => {
                     toasts::toast_error(&format!("Zone create failed: {error}"));
                     outcome(NewZone::NotCreated);
-                    self.refresh.run(());
-                    self.finish(generation);
+                    self.release(generation).await;
                     return;
                 }
             };
             let mut moved = Moved::Unchanged;
             let mut filled = Vec::new();
             if let Some(plan) = plan {
-                let live = api::fetch_active_scene().await;
+                let live = live_scene(scene.id).await;
                 if !self.is_current(generation) {
+                    self.overtaken(outcome);
                     return;
                 }
                 match live {
@@ -289,13 +322,16 @@ impl StudioHistory {
                                     moved = Moved::Landed;
                                 }
                                 Sent::Failed => moved = Moved::Failed,
-                                Sent::Superseded => return,
+                                Sent::Superseded => {
+                                    self.overtaken(outcome);
+                                    return;
+                                }
                             }
                         }
                     }
-                    Err(error) => {
+                    Err(reason) => {
                         toasts::toast_error(&format!(
-                            "Created {}, but the move failed: {error}",
+                            "Created {}, but the move failed: {reason}",
                             zone.name
                         ));
                         moved = Moved::Failed;
@@ -311,8 +347,7 @@ impl StudioHistory {
                 });
             });
             outcome(NewZone::Created { zone, moved });
-            self.refresh.run(());
-            self.finish(generation);
+            self.release(generation).await;
         });
     }
 
@@ -363,10 +398,19 @@ impl StudioHistory {
     /// Rename, recolor, pause or resume, or reorder a zone. Undo puts the
     /// changed fields back as they were.
     pub fn patch_zone(self, zone_id: String, after: PatchZoneRequest, failure: &'static str) {
-        self.run_when_free(move || self.patch_zone_now(zone_id, after, failure));
+        self.when_free(super::Waiting::PatchZone {
+            zone_id,
+            after,
+            failure,
+        });
     }
 
-    fn patch_zone_now(self, zone_id: String, after: PatchZoneRequest, failure: &'static str) {
+    pub(super) fn patch_zone_now(
+        self,
+        zone_id: String,
+        after: PatchZoneRequest,
+        failure: &'static str,
+    ) {
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -403,8 +447,7 @@ impl StudioHistory {
                 }
                 Err(error) => toasts::toast_error(&describe_zone_failure(failure, &error)),
             }
-            self.refresh.run(());
-            self.finish(generation);
+            self.release(generation).await;
         });
     }
 
@@ -449,7 +492,7 @@ impl StudioHistory {
             return;
         };
         spawn_local(async move {
-            if self.take_down_zone(&mut record).await && self.is_current(generation) {
+            if self.take_down_zone(scene.id, &mut record).await && self.is_current(generation) {
                 if self.selected.get_untracked().as_deref() == Some(zone_id.as_str()) {
                     self.selected.set(select_after);
                 }
@@ -458,27 +501,32 @@ impl StudioHistory {
                 });
                 let _ = deleted.try_run(record);
             }
-            self.refresh.run(());
-            self.finish(generation);
+            self.release(generation).await;
         });
     }
 
-    /// Release a zone's outputs and delete it, filling `record.outputs`
-    /// with their complete snapshots. A failed delete puts the outputs
-    /// back, so the zone's devices are never stranded.
-    async fn take_down_zone(self, record: &mut DeletedZone) -> bool {
-        let Ok(scene) = api::fetch_active_scene().await else {
-            toasts::toast_error("Zone delete failed: the scene could not be read");
-            return false;
+    /// Release a zone's outputs and delete it, refreshing `record` from the
+    /// live zone and filling `record.outputs` with complete snapshots. A
+    /// failed delete puts the outputs back, so the zone's devices are never
+    /// stranded.
+    async fn take_down_zone(self, scene_id: SceneId, record: &mut DeletedZone) -> bool {
+        let scene = match live_scene(scene_id).await {
+            Ok(scene) => scene,
+            Err(reason) => {
+                toasts::toast_error(&format!("Zone delete failed: {reason}"));
+                return false;
+            }
         };
-        let Some(zone) = scene
+        let Some((index, zone)) = scene
             .zones
             .iter()
-            .find(|zone| zone.id.to_string() == record.zone_id)
+            .enumerate()
+            .find(|(_, zone)| zone.id.to_string() == record.zone_id)
         else {
             toasts::toast_error("Zone delete failed: the zone no longer exists");
             return false;
         };
+        *record = DeletedZone::of(zone, index, record.token);
         let zone_key = zone.id;
         let changes: Vec<MemberEdit> = api::zone_outputs(zone)
             .into_iter()
@@ -492,7 +540,6 @@ impl StudioHistory {
                 after: None,
             })
             .collect();
-        record.layers.clone_from(&zone.layers);
         let mut revision = scene.revision;
         if !changes.is_empty() {
             let request = EditMembersRequest {
@@ -525,9 +572,10 @@ impl StudioHistory {
             Ok(api::zones::ZoneOutcome::Applied(())) => true,
             outcome => {
                 if !record.outputs.is_empty()
-                    && let Some(revision) = live_revision().await
+                    && let Ok(live) = live_scene(scene_id).await
                 {
-                    let _ = restore_outputs(scene.id, zone_key, &record.outputs, revision).await;
+                    let _ =
+                        restore_outputs(live.id, zone_key, &record.outputs, live.revision).await;
                 }
                 match outcome {
                     Err(error) => toasts::toast_error(&format!("Zone delete failed: {error}")),
@@ -538,13 +586,31 @@ impl StudioHistory {
         }
     }
 
-    /// Rebuild a deleted zone: its name, color, paused state, outputs
-    /// (those still unclaimed), layers, and, best effort, its position.
-    /// Returns the zone it made.
-    async fn rebuild_zone(self, record: &DeletedZone) -> Option<api::ZoneResource> {
-        let revision = live_revision().await?;
+    /// Rebuild a deleted zone in the scene `scene_id`: its name, color,
+    /// outputs (those still unclaimed), layers, paused state, brightness,
+    /// and, best effort, its position. Returns the zone it made, or `None`
+    /// when it made none or a scene switch overtook it partway.
+    async fn rebuild_zone(
+        self,
+        generation: u64,
+        scene_id: SceneId,
+        record: &DeletedZone,
+    ) -> Option<api::ZoneResource> {
+        let live = match live_scene(scene_id).await {
+            Ok(live) => live,
+            Err(reason) => {
+                toasts::toast_error(&format!("Zone restore failed: {reason}"));
+                return None;
+            }
+        };
+        if !self.is_current(generation) {
+            return None;
+        }
         let created =
-            api::zones::create_zone(&record.name, record.color.as_deref(), revision).await;
+            api::zones::create_zone(&record.name, record.color.as_deref(), live.revision).await;
+        if !self.is_current(generation) {
+            return None;
+        }
         let zone = match created {
             Ok(api::zones::ZoneOutcome::Applied(zone)) => zone,
             Ok(api::zones::ZoneOutcome::Stale { .. }) => {
@@ -560,75 +626,109 @@ impl StudioHistory {
         let zone_key = zone_id.to_string();
         let mut problems = Vec::new();
 
-        if let Ok(live) = api::fetch_active_scene().await {
-            let claimed: HashSet<&str> = live
-                .zones
-                .iter()
-                .flat_map(|zone| zone.members.iter())
-                .map(|member| member.id.0.as_str())
-                .collect();
-            let free: Vec<_> = record
-                .outputs
-                .iter()
-                .filter(|output| !claimed.contains(output.id.as_str()))
-                .cloned()
-                .collect();
-            let moved_on = record.outputs.len() - free.len();
-            if !free.is_empty()
-                && restore_outputs(live.id, zone_id, &free, live.revision)
-                    .await
-                    .is_err()
-            {
+        if !record.outputs.is_empty() {
+            let live = live_scene(scene_id).await;
+            if !self.is_current(generation) {
+                return None;
+            }
+            if let Ok(live) = live {
+                let claimed: HashSet<&str> = live
+                    .zones
+                    .iter()
+                    .flat_map(|zone| zone.members.iter())
+                    .map(|member| member.id.0.as_str())
+                    .collect();
+                let free: Vec<_> = record
+                    .outputs
+                    .iter()
+                    .filter(|output| !claimed.contains(output.id.as_str()))
+                    .cloned()
+                    .collect();
+                let moved_on = record.outputs.len() - free.len();
+                let put_back = free.is_empty()
+                    || restore_outputs(live.id, zone_id, &free, live.revision)
+                        .await
+                        .is_ok();
+                if !self.is_current(generation) {
+                    return None;
+                }
+                if !put_back {
+                    problems.push("its devices could not be put back");
+                } else if moved_on > 0 {
+                    problems.push("devices you moved since stayed where they are");
+                }
+            } else {
                 problems.push("its devices could not be put back");
-            } else if moved_on > 0 {
-                problems.push("devices you moved since stayed where they are");
             }
         }
 
-        let mut revision = live_revision().await;
-        let mut layers_back = true;
-        for request in restore_layer_requests(record) {
-            match api::create_layer(&zone_key, &request, revision).await {
-                Ok(api::LayerStackOutcome::Applied(stack)) => revision = Some(stack.revision),
-                _ => {
-                    layers_back = false;
-                    break;
+        if !record.layers.is_empty() {
+            let live = live_scene(scene_id).await;
+            if !self.is_current(generation) {
+                return None;
+            }
+            let mut revision = live.ok().map(|live| live.revision);
+            let mut layers_back = revision.is_some();
+            if layers_back {
+                for request in restore_layer_requests(record) {
+                    let result = api::create_layer(&zone_key, &request, revision).await;
+                    if !self.is_current(generation) {
+                        return None;
+                    }
+                    if let Ok(api::LayerStackOutcome::Applied(stack)) = result {
+                        revision = Some(stack.revision);
+                    } else {
+                        layers_back = false;
+                        break;
+                    }
                 }
             }
-        }
-        if !layers_back {
-            problems.push("its layers could not all be put back");
+            if !layers_back {
+                problems.push("its layers could not all be put back");
+            }
         }
 
-        if !record.enabled
-            && !patch_live_zone(
-                &zone_key,
-                &PatchZoneRequest {
-                    enabled: Some(false),
-                    ..Default::default()
-                },
-            )
-            .await
-        {
-            problems.push("it could not be paused again");
+        let restyle = PatchZoneRequest {
+            enabled: (!record.enabled).then_some(false),
+            brightness: ((record.brightness - zone.brightness).abs() > f32::EPSILON)
+                .then_some(record.brightness),
+            ..Default::default()
+        };
+        if restyle.enabled.is_some() || restyle.brightness.is_some() {
+            let patched = patch_live_zone(scene_id, &zone_key, &restyle).await;
+            if !self.is_current(generation) {
+                return None;
+            }
+            if !patched {
+                problems.push(if restyle.enabled.is_some() {
+                    "it could not be paused again"
+                } else {
+                    "its brightness could not be put back"
+                });
+            }
         }
-        let index = api::fetch_active_scene().await.ok().and_then(|live| {
+
+        let live = live_scene(scene_id).await;
+        if !self.is_current(generation) {
+            return None;
+        }
+        let index = live.ok().and_then(|live| {
             let current = live.zones.iter().position(|zone| zone.id == zone_id)?;
             (current != record.index).then_some(record.index)
         });
-        if let Some(index) = index
-            && !patch_live_zone(
-                &zone_key,
-                &PatchZoneRequest {
-                    index: Some(index),
-                    ..Default::default()
-                },
-            )
-            .await
-        {
-            problems.push("it kept its new place at the end of the tabs");
+        if let Some(index) = index {
+            let request = PatchZoneRequest {
+                index: Some(index),
+                ..Default::default()
+            };
+            let placed = patch_live_zone(scene_id, &zone_key, &request).await;
+            if !self.is_current(generation) {
+                return None;
+            }
+            if !placed {
+                problems.push("it kept its new place at the end of the tabs");
+            }
         }
-
         if problems.is_empty() {
             toasts::toast_success(&format!("Restored {}", record.name));
         } else {
@@ -645,33 +745,33 @@ impl StudioHistory {
     /// ordinary undo when it is the latest edit, otherwise a restore that
     /// drops its journal entry. A deletion already restored stays put.
     pub fn undo_deletion(self, token: u64) {
-        self.run_when_free(move || {
-            let found = self.journal.with_untracked(|journal| {
-                journal
-                    .undoable_deletion(token)
-                    .map(|index| (index, index + 1 == journal.cursor))
-            });
-            match found {
-                Some((_, true)) => {
-                    let recorded = self.journal.with_untracked(super::StudioJournal::recorded);
-                    self.replay_now(false, recorded);
-                }
-                Some((index, false)) => {
-                    let record =
-                        self.journal
-                            .with_untracked(|journal| match journal.entries.get(index) {
-                                Some(StudioEdit::ZoneDeleted(record)) => {
-                                    Some(record.as_ref().clone())
-                                }
-                                _ => None,
-                            });
-                    if let Some(record) = record {
-                        self.replay_zone_deleted(index, false, record, Settle::Remove);
-                    }
-                }
-                None => {}
-            }
+        self.when_free(super::Waiting::UndoDeletion(token));
+    }
+
+    pub(super) fn undo_deletion_now(self, token: u64) {
+        let found = self.journal.with_untracked(|journal| {
+            journal
+                .undoable_deletion(token)
+                .map(|index| (index, index + 1 == journal.cursor))
         });
+        match found {
+            Some((_, true)) => {
+                let recorded = self.journal.with_untracked(super::StudioJournal::recorded);
+                self.replay_now(false, recorded);
+            }
+            Some((index, false)) => {
+                let record =
+                    self.journal
+                        .with_untracked(|journal| match journal.entries.get(index) {
+                            Some(StudioEdit::ZoneDeleted(record)) => Some(record.as_ref().clone()),
+                            _ => None,
+                        });
+                if let Some(record) = record {
+                    self.replay_zone_deleted(index, false, record, Settle::Remove);
+                }
+            }
+            None => {}
+        }
     }
 
     /// Undo puts a deleted zone back; redo deletes it again.
@@ -686,12 +786,15 @@ impl StudioHistory {
         mut record: DeletedZone,
         settle: Settle,
     ) {
+        let Some(scene_id) = self.current_scene().map(|scene| scene.id) else {
+            return;
+        };
         let Some(generation) = self.begin() else {
             return;
         };
         spawn_local(async move {
             if redo {
-                if self.take_down_zone(&mut record).await && self.is_current(generation) {
+                if self.take_down_zone(scene_id, &mut record).await && self.is_current(generation) {
                     self.settle_zone_entry(
                         index,
                         redo,
@@ -699,7 +802,7 @@ impl StudioHistory {
                         settle,
                     );
                 }
-            } else if let Some(zone) = self.rebuild_zone(&record).await
+            } else if let Some(zone) = self.rebuild_zone(generation, scene_id, &record).await
                 && self.is_current(generation)
             {
                 let old = std::mem::replace(&mut record.zone_id, zone.id.to_string());
@@ -713,26 +816,27 @@ impl StudioHistory {
                 self.journal
                     .update(|journal| journal.remap_zone(&old, zone.id));
             }
-            self.refresh.run(());
-            self.finish(generation);
+            self.release(generation).await;
         });
     }
 
     /// Undo or redo a rename, recolor, pause, or reorder.
     pub(super) fn replay_zone_patched(self, redo: bool, zone_id: String, patch: PatchZoneRequest) {
+        let Some(scene_id) = self.current_scene().map(|scene| scene.id) else {
+            return;
+        };
         let Some(generation) = self.begin() else {
             return;
         };
         spawn_local(async move {
-            if patch_live_zone(&zone_id, &patch).await {
+            if patch_live_zone(scene_id, &zone_id, &patch).await {
                 if self.is_current(generation) {
                     self.journal.update(|journal| journal.complete(redo));
                 }
             } else if self.is_current(generation) {
                 toasts::toast_error("The zone changed elsewhere; history was not applied");
             }
-            self.refresh.run(());
-            self.finish(generation);
+            self.release(generation).await;
         });
     }
 
@@ -749,17 +853,20 @@ impl StudioHistory {
         color: Option<String>,
         filled: Vec<MemberEdit>,
     ) {
+        let Some(scene_id) = self.current_scene().map(|scene| scene.id) else {
+            return;
+        };
         let Some(generation) = self.begin() else {
             return;
         };
         spawn_local(async move {
             let old = zone_id.clone();
             let settled = if redo {
-                self.recreate_zone(generation, name, color, filled)
+                self.recreate_zone(generation, scene_id, name, color, filled)
                     .await
                     .map(|(entry, remade)| (entry, Some(remade)))
             } else {
-                self.uncreate_zone(generation, zone_id, name, color, filled)
+                self.uncreate_zone(generation, scene_id, zone_id, name, color, filled)
                     .await
                     .map(|entry| (entry, None))
             };
@@ -771,22 +878,32 @@ impl StudioHistory {
                     self.journal.update(|journal| journal.remap_zone(&old, new));
                 }
             }
-            self.refresh.run(());
-            self.finish(generation);
+            self.release(generation).await;
         });
     }
 
+    /// The undo of a zone's creation. `None` leaves the entry where it is,
+    /// for a step that changed nothing; otherwise the entry the journal
+    /// keeps in its place.
     async fn uncreate_zone(
         self,
         generation: u64,
+        scene_id: SceneId,
         zone_id: String,
         name: String,
         color: Option<String>,
         filled: Vec<MemberEdit>,
     ) -> Option<StudioEdit> {
+        let moves_out = !filled.is_empty();
         let mut filled_now = filled.clone();
-        if !filled.is_empty() {
-            let scene = api::fetch_active_scene().await.ok()?;
+        if moves_out {
+            let scene = match live_scene(scene_id).await {
+                Ok(scene) => scene,
+                Err(reason) => {
+                    toasts::toast_error(&format!("History could not be applied: {reason}"));
+                    return None;
+                }
+            };
             let changes: Vec<MemberEdit> = filled.into_iter().map(flip).collect();
             let Ok(changes) = prepare_members_replay(&scene, changes) else {
                 toasts::toast_error("Assignment changed elsewhere; history was not applied");
@@ -807,44 +924,74 @@ impl StudioHistory {
                 Sent::Failed | Sent::Superseded => return None,
             }
         }
-        let live = api::fetch_active_scene().await.ok()?;
-        let untouched = match live
-            .zones
-            .iter()
-            .find(|zone| zone.id.to_string() == zone_id)
-        {
-            None => true,
-            Some(zone) => {
-                zone.members.is_empty()
-                    && zone.layers.is_empty()
-                    && matches!(
-                        api::zones::delete_zone(&zone_id, live.revision).await,
-                        Ok(api::zones::ZoneOutcome::Applied(()))
-                    )
-            }
+        // The devices are back where they came from; only the zone is left.
+        let removal = match live_scene(scene_id).await {
+            Err(reason) => Removal::Failed(reason.to_owned()),
+            Ok(live) => match live
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == zone_id)
+            {
+                None => Removal::Removed,
+                Some(zone) if !zone.members.is_empty() || !zone.layers.is_empty() => {
+                    Removal::Kept("it holds devices or layers now")
+                }
+                Some(_) => match api::zones::delete_zone(&zone_id, live.revision).await {
+                    Ok(api::zones::ZoneOutcome::Applied(())) => Removal::Removed,
+                    Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                        Removal::Failed("the scene changed elsewhere".to_owned())
+                    }
+                    Err(error) => Removal::Failed(error.to_string()),
+                },
+            },
         };
-        if untouched {
-            Some(StudioEdit::ZoneCreated {
+        match removal {
+            Removal::Removed => Some(StudioEdit::ZoneCreated {
                 zone_id,
                 name,
                 color,
                 filled: filled_now,
-            })
-        } else {
-            toasts::toast_info(&format!("Kept {name}: it holds devices or layers now"));
-            Some(StudioEdit::Members(filled_now))
+            }),
+            Removal::Kept(reason) => {
+                toasts::toast_info(&format!("Kept {name}: {reason}"));
+                Some(StudioEdit::Members(filled_now))
+            }
+            Removal::Failed(reason) if !moves_out => {
+                toasts::toast_error(&format!("{name} could not be removed: {reason}"));
+                None
+            }
+            Removal::Failed(reason) => {
+                toasts::toast_info(&format!(
+                    "Moved its devices back, but {name} could not be removed: {reason}"
+                ));
+                Some(StudioEdit::Members(filled_now))
+            }
         }
     }
 
     async fn recreate_zone(
         self,
         generation: u64,
+        scene_id: SceneId,
         name: String,
         color: Option<String>,
         filled: Vec<MemberEdit>,
-    ) -> Option<(StudioEdit, hypercolor_types::scene::ZoneId)> {
-        let revision = live_revision().await?;
-        let zone = match api::zones::create_zone(&name, color.as_deref(), revision).await {
+    ) -> Option<(StudioEdit, ZoneId)> {
+        let live = match live_scene(scene_id).await {
+            Ok(live) => live,
+            Err(reason) => {
+                toasts::toast_error(&format!("History could not be applied: {reason}"));
+                return None;
+            }
+        };
+        if !self.is_current(generation) {
+            return None;
+        }
+        let created = api::zones::create_zone(&name, color.as_deref(), live.revision).await;
+        if !self.is_current(generation) {
+            return None;
+        }
+        let zone = match created {
             Ok(api::zones::ZoneOutcome::Applied(zone)) => zone,
             Ok(api::zones::ZoneOutcome::Stale { .. }) => {
                 toasts::toast_error("Scene changed elsewhere; history was not applied");
@@ -857,7 +1004,10 @@ impl StudioHistory {
         };
         let mut filled_now = Vec::new();
         if !filled.is_empty() {
-            let scene = api::fetch_active_scene().await.ok();
+            let scene = live_scene(scene_id).await.ok();
+            if !self.is_current(generation) {
+                return None;
+            }
             let changes = scene.as_ref().and_then(|scene| {
                 let changes = filled
                     .into_iter()
@@ -877,11 +1027,13 @@ impl StudioHistory {
                         changes,
                         assignment: None,
                     };
-                    if let Sent::Landed { changes, .. } = self
+                    match self
                         .send_members(generation, request, scene.revision, None)
                         .await
                     {
-                        filled_now = changes;
+                        Sent::Landed { changes, .. } => filled_now = changes,
+                        Sent::Failed => {}
+                        Sent::Superseded => return None,
                     }
                 }
                 _ => toasts::toast_info(&format!(
@@ -890,9 +1042,7 @@ impl StudioHistory {
                 )),
             }
         }
-        if self.is_current(generation) {
-            self.selected.set(Some(zone.id.to_string()));
-        }
+        self.selected.set(Some(zone.id.to_string()));
         Some((
             StudioEdit::ZoneCreated {
                 zone_id: zone.id.to_string(),

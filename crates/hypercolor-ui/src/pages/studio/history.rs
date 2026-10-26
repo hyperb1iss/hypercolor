@@ -166,25 +166,49 @@ enum Waiting {
         changes: Vec<MemberEdit>,
         done: Option<EditDone>,
     },
+    /// A zone to create; with a `plan`, the move into it as well.
+    CreateZone {
+        name: String,
+        color: Option<String>,
+        plan: Option<zones::PlanMove>,
+        outcome: Box<dyn FnOnce(NewZone)>,
+    },
+    PatchZone {
+        zone_id: String,
+        after: PatchZoneRequest,
+        failure: &'static str,
+    },
     DeleteZone {
         zone_id: String,
         select_after: Option<String>,
         deleted: Callback<DeletedZone>,
     },
-    /// A flow that claims the scene itself once it is free.
-    Run(Box<dyn FnOnce()>),
+    /// The Undo bar's restore of the deletion this token names.
+    UndoDeletion(u64),
 }
 
 impl Waiting {
     /// Whether this operation records a journal entry when it lands.
     fn records(&self) -> bool {
-        matches!(self, Self::Assign { .. } | Self::Edit { .. } | Self::Run(_))
+        matches!(
+            self,
+            Self::Assign { .. }
+                | Self::Edit { .. }
+                | Self::CreateZone { .. }
+                | Self::PatchZone { .. }
+                | Self::DeleteZone { .. }
+        )
     }
 
     /// Tell whoever waits on this operation that it will not run.
     fn stand_down(self) {
-        if let Self::Assign { done, .. } | Self::Edit { done, .. } = self {
-            settle(done, None);
+        match self {
+            Self::Assign { done, .. } | Self::Edit { done, .. } => settle(done, None),
+            Self::CreateZone { outcome, .. } => outcome(NewZone::NotCreated),
+            Self::Replay { .. }
+            | Self::PatchZone { .. }
+            | Self::DeleteZone { .. }
+            | Self::UndoDeletion(_) => {}
         }
     }
 }
@@ -427,12 +451,6 @@ impl StudioHistory {
         }
     }
 
-    /// Run `flow` once nothing holds the scene. The flow claims it with
-    /// [`Self::begin`] and releases it with [`Self::finish`].
-    pub fn run_when_free(self, flow: impl FnOnce() + 'static) {
-        self.when_free(Waiting::Run(Box::new(flow)));
-    }
-
     /// Pick the queue up again after a canvas gesture ends.
     pub fn resume(self) {
         self.next_waiting();
@@ -491,12 +509,23 @@ impl StudioHistory {
                 done,
             } => self.assign_device_at_now(zone_id, device_id, segments, placements, point, done),
             Waiting::Edit { changes, done } => self.edit_members_now(changes, done),
-            Waiting::Run(flow) => flow(),
+            Waiting::CreateZone {
+                name,
+                color,
+                plan,
+                outcome,
+            } => self.create_zone_now(name, color, plan, outcome),
+            Waiting::PatchZone {
+                zone_id,
+                after,
+                failure,
+            } => self.patch_zone_now(zone_id, after, failure),
             Waiting::DeleteZone {
                 zone_id,
                 select_after,
                 deleted,
             } => self.delete_zone_now(zone_id, select_after, deleted),
+            Waiting::UndoDeletion(token) => self.undo_deletion_now(token),
         }
     }
 
@@ -1346,6 +1375,56 @@ mod replay_tests {
                 Some(history.journal.with_untracked(StudioJournal::recorded) + 1),
                 "the queued edit counts as asked for before the undo"
             );
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn an_undo_pressed_after_a_queued_zone_delete_undoes_that_delete() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let history = history(None, true, None, zone);
+            history.delete_zone(zone.to_owned(), None, Callback::new(|_| {}));
+            history.undo_deletion(1);
+            history.replay(false);
+            let expected = history.waiting.with_value(|waiting| match waiting.back() {
+                Some(Waiting::Replay { recorded, .. }) => Some(*recorded),
+                _ => None,
+            });
+            assert_eq!(
+                expected,
+                Some(history.journal.with_untracked(StudioJournal::recorded) + 1),
+                "the queued delete counts and the Undo bar's restore does not"
+            );
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn a_queued_zone_create_hears_exactly_once_when_the_scene_switches() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let history = history(None, true, None, zone);
+            let heard = StoredValue::new(Vec::new());
+            history.create_zone(
+                "Desk".to_owned(),
+                None,
+                Box::new(move |created| heard.update_value(|heard| heard.push(created.is_some()))),
+            );
+            assert!(
+                heard.with_value(Vec::is_empty),
+                "the create waits while the scene is held"
+            );
+            let dropped = history
+                .waiting
+                .try_update_value(std::mem::take)
+                .unwrap_or_default();
+            for operation in dropped {
+                operation.stand_down();
+            }
+            assert_eq!(heard.get_value(), vec![false]);
         });
         owner.cleanup();
     }
