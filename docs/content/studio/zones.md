@@ -47,12 +47,14 @@ Click **+** after the tabs. Studio creates a zone named **New zone** (or **New z
                                           └─ click: a "New zone" tab opens, name selected
 ```
 
-A new zone starts empty: no devices, no layers. Its canvas reads **Drag devices here, or add them from Unassigned**, and the device pane expands every other zone's row so the devices you might bring in are in view. Bring hardware in from the [device pane](@/studio/device-assignment.md); the first devices you add are placed from your rig and fitted to the canvas.
+A new zone starts empty: no devices, no layers. Its canvas reads **Drag devices here, or add them from Unassigned**, and the device pane expands every other zone's row so the devices you might bring in are in view. Those rows fold up again once the zone has its first device or you leave its tab. Bring hardware in from the [device pane](@/studio/device-assignment.md); the first devices you add are placed from your rig and fitted to the canvas.
 
 Two other routes make a zone and fill it in one move:
 
 - A device card's **Move to** menu ends with **New zone**. It creates a zone named after the device, moves the device in, and opens the tab with the name ready to type over.
 - Dragging a device from the pane onto **+** does the same thing.
+
+Making a zone is one step in Studio's undo history, and so is making one from a device, move included. `Ctrl+Z` removes the new zone again and puts back any device it took in. If the zone has gained devices or layers since, undo keeps it, says "Kept" and the zone's name, and carries on past that step.
 
 The **+** button and the **New zone** item appear only once the daemon reports it can create zones, so on a freshly started daemon they may take a moment to show up.
 
@@ -64,9 +66,11 @@ Every zone's settings live on its tab. Open the zone menu with the **⋯** butto
 
 **Color.** **Color** opens a row of eight identity swatches (Purple, Cyan, Coral, Green, Yellow, Blue, Orange, and Red), a custom color picker, and **No color**. The color tints the zone's dot on its tab, in the device pane, in the preview's zone tabs, and on its Now Playing row in the sidebar. It is an identity cue for the zone, not a lighting color, so it never changes what your LEDs display.
 
-**Pause and resume.** **Pause zone** stops the zone driving its devices while it keeps its layers, canvas, and color, so **Resume zone** brings it back exactly as it was. A paused zone's tab shows a pause glyph, and its row under **Other zones** is dimmed. The per-zone pause buttons in the sidebar's Now Playing panel flip the same switch.
+**Pause and resume.** **Pause zone** stops the zone driving its devices while it keeps its layers, canvas, and color, so **Resume zone** brings it back exactly as it was. A paused zone's tab shows a pause glyph, and its row under **Other zones** is dimmed. The per-zone pause buttons in the sidebar's Now Playing panel flip the same switch, outside Studio's undo history.
 
 **Reorder.** **Move left** and **Move right** step the zone one tab over; dragging a tab along the strip drops it anywhere. Tab order is the scene's zone order, which the preview's zone tabs and the sidebar rows follow too.
+
+Every rename, recolor, pause or resume, and reorder made in Studio is one step in the undo history, so `Ctrl+Z` takes it back and `Ctrl+Shift+Z` puts it back, in order with your device moves and canvas edits.
 
 {{< img path="img/ui/ui-studio-zones.webp" alt="The zone menu open on a Studio tab: Rename, Color, Pause zone, Move left, Move right, Delete zone" />}}
 
@@ -78,10 +82,12 @@ Choose **Delete zone** from the zone menu. The Main zone and a scene's last LED 
 
 An empty zone deletes immediately. A zone that holds devices asks once first: the dialog names the zone and how many devices become unassigned, and offers **Keep zone** and **Delete zone**. **Keep zone** has focus, and **Escape** or a click outside the dialog also keeps the zone.
 
-Either way, a bar at the bottom of the Stage then reads **Deleted** and the zone's name, with an **Undo** button, for eight seconds. Undo rebuilds the zone: its name, color, paused state, its position among the tabs, and the devices it held, back where they sat on its canvas. A device you moved somewhere else in the meantime stays where you put it. When the deleted zone was open, the tab to its left (or, for the first tab, its right) opens in its place.
+Either way, a bar at the bottom of the Stage then reads **Deleted** and the zone's name, with an **Undo** button, for eight seconds. The delete is also one step in the undo history, so `Ctrl+Z` works the same way after the bar has gone. The two share one record: whichever you use restores the zone, and the zone never comes back twice.
+
+Undo rebuilds the zone: its name, color, layers, brightness, paused state, its position among the tabs, and the devices it held, back where they sat on its canvas. A device you moved somewhere else in the meantime stays where you put it. When the deleted zone was open, the tab to its left (or, for the first tab, its right) opens in its place.
 
 {% <callout type="warning"> %}
-Deleting a zone releases its devices to Unassigned and throws away its layer stack. Undo puts the zone and its devices back, but not its layers, so add them again after an undo. The physical devices are never touched.
+Deleting a zone releases its devices to Unassigned and removes its layer stack from the scene. Undo brings both back. Once you switch scenes or leave Studio the undo history is gone, so a delete is final from then on. The physical devices are never touched.
 {% </callout> %}
 
 ## The Unassigned section

@@ -89,10 +89,10 @@ A zone with no devices shows **Drag devices here, or add them from Unassigned** 
 
 The Stage header carries the now-playing chip on the left and three canvas actions on the right:
 
-- **Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Shift+Z`, or `Ctrl+Y`) step through one history of device moves and canvas edits.
+- **Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Shift+Z`, or `Ctrl+Y`) step through one history of device moves, canvas edits, and zone changes.
 - **Fit** scales and centers the zone's devices to fill the canvas, keeping their arrangement.
 
-There is no Save or Revert. A canvas edit commits when you release the drag or finish the field, and a device move commits when you make it.
+There is no Save or Revert. A canvas edit commits when you release the drag or the slider, or when you press Enter in a property field or leave it. A device move commits when you make it.
 
 ### The Screens tab: the live face
 
@@ -120,7 +120,7 @@ The panel is the same layer editor used everywhere layers are edited, so what yo
 
 ## The undo bar
 
-Deleting a zone shows a bar at the bottom of the Stage that reads **Deleted** and the zone's name, with an **Undo** button. It stays for eight seconds. Undo rebuilds the zone with its name, color, paused state, position, and the devices it held. See [Zones](@/studio/zones.md#deleting-a-zone).
+Deleting a zone shows a bar at the bottom of the Stage that reads **Deleted** and the zone's name, with an **Undo** button. It stays for eight seconds. Undo rebuilds the zone with its name, color, layers, brightness, paused state, position, and the devices it held. The bar and `Ctrl+Z` share one record, so a zone comes back once whichever you use. See [Zones](@/studio/zones.md#deleting-a-zone).
 
 ## The narrow-viewport drawer
 

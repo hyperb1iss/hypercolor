@@ -85,7 +85,7 @@ Drag a box off the canvas and onto another zone's tab to move that output to the
 
 Real rigs overlap. A press on the canvas picks the **smallest** box under the pointer, so a small device under a long strip stays clickable without any reordering. **Alt**-click steps down through the boxes stacked beneath it.
 
-Names declutter the same way. A box names itself when its name fits inside it and nothing above covers it. Otherwise the name waits for hover or selection, and a box too small to hold its name shows it in a callout beside the box.
+Labels declutter the same way. A box's label is its name and LED count, or its resolution for a screen. A box shows its label when the label fits inside it and nothing above covers it. Otherwise the label waits for hover or selection, and a box too small to hold it shows it in a callout beside the box.
 
 ## The properties panel
 
@@ -117,9 +117,9 @@ When more than one output is selected, the properties panel switches to group co
 
 ## Live commit and undo
 
-Canvas edits commit as you finish them: releasing a drag or a resize, changing a value in the properties panel, or clicking **Fit**. There is no Save and no Revert, and switching tabs or leaving Studio never loses an edit.
+Canvas edits commit as you finish them: releasing a drag or a resize, releasing a slider, pressing Enter in a property field or leaving it, or clicking **Fit**. Typing in a field commits nothing until then. There is no Save and no Revert, and switching tabs or leaving Studio never loses an edit.
 
-**Undo** and **Redo** in the Stage header step through one history that holds canvas edits and device moves in the order you made them. The shortcuts are `Ctrl+Z` to undo and `Ctrl+Shift+Z` or `Ctrl+Y` to redo. They are ignored while you type in a text field or while a drag is in flight. Undoing an edit made in another zone opens that zone's tab first, so you see what changed. The history belongs to the current Studio visit and resets when you switch scenes or leave Studio.
+**Undo** and **Redo** in the Stage header step through one history that holds canvas edits, device moves, and zone changes in the order you made them. The shortcuts are `Ctrl+Z` to undo and `Ctrl+Shift+Z` or `Ctrl+Y` to redo. They are ignored while you type in a text field or while a drag is in flight. Undoing an edit made in another zone opens that zone's tab first, so you see what changed. The history belongs to the current Studio visit and resets when you switch scenes or leave Studio.
 
 If someone changes the same scene from another client or the CLI while you edit, Studio writes only the fields you changed over the zone as it stands, so their edit to another output or another field survives. When the write still cannot land, a toast says the change was not saved, the edit stays on your canvas, and your next edit retries it.
 

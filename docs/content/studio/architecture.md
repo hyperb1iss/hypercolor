@@ -22,7 +22,7 @@ Studio reads from three app-root contexts and provides its own. The rule of thum
 | `ScenesContext` | `zones.rs` | App root | The scene library, switching and activation state |
 | `EffectsContext` | `app.rs` | App root | Per-zone effect state, active-effect signals, and the apply path that lands in the target zone |
 | `StudioContext` | `pages/studio/mod.rs` | Studio page | Tab selection, slide-over state, pane state, rail highlight and hidden-output UI state, the rig layout |
-| `StudioHistory` | `pages/studio/history.rs` | Studio page | The undo journal and the queue every membership, zone-delete, and layout write goes through |
+| `StudioHistory` | `pages/studio/history.rs`, `history/zones.rs` | Studio page | The undo journal and the queue every membership, zone-structure, and layout write goes through |
 | `DragController` | `pages/studio/drag.rs` | Studio page | The one pointer drag between the pane, the tabs, and the canvas, the **Move to** menu, and the move announcements |
 | `LayoutEditorContext` / `ZoneCanvasActions` | `components/layout_builder.rs` | The Stage | The in-flight `SpatialLayout`, selection, undo and redo, Fit |
 
@@ -73,11 +73,12 @@ Three writers move it:
 | `attachment_cache` | `RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>` | Per-device component-binding cache the cards fill lazily and search reads |
 | `screen_labels` | `Memo<HashMap<String, String>>` | Screen labels that tell identical device names apart ("TL LCD 2") |
 | `render_canvas_size` | `Memo<(u32, u32)>` | The daemon's render canvas extent, read by anything fitting a footprint to the canvas |
-| `rig_layout` | `Signal<Option<SpatialLayout>>` | The active named layout; arriving outputs are placed from it |
+| `rig_layout`, `refresh_rig_layout` | `Signal<Option<SpatialLayout>>`, `Callback<()>` | The active named layout, read once for Studio; arriving outputs are placed from it |
 | `rail_disclosure` | `RwSignal<Option<String>>` | The single open-disclosure slot shared by the device cards' menus |
 | `zone_rename_draft` | `RwSignal<Option<(String, String)>>` | An in-flight tab rename as `(zone id, draft text)` |
 | `pane_expanded` | `RwSignal<HashSet<String>>` | Which Other zones rows are expanded |
-| `undo_notice` | `RwSignal<Option<UndoNotice>>` | The open offer to undo a zone delete |
+| `pane_auto_expanded` | `RwSignal<Option<(String, HashSet<String>)>>` | The rows a new zone opened on its own, closed again when it gains a device or its tab is left |
+| `undo_notice` | `RwSignal<Option<UndoNotice>>` | The Undo bar's offer to restore a deleted zone |
 | `pane_drawer` | `RwSignal<bool>` | Whether the narrow-viewport device drawer is open |
 
 `rail_disclosure` and `zone_rename_draft` exist because the pane and the tab strip rebuild on every scene event and every search keystroke. Disclosure state and in-flight text have to outlive the DOM that renders them, or a menu snaps shut and a half-typed name vanishes mid-edit. One shared disclosure slot also means opening a menu closes the previous one.
@@ -124,22 +125,30 @@ The rules behind the tab strip, the pane, placement, and moves live in Leptos-fr
 | `pages/studio/pane_model.rs` | The pane's sections, split-device hints, search and hit counts, when Unassigned shows, the policy select |
 | `pages/studio/placement.rs` | Where arrivals land from the rig, the first-arrival fit, and Fit |
 | `pages/studio/drag_model.rs` | What a drag carries, what each drop target does with it, spring-loaded tabs, announcements, names for zones made from a device |
-| `pages/studio/history.rs` | The journal, replay preparation, and the order waiting operations run in |
+| `pages/studio/history.rs`, `history/zones.rs` | The journal, replay preparation, zone structure steps, and the order waiting operations run in |
 | `components/layout_builder/commit.rs` | The live layout commit queue |
 | `components/layout_canvas/{picking,labels}.rs` | Smallest-box hit testing with Alt cycling, and when a box names itself |
 | `zones/surface.rs` | `zone_display_name`, layer labels, the target-zone rule |
 
 ## One history for every Studio write
 
-Every write that changes membership, deletes or restores a zone, or replays a layout goes through `StudioHistory`. The scene revision fences each write, so one operation runs at a time:
+Every write that changes membership, changes zone structure, or replays a layout goes through `StudioHistory`. The scene revision fences each write, so one operation runs at a time:
 
-- `busy` marks a membership write, a zone delete or restore, or a layout replay in flight. The Stage canvas is `inert` while it holds.
+- `busy` marks a membership write, a zone operation, or a layout replay in flight. The Stage canvas is `inert` while it holds.
 - `committing` marks the layout commit queue draining. Editing carries on.
 - An operation asked for while either holds waits its turn in order instead of being dropped. Queued layout commits always go first, so an operation acts on a scene with every finished edit already written.
 
-The journal records two kinds of step: `StudioEdit::Layout` (a zone's editor snapshot before and after) and `StudioEdit::Members` (the canonical `MemberEdit` receipts `POST /scene/members/edit` returns). Undo replays a members step by swapping each receipt's `before` and `after`, rebased on the live scene; an output still where the step left it returns to the placement the step recorded. An undo or redo waits for a canvas gesture to end, and one that finds a newer edit recorded since it was asked for stands down rather than reversing the wrong thing. The journal resets when the active scene changes.
+The journal records five kinds of step:
 
-Zone deletes are not journal steps. `delete_zone` releases the zone's outputs through one membership edit, keeping their complete snapshots, then deletes the empty zone; `restore_zone` rebuilds the zone, its outputs that are still unclaimed, its paused state, and its `index`. The undo bar (`undo_notice.rs`) offers that restore for eight seconds. Zone create, rename, color, pause, and reorder are plain revision-guarded `PATCH`es in `zone_controls.rs`, outside the journal.
+- `StudioEdit::Layout`: a zone's editor snapshot before and after.
+- `StudioEdit::Members`: the canonical `MemberEdit` receipts `POST /scene/members/edit` returns.
+- `StudioEdit::ZoneCreated`: a zone Studio made, together with the move that filled it when it came from **Move to** ▸ **New zone**, so the pair undoes as one step.
+- `StudioEdit::ZonePatched`: a rename, recolor, pause or resume, or reorder, as the changed fields were and became.
+- `StudioEdit::ZoneDeleted`: the `DeletedZone` record of a delete.
+
+Undo replays a members step by swapping each receipt's `before` and `after`, rebased on the live scene; an output still where the step left it returns to the placement the step recorded. Undoing a `ZoneCreated` moves its devices back and deletes the zone, unless the zone has gained devices or layers since: then it keeps the zone, toasts "Kept" and the name, and records only the move it reversed. A restore or redo that makes a zone again under a new id remaps every journal entry that named the old one. An undo or redo waits for a canvas gesture to end, and one that finds a newer edit recorded since it was asked for stands down rather than reversing the wrong thing. The journal resets when the active scene changes.
+
+A delete releases the zone's outputs through one membership edit, keeping their complete snapshots, then deletes the empty zone. Its `DeletedZone` record also keeps the zone's name, color, paused state, brightness, `index`, and layer stack (not its description). A restore rebuilds the zone, puts back the outputs that are still unclaimed, recreates the layers bottom to top, re-pauses or re-dims it, and moves it back to its `index`. The Undo bar (`undo_notice.rs`) and the journal entry share the record's `token`: the bar undoes normally when the delete is the latest step, otherwise it restores and drops the entry, and a deletion restored once is never restored again. Zone create and patches go through `StudioHistory::create_zone`, `create_zone_filled`, and `patch_zone`, called from `zone_controls.rs` and `moves.rs`.
 
 ## The reused contracts
 
@@ -189,7 +198,7 @@ The drag and resize hot path is deliberately non-reactive. A single requestAnima
 
 ## Live layout commit
 
-There is no Save. `LayoutWriteHandle` records every finished edit (a released drag or resize, a properties field, Fit) in `StudioHistory` and hands the zone to the commit queue (`components/layout_builder/commit.rs`):
+There is no Save. `LayoutWriteHandle` records every finished edit (a released drag, resize, or slider, a property field's `change` event on Enter or blur, Fit) in `StudioHistory` and hands the zone to the commit queue (`components/layout_builder/commit.rs`):
 
 - The queue keeps the newest state per zone, in the order zones were first queued, and drains one zone at a time because writes are revision-fenced.
 - A commit writes only what the editor changed against the zone it last loaded, field by field, over the zone as it stands when the write goes out. A concurrent edit to another output or another field is never put back.
@@ -224,7 +233,7 @@ Live control editing is separate. `patch_layer_controls` sends `PatchControlsReq
 
 ### Membership and zone writes
 
-Device adds, moves, unassigns, and their undo and redo all go through `POST /scene/members/edit`. An add from Unassigned sends the `assignment` form with `placements` the UI computed from the rig (`placement::assignment_hints`); a move sends explicit `changes` whose `after` states already carry the arrival geometry from `placement.rs`. Zone create, rename, color, pause, and reorder `PATCH /scene/zones/{zone}`, reordering through `index` against the scene's full zone order (`tab_model::zone_move_index`).
+Device adds, moves, unassigns, and their undo and redo all go through `POST /scene/members/edit`. An add from Unassigned sends the `assignment` form with `placements` the UI computed from the rig (`placement::assignment_hints`); a move sends explicit `changes` whose `after` states already carry the arrival geometry from `placement.rs`. Zone create posts to `/scene/zones`, and rename, color, pause, and reorder `PATCH /scene/zones/{zone}`, reordering through `index` against the scene's full zone order (`tab_model::zone_move_index`). A delete's restore also recreates the zone's layers through the layer routes.
 
 ## Capability gating
 

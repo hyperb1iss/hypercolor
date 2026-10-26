@@ -119,7 +119,7 @@ To rescale everything afterward, click **Fit** in the Stage header. See [Layouts
 
 ## Undo and announcements
 
-Every move is one step in Studio's undo history: a menu choice, a drop, a **+**, or a **Remove from zone**. Press `Ctrl+Z` to undo and `Ctrl+Shift+Z` to redo, or use the **Undo** and **Redo** arrow buttons in the Stage header. Undo puts the outputs back in their old zone at the placement they had, unless you have moved them on that canvas since. Device moves and canvas edits share the one history, in the order you made them. It belongs to the current Studio visit and resets when you switch scenes or leave Studio.
+Every move is one step in Studio's undo history: a menu choice, a drop, an Unassigned card's **+**, or a **Remove from zone**. A **New zone** move is one step too, zone and all: undoing it puts the device back and removes the zone. Press `Ctrl+Z` to undo and `Ctrl+Shift+Z` to redo, or use the **Undo** and **Redo** arrow buttons in the Stage header. Undo puts the outputs back in their old zone at the placement they had, unless you have moved them on that canvas since. Device moves, canvas edits, and zone changes share the one history, in the order you made them. It belongs to the current Studio visit and resets when you switch scenes or leave Studio.
 
 Moves save as you make them, and a toast confirms each one. While a move is saving, the canvas holds still for a moment so the next edit lands on the updated zone.
 

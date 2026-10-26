@@ -78,7 +78,7 @@ The left column is the **device pane**: a search field, the open zone's devices,
 
 The center column is the **Stage**. For an LED zone it is the live canvas with the effect under the device boxes, a properties panel for the selected output below it, and **Undo**, **Redo**, and **Fit** in its header. The now-playing chip on the Stage opens the **composition panel**, a slide-over that hosts the layer editor over the Stage instead of occupying a permanent rail.
 
-Every edit commits when you make it. Moving a device, releasing a drag on the canvas, and changing a layer all write to the active scene right away, and one undo history covers device moves and canvas edits. There is nothing to save before you switch tabs or leave the page.
+Every edit commits when you make it. Moving a device, releasing a drag on the canvas, and changing a layer all write to the active scene right away, and one undo history covers device moves, canvas edits, and zone changes. There is nothing to save before you switch tabs or leave the page.
 
 The tab you have open is also the app-wide target zone. Apply an effect from the Effects page, a favorite, or the command palette after working in Studio, and it lands in the zone you were composing. The Screens tab is not a target, so opening it leaves the target on the last LED zone you had open.
 

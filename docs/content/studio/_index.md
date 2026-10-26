@@ -38,7 +38,7 @@ Studio shows one zone at a time. Each LED zone is a tab in the page header, foll
 
 The **composition panel** for the zone's layers slides in over the Stage when you click the now-playing chip.
 
-Every edit commits as you make it. There is no Save button: device moves, canvas edits, and layer changes land in the active scene immediately, and **Undo** (`Ctrl+Z`) takes back device moves and canvas edits one step at a time.
+Every edit commits as you make it. There is no Save button: device moves, canvas edits, and layer changes land in the active scene immediately, and **Undo** (`Ctrl+Z`) takes back device moves, canvas edits, and zone changes one step at a time.
 
 Studio shares one app-wide active scene, so a change made from the dashboard, another client, or the CLI lands here without a refresh. The tab you have open is also the app's target zone: apply an effect from the Effects page, a favorite, or the command palette and it lands in that zone.
 

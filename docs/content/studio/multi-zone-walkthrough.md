@@ -61,7 +61,7 @@ The keyboard is still in Main. Pick whichever route suits you; each one is a sin
 - **From Unassigned.** A device no zone claims has a **+** on its card that adds it to the open tab's zone.
 
 {% <callout type="tip" title="Steps 2 and 3 in one move"> %}
-On the Main tab, open the keyboard card's **⋯** menu and choose **Move to**, then **New zone**. Studio creates a zone named after the keyboard, moves the keyboard in, and opens the tab with the name selected so you can type over it.
+On the Main tab, open the keyboard card's **⋯** menu and choose **Move to**, then **New zone**. Studio creates a zone named after the keyboard, moves the keyboard in, and opens the tab with the name selected so you can type over it. One `Ctrl+Z` takes the whole thing back.
 {% </callout> %}
 
 Screen readers hear the move announced, for example "Moved Razer Huntsman V2 to Keyboard from Main", and a toast confirms it saved.
@@ -116,9 +116,12 @@ Every zone setting lives on its tab. Right-click a tab, or click the **⋯** on 
 
 Studio commits every step as you take it, so undo is how you back out.
 
-- **Device moves and canvas edits:** press `Ctrl+Z`, or use the **Undo** arrow button in the Stage header. Each move, drop, Unassigned **+**, resize, and **Fit** is one step, in the order you made them. `Ctrl+Shift+Z` or **Redo** steps forward again. Undoing a move puts the device back where it was, in its old zone.
-- **A deleted zone:** deleting a zone shows a **Deleted** bar with an **Undo** button for eight seconds. Undo brings the zone back with its name, color, paused state, place among the tabs, and devices. Its layers do not come back, so add them again.
-- **New zones, names, colors, pauses, and order:** these are not in the undo history. Delete a zone you made by mistake, and change the rest back from the same tab menu. Undoing a **Move to** ▸ **New zone** puts the device back but leaves the new zone, empty.
+Press `Ctrl+Z`, or use the **Undo** arrow button in the Stage header, to take back the last step. `Ctrl+Shift+Z` or **Redo** puts it back. One history holds every step in the order you made it:
+
+- **Device moves:** each move, drop, Unassigned **+**, and **Remove from zone**. Undoing a move puts the device back where it was, in its old zone.
+- **Canvas edits:** each drag, resize, field change, and **Fit**.
+- **Zone changes:** each new zone, rename, recolor, pause or resume, and reorder. A **Move to** ▸ **New zone** is one step, zone and all, so one undo puts the device back and removes the zone. If a zone you made has gained devices or layers since, undo keeps it and says so, then carries on.
+- **Deleted zones:** a delete is a step like any other, and the **Deleted** bar's **Undo** button offers the same restore for eight seconds. The zone comes back with its name, color, layers, brightness, paused state, place among the tabs, and devices.
 
 The undo history lasts while you stay in Studio on this scene. Switching scenes or leaving Studio starts it fresh.
 
