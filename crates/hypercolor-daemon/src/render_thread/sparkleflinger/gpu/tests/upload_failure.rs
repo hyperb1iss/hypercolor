@@ -208,3 +208,52 @@ fn a_failed_upload_also_forgets_the_layers_encoded_before_it() {
         "the retried frame must match a compositor that never failed"
     );
 }
+
+/// A preview that fails after its composition committed leaves that
+/// composition valid: its deferred encoder still goes out under the same
+/// output generation, and the same plan is a cache hit afterwards.
+#[test]
+fn a_failed_preview_keeps_its_committed_composition() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let (red, _red) = shared_canvas(Rgba::new(255, 0, 0, 255));
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(red.clone())),
+    );
+    let scaled_preview = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+
+    compositor
+        .pipeline
+        .preview_scale_params
+        .force_next_overflow_for_test();
+    fail_buffer_with_contents_after_for_test(0);
+    let Err(error) = compositor.compose(&plan, false, Some(scaled_preview)) else {
+        panic!("a failed preview params upload must fail the preview");
+    };
+    assert!(
+        format!("{error:#}").contains("preview staging failed"),
+        "{error:#}"
+    );
+    let generation = compositor.output_generation;
+
+    // Exporting flushes the kept encoder, which must still match the
+    // output generation it was staged under.
+    let output = read_current_output(&mut compositor);
+    assert_eq!(&output[..4], &[255, 0, 0, 255]);
+
+    compositor
+        .compose(&plan, false, Some(scaled_preview))
+        .expect("the same plan should restage its preview");
+    assert_eq!(
+        compositor.output_generation, generation,
+        "the same plan must reuse the committed composition"
+    );
+    let preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!(&preview.rgba_bytes()[..4], &[255, 0, 0, 255]);
+}

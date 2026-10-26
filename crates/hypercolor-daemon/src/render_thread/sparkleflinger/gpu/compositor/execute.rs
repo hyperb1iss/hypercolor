@@ -3,7 +3,9 @@ use anyhow::{Context, Result};
 use super::super::frame_set::{
     gpu_composed_from_surface, gpu_composed_with_preview_surface, gpu_composed_without_surfaces,
 };
-use super::super::preview::{CachedPreviewSurfaceKey, preview_request_matches_plan};
+use super::super::preview::{
+    CachedPreviewSurfaceKey, PreviewStagingFailed, preview_request_matches_plan,
+};
 use super::super::screen_upload::ScreenUploadPoolSaturated;
 use super::super::source::{cached_readback_key, copy_frame_into_output_texture};
 use super::super::{GpuCompositorOutputSurface, GpuSparkleFlinger};
@@ -24,6 +26,10 @@ impl GpuSparkleFlinger {
             Ok(composed) => super::super::GpuComposeOutcome::Produced(composed),
             Err(error) if error.is::<ScreenUploadPoolSaturated>() => {
                 tracing::debug!(%error, "retaining GPU output while screen uploads are saturated");
+                super::super::GpuComposeOutcome::Retained(gpu_composed_without_surfaces())
+            }
+            Err(error) if error.is::<PreviewStagingFailed>() => {
+                tracing::debug!(%error, "retaining GPU output without this frame's preview");
                 super::super::GpuComposeOutcome::Retained(gpu_composed_without_surfaces())
             }
             Err(error) => super::super::GpuComposeOutcome::Failed(error),
@@ -192,7 +198,7 @@ impl GpuSparkleFlinger {
                 native_screen_leases,
                 prepared_preview_surface,
             );
-            if restaged.is_err() {
+            if restaged.as_ref().is_err_and(composition_was_lost) {
                 self.invalidate_output_identity();
             }
             return restaged;
@@ -421,7 +427,7 @@ impl GpuSparkleFlinger {
             native_screen_leases,
             prepared_preview_surface,
         );
-        if read_back.is_err() {
+        if read_back.as_ref().is_err_and(composition_was_lost) {
             self.invalidate_output_identity();
         }
         read_back
@@ -442,4 +448,11 @@ impl GpuSparkleFlinger {
         self.output_generation = self.output_generation.saturating_add(1);
         self.invalidate_output_sample();
     }
+}
+
+/// Whether a failed output readback also lost the composition it read from.
+/// Only a preview that failed after its composition was kept for
+/// submission leaves the output intact.
+fn composition_was_lost(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<PreviewStagingFailed>().is_none()
 }

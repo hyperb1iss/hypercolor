@@ -40,6 +40,8 @@ pub(super) struct UniformParamsRing {
     cursor: u64,
     watermark: u64,
     #[cfg(test)]
+    force_overflow_once: bool,
+    #[cfg(test)]
     pub(super) ring_write_count: usize,
     #[cfg(test)]
     pub(super) fallback_write_count: usize,
@@ -76,6 +78,8 @@ impl UniformParamsRing {
             cursor: 0,
             watermark: 0,
             #[cfg(test)]
+            force_overflow_once: false,
+            #[cfg(test)]
             ring_write_count: 0,
             #[cfg(test)]
             fallback_write_count: 0,
@@ -105,7 +109,11 @@ impl UniformParamsRing {
         params: &[u8],
     ) -> Result<UniformParamsWrite> {
         debug_assert_eq!(params.len(), self.param_bytes as usize);
-        if self.cursor.saturating_sub(self.watermark) >= self.slot_count {
+        #[cfg(test)]
+        let forced_overflow = std::mem::take(&mut self.force_overflow_once);
+        #[cfg(not(test))]
+        let forced_overflow = false;
+        if forced_overflow || self.cursor.saturating_sub(self.watermark) >= self.slot_count {
             // Overflow: the next ring slot may still be referenced by an
             // unsubmitted encoder, so stage the write through an encoder
             // copy into the dedicated overflow slot instead.
@@ -164,6 +172,13 @@ impl UniformParamsRing {
     fn slot_offset(&self, cursor: u64) -> u32 {
         u32::try_from(cursor % self.slot_count).expect("ring slot index should fit in u32")
             * self.slot_stride
+    }
+
+    /// Send the next write down the overflow path, as if the ring were
+    /// saturated.
+    #[cfg(test)]
+    pub(super) fn force_next_overflow_for_test(&mut self) {
+        self.force_overflow_once = true;
     }
 
     #[cfg(test)]

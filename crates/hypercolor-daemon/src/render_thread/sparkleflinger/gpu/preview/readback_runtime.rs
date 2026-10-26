@@ -160,7 +160,7 @@ impl GpuSparkleFlinger {
                             None,
                             native_screen_leases,
                         );
-                        return Err(error);
+                        return Err(error.context(PreviewStagingFailed));
                     }
                 };
                 preview_surfaces.cached_scale_params = Some(params);
@@ -261,3 +261,17 @@ impl GpuSparkleFlinger {
         Ok(preview_surface)
     }
 }
+
+/// A preview could not be staged after its composition committed and was
+/// kept for submission. The compositor's output is still valid, so the
+/// failure must not invalidate the output identity.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::render_thread::sparkleflinger::gpu) struct PreviewStagingFailed;
+
+impl std::fmt::Display for PreviewStagingFailed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GPU preview staging failed after its composition committed")
+    }
+}
+
+impl std::error::Error for PreviewStagingFailed {}
