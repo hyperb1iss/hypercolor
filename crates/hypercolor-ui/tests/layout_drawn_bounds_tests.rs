@@ -6,8 +6,8 @@ use std::collections::HashSet;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
 use hypercolor_types::spatial::{
-    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
-    StripDirection, Winding, ZoneShape,
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout, Winding,
+    ZoneShape,
 };
 use hypercolor_ui::layout_geometry::{self, ResizeHandle, ResizeStart};
 
@@ -235,25 +235,6 @@ fn group_bounds_wrap_the_boxes_as_drawn() {
         approx(bottom, 0.66454 + 0.25105 * aspect * 0.5),
         "{bounds:?}"
     );
-}
-
-#[test]
-fn a_strip_beside_an_edge_keeps_its_length_through_editor_normalization() {
-    // A strip turned to stand vertically can sit right at the right edge;
-    // its length runs along its own axis, not toward that edge.
-    let size = layout_geometry::normalize_zone_size_for_editor(
-        NormalizedPosition::new(0.98, 0.5),
-        NormalizedPosition::new(0.3, 0.03),
-        &LedTopology::Strip {
-            count: 30,
-            direction: StripDirection::LeftToRight,
-        },
-        None,
-        640.0 / 480.0,
-    );
-
-    assert!(approx(size.x, 0.3), "{size:?}");
-    assert!(size.x / size.y <= 8.01, "{size:?}");
 }
 
 /// Where a box's corner draws, in normalized canvas units. `signs` picks

@@ -447,7 +447,6 @@ fn seeded_attachment_layout_handles_single_slot_attachments() {
 #[test]
 fn editor_normalization_gives_horizontal_strips_visible_height() {
     let size = layout_geometry::normalize_zone_size_for_editor(
-        NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(0.24, 0.004),
         &LedTopology::Strip {
             count: 60,
@@ -465,7 +464,6 @@ fn editor_normalization_gives_horizontal_strips_visible_height() {
 #[test]
 fn editor_normalization_gives_vertical_strips_visible_width() {
     let size = layout_geometry::normalize_zone_size_for_editor(
-        NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(0.004, 0.24),
         &LedTopology::Strip {
             count: 60,
@@ -643,7 +641,6 @@ fn circular_zones_normalize_to_a_pixel_square() {
     // (height fraction = width fraction * 4/3), matching both the CSS
     // aspect-ratio: 1 box and the sampled LED circle.
     let size = layout_geometry::normalize_zone_size_for_editor(
-        NormalizedPosition::new(0.5, 0.5),
         NormalizedPosition::new(0.2, 0.2),
         &LedTopology::Ring {
             count: 20,

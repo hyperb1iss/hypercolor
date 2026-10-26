@@ -50,13 +50,8 @@ pub enum ResizeHandle {
 pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
     let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     for zone in &mut layout.zones {
-        zone.size = normalize_zone_size_for_editor(
-            zone.position,
-            zone.size,
-            &zone.topology,
-            zone.shape.as_ref(),
-            aspect,
-        );
+        zone.size =
+            normalize_zone_size_for_editor(zone.size, &zone.topology, zone.shape.as_ref(), aspect);
     }
     layout
 }
@@ -85,7 +80,6 @@ pub fn canvas_pixel_aspect(canvas_width: u32, canvas_height: u32) -> f32 {
 /// box near an edge stays on the canvas through its position, which
 /// [`drawn_extent`] measures as drawn, rotation included.
 pub fn normalize_zone_size_for_editor(
-    _position: NormalizedPosition,
     size: NormalizedPosition,
     topology: &LedTopology,
     shape: Option<&ZoneShape>,

@@ -158,7 +158,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     updater(zone);
                     let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
-                        zone.position,
                         zone.size,
                         &zone.topology,
                         zone.shape.as_ref(),
@@ -177,7 +176,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 if changed && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                     let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
-                        zone.position,
                         zone.size,
                         &zone.topology,
                         zone.shape.as_ref(),
@@ -608,7 +606,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                 && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
                                                     zone.position = hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5);
                                                     zone.size = crate::layout_geometry::normalize_zone_size_for_editor(
-                                                        zone.position,
                                                         defaults.size,
                                                         &defaults.topology,
                                                         defaults.shape.as_ref(),

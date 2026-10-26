@@ -524,7 +524,6 @@ pub fn LayoutCanvas() -> impl IntoView {
         });
         for zone in &mut runtime.current_zones {
             zone.size = layout_geometry::normalize_zone_size_for_editor(
-                zone.position,
                 zone.size,
                 &zone.topology,
                 zone.shape.as_ref(),

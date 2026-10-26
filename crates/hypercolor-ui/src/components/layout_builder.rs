@@ -713,7 +713,6 @@ pub(crate) fn ZoneLayoutProvider(
                 let aspect = layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height);
                 for zone in &mut layout.zones {
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
-                        zone.position,
                         zone.size,
                         &zone.topology,
                         zone.shape.as_ref(),
