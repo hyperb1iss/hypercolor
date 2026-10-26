@@ -624,6 +624,18 @@ effects and scenes...".
   panel header. A favorite applies to the focused zone, which the compact zone
   chips on the same page already show.
 
+**Shipped as (2026-10-25).** There is no single `ZoneTabs` component. What the
+compact chips and the Studio strip share is the tab anatomy and keyboard model
+in `components/zone_tabs.rs`: `ZoneDot` (the identity dot, also used by the
+device pane, the Move to menu, and the sidebar rows), `ZoneLabel` (dot, name,
+and one `TabStatus` glyph, with the status exposed as the tab's description
+rather than its name), `tab_status` and `surface_status`, and `next_tab` with
+`focus_tab_soon` (arrows, Home, End, and the brackets, selection following
+focus). `CompactZoneTabs` renders the chips from those parts. The Studio strip
+(`pages/studio/zone_strip.rs`) renders the same parts and adds its editing
+affordances around them: rename in place, the zone menu, drag reorder,
+overflow, the Screens tab, and "+".
+
 ---
 
 ## 8. Dashboard Header
@@ -752,4 +764,5 @@ it as a hint.
   viewport.
 - **Consistency sweep:** one scene picker component mounted three times, one
   zone selector component in two densities, zero remaining references to
-  `ApplyTarget`.
+  `ApplyTarget`. Shipped as (2026-10-25): one shared tab anatomy and key map
+  used by both selectors, per the note in section 7.2.
