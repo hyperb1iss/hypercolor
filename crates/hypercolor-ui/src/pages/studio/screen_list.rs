@@ -11,6 +11,7 @@ use crate::app::{DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
+use crate::label_utils::natural_cmp;
 
 use super::StudioContext;
 use super::surface::{Surface, SurfaceKind, surfaces_from_zones};
@@ -38,9 +39,11 @@ pub fn ScreenList(#[prop(into)] query: Signal<String>) -> impl IntoView {
             .with(|labels| labels.get(&surface.id).cloned())
             .unwrap_or_else(|| surface.name.clone())
     };
+    // Screens list by name in counting order, so a run of identical
+    // panels reads 1, 2, 3 whatever order the scene keeps them in.
     let shown = Memo::new(move |_| {
         let query = query.get();
-        screens
+        let mut rows = screens
             .get()
             .into_iter()
             .map(|surface| {
@@ -48,7 +51,9 @@ pub fn ScreenList(#[prop(into)] query: Signal<String>) -> impl IntoView {
                 (surface, label)
             })
             .filter(|(_, label)| query.is_empty() || label.to_lowercase().contains(&query))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        rows.sort_by(|(_, left), (_, right)| natural_cmp(left, right));
+        rows
     });
     let count = move || {
         let total = screens.with(Vec::len);
