@@ -742,6 +742,7 @@ pub(crate) fn ZoneLayoutProvider(
         refetched: Callback::new(move |scene| studio_history.adopt(scene)),
         changed: Callback::new(move |_zone_id: String| ledger_tick.update(|tick| *tick += 1)),
         problem: Callback::new(move |message: String| toasts::toast_error(&message)),
+        idle: Callback::new(move |()| studio_history.resume()),
     });
     on_cleanup(move || writer::detach(lent));
 

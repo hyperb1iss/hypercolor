@@ -560,12 +560,21 @@ impl StudioHistory {
             .waiting
             .try_with_value(|waiting| !waiting.is_empty())
             .unwrap_or(false);
-        if self.is_free() && !queued && !self.gesture_running() {
+        if self.is_free() && !queued && !self.gesture_running() && !self.commits_pending() {
             self.run(operation);
         } else {
             self.waiting
                 .try_update_value(|waiting| waiting.push_back(operation));
+            self.next_waiting();
         }
+    }
+
+    /// Whether layout commits wait or are being written. They go before any
+    /// operation, so an operation never acts on a zone an edit is still
+    /// landing in.
+    fn commits_pending(self) -> bool {
+        self.editor_hooks()
+            .is_some_and(|editor| editor.commits_pending.try_run(()).unwrap_or(false))
     }
 
     /// Pick the queue up again after a canvas gesture ends.
@@ -578,14 +587,13 @@ impl StudioHistory {
     /// with every finished edit (an undo included) already written.
     fn next_waiting(self) {
         while self.is_free() {
-            let editor = self.editor_hooks();
-            if let Some(editor) = editor
-                && editor.commits_pending.run(())
-            {
-                editor.drain_commits.run(());
-                if !self.is_free() {
-                    return;
+            if self.commits_pending() {
+                // The writer takes them; it hands the scene back as it goes
+                // idle, and the queue picks up from there.
+                if let Some(editor) = self.editor_hooks() {
+                    let _ = editor.drain_commits.try_run(());
                 }
+                return;
             }
             if self.gesture_running() {
                 return;
@@ -1705,6 +1713,36 @@ mod replay_tests {
                 assert!(matches!(journal.entries[0], StudioEdit::ZoneDeleted(_)));
                 assert!(matches!(journal.entries[1], StudioEdit::Members(_)));
             });
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn an_operation_waits_for_pending_layout_commits_to_land() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let history = history(None, false, None, zone);
+            let pending = RwSignal::new(true);
+            let drained = RwSignal::new(0_u32);
+            history.attach_editor(Some(EditorHooks {
+                commits_pending: Callback::new(move |()| pending.get_untracked()),
+                drain_commits: Callback::new(move |()| drained.update(|count| *count += 1)),
+                gesture_active: Callback::new(|()| false),
+            }));
+            history.delete_zone(zone.to_owned(), Callback::new(|_| {}));
+            assert!(
+                history.waiting.with_value(|waiting| waiting.len() == 1),
+                "the delete waits for the commits"
+            );
+            assert!(drained.get_untracked() > 0, "and the writer is asked to go");
+            // A scene released between two writes still starts nothing.
+            history.resume();
+            assert!(history.waiting.with_value(|waiting| waiting.len() == 1));
+            // The writer goes idle and hands the scene back.
+            pending.set(false);
+            history.resume();
+            assert!(history.waiting.with_value(VecDeque::is_empty));
         });
         owner.cleanup();
     }

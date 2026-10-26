@@ -45,6 +45,9 @@ pub(crate) struct WriterHooks {
     pub changed: Callback<String>,
     /// Something the user should hear about.
     pub problem: Callback<String>,
+    /// The writer stopped and let the scene go: Studio's own queue can
+    /// take it.
+    pub idle: Callback<()>,
 }
 
 #[derive(Default)]
@@ -235,7 +238,40 @@ pub(crate) fn resume() {
     wake();
 }
 
-/// Start writing, unless the writer already runs or has nothing to do.
+/// How a run of the writer ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ended {
+    /// Nothing left to do for now.
+    Done,
+    /// Another operation holds the scene; it wakes the writer as it ends.
+    Blocked,
+    /// A failure stopped it; a new edit or a reopened socket resumes it.
+    Paused,
+}
+
+/// Claim the scene for one turn: `Some(None)` with no Studio to claim it
+/// from, `None` while another operation holds it.
+fn claim() -> Option<Option<(WriterHooks, u64)>> {
+    match hooks() {
+        Some(hooks) => hooks
+            .begin
+            .try_run(())
+            .flatten()
+            .map(|generation| Some((hooks, generation))),
+        None => Some(None),
+    }
+}
+
+fn release(claim: Option<(WriterHooks, u64)>) {
+    if let Some((hooks, generation)) = claim {
+        let _ = hooks.end.try_run(generation);
+    }
+}
+
+/// Start writing, unless the writer already runs or has nothing to do. The
+/// first turn's claim is taken here, before anything is spawned, so a scene
+/// another operation holds starts nothing at all: that operation wakes the
+/// writer as it ends.
 pub(crate) fn wake() {
     let ready = with_ledgers(|ledgers| {
         (!ledgers.writing && ledgers.has_work())
@@ -245,11 +281,21 @@ pub(crate) fn wake() {
     let Some(scene_id) = ready else {
         return;
     };
+    let Some(first) = claim() else {
+        return;
+    };
     with_ledgers(|ledgers| ledgers.writing = true);
     leptos::task::spawn_local(async move {
-        run(scene_id).await;
+        let ended = run(scene_id, first).await;
         with_ledgers(|ledgers| ledgers.writing = false);
-        wake();
+        // Commits still go first: more work starts the writer again before
+        // the queue gets the scene.
+        if ended == Ended::Done {
+            wake();
+        }
+        if let Some(hooks) = hooks() {
+            let _ = hooks.idle.try_run(());
+        }
     });
 }
 
@@ -265,10 +311,17 @@ fn problem(message: &str) {
     }
 }
 
-/// Stop for a failure, and say so.
+/// Stop for a failure, and say so, while the ledgers still belong to
+/// `scene_id`.
 fn pause(scene_id: SceneId, message: &str) {
-    with_ledgers(|ledgers| ledgers.pause(scene_id));
-    problem(message);
+    let paused = with_ledgers(|ledgers| {
+        let ours = ledgers.scene_id == Some(scene_id);
+        ledgers.pause(scene_id);
+        ours
+    });
+    if paused {
+        problem(message);
+    }
 }
 
 /// What one turn of the writer does.
@@ -302,41 +355,56 @@ async fn read_scene(scene_id: SceneId) -> Option<api::SceneDocument> {
         .filter(|scene| scene.id == scene_id)
 }
 
+/// Failures in a row, so a writer that keeps failing stops and says so.
+#[derive(Default)]
+struct Streaks {
+    stale: u32,
+    lost: u32,
+}
+
 /// Write until no zone of `scene_id` has anything to send or settle. With
-/// a Studio mounted, every turn claims the scene for itself and releases it
-/// after, so Studio's own operations go between writes.
-async fn run(scene_id: SceneId) {
-    let mut stale_streak = 0;
+/// a Studio mounted, every turn holds a claim on the scene of its own and
+/// releases it after; a claim refused ends the run.
+async fn run(scene_id: SceneId, first: Option<(WriterHooks, u64)>) -> Ended {
+    let mut streaks = Streaks::default();
+    let mut held = first;
     loop {
-        let claim = match hooks() {
-            Some(hooks) => match hooks.begin.try_run(()).flatten() {
-                Some(generation) => Some((hooks, generation)),
-                None => break,
-            },
-            None => None,
-        };
         let Some(turn) = next_turn(scene_id) else {
-            if let Some((hooks, generation)) = claim {
-                let _ = hooks.end.try_run(generation);
-            }
-            break;
+            release(held);
+            return Ended::Done;
         };
-        let keep_going = match turn {
-            Turn::Settle(zone_id) => settle_lost(scene_id, &zone_id).await,
-            Turn::Send(zone_id, write) => send(scene_id, &zone_id, write, &mut stale_streak).await,
+        let going = match turn {
+            Turn::Settle(zone_id) => settle_lost(scene_id, &zone_id, None, &mut streaks).await,
+            Turn::Send(zone_id, write) => send(scene_id, &zone_id, write, &mut streaks).await,
         };
-        if let Some((hooks, generation)) = claim {
-            let _ = hooks.end.try_run(generation);
+        release(held);
+        if !going {
+            return Ended::Paused;
         }
-        if !keep_going {
-            break;
-        }
+        let Some(next) = claim() else {
+            return Ended::Blocked;
+        };
+        held = next;
     }
 }
 
-/// Read the scene to learn whether a lost write landed. Reports whether
-/// the writer goes on.
-async fn settle_lost(scene_id: SceneId, zone_id: &str) -> bool {
+fn canvas() -> (u32, u32) {
+    with_ledgers(|ledgers| ledgers.canvas).unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
+}
+
+/// How many lost replies in a row the writer settles and resends before
+/// it pauses.
+const LOST_STREAK: u32 = 3;
+
+/// Read the scene to learn whether a lost write landed. `answered` is the
+/// daemon's own error when it replied with one, which means a write the
+/// read finds not landed was refused. Reports whether the writer goes on.
+async fn settle_lost(
+    scene_id: SceneId,
+    zone_id: &str,
+    answered: Option<&str>,
+    streaks: &mut Streaks,
+) -> bool {
     let canvas = canvas();
     let Some(scene) = read_scene(scene_id).await else {
         pause(
@@ -346,6 +414,9 @@ async fn settle_lost(scene_id: SceneId, zone_id: &str) -> bool {
         return false;
     };
     let settled = with_ledgers(|ledgers| {
+        if ledgers.scene_id != Some(scene_id) {
+            return None;
+        }
         let zone = scene
             .zones
             .iter()
@@ -359,22 +430,91 @@ async fn settle_lost(scene_id: SceneId, zone_id: &str) -> bool {
     if let Some(hooks) = hooks() {
         let _ = hooks.refetched.try_run(scene);
     }
-    if settled == Some(Settled::Landed { unconfirmed: true }) {
-        problem(
-            "A layout change may not have been saved, and the scene has changed since. Check the canvas.",
-        );
-    }
     changed(zone_id);
-    true
+    match settled {
+        Some(Settled::Resend) => {
+            if let Some(error) = answered {
+                pause(
+                    scene_id,
+                    &format!(
+                        "Layout change not saved: {error}. It goes out again with your next edit."
+                    ),
+                );
+                return false;
+            }
+            streaks.lost += 1;
+            if streaks.lost >= LOST_STREAK {
+                pause(
+                    scene_id,
+                    "Layout change not saved yet: replies keep getting lost. It goes out again when the connection is back or with your next edit.",
+                );
+                return false;
+            }
+            true
+        }
+        Some(Settled::Landed { unconfirmed }) => {
+            streaks.lost = 0;
+            if unconfirmed {
+                problem(
+                    "A layout change may not have been saved, and the scene has changed since. Check the canvas.",
+                );
+            }
+            true
+        }
+        None => true,
+    }
 }
 
-fn canvas() -> (u32, u32) {
-    with_ledgers(|ledgers| ledgers.canvas).unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
+/// After a stale rejection: read the scene, settle what it satisfies, and
+/// go again, up to a streak. Reports whether the writer goes on.
+async fn after_stale(scene_id: SceneId, zone_id: &str, id: u64, streaks: &mut Streaks) -> bool {
+    with_ledgers(|ledgers| {
+        if ledgers.scene_id == Some(scene_id) {
+            ledgers.zone_mut(zone_id).stale(id);
+        }
+    });
+    streaks.stale += 1;
+    let canvas = canvas();
+    let Some(scene) = read_scene(scene_id).await else {
+        pause(
+            scene_id,
+            "Layout change not saved yet: the scene could not be read. It goes out again when the connection is back or with your next edit.",
+        );
+        return false;
+    };
+    with_ledgers(|ledgers| {
+        if ledgers.scene_id != Some(scene_id) {
+            return;
+        }
+        if let Some(zone) = scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)
+        {
+            let (raw, shown) = zone_outputs(zone, canvas);
+            ledgers
+                .zone_mut(zone_id)
+                .refetched(scene.revision, raw, shown);
+        }
+    });
+    confirm_known(&scene, canvas);
+    if let Some(hooks) = hooks() {
+        let _ = hooks.refetched.try_run(scene);
+    }
+    changed(zone_id);
+    if streaks.stale >= STALE_STREAK {
+        pause(
+            scene_id,
+            "Layout change not saved yet: the scene keeps changing elsewhere. It goes out again with your next edit.",
+        );
+        return false;
+    }
+    true
 }
 
 /// Send one write and take in its outcome. Reports whether the writer goes
 /// on.
-async fn send(scene_id: SceneId, zone_id: &str, write: Write, stale_streak: &mut u32) -> bool {
+async fn send(scene_id: SceneId, zone_id: &str, write: Write, streaks: &mut Streaks) -> bool {
     // The layout route stores each member's placement and nothing else.
     let layout = SpatialLayout {
         id: zone_id.to_owned(),
@@ -390,7 +530,8 @@ async fn send(scene_id: SceneId, zone_id: &str, write: Write, stale_streak: &mut
     let canvas = canvas();
     match api::zones::update_zone_layout(zone_id, &layout, write.fence).await {
         Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
-            *stale_streak = 0;
+            streaks.stale = 0;
+            streaks.lost = 0;
             let revision = landed.unwrap_or_else(|| write.fence.saturating_add(1));
             let (raw, shown) = zone_outputs(&zone, canvas);
             with_ledgers(|ledgers| {
@@ -417,72 +558,115 @@ async fn send(scene_id: SceneId, zone_id: &str, write: Write, stale_streak: &mut
             true
         }
         Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-            with_ledgers(|ledgers| {
-                if ledgers.scene_id == Some(scene_id) {
-                    ledgers.zone_mut(zone_id).stale(write.id);
-                }
-            });
-            *stale_streak += 1;
-            let Some(scene) = read_scene(scene_id).await else {
-                pause(
-                    scene_id,
-                    "Layout change not saved yet: the scene could not be read. It goes out again when the connection is back or with your next edit.",
-                );
-                return false;
-            };
-            with_ledgers(|ledgers| {
-                if let Some(zone) = scene
-                    .zones
-                    .iter()
-                    .find(|zone| zone.id.to_string() == zone_id)
-                {
-                    let (raw, shown) = zone_outputs(zone, canvas);
-                    ledgers
-                        .zone_mut(zone_id)
-                        .refetched(scene.revision, raw, shown);
-                }
-            });
-            confirm_known(&scene, canvas);
-            if let Some(hooks) = hooks() {
-                let _ = hooks.refetched.try_run(scene);
-            }
-            changed(zone_id);
-            if *stale_streak >= STALE_STREAK {
-                pause(
-                    scene_id,
-                    "Layout change not saved yet: the scene keeps changing elsewhere. It goes out again with your next edit.",
-                );
-                return false;
-            }
-            true
+            after_stale(scene_id, zone_id, write.id, streaks).await
         }
         Err(error) => {
-            // A refusal is final: the write did not land.
-            if matches!(&error, api::ApiError::Http { status, .. } if (400..500).contains(status)) {
-                with_ledgers(|ledgers| {
-                    if ledgers.scene_id == Some(scene_id) {
-                        ledgers.zone_mut(zone_id).failed(write.id);
-                    }
-                });
-                changed(zone_id);
-                pause(
-                    scene_id,
-                    &format!(
-                        "Layout change not saved: {error}. It goes out again with your next edit."
-                    ),
-                );
-                return false;
-            }
-            // Lost, unreadable, or failed after the daemon may have
-            // committed it: a fresh read settles it before anything else
-            // goes out.
-            with_ledgers(|ledgers| {
-                if ledgers.scene_id == Some(scene_id) {
-                    ledgers.zone_mut(zone_id).lost(write.id);
+            let status = match &error {
+                api::ApiError::Http { status, .. } => Some(*status),
+                _ => None,
+            };
+            match status {
+                // A commit race: another write won, as with a stale fence.
+                Some(409) => after_stale(scene_id, zone_id, write.id, streaks).await,
+                // A refusal is final: the write did not land.
+                Some(status) if (400..500).contains(&status) => {
+                    with_ledgers(|ledgers| {
+                        if ledgers.scene_id == Some(scene_id) {
+                            ledgers.zone_mut(zone_id).failed(write.id);
+                        }
+                    });
+                    changed(zone_id);
+                    pause(
+                        scene_id,
+                        &format!(
+                            "Layout change not saved: {error}. It goes out again with your next edit."
+                        ),
+                    );
+                    false
                 }
-            });
-            changed(zone_id);
-            true
+                // Lost, unreadable, or failed after the daemon may have
+                // committed it: a fresh read settles it before anything
+                // else goes out.
+                _ => {
+                    with_ledgers(|ledgers| {
+                        if ledgers.scene_id == Some(scene_id) {
+                            ledgers.zone_mut(zone_id).lost(write.id);
+                        }
+                    });
+                    let answered = status.is_some().then(|| error.to_string());
+                    settle_lost(scene_id, zone_id, answered.as_deref(), streaks).await
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hypercolor_types::spatial::{LedTopology, NormalizedPosition, StripDirection};
+
+    fn output(x: f32) -> Output {
+        Output {
+            id: "a".to_owned(),
+            name: "a".to_owned(),
+            device_id: "usb:a".to_owned(),
+            zone_name: None,
+            position: NormalizedPosition::new(x, 0.5),
+            size: NormalizedPosition::new(0.1, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 10,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        }
+    }
+
+    #[test]
+    fn a_held_scene_starts_no_writer_until_its_holder_lets_go() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let scene_id = SceneId::new();
+            select_scene(scene_id);
+            with_ledgers(|ledgers| {
+                let ledger = ledgers.zone_mut("zone");
+                ledger.confirm(1, vec![output(0.2)], vec![output(0.2)]);
+                assert!(ledger.edit(&[output(0.4)]));
+            });
+            let asked = StoredValue::new(0_u32);
+            let lent = attach(WriterHooks {
+                begin: Callback::new(move |()| {
+                    asked.update_value(|asked| *asked += 1);
+                    None
+                }),
+                end: Callback::new(|_| {}),
+                landed: Callback::new(|_| {}),
+                refetched: Callback::new(|_| {}),
+                changed: Callback::new(|_| {}),
+                problem: Callback::new(|_| {}),
+                idle: Callback::new(|()| {}),
+            });
+            // Woken again and again while an operation holds the scene: each
+            // asks once and starts nothing, so nothing spins.
+            for _ in 0..3 {
+                wake();
+            }
+            assert_eq!(asked.get_value(), 3);
+            assert!(!with_ledgers(|ledgers| ledgers.writing));
+            assert!(busy(scene_id), "the edit still waits to go");
+            detach(lent);
+        });
+        owner.cleanup();
     }
 }
