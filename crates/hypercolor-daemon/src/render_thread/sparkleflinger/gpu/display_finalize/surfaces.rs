@@ -38,13 +38,42 @@ impl PendingGpuDisplayFinalize {
             receiver: None,
             map_ready: false,
             slot,
+            #[cfg(test)]
+            unmaps: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
+    /// Unmap this finalization's readback buffer. Every display finalize
+    /// cleanup path goes through here, and each path unmaps exactly once:
+    /// on a destroyed buffer every extra unmap raises its own validation
+    /// error.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn unmap(&self) {
+        #[cfg(test)]
+        self.unmaps
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.buffer.unmap();
+    }
+
+    /// Clean up after a failed map: the one owner of that unmap, so the
+    /// callback handler that reports the failure leaves the buffer alone.
     pub(in crate::render_thread::sparkleflinger::gpu) fn unmap_after_failed_map(&mut self) {
         self.receiver = None;
         self.map_ready = false;
-        self.buffer.unmap();
+        self.unmap();
+    }
+
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger::gpu) fn unmap_count(&self) -> u32 {
+        self.unmaps.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Make the pending map callback report failure, the way a map the GPU
+    /// aborted does.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger::gpu) fn fail_map_for_test(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send(Err(wgpu::BufferAsyncError));
+        self.receiver = Some(receiver);
     }
 
     pub(in crate::render_thread::sparkleflinger::gpu) fn map_ready(&self) -> bool {

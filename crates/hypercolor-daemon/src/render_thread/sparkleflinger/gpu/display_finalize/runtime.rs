@@ -369,7 +369,7 @@ impl GpuSparkleFlinger {
         &mut self,
         pending: PendingGpuDisplayFinalize,
     ) {
-        pending.buffer.unmap();
+        pending.unmap();
         self.release_display_finalize_slot(
             pending.cache_key,
             pending.surface_generation,
@@ -441,7 +441,7 @@ impl GpuSparkleFlinger {
                     .get_mut(&pending.cache_key)
                     .filter(|surfaces| surfaces.generation == pending.surface_generation)
                 else {
-                    pending.buffer.unmap();
+                    pending.unmap();
                     anyhow::bail!("GPU display finalize surfaces changed before RGBA readback");
                 };
                 copy_mapped_readback_buffer_into_surface(

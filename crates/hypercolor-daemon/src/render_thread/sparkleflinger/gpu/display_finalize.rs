@@ -81,4 +81,7 @@ pub(crate) struct PendingGpuDisplayFinalize {
     receiver: Option<mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>>,
     map_ready: bool,
     pub(super) slot: usize,
+    /// Times `unmap` ran for this finalization's buffer.
+    #[cfg(test)]
+    unmaps: std::sync::atomic::AtomicU32,
 }

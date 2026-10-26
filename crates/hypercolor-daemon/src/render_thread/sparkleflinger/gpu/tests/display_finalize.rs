@@ -366,3 +366,29 @@ fn display_source_textures_that_fail_to_allocate_are_rebuilt_on_retry() {
     let surface = finalize_display_face_blocking(&mut compositor, &scene, &large_face, params);
     assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
 }
+
+/// A map callback that reports failure leaves exactly one unmap, done by
+/// the failed-map cleanup, and frees the readback slot.
+#[test]
+fn a_failed_display_readback_map_unmaps_its_buffer_once() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+    let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
+    let GpuDisplayFinalizeDispatch::Pending(mut pending) = compositor
+        .begin_finalize_display_face(&scene, &face, params)
+        .expect("RGBA display finalize should dispatch")
+    else {
+        panic!("a 2x2 RGBA display finalize should be admitted");
+    };
+    pending.fail_map_for_test();
+
+    let Err(error) = compositor.try_finish_pending_display_finalization(&mut pending) else {
+        panic!("a failed map must fail the finalization");
+    };
+    assert!(format!("{error:#}").contains("mapping failed"), "{error:#}");
+    assert_eq!(pending.unmap_count(), 1, "a failed map unmaps once");
+    assert_eq!(compositor.display_finalize_readback_slots_in_use(), 0);
+}
