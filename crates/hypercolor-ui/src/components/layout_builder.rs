@@ -744,6 +744,16 @@ pub(crate) fn ZoneLayoutProvider(
         }
     });
 
+    // A writer that paused on a failure tries again once the socket opens
+    // again.
+    Effect::new(move |previous: Option<u64>| {
+        let opened = ws_ctx.connection_generation.get();
+        if previous.is_some_and(|previous| previous != opened) {
+            writer::resume();
+        }
+        opened
+    });
+
     // One edit: the whole group scales and recenters together, so undo
     // steps back over the Fit in one go.
     let fit = Callback::new(move |()| {

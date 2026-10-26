@@ -6,8 +6,10 @@
 //! Each zone keeps two things.
 //!
 //! - **Confirmed**: the zone as the daemon last reported it, with the scene
-//!   revision of that report. A report replaces it only when its revision
-//!   is newer. Nothing about it is ever inferred from values.
+//!   revision of that report. A scene read replaces it when its revision is
+//!   at least as new; a write's reply only when it is newer, since a read
+//!   at the same revision is the daemon's own account of that revision.
+//!   Nothing about it is inferred from values.
 //! - **Pending intents**: the local edits the daemon has not confirmed, in
 //!   the order they were made. Each names one output, one placement field,
 //!   and the value the user gave that field.
@@ -18,13 +20,22 @@
 //!
 //! A write carries every intent pending when it is sent, each field at its
 //! latest value, and is fenced at confirmed's revision. Fields with no
-//! intent go out as confirmed has them, which under the fence changes
-//! nothing on the daemon. The write's reply retires exactly the intents it
-//! carried, and adopts the reply's zone only when its revision is newer
-//! than confirmed. A stale rejection retires nothing: the zone is read
-//! afresh, a field whose fresh value already equals its latest intent drops
-//! its intents (that is how an edit that depended on a write the daemon
-//! already holds settles), and what remains goes out again.
+//! intent go out as the daemon stores them in confirmed, which under the
+//! fence changes nothing. One write is out at a time. Its outcome settles
+//! it:
+//!
+//! - **Applied**: the intents it carried retire, and the reply's zone is
+//!   adopted if its revision is newer than confirmed.
+//! - **Stale**: nothing retires. The zone is read afresh, a field whose
+//!   fresh value already equals its latest intent drops its intents (that
+//!   is how an edit that depended on a write the daemon already holds
+//!   settles), and what remains goes out again.
+//! - **Unknown** (the reply was lost): the zone is read afresh before
+//!   anything else goes out. At the write's own fence nothing landed, so it
+//!   goes out again. Past it, the write may have landed and been followed
+//!   by others, so it is taken as landed and its intents retire: sending it
+//!   again could undo a later remote write. When the fresh zone does not
+//!   hold what it carried, the user is told.
 //!
 //! Between clients the daemon's order decides. A remote write that lands
 //! after ours wins; a local intent that reaches the daemon later wins.
@@ -32,7 +43,7 @@
 //!
 //! Confirmed holds the zone twice: `raw`, as the daemon stores it, which a
 //! write starts from; and `shown`, as the canvas draws it (sizes normalized
-//! for the canvas), which edits and the stale check compare against.
+//! for the canvas), which edits and the fresh-read checks compare against.
 
 use hypercolor_types::spatial::{Orientation, Output};
 
@@ -112,8 +123,11 @@ struct Confirmed {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Sent {
     id: u64,
+    fence: u64,
     /// The newest intent the write carried.
     through: u64,
+    /// The reply was lost; a fresh read must settle it.
+    unknown: bool,
 }
 
 /// A write to send: the zone's outputs to store, fenced at `fence`.
@@ -122,6 +136,16 @@ pub struct Write {
     pub id: u64,
     pub fence: u64,
     pub outputs: Vec<Output>,
+}
+
+/// How a fresh read settled a write whose reply was lost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    /// Nothing had landed: its intents go out again.
+    Resend,
+    /// Taken as landed. `unconfirmed` when the fresh zone does not hold
+    /// what it carried, so the user should check the canvas.
+    Landed { unconfirmed: bool },
 }
 
 /// One zone's confirmed layout and its pending intents.
@@ -146,19 +170,7 @@ fn apply(outputs: &mut [Output], intents: &[Intent]) {
 }
 
 impl ZoneLedger {
-    /// Take in the zone as the daemon reported it at `revision`. A newer
-    /// report replaces confirmed; the same revision only redraws it (the
-    /// canvas changed size); an older one changes nothing. Intents for
-    /// outputs the zone no longer holds go with them.
-    pub fn confirm(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) {
-        match self.confirmed.as_mut() {
-            Some(confirmed) if revision < confirmed.revision => return,
-            Some(confirmed) if revision == confirmed.revision => {
-                confirmed.shown = shown;
-                return;
-            }
-            _ => {}
-        }
+    fn adopt(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) {
         self.pending
             .retain(|intent| shown.iter().any(|output| output.id == intent.output_id));
         self.confirmed = Some(Confirmed {
@@ -166,6 +178,22 @@ impl ZoneLedger {
             raw,
             shown,
         });
+    }
+
+    /// Take in the zone as a scene read reported it at `revision`. A read
+    /// as new as confirmed or newer replaces it (the same revision redraws
+    /// it, after a canvas resize or over a reply's account of that
+    /// revision); an older one changes nothing. Intents for outputs the
+    /// zone no longer holds go with them.
+    pub fn confirm(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) {
+        if self
+            .confirmed
+            .as_ref()
+            .is_some_and(|confirmed| revision < confirmed.revision)
+        {
+            return;
+        }
+        self.adopt(revision, raw, shown);
     }
 
     /// Confirmed's outputs as the daemon stores them.
@@ -180,6 +208,17 @@ impl ZoneLedger {
     #[must_use]
     pub fn revision(&self) -> Option<u64> {
         self.confirmed.as_ref().map(|confirmed| confirmed.revision)
+    }
+
+    /// Move confirmed from revision `from` to `to` without changing it,
+    /// when the only change between them is known to be elsewhere (another
+    /// zone's write that landed at `to`, fenced at `from`).
+    pub fn advance(&mut self, from: u64, to: u64) {
+        if let Some(confirmed) = self.confirmed.as_mut()
+            && confirmed.revision == from
+        {
+            confirmed.revision = to;
+        }
     }
 
     /// What the canvas shows: confirmed with every pending intent applied.
@@ -227,7 +266,13 @@ impl ZoneLedger {
     /// Whether a write is out and its outcome not yet known.
     #[must_use]
     pub fn in_flight(&self) -> bool {
-        self.sent.is_some()
+        self.sent.is_some_and(|sent| !sent.unknown)
+    }
+
+    /// Whether a write's reply was lost, so a fresh read must come first.
+    #[must_use]
+    pub fn unsettled(&self) -> bool {
+        self.sent.is_some_and(|sent| sent.unknown)
     }
 
     /// The pending intents, oldest first.
@@ -236,9 +281,9 @@ impl ZoneLedger {
         &self.pending
     }
 
-    /// The next write, when intents wait and no write is out: confirmed's
-    /// stored outputs with each intent's field at its latest value, fenced
-    /// at confirmed's revision.
+    /// The next write, when intents wait and no write is out or unsettled:
+    /// confirmed's stored outputs with each intent's field at its latest
+    /// value, fenced at confirmed's revision.
     pub fn take_write(&mut self) -> Option<Write> {
         if self.sent.is_some() {
             return None;
@@ -250,7 +295,9 @@ impl ZoneLedger {
         self.next_write += 1;
         self.sent = Some(Sent {
             id: self.next_write,
+            fence: confirmed.revision,
             through,
+            unknown: false,
         });
         Some(Write {
             id: self.next_write,
@@ -260,7 +307,7 @@ impl ZoneLedger {
     }
 
     fn settle(&mut self, id: u64) -> Option<Sent> {
-        let sent = self.sent.filter(|sent| sent.id == id)?;
+        let sent = self.sent.filter(|sent| sent.id == id && !sent.unknown)?;
         self.sent = None;
         Some(sent)
     }
@@ -272,7 +319,13 @@ impl ZoneLedger {
             return;
         };
         self.pending.retain(|intent| intent.seq > sent.through);
-        self.confirm(revision, raw, shown);
+        if self
+            .confirmed
+            .as_ref()
+            .is_none_or(|confirmed| revision > confirmed.revision)
+        {
+            self.adopt(revision, raw, shown);
+        }
     }
 
     /// Write `id` met a newer revision than its fence. Its intents stay;
@@ -281,10 +334,52 @@ impl ZoneLedger {
         self.settle(id);
     }
 
-    /// Write `id` failed for another reason, or its outcome is unknown.
-    /// Its intents stay for the next write.
+    /// Write `id` was refused outright, so it did not land. Its intents
+    /// stay for the next write.
     pub fn failed(&mut self, id: u64) {
         self.settle(id);
+    }
+
+    /// Write `id`'s reply was lost, so whether it landed is unknown. No
+    /// write goes out until [`Self::settle_lost`] takes in a fresh read.
+    pub fn lost(&mut self, id: u64) {
+        if let Some(sent) = self.sent.as_mut().filter(|sent| sent.id == id) {
+            sent.unknown = true;
+        }
+    }
+
+    /// Take in a fresh read after a lost reply, and settle the write it
+    /// left unknown: at the write's fence nothing landed, so its intents
+    /// stay to go out again; past it, the write is taken as landed and its
+    /// intents retire. `None` when no write was unknown.
+    pub fn settle_lost(
+        &mut self,
+        revision: u64,
+        raw: Vec<Output>,
+        shown: Vec<Output>,
+    ) -> Option<Settled> {
+        let sent = self.sent.filter(|sent| sent.unknown)?;
+        self.sent = None;
+        if revision <= sent.fence {
+            self.confirm(revision, raw, shown);
+            return Some(Settled::Resend);
+        }
+        // Given up on: a field the write carried with no newer intent to
+        // send after it, which the fresh zone does not hold.
+        let unconfirmed = self.pending.iter().enumerate().any(|(index, intent)| {
+            let latest = !self.pending[index + 1..]
+                .iter()
+                .any(|later| later.output_id == intent.output_id && later.field == intent.field);
+            intent.seq <= sent.through
+                && latest
+                && shown
+                    .iter()
+                    .find(|output| output.id == intent.output_id)
+                    .is_some_and(|output| intent.field.read(output) != intent.value)
+        });
+        self.pending.retain(|intent| intent.seq > sent.through);
+        self.confirm(revision, raw, shown);
+        Some(Settled::Landed { unconfirmed })
     }
 
     /// Take in the zone read afresh after a stale rejection, then drop the
