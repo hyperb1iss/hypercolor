@@ -833,9 +833,10 @@ impl WindowsDirectory {
     /// regular file, or a removal failure.
     pub fn remove_file(&self, name: &OsStr) -> io::Result<()> {
         self.require_write()?;
+        // Reading the entry's kind needs FILE_READ_ATTRIBUTES on the handle.
         let handle = self.nt_open(
             name,
-            DELETE | SYNCHRONIZE,
+            DELETE | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
             FILE_OPEN,
             FILE_NON_DIRECTORY_FILE,
         )?;
