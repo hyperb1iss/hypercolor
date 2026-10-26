@@ -28,7 +28,8 @@ use super::placement;
 use super::surface::{SurfaceKind, surfaces_from_zones};
 
 /// Run `action` on `payload`. `focus` names where focus goes once the move
-/// lands; a drag passes `None`.
+/// lands; a drag passes `None`. A move asked for while another write runs
+/// waits its turn in Studio history rather than being refused.
 pub(crate) fn perform(
     drag: DragController,
     payload: MovePayload,
@@ -36,10 +37,6 @@ pub(crate) fn perform(
     focus: Option<FocusReturn>,
 ) {
     let studio = drag.studio;
-    if studio.history.busy.get_untracked() {
-        toasts::toast_info("Still saving the last change");
-        return;
-    }
     let focus = focus.map(|mut focus| {
         if focus.fallback.is_none() {
             focus.fallback = landing_dom_id(studio, &payload, &action);
@@ -48,17 +45,17 @@ pub(crate) fn perform(
     });
     match action {
         DropAction::MoveTo(zone_id) => {
-            let done = announce_move(drag, &payload, &zone_id, focus);
-            move_into(drag, &payload, &zone_id, None, done);
+            let settle = announce_move(drag, &payload, &zone_id, focus);
+            move_into(drag, &payload, &zone_id, None, settle);
         }
         DropAction::Place { zone_id, point } => {
-            let done = if payload.is_in(&zone_id) {
+            let settle = if payload.is_in(&zone_id) {
                 let text = placed_announcement(&payload.label, &zone_name(studio, &zone_id));
                 announce_after(drag, text, focus)
             } else {
                 announce_move(drag, &payload, &zone_id, focus)
             };
-            move_into(drag, &payload, &zone_id, Some(point), done);
+            move_into(drag, &payload, &zone_id, Some(point), settle);
         }
         DropAction::Unassign => {
             let from = origin_name(&payload.origin, |id| zone_name(studio, id));
@@ -115,12 +112,20 @@ pub(crate) fn led_zones(scene: &api::SceneDocument) -> Vec<(String, String, Opti
         .collect()
 }
 
+/// How a move settles for whoever asked for it.
+struct Settle {
+    /// The write landed at a revision, or did not apply.
+    done: EditDone,
+    /// Nothing needed to change: no write, and nothing to announce.
+    unchanged: Box<dyn FnOnce()>,
+}
+
 fn announce_move(
     drag: DragController,
     payload: &MovePayload,
     zone_id: &str,
     focus: Option<FocusReturn>,
-) -> EditDone {
+) -> Settle {
     let studio = drag.studio;
     let from = origin_name(&payload.origin, |id| zone_name(studio, id));
     let text = moved_announcement(&payload.label, &zone_name(studio, zone_id), &from);
@@ -129,21 +134,30 @@ fn announce_move(
 
 /// Announce `text` once the write applies, then return focus. A write that
 /// did not apply already raised its own toast; the announcement says so too.
-fn announce_after(drag: DragController, text: String, focus: Option<FocusReturn>) -> EditDone {
-    Box::new(move |applied| match applied {
-        Some(revision) => {
-            drag.announce(text);
-            if let Some(focus) = focus {
-                drag.focus_after(revision, focus);
+/// A move that changes nothing only returns focus.
+fn announce_after(drag: DragController, text: String, focus: Option<FocusReturn>) -> Settle {
+    let quiet_focus = focus.clone();
+    Settle {
+        done: Box::new(move |applied| match applied {
+            Some(revision) => {
+                drag.announce(text);
+                if let Some(focus) = focus {
+                    drag.focus_after(revision, focus);
+                }
             }
-        }
-        None => {
-            drag.announce("The move did not apply".to_owned());
-            if let Some(focus) = focus {
+            None => {
+                drag.announce("The move did not apply".to_owned());
+                if let Some(focus) = focus {
+                    drag.focus_after(0, focus);
+                }
+            }
+        }),
+        unchanged: Box::new(move || {
+            if let Some(focus) = quiet_focus {
                 drag.focus_after(0, focus);
             }
-        }
-    })
+        }),
+    }
 }
 
 /// The outputs `payload` names as they stand in the live scene, each with
@@ -181,12 +195,12 @@ fn move_into(
     payload: &MovePayload,
     zone_id: &str,
     point: Option<NormalizedPosition>,
-    done: EditDone,
+    settle: Settle,
 ) {
     let studio = drag.studio;
     let history = studio.history;
     let Some(scene) = history.current_scene() else {
-        done(None);
+        (settle.done)(None);
         return;
     };
     let Some(target) = scene
@@ -194,7 +208,7 @@ fn move_into(
         .iter()
         .find(|zone| zone.id.to_string() == zone_id && zone.role != ZoneRole::Display)
     else {
-        done(None);
+        (settle.done)(None);
         return;
     };
 
@@ -226,14 +240,14 @@ fn move_into(
                 segments,
                 hints,
                 point,
-                Some(done),
+                Some(settle.done),
             ),
             None => history.assign_device(
                 zone_id.to_owned(),
                 payload.device_id.clone(),
                 segments,
                 hints,
-                Some(done),
+                Some(settle.done),
             ),
         }
         return;
@@ -281,19 +295,27 @@ fn move_into(
         })
         .filter(|change| change.before != change.after)
         .collect();
-    history.edit_members(changes, Some(done));
+    if changes.is_empty() {
+        (settle.unchanged)();
+        return;
+    }
+    history.edit_members(changes, Some(settle.done));
 }
 
 /// Release `payload`'s outputs from their zones.
-fn unassign(studio: StudioContext, payload: &MovePayload, done: EditDone) {
-    let changes = held_outputs(studio, payload)
+fn unassign(studio: StudioContext, payload: &MovePayload, settle: Settle) {
+    let changes: Vec<MemberEdit> = held_outputs(studio, payload)
         .into_iter()
         .map(|before| MemberEdit {
             before: Some(before),
             after: None,
         })
         .collect();
-    studio.history.edit_members(changes, Some(done));
+    if changes.is_empty() {
+        (settle.unchanged)();
+        return;
+    }
+    studio.history.edit_members(changes, Some(settle.done));
 }
 
 /// Make a zone named after the device, move the payload in, then open its
@@ -364,21 +386,30 @@ fn create_zone_and_move(drag: DragController, payload: MovePayload) {
         }
         let zone_id = zone.id.to_string();
         let text = moved_announcement(&payload.label, &zone.name, &from);
-        let opened = zone_id.clone();
-        let zone_name = zone.name.clone();
-        let done: EditDone = Box::new(move |applied| {
-            drag.announce(if applied.is_some() {
-                text
-            } else {
-                "The move did not apply".to_owned()
-            });
-            studio
-                .zone_rename_draft
-                .try_set(Some((opened.clone(), zone_name)));
-            studio.selected_surface_id.try_set(Some(opened));
-        });
+        // The new tab opens with its name selected, whatever the move did.
+        let open_tab = {
+            let (zone_id, zone_name) = (zone_id.clone(), zone.name.clone());
+            move || {
+                studio
+                    .zone_rename_draft
+                    .try_set(Some((zone_id.clone(), zone_name)));
+                studio.selected_surface_id.try_set(Some(zone_id));
+            }
+        };
+        let quiet_open = open_tab.clone();
+        let settle = Settle {
+            done: Box::new(move |applied| {
+                drag.announce(if applied.is_some() {
+                    text
+                } else {
+                    "The move did not apply".to_owned()
+                });
+                open_tab();
+            }),
+            unchanged: Box::new(quiet_open),
+        };
         history.hand_over(generation, move || {
-            move_into(drag, &payload, &zone_id, None, done);
+            move_into(drag, &payload, &zone_id, None, settle);
         });
     });
 }
