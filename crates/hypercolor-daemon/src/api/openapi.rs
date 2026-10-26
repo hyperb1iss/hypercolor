@@ -6,7 +6,8 @@ use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::{ObjectBuilder, Schema, Type};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
-    Content, HttpMethod, OpenApi as OpenApiDocument, Ref, Required, Response, ResponseBuilder,
+    Content, HttpMethod, OpenApi as OpenApiDocument, Ref, RefOr, Required, Response,
+    ResponseBuilder,
 };
 use utoipa::{Modify, OpenApi};
 use utoipa_axum::router::UtoipaMethodRouter;
@@ -126,6 +127,7 @@ pub(crate) struct OperationDoc {
     additional_schemas: Vec<SchemaRegistrar>,
     query: Option<ParameterProvider>,
     headers: Vec<Parameter>,
+    idempotent: bool,
 }
 
 impl OperationDoc {
@@ -212,6 +214,7 @@ impl OperationDoc {
             additional_schemas: Vec::new(),
             query: None,
             headers: Vec::new(),
+            idempotent: false,
         }
     }
 
@@ -301,10 +304,13 @@ impl OperationDoc {
                 .schema(Some(
                     ObjectBuilder::new()
                         .schema_type(Type::String)
-                        .max_length(Some(super::idempotency::IDEMPOTENCY_KEY_MAX_LEN)),
+                        .max_length(Some(
+                            hypercolor_types::api::envelope::IDEMPOTENCY_KEY_MAX_LEN,
+                        )),
                 ))
                 .build(),
         );
+        self.idempotent = true;
         self
     }
 
@@ -339,22 +345,32 @@ where
 }
 
 fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Operation {
+    let replayed = document.idempotent;
     let mut builder = OperationBuilder::new()
         .tag(document.tag)
         .summary(Some(document.summary))
         .operation_id(Some(document.operation_id))
         .response(
             document.success_status,
-            success_response(document.summary, document.success),
+            with_replay_header(
+                success_response(document.summary, document.success),
+                replayed,
+            ),
         );
     if let Some(status) = document.alternate_success_status {
-        builder = builder.response(status, success_response(document.summary, document.success));
+        builder = builder.response(
+            status,
+            with_replay_header(
+                success_response(document.summary, document.success),
+                replayed,
+            ),
+        );
     }
 
     for status in [
         "400", "401", "403", "404", "409", "412", "422", "429", "500",
     ] {
-        builder = builder.response(status, error_response(status));
+        builder = builder.response(status, with_replay_header(error_response(status), replayed));
     }
 
     for name in path_parameter_names(path) {
@@ -432,6 +448,26 @@ fn success_response(summary: &str, shape: ResponseShape) -> Response {
             .build(),
         ResponseShape::Empty => response.build(),
     }
+}
+
+/// Declare `Idempotency-Replayed` on a response an opted-in operation can
+/// replay.
+fn with_replay_header(mut response: Response, replayed: bool) -> Response {
+    if replayed {
+        response.headers.insert(
+            hypercolor_types::api::envelope::IDEMPOTENCY_REPLAYED_HEADER.to_owned(),
+            RefOr::T(
+                utoipa::openapi::header::HeaderBuilder::new()
+                    .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+                    .description(Some(
+                        "`true` when this answer was stored for an earlier request with the same \
+                         Idempotency-Key and replayed instead of applied again; absent otherwise.",
+                    ))
+                    .build(),
+            ),
+        );
+    }
+    response
 }
 
 fn error_response(status: &str) -> Response {

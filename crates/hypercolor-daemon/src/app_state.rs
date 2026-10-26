@@ -237,7 +237,8 @@ pub struct AppState {
     pub security_state: crate::api::security::SecurityState,
 
     /// This run's record of `Idempotency-Key` writes, shared by every router
-    /// built from this state, so REST and WebSocket command dispatch agree.
+    /// built from this state. WebSocket commands carry no headers, so only
+    /// REST requests ever use it.
     pub(crate) idempotency: crate::api::idempotency::IdempotencyStore,
 
     /// Persistent trail of state-changing requests. Isolated test states

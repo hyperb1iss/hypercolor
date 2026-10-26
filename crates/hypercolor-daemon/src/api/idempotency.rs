@@ -11,8 +11,10 @@
 //!   and its status, headers, and body are stored once it answers.
 //! - A repeat with the same key and the same request fingerprint is not
 //!   applied again. It gets the stored answer with `Idempotency-Replayed:
-//!   true`; a repeat that arrives while the original is still running waits
-//!   for it and gets the same.
+//!   true`. A repeat that arrives while the original is still running waits
+//!   for it and gets the same; the draft also allows answering `409` there,
+//!   but a client retrying a lost reply wants the answer, not a second
+//!   retry loop.
 //! - The same key on a different request (method, path, `If-Match`, or
 //!   body) answers `422 idempotency_key_mismatch`.
 //! - A request without the header costs one header lookup and is otherwise
@@ -22,13 +24,17 @@
 //! fence is as definitive as a `200`, and only a stored answer guarantees a
 //! retry cannot apply what the original did not.
 //!
+//! Keys are scoped per credential, as the draft recommends, when the
+//! request carries a recognized one; callers without one share a scope.
 //! Which routes honor the key is declared in the OpenAPI document: an
 //! operation that documents the optional `Idempotency-Key` header gets this
 //! behavior, so the published contract and the enforced one cannot drift.
-//! Keys live in memory for one daemon run, bounded by
-//! [`IDEMPOTENCY_RETENTION_ENTRIES`], [`IDEMPOTENCY_RETENTION_BYTES`], and
-//! [`IDEMPOTENCY_RETENTION_AGE`]; the run epoch on every response tells a
-//! client when its keys stopped meaning anything.
+//! A keyed body is buffered under the API-wide body ceiling, so an opted-in
+//! route must not rely on a larger route-level limit. Keys live in memory
+//! for one daemon run, bounded by [`IDEMPOTENCY_RETENTION_ENTRIES`],
+//! [`IDEMPOTENCY_RETENTION_BYTES`], and [`IDEMPOTENCY_RETENTION_AGE`]; the
+//! run epoch on every response tells a client when its keys stopped
+//! meaning anything.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -39,12 +45,15 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use hypercolor_types::api::envelope::{IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER};
+use hypercolor_types::api::envelope::{
+    IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MAX_LEN, IDEMPOTENCY_REPLAYED_HEADER,
+};
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tracing::Instrument;
 
+use super::security::CredentialGrant;
 use crate::domain::DomainError;
 
 /// The request header naming an idempotent attempt.
@@ -60,14 +69,13 @@ pub(super) const DOCUMENTED_HEADER: &str = "Idempotency-Key";
 /// Most completed answers kept at once; the oldest goes first.
 pub(crate) const IDEMPOTENCY_RETENTION_ENTRIES: usize = 1024;
 
-/// Most response bytes kept at once across every completed answer.
+/// Most response bytes kept at once across every completed answer. The
+/// newest answer is always kept, so one answer larger than this still
+/// replays until the next one arrives.
 pub(crate) const IDEMPOTENCY_RETENTION_BYTES: usize = 32 * 1024 * 1024;
 
 /// How long a completed answer stays replayable.
 pub(crate) const IDEMPOTENCY_RETENTION_AGE: Duration = Duration::from_hours(1);
-
-/// Longest key accepted. A UUID is 36 characters.
-pub(crate) const IDEMPOTENCY_KEY_MAX_LEN: usize = 255;
 
 /// The bounds a store keeps completed answers within.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,9 +320,13 @@ impl StoreInner {
         }
     }
 
-    /// Drop the oldest completed answers until both bounds hold.
+    /// Drop the oldest completed answers until both bounds hold, never
+    /// the newest one, so an answer larger than the byte bound still
+    /// replays for the retry most likely to follow it.
     fn shrink_to(&mut self, retention: Retention) {
-        while self.completed_count > retention.entries || self.stored_bytes > retention.bytes {
+        while self.completed_count > retention.entries.max(1)
+            || (self.stored_bytes > retention.bytes && self.completed_count > 1)
+        {
             if !self.evict_front() {
                 break;
             }
@@ -473,7 +485,7 @@ pub(crate) async fn guard(
         return next.run(request).await;
     }
     let key = match parse_key(raw_key) {
-        Ok(key) => key,
+        Ok(key) => scoped_key(request.extensions().get::<CredentialGrant>(), key),
         Err(error) => return error.into_response(),
     };
 
@@ -518,12 +530,20 @@ pub(crate) async fn guard(
     }
 }
 
-/// Validate a key: printable ASCII, at most [`IDEMPOTENCY_KEY_MAX_LEN`],
-/// written bare or as the draft's quoted structured-field string.
-fn parse_key(raw: &HeaderValue) -> Result<String, DomainError> {
+/// Place a client's key in its credential's scope, so two credentials that
+/// happen to pick the same key never see each other's answers.
+fn scoped_key(grant: Option<&CredentialGrant>, key: &str) -> String {
+    let scope = grant.map_or("", CredentialGrant::credential_id);
+    format!("{}:{scope}:{key}", scope.len())
+}
+
+/// Validate a key: visible ASCII with no spaces or quotes, at most
+/// [`IDEMPOTENCY_KEY_MAX_LEN`] characters, written bare or as the draft's
+/// quoted structured-field string.
+fn parse_key(raw: &HeaderValue) -> Result<&str, DomainError> {
     let text = raw
         .to_str()
-        .map_err(|_| DomainError::malformed("Idempotency-Key must be printable ASCII"))?
+        .map_err(|_| DomainError::malformed("Idempotency-Key must be visible ASCII"))?
         .trim();
     let key = text
         .strip_prefix('"')
@@ -542,10 +562,10 @@ fn parse_key(raw: &HeaderValue) -> Result<String, DomainError> {
         .all(|byte| byte.is_ascii_graphic() && byte != b'"')
     {
         return Err(DomainError::malformed(
-            "Idempotency-Key must be printable ASCII without spaces or quotes",
+            "Idempotency-Key must be visible ASCII without spaces or quotes",
         ));
     }
-    Ok(key.to_owned())
+    Ok(key)
 }
 
 async fn wait(mut done: watch::Receiver<Option<Arc<Outcome>>>) -> Option<Arc<Outcome>> {
@@ -599,342 +619,4 @@ fn abandoned(replayed: bool) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use axum::Router;
-    use axum::routing::post;
-    use tokio::sync::Notify;
-    use tower::ServiceExt;
-
-    use super::*;
-
-    fn fingerprint(body: &str) -> Fingerprint {
-        Fingerprint::of(&Method::POST, "/things", None, body.as_bytes())
-    }
-
-    fn answered(body: &'static str) -> Outcome {
-        Outcome::Answered(StoredResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from_static(body.as_bytes()),
-        })
-    }
-
-    fn run(store: &IdempotencyStore, key: &str, body: &'static str) {
-        match store.claim(key, fingerprint(body)) {
-            Claim::Execute(in_flight) => {
-                in_flight.settle(answered(body));
-            }
-            _ => panic!("{key} should be a first sighting"),
-        }
-    }
-
-    fn retention(entries: usize, bytes: usize) -> Retention {
-        Retention {
-            entries,
-            bytes,
-            age: IDEMPOTENCY_RETENTION_AGE,
-        }
-    }
-
-    #[test]
-    fn the_oldest_answers_go_first_past_the_entry_bound() {
-        let store = IdempotencyStore::with_retention(retention(2, usize::MAX));
-        run(&store, "a", "one");
-        run(&store, "b", "two");
-        run(&store, "c", "three");
-        assert_eq!(store.completed_len(), 2);
-        assert!(matches!(
-            store.claim("a", fingerprint("one")),
-            Claim::Execute(_)
-        ));
-        assert!(matches!(
-            store.claim("c", fingerprint("three")),
-            Claim::Replay(_)
-        ));
-    }
-
-    #[test]
-    fn the_oldest_answers_go_first_past_the_byte_bound() {
-        let store = IdempotencyStore::with_retention(retention(usize::MAX, 10));
-        run(&store, "a", "123456");
-        run(&store, "b", "abcdef");
-        assert_eq!(store.completed_len(), 1);
-        assert_eq!(store.stored_bytes(), 6);
-        assert!(matches!(
-            store.claim("b", fingerprint("abcdef")),
-            Claim::Replay(_)
-        ));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn answers_expire_after_the_retention_age() {
-        let store = IdempotencyStore::with_retention(Retention {
-            entries: usize::MAX,
-            bytes: usize::MAX,
-            age: Duration::from_secs(10),
-        });
-        run(&store, "a", "one");
-        tokio::time::advance(Duration::from_secs(9)).await;
-        assert!(matches!(
-            store.claim("a", fingerprint("one")),
-            Claim::Replay(_)
-        ));
-        tokio::time::advance(Duration::from_secs(2)).await;
-        let restarted = store.claim("a", fingerprint("one"));
-        assert!(
-            matches!(restarted, Claim::Execute(_)),
-            "an expired key starts over"
-        );
-        assert_eq!(store.completed_len(), 0, "the expired answer is released");
-        assert_eq!(store.stored_bytes(), 0);
-        drop(restarted);
-    }
-
-    #[test]
-    fn an_in_flight_request_is_never_evicted() {
-        let store = IdempotencyStore::with_retention(retention(1, usize::MAX));
-        let Claim::Execute(held) = store.claim("held", fingerprint("x")) else {
-            panic!("first sighting");
-        };
-        run(&store, "b", "two");
-        run(&store, "c", "three");
-        assert!(matches!(
-            store.claim("held", fingerprint("x")),
-            Claim::Wait(_)
-        ));
-        held.settle(answered("x"));
-        assert!(matches!(
-            store.claim("held", fingerprint("x")),
-            Claim::Replay(_)
-        ));
-    }
-
-    #[test]
-    fn a_key_names_exactly_one_request() {
-        let store = IdempotencyStore::default();
-        let Claim::Execute(held) = store.claim("k", fingerprint("one")) else {
-            panic!("first sighting");
-        };
-        assert!(matches!(
-            store.claim("k", fingerprint("two")),
-            Claim::Mismatch
-        ));
-        held.settle(answered("one"));
-        assert!(matches!(
-            store.claim("k", fingerprint("two")),
-            Claim::Mismatch
-        ));
-        assert!(matches!(
-            store.claim("k", fingerprint("one")),
-            Claim::Replay(_)
-        ));
-    }
-
-    #[test]
-    fn the_fingerprint_covers_method_target_fence_and_body() {
-        let base = Fingerprint::of(&Method::PUT, "/a", None, b"x");
-        let fence = HeaderValue::from_static("\"7\"");
-        assert_eq!(base, Fingerprint::of(&Method::PUT, "/a", None, b"x"));
-        assert_ne!(base, Fingerprint::of(&Method::POST, "/a", None, b"x"));
-        assert_ne!(base, Fingerprint::of(&Method::PUT, "/b", None, b"x"));
-        assert_ne!(
-            base,
-            Fingerprint::of(&Method::PUT, "/a", Some(&fence), b"x")
-        );
-        assert_ne!(base, Fingerprint::of(&Method::PUT, "/a", None, b"y"));
-        assert_ne!(
-            Fingerprint::of(&Method::PUT, "/ab", None, b"c"),
-            Fingerprint::of(&Method::PUT, "/a", None, b"bc"),
-            "components are length-prefixed"
-        );
-    }
-
-    #[test]
-    fn a_dropped_claim_is_recorded_as_abandoned() {
-        let store = IdempotencyStore::default();
-        let Claim::Execute(held) = store.claim("k", fingerprint("one")) else {
-            panic!("first sighting");
-        };
-        drop(held);
-        let Claim::Replay(outcome) = store.claim("k", fingerprint("one")) else {
-            panic!("an abandoned key still answers");
-        };
-        assert!(matches!(outcome.as_ref(), Outcome::Abandoned));
-    }
-
-    #[test]
-    fn keys_are_opaque_printable_ascii() {
-        let parse = |raw: &'static str| parse_key(&HeaderValue::from_static(raw));
-        assert_eq!(
-            parse("8e03978e-40d5-43e8-bc93-6894a57f9324")
-                .ok()
-                .as_deref(),
-            Some("8e03978e-40d5-43e8-bc93-6894a57f9324")
-        );
-        assert_eq!(
-            parse("\"8e03978e-40d5-43e8-bc93-6894a57f9324\"")
-                .ok()
-                .as_deref(),
-            Some("8e03978e-40d5-43e8-bc93-6894a57f9324"),
-            "the draft's quoted structured-field form names the same key"
-        );
-        for refused in ["", "\"\"", "two words", "a\"b"] {
-            assert!(
-                matches!(parse(refused), Err(DomainError::Malformed { .. })),
-                "{refused:?} is not a key"
-            );
-        }
-        let long =
-            HeaderValue::from_str(&"k".repeat(IDEMPOTENCY_KEY_MAX_LEN + 1)).expect("header value");
-        assert!(parse_key(&long).is_err());
-    }
-
-    struct Probe {
-        applied: AtomicUsize,
-        entered: Notify,
-        release: Notify,
-        hold: bool,
-    }
-
-    fn probe_app(probe: &Arc<Probe>) -> Router {
-        let handler = {
-            let probe = Arc::clone(probe);
-            move || {
-                let probe = Arc::clone(&probe);
-                async move {
-                    let count = probe.applied.fetch_add(1, Ordering::SeqCst) + 1;
-                    probe.entered.notify_one();
-                    if probe.hold {
-                        probe.release.notified().await;
-                    }
-                    (StatusCode::CREATED, format!("applied {count}")).into_response()
-                }
-            }
-        };
-        let layer = IdempotencyLayer {
-            store: IdempotencyStore::default(),
-            routes: Arc::new(IdempotentRoutes::of(&[(Method::POST, "/things")])),
-        };
-        Router::new()
-            .route("/things", post(handler.clone()))
-            .route("/plain", post(handler))
-            .layer(axum::middleware::from_fn_with_state(layer, guard))
-    }
-
-    fn probe(hold: bool) -> Arc<Probe> {
-        Arc::new(Probe {
-            applied: AtomicUsize::new(0),
-            entered: Notify::new(),
-            release: Notify::new(),
-            hold,
-        })
-    }
-
-    fn request(path: &str, key: Option<&str>) -> Request {
-        let mut builder = axum::http::Request::builder().method("POST").uri(path);
-        if let Some(key) = key {
-            builder = builder.header(&IDEMPOTENCY_KEY, key);
-        }
-        builder.body(Body::from("{}")).expect("request builds")
-    }
-
-    async fn text(response: Response) -> String {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body reads");
-        String::from_utf8(bytes.to_vec()).expect("utf-8 body")
-    }
-
-    fn replayed(response: &Response) -> bool {
-        response
-            .headers()
-            .get(&IDEMPOTENCY_REPLAYED)
-            .map(HeaderValue::as_bytes)
-            == Some(b"true")
-    }
-
-    #[tokio::test]
-    async fn a_duplicate_waits_for_the_original_and_never_applies_twice() {
-        let probe = probe(true);
-        let app = probe_app(&probe);
-
-        let first = tokio::spawn(app.clone().oneshot(request("/things", Some("k"))));
-        probe.entered.notified().await;
-        let second = tokio::spawn(app.clone().oneshot(request("/things", Some("k"))));
-        for _ in 0..16 {
-            tokio::task::yield_now().await;
-        }
-        assert!(!second.is_finished(), "the duplicate waits on the original");
-
-        probe.release.notify_one();
-        let first = first.await.expect("first task").expect("first response");
-        let second = second.await.expect("second task").expect("second response");
-        assert_eq!(probe.applied.load(Ordering::SeqCst), 1);
-        assert_eq!(first.status(), StatusCode::CREATED);
-        assert_eq!(second.status(), StatusCode::CREATED);
-        assert!(!replayed(&first));
-        assert!(replayed(&second));
-        assert_eq!(text(first).await, text(second).await);
-    }
-
-    #[tokio::test]
-    async fn the_original_finishes_and_is_recorded_when_its_caller_hangs_up() {
-        let probe = probe(true);
-        let app = probe_app(&probe);
-
-        let first = tokio::spawn(app.clone().oneshot(request("/things", Some("k"))));
-        probe.entered.notified().await;
-        first.abort();
-        let _ = first.await;
-        probe.release.notify_one();
-
-        let retry = app
-            .clone()
-            .oneshot(request("/things", Some("k")))
-            .await
-            .expect("retry response");
-        assert!(replayed(&retry));
-        assert_eq!(text(retry).await, "applied 1");
-        assert_eq!(probe.applied.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn requests_without_a_key_or_off_the_opted_in_routes_pass_through() {
-        let probe = probe(false);
-        let app = probe_app(&probe);
-        for request in [
-            request("/things", None),
-            request("/things", None),
-            request("/plain", Some("k")),
-            request("/plain", Some("k")),
-        ] {
-            let response = app.clone().oneshot(request).await.expect("response");
-            assert_eq!(response.status(), StatusCode::CREATED);
-            assert!(!replayed(&response));
-        }
-        assert_eq!(probe.applied.load(Ordering::SeqCst), 4);
-    }
-
-    #[tokio::test]
-    async fn a_key_on_a_different_request_is_refused() {
-        let probe = probe(false);
-        let app = probe_app(&probe);
-        let first = app
-            .clone()
-            .oneshot(request("/things", Some("k")))
-            .await
-            .expect("response");
-        assert_eq!(first.status(), StatusCode::CREATED);
-
-        let mut different = request("/things", Some("k"));
-        *different.body_mut() = Body::from("{\"other\":true}");
-        let refused = app.clone().oneshot(different).await.expect("response");
-        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body: serde_json::Value =
-            serde_json::from_str(&text(refused).await).expect("error envelope");
-        assert_eq!(body["error"]["code"], "idempotency_key_mismatch");
-        assert_eq!(probe.applied.load(Ordering::SeqCst), 1);
-    }
-}
+mod tests;

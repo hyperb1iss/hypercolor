@@ -27,6 +27,10 @@ pub const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// [`IDEMPOTENCY_KEY_HEADER`] instead of produced by applying the request.
 pub const IDEMPOTENCY_REPLAYED_HEADER: &str = "idempotency-replayed";
 
+/// Longest [`IDEMPOTENCY_KEY_HEADER`] value accepted. A UUID is 36
+/// characters.
+pub const IDEMPOTENCY_KEY_MAX_LEN: usize = 255;
+
 /// Error code for a key reused on a request whose method, path,
 /// `If-Match`, or body differs from the request it first named (`422`).
 pub const IDEMPOTENCY_KEY_MISMATCH_CODE: &str = "idempotency_key_mismatch";

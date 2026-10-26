@@ -629,3 +629,82 @@ fn every_scene_tree_write_documents_the_key() {
     expected.sort_unstable();
     assert_eq!(documented, expected);
 }
+
+#[tokio::test]
+async fn an_oversized_keyed_body_is_refused_without_burning_the_key() {
+    let (state, app) = isolated();
+    let revision = state.scene_manager.revision();
+    let key = "big-body";
+    let oversized = json!({ "name": "x".repeat(3 * 1024 * 1024) });
+    let refused = send(
+        &app,
+        keyed(
+            fenced(
+                json_request("POST", "/api/v1/scene/zones", &oversized),
+                revision,
+            ),
+            key,
+        ),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(state.scene_manager.revision(), revision);
+
+    let created = send(&app, keyed(create_zone("Fits", revision), key)).await;
+    assert_eq!(
+        created.status(),
+        StatusCode::CREATED,
+        "a body the daemon never read claims nothing"
+    );
+    assert!(!replayed(&created));
+}
+
+/// Every documented operation, with its path parameters filled, answers a
+/// keyed repeat from the store. Most of these answer 404 or 422 for the
+/// made-up targets and bodies; a refusal replays like any other answer,
+/// which is what proves the router matched each template.
+#[tokio::test]
+async fn every_documented_route_replays_a_keyed_repeat() {
+    let (_state, app) = isolated();
+    let document: serde_json::Value = serde_json::from_str(
+        &api::openapi::document_json_pretty().expect("OpenAPI document renders"),
+    )
+    .expect("OpenAPI document parses");
+    let mut swept = 0;
+    for (path, item) in document["paths"].as_object().expect("paths") {
+        for (method, operation) in item.as_object().expect("path item") {
+            let declares = operation["parameters"]
+                .as_array()
+                .is_some_and(|parameters| {
+                    parameters
+                        .iter()
+                        .any(|parameter| parameter["name"] == "Idempotency-Key")
+                });
+            if !declares {
+                continue;
+            }
+            let uri = path
+                .replace("{zone}", "0198c5b6-1111-7000-8000-00000000aaaa")
+                .replace("{layer}", "0198c5b6-1111-7000-8000-00000000bbbb")
+                .replace("{member}", "no-such-member");
+            let key = format!("sweep-{swept}");
+            let attempt = || {
+                keyed(
+                    json_request(&method.to_ascii_uppercase(), &uri, &json!({})),
+                    &key,
+                )
+            };
+            let first = send(&app, attempt()).await;
+            assert!(
+                !replayed(&first),
+                "{method} {path}: the first attempt is live"
+            );
+            let status = first.status();
+            let repeat = send(&app, attempt()).await;
+            assert!(replayed(&repeat), "{method} {path} did not honor the key");
+            assert_eq!(repeat.status(), status, "{method} {path}");
+            swept += 1;
+        }
+    }
+    assert_eq!(swept, 13);
+}
