@@ -83,7 +83,8 @@ pub enum NewSceneStart {
     /// A copy of the scene running now: its zones, layers, and layout.
     #[default]
     Duplicate,
-    /// An empty scene.
+    /// A fresh scene: one Main zone holding every output in the rig, with
+    /// no layers.
     Blank,
 }
 
@@ -921,7 +922,7 @@ fn StartChoice(start: RwSignal<NewSceneStart>) -> impl IntoView {
             <p class="text-[11px] leading-snug text-fg-tertiary">
                 {move || match start.get() {
                     NewSceneStart::Duplicate => "Copies the zones, layers, and layout running now.",
-                    NewSceneStart::Blank => "Starts from an empty scene.",
+                    NewSceneStart::Blank => "One Main zone with every device in the rig, and no effects yet.",
                 }}
             </p>
         </div>
