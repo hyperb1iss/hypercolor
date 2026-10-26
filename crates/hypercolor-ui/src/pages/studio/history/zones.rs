@@ -305,8 +305,8 @@ impl StudioHistory {
     }
 
     /// Settle the unknown deletes of `scene` from a read of it taken after
-    /// they failed: each becomes the journal entry that undoes what it
-    /// really did.
+    /// they failed: each one's place in the journal becomes the entry that
+    /// undoes what it really did.
     pub(super) fn resolve_unresolved(self, scene: &api::SceneDocument) {
         let settled = self
             .unresolved
@@ -319,9 +319,9 @@ impl StudioHistory {
             })
             .unwrap_or_default();
         for item in settled {
-            if let Some(entry) = resolve_deletion(scene, &item.record, &item.release) {
-                self.journal.update(|journal| journal.record(entry));
-            }
+            let entry = resolve_deletion(scene, &item.record, &item.release);
+            self.journal
+                .update(|journal| journal.settle_unresolved(item.record.token, entry));
         }
     }
 
@@ -623,6 +623,11 @@ impl StudioHistory {
                         journal.record(StudioEdit::Members(released));
                     }),
                     TakeDown::Unknown(released) => {
+                        let token = record.token;
+                        let name = record.name.clone();
+                        self.journal.update(|journal| {
+                            journal.record(StudioEdit::Unresolved { token, name });
+                        });
                         self.hold_unresolved(scene.id, record, released);
                     }
                     TakeDown::Kept => {}
@@ -974,8 +979,15 @@ impl StudioHistory {
                                 settle,
                             );
                         }
+                        // The redo's place holds until a scene read says
+                        // what the delete did, so it cannot run twice.
                         TakeDown::Unknown(released) => {
                             self.replay_words.try_set_value(None);
+                            let entry = StudioEdit::Unresolved {
+                                token: record.token,
+                                name: record.name.clone(),
+                            };
+                            self.settle_zone_entry(index, redo, entry, settle);
                             self.hold_unresolved(scene_id, record, released);
                         }
                         TakeDown::Kept => {}

@@ -71,6 +71,7 @@ pub fn replay_announcement(
                 zone_display_name(&record.name, ZoneRole::Custom)
             )
         }
+        StudioEdit::Unresolved { .. } => return None,
     };
     Some(format!("{verb}: {action}"))
 }

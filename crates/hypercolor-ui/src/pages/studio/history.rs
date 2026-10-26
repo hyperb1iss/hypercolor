@@ -61,6 +61,13 @@ pub enum StudioEdit {
         after: PatchZoneRequest,
     },
     ZoneDeleted(Box<DeletedZone>),
+    /// A zone delete whose outcome a lost connection hid. It holds its
+    /// place in the journal until a scene read says what it did, then
+    /// becomes that entry; until then neither undo nor redo moves past it.
+    Unresolved {
+        token: u64,
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -126,6 +133,27 @@ impl StudioJournal {
                     if record.zone_id == old {
                         record.zone_id.clone_from(&new_key);
                     }
+                }
+                StudioEdit::Unresolved { .. } => {}
+            }
+        }
+    }
+
+    /// Settle the unresolved delete `token` names: its place becomes
+    /// `entry`, or goes when the delete changed nothing. A journal that no
+    /// longer holds it (a scene switch cleared it) is left alone.
+    pub fn settle_unresolved(&mut self, token: u64, entry: Option<StudioEdit>) {
+        let Some(index) = self.entries.iter().position(
+            |held| matches!(held, StudioEdit::Unresolved { token: held, .. } if *held == token),
+        ) else {
+            return;
+        };
+        match entry {
+            Some(entry) => self.entries[index] = entry,
+            None => {
+                self.entries.remove(index);
+                if index < self.cursor {
+                    self.cursor -= 1;
                 }
             }
         }
@@ -1082,6 +1110,11 @@ impl StudioHistory {
                 let index = self.replay_index(redo);
                 self.replay_zone_deleted_step(index, redo, *record);
             }
+            StudioEdit::Unresolved { name, .. } => {
+                toasts::toast_info(&format!(
+                    "Still waiting to learn whether {name} was deleted. Undo and redo go on once the scene loads again."
+                ));
+            }
             StudioEdit::Members(changes) => {
                 let Some(scene) = self.current_scene() else {
                     return;
@@ -1655,16 +1688,23 @@ mod replay_tests {
             let gone = DeletedZone::of(&scene.zones[1], 1, 1);
             let mut after = scene.clone();
             after.zones.remove(1);
+            // The delete holds its place; an edit lands after it meanwhile.
+            history.journal.update(|journal| {
+                journal.record(StudioEdit::Unresolved {
+                    token: gone.token,
+                    name: gone.name.clone(),
+                });
+                journal.record(StudioEdit::Members(Vec::new()));
+            });
             history.hold_unresolved(scene.id, gone, Vec::new());
             assert!(history.has_unresolved());
             history.resolve_unresolved(&after);
             assert!(!history.has_unresolved());
-            assert!(matches!(
-                history
-                    .journal
-                    .with_untracked(|journal| journal.undo_edit().cloned()),
-                Some(StudioEdit::ZoneDeleted(_))
-            ));
+            history.journal.with_untracked(|journal| {
+                assert_eq!(journal.cursor, 2, "settling neither adds nor moves a step");
+                assert!(matches!(journal.entries[0], StudioEdit::ZoneDeleted(_)));
+                assert!(matches!(journal.entries[1], StudioEdit::Members(_)));
+            });
         });
         owner.cleanup();
     }
