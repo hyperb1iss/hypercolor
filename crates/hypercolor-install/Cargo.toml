@@ -1,6 +1,6 @@
 [package]
 name = "hypercolor-install"
-description = "Transactional release installer for Hypercolor: install journal, coordinator, and the Linux and macOS platforms"
+description = "Transactional release installer for Hypercolor: install journal, coordinator, the Linux and macOS platforms, and the Windows store"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
