@@ -1079,6 +1079,9 @@ fn layout_update_domain_error(error: LayoutUpdateError) -> DomainError {
         }) => DomainError::validation(error.to_string()),
         LayoutUpdateError::Transaction(LayoutTransactionRejection::Superseded)
         | LayoutUpdateError::PersistenceSuperseded => DomainError::conflict(error.to_string()),
+        LayoutUpdateError::Transaction(LayoutTransactionRejection::RevisionsUnavailable) => {
+            DomainError::service_unavailable(error.to_string())
+        }
         LayoutUpdateError::Transaction(LayoutTransactionRejection::RendererStopped)
         | LayoutUpdateError::Coordinator(_)
         | LayoutUpdateError::Persistence(_)

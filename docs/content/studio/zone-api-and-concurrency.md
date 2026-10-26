@@ -303,8 +303,12 @@ fields with a later commit's revision.
 Revisions never repeat, even across restarts. The daemon keeps a reservation
 ceiling in `scene-revisions.json` in its state directory, and every run starts
 above the previous run's ceiling, so a fence a client kept from before a
-restart can never pass. Every run also starts at or above the wall clock in
-microseconds, which covers a reservation that cannot be read. Expect a jump: the first revision of a new run can
+restart can never pass. A revision is only ever handed out below a ceiling
+that is already on disk; if the state directory stops accepting the
+reservation, scene writes answer `503 service_unavailable` until it does,
+rather than risk a revision that could repeat. Every run also starts at or
+above the wall clock in microseconds, which covers a reservation that cannot
+be read. Expect a jump: the first revision of a new run can
 sit far above the last one the old run served. The daemon keeps revisions
 below 2^53, so they stay exact in a JSON double.
 

@@ -23,6 +23,8 @@ pub enum LayoutTransactionRejection {
     Superseded,
     #[error("render pipeline rejected the layout: {message}")]
     PreparationFailed { message: String },
+    #[error("scene revisions are not durably reserved, so the layout was not published")]
+    RevisionsUnavailable,
 }
 
 #[derive(Debug, Error)]
@@ -473,6 +475,14 @@ impl LayoutTransactionAuthority {
         Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
     {
         let prepared = PreparedLayoutUpdate::try_new(layout)?;
+        if publication_mode == LayoutPublicationMode::AuthorityAndRenderer {
+            // The render thread admits this publication's scene commit and
+            // never waits on disk, so its revision is reserved here first.
+            self.scene_manager
+                .reserve_next_revision()
+                .await
+                .map_err(|_| LayoutTransactionRejection::RevisionsUnavailable)?;
+        }
         let spatial_engine = self.spatial_engine.clone();
         let scene_manager = self.scene_manager.clone();
         let scene_transactions = self.scene_transactions.clone();

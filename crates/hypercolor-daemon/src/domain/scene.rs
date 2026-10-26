@@ -72,6 +72,11 @@ use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 // ── Owning service ───────────────────────────────────────────────────────
 
+/// How many times a commit reserves its revision again after another
+/// commit consumed the coverage between the reservation and the write
+/// lock, before it reports the reservation as unavailable.
+const COMMIT_RESERVATION_ATTEMPTS: u8 = 4;
+
 /// Cloneable authority for scene state, commit order, and scene events.
 #[derive(Clone)]
 pub struct SceneService(Arc<SceneServiceInner>);
@@ -276,6 +281,23 @@ impl SceneService {
         )
     }
 
+    /// [`in_memory`](Self::in_memory) continuing `run`'s revision sequence.
+    #[cfg(test)]
+    pub(crate) fn in_memory_with_run(
+        manager: SceneManager,
+        event_bus: Arc<HypercolorBus>,
+        run: SceneRun,
+    ) -> Self {
+        Self::build(
+            manager,
+            event_bus,
+            None,
+            None,
+            Arc::new(ZoneLayoutPreviewStore::default()),
+            run,
+        )
+    }
+
     /// Own a temporary scene store for isolated persistence harnesses.
     ///
     /// # Errors
@@ -325,8 +347,8 @@ impl SceneService {
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
         run: SceneRun,
     ) -> Self {
-        let (run_epoch, start, ledger) = run.into_parts();
-        let commits = Arc::new(SceneCommitSequencer::resuming(start, ledger));
+        let (run_epoch, start, reservation) = run.into_parts();
+        let commits = Arc::new(SceneCommitSequencer::resuming(start, reservation));
         let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
         let store_writer = store.as_ref().map(SceneStore::file_writer);
         Self(Arc::new(SceneServiceInner {
@@ -383,6 +405,22 @@ impl SceneService {
     #[must_use]
     pub fn revision(&self) -> SceneRevision {
         self.0.commits.revision()
+    }
+
+    /// Wait until the next scene revision is durably reserved, persisting
+    /// a reservation on the blocking pool when it is not. Callers settle
+    /// this before taking the scene write lock.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::ServiceUnavailable`] when the reservation cannot be
+    /// persisted; scene writes stay refused until it can.
+    pub(crate) async fn reserve_next_revision(&self) -> Result<(), DomainError> {
+        self.0
+            .commits
+            .reserve_next()
+            .await
+            .map_err(|error| DomainError::service_unavailable(error.to_string()))
     }
 
     /// The opaque identity of the daemon run these revisions belong to.
@@ -488,10 +526,17 @@ impl SceneService {
         &self,
         migration: PersistedSceneDeviceBindingMigration,
     ) -> anyhow::Result<SceneDeviceBindingMigrationPublication> {
+        self.0.commits.reserve_next().await?;
         let manager = Arc::clone(&self.0.manager).write_owned().await;
         anyhow::ensure!(
             self.0.commits.revision() == migration.base_revision,
             "device binding migration was superseded by newer scene state"
+        );
+        // Held until publication, so no other admission can consume the
+        // revision this publication will take.
+        anyhow::ensure!(
+            self.0.commits.covers_next(),
+            "scene revisions are not durably reserved for the device binding migration"
         );
         let store = if migration.stored_scenes.is_some() {
             let store = self
@@ -526,7 +571,11 @@ impl SceneService {
             .candidate
             .take()
             .expect("scene binding migration must publish exactly once");
-        let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        let ticket = self
+            .0
+            .commits
+            .admit(Arc::clone(&self.0.event_bus))
+            .expect("the publication checked revision coverage under the write lock it holds");
         self.move_store_projection(ticket.generation());
         self.0.plan.store(Arc::new(
             publication.manager.plan_snapshot(ticket.generation()),
@@ -540,6 +589,7 @@ impl SceneService {
         &self,
         migration: PersistedSceneEffectIdMigration,
     ) -> Result<SceneEffectIdMigrationPublication, DomainError> {
+        self.reserve_next_revision().await?;
         let manager = Arc::clone(&self.0.manager).write_owned().await;
         let current_revision = self.0.commits.revision();
         if current_revision != migration.base_revision {
@@ -549,6 +599,13 @@ impl SceneService {
                     expected_revision: migration.base_revision,
                     current_revision,
                 },
+            ));
+        }
+        // Held until publication, so no other admission can consume the
+        // revision this publication will take.
+        if !self.0.commits.covers_next() {
+            return Err(DomainError::service_unavailable(
+                "scene revisions are not durably reserved for the effect ID migration",
             ));
         }
 
@@ -597,7 +654,11 @@ impl SceneService {
         **manager = candidate
             .take()
             .expect("scene migration publication must publish exactly once");
-        let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        let ticket = self
+            .0
+            .commits
+            .admit(Arc::clone(&self.0.event_bus))
+            .expect("the publication checked revision coverage under the write lock it holds");
         self.move_store_projection(ticket.generation());
         self.0
             .plan
@@ -702,7 +763,12 @@ impl SceneService {
                 None
             };
 
-        let (ticket, pending) = {
+        let mut attempts = 0_u8;
+        let (ticket, pending) = loop {
+            // Coverage for the revision this commit takes is settled before
+            // the write lock, because reserving can mean disk I/O and none
+            // happens under a scene lock.
+            self.reserve_next_revision().await?;
             let mut manager = self.0.manager.write().await;
             let current_revision = self.0.commits.revision();
             if current_revision != base_revision {
@@ -727,6 +793,22 @@ impl SceneService {
             if persists_scene_content && prepared.is_none() && !self.store_projection_current() {
                 prepared = Some(prepare()?);
             }
+            // Admitted before anything changes, so a refusal leaves the
+            // scene exactly as it was.
+            let ticket = match self.0.commits.admit(Arc::clone(&self.0.event_bus)) {
+                Ok(ticket) => ticket,
+                // Another commit took the last covered revision between the
+                // reservation and the lock; reserve again, a bounded number
+                // of times.
+                Err(error) => {
+                    drop(manager);
+                    attempts += 1;
+                    if attempts >= COMMIT_RESERVATION_ATTEMPTS {
+                        return Err(DomainError::service_unavailable(error.to_string()));
+                    }
+                    continue;
+                }
+            };
 
             self.0
                 .zone_layout_previews
@@ -736,7 +818,6 @@ impl SceneService {
                 )
                 .await;
             *manager = candidate;
-            let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
             if store_changes {
                 self.move_store_projection(ticket.generation());
             }
@@ -751,7 +832,7 @@ impl SceneService {
             self.0
                 .plan
                 .store(Arc::new(manager.plan_snapshot(ticket.generation())));
-            (ticket, pending)
+            break (ticket, pending);
         };
 
         let generation = ticket.generation();
@@ -999,10 +1080,23 @@ impl SceneService {
         if !source_is_current {
             return Err(LayoutTransactionRejection::Superseded);
         }
+        // This runs on the render thread, which never waits on disk: an
+        // uncovered revision rejects the publication before anything is
+        // published, and queues the reservation for its retry.
+        if !self.0.commits.covers_next() {
+            self.0.commits.top_up();
+            return Err(LayoutTransactionRejection::RevisionsUnavailable);
+        }
 
         publish_renderer_state(candidate_spatial_engine.clone())?;
         manager.sync_primary_zone_layout(candidate_spatial_engine.layout().as_ref());
-        let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        // Coverage was checked under this same write lock, and only an
+        // admission (which needs the lock) consumes it.
+        let ticket = self
+            .0
+            .commits
+            .admit(Arc::clone(&self.0.event_bus))
+            .map_err(|_| LayoutTransactionRejection::RevisionsUnavailable)?;
         // The synced primary zone may belong to a named scene, which only a
         // later store save persists.
         self.move_store_projection(ticket.generation());

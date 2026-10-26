@@ -52,19 +52,28 @@ pub(crate) struct ReservationStore {
     /// write lock.
     persisted: AtomicU64,
     write: Mutex<()>,
+    #[cfg(test)]
+    fail_writes: std::sync::atomic::AtomicBool,
 }
 
 impl ReservationStore {
-    pub(crate) fn new(path: PathBuf) -> Self {
+    /// A store for `path` whose file is known to hold `durable` already
+    /// (zero when it holds nothing this run can trust).
+    pub(crate) fn new(path: PathBuf, durable: u64) -> Self {
         Self {
             path,
-            persisted: AtomicU64::new(0),
+            persisted: AtomicU64::new(durable),
             write: Mutex::new(()),
+            #[cfg(test)]
+            fail_writes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
+    /// Make every later write fail, the way a full or read-only state tier
+    /// would, while the file on disk stays readable.
+    #[cfg(test)]
+    pub(crate) fn fail_writes_for_test(&self, fail: bool) {
+        self.fail_writes.store(fail, Ordering::Release);
     }
 
     /// The highest ceiling known to be on disk.
@@ -77,6 +86,10 @@ impl ReservationStore {
         let _write = self.write.lock().unwrap_or_else(PoisonError::into_inner);
         if self.persisted() >= ceiling {
             return Ok(());
+        }
+        #[cfg(test)]
+        if self.fail_writes.load(Ordering::Acquire) {
+            anyhow::bail!("injected reservation write failure");
         }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)

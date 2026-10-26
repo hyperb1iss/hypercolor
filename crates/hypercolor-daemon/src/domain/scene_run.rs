@@ -1,31 +1,42 @@
 //! One daemon run's scene revision sequence: where it starts, the opaque
-//! epoch that names it, and the persisted reservation that keeps every
-//! later run's revisions above it.
+//! epoch that names it, and the durable reservation that keeps every later
+//! run's revisions above it.
 //!
 //! A revision is an optimistic-concurrency fence, so a fence a client
 //! captured in a previous run must never pass in this one. A counter that
 //! restarts at zero breaks that the moment it climbs back past the old
-//! value. Two mechanisms close it, each covering the other's blind spot:
+//! value.
 //!
 //! **The reservation.** `scene-revisions.json` in the state tier records a
-//! ceiling, and a run hands out only revisions strictly below a ceiling it
-//! made durable. Startup reads the previous run's ceiling, starts at or
-//! above it, and persists a new ceiling one [`REVISION_RESERVATION_BLOCK`]
-//! further on before the first commit. Halfway through a block the next
-//! one is reserved on the blocking pool, off the commit path; only a run
-//! that reaches its ceiling before that write lands persists inline. This
-//! holds whatever the wall clock does, and across crashes, because a
-//! ceiling always reaches disk before any revision it covers is used.
+//! ceiling. A run hands out only revisions strictly below a ceiling that is
+//! already durable on disk, and the next run starts at or above that
+//! ceiling, so no revision can repeat whatever the wall clock does and
+//! across crashes. Startup persists a ceiling one
+//! [`REVISION_RESERVATION_BLOCK`] past the start before the first commit.
+//! Once half a block is used, the next block is persisted on the blocking
+//! pool off every commit path. A commit that finds its revision uncovered
+//! (that background write failed or has not landed) waits for a
+//! reservation before it takes any scene lock, and the render thread never
+//! waits: a layout publication it cannot cover is rejected and retried.
+//!
+//! **Degraded mode.** When the reservation cannot be persisted, scene
+//! commits past the durable ceiling are refused with
+//! [`RevisionsUnavailable`], and each later commit retries the write at
+//! most once per [`RESERVATION_RETRY_BACKOFF`]. That is a deliberate
+//! choice over serving revisions the disk does not cover: an uncovered
+//! revision can repeat after a crash and a clock rollback, and then a fence
+//! from the earlier run passes against different contents, which silently
+//! overwrites newer work. A refused write is loud, retryable, and clears on
+//! its own once the state tier accepts writes again; nothing else in the
+//! scene degrades.
 //!
 //! **The clock.** The start is also never below the wall clock in
-//! microseconds since the Unix epoch, which protects an install whose
-//! reservation could not be read or written: the previous run started
-//! earlier and would have needed more than one commit per microsecond to
-//! climb past now. The block is about a second of that clock, so a
-//! reservation never runs far ahead of it and the clock term stays the
-//! one that decides the start in practice. The clock term is clamped
-//! below 2^52, and a persisted floor at or above 2^53 is distrusted, so
-//! revisions stay exact for clients that hold JSON numbers as doubles.
+//! microseconds since the Unix epoch, clamped below 2^52, so a lost or
+//! unreadable reservation still starts far above an earlier run in
+//! practice, and a persisted floor at or above 2^53 is distrusted. Both
+//! keep revisions exact for clients that hold JSON numbers as doubles. The
+//! block is about a second of that clock, so the reservation never runs
+//! far ahead of it.
 //!
 //! The epoch is a fresh random identifier for every run. It never orders
 //! anything; clients compare it for equality to notice a new run and
@@ -34,7 +45,9 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use tokio::time::Instant;
 
 use super::commit::SceneRevision;
 use crate::scene_revision_store::{ReservationStore, read_reservation};
@@ -55,12 +68,46 @@ pub const CLOCK_BASE_CEILING: u64 = 1 << 52;
 /// and each run reserves one small block past its start.
 pub const MAX_TRUSTED_FLOOR: u64 = 1 << 53;
 
+/// How long a failed reservation write is remembered before a commit
+/// tries the disk again. Commits in between are refused at once.
+pub const RESERVATION_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Why a scene commit was refused a revision.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "scene revisions cannot be reserved durably ({reason}); scene writes are refused until \
+     the state directory accepts writes again"
+)]
+pub struct RevisionsUnavailable {
+    reason: String,
+}
+
+impl RevisionsUnavailable {
+    fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn uncovered(revision: SceneRevision, durable: SceneRevision) -> Self {
+        Self::new(format!(
+            "revision {revision} is not below the durable ceiling {durable}"
+        ))
+    }
+
+    /// What kept the reservation from reaching disk.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 /// The identity and starting point of one daemon run's scene revisions.
 #[derive(Debug)]
 pub struct SceneRun {
     epoch: Arc<str>,
     start: SceneRevision,
-    ledger: Option<RevisionLedger>,
+    reservation: Option<Arc<RevisionReservation>>,
 }
 
 impl SceneRun {
@@ -71,12 +118,17 @@ impl SceneRun {
         Self {
             epoch: fresh_epoch(),
             start: 0,
-            ledger: None,
+            reservation: None,
         }
     }
 
     /// Resume the revision sequence recorded under `state_dir`, starting
     /// above every revision a previous run could have handed out.
+    ///
+    /// Persists the first reservation before returning, which is startup
+    /// I/O: call it before any scene lock exists. When that write fails the
+    /// run still starts, with every commit refused until a later
+    /// reservation lands.
     #[must_use]
     pub fn resume(state_dir: &Path) -> Self {
         Self::resume_at(state_dir, SystemTime::now())
@@ -93,13 +145,13 @@ impl SceneRun {
     }
 
     pub(crate) fn resume_with_block(state_dir: &Path, now: SystemTime, block: u64) -> Self {
-        let store = Arc::new(ReservationStore::new(state_dir.join(SCENE_REVISIONS_FILE)));
-        let floor = match read_reservation(store.path()) {
+        let path = state_dir.join(SCENE_REVISIONS_FILE);
+        let floor = match read_reservation(&path) {
             Ok(Some(floor)) if floor >= MAX_TRUSTED_FLOOR => {
                 tracing::error!(
-                    path = %store.path().display(),
+                    path = %path.display(),
                     floor,
-                    "Scene revision reservation is beyond any real ceiling; starting from the clock alone"
+                    "Scene revision reservation is beyond any real ceiling; starting from the clock"
                 );
                 None
             }
@@ -107,16 +159,26 @@ impl SceneRun {
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "Scene revision reservation is unreadable; starting from the clock alone"
+                    "Scene revision reservation is unreadable; starting from the clock"
                 );
                 None
             }
         };
         let start = floor.unwrap_or(0).max(clock_base(now));
+        let store = Arc::new(ReservationStore::new(path, floor.unwrap_or(0)));
+        let reservation = Arc::new(RevisionReservation::new(store, block));
+        let ceiling = start.saturating_add(reservation.block);
+        if let Err(error) = reservation.store.persist_at_least(ceiling) {
+            tracing::error!(
+                error = format!("{error:#}"),
+                ceiling,
+                "Failed to persist the scene revision reservation; scene writes are refused until it lands"
+            );
+        }
         Self {
             epoch: fresh_epoch(),
             start,
-            ledger: Some(RevisionLedger::reserve(store, start, block)),
+            reservation: Some(reservation),
         }
     }
 
@@ -132,104 +194,155 @@ impl SceneRun {
         self.start
     }
 
-    /// The ceiling this run hands revisions out under: every revision it
-    /// has handed out so far is strictly below it. `None` for an
-    /// ephemeral run.
+    /// The durable ceiling: every revision this run may hand out is
+    /// strictly below it. `None` for an ephemeral run, which has no
+    /// ceiling.
     #[must_use]
     pub fn reserved_until(&self) -> Option<SceneRevision> {
-        self.ledger.as_ref().map(|ledger| ledger.ceiling)
+        self.reservation
+            .as_ref()
+            .map(|reservation| reservation.durable())
     }
 
-    pub(crate) fn into_parts(self) -> (Arc<str>, SceneRevision, Option<RevisionLedger>) {
-        (self.epoch, self.start, self.ledger)
+    pub(crate) fn into_parts(self) -> (Arc<str>, SceneRevision, Option<Arc<RevisionReservation>>) {
+        (self.epoch, self.start, self.reservation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reservation_for_test(&self) -> Option<Arc<RevisionReservation>> {
+        self.reservation.clone()
     }
 }
 
-/// The persisted reservation a resumed run hands revisions out under.
+/// The durable bound a resumed run hands revisions out under, and the
+/// machinery that raises it without any commit path doing I/O.
 #[derive(Debug)]
-pub(crate) struct RevisionLedger {
+pub(crate) struct RevisionReservation {
     store: Arc<ReservationStore>,
     block: u64,
-    /// Every revision this run hands out stays strictly below this. It is
-    /// a ceiling the store made durable, or one accepted in memory after
-    /// a write failed, when only the clock still protects the next run.
-    ceiling: SceneRevision,
-    /// The revision that starts the background reservation of the next
-    /// block.
-    refresh_at: SceneRevision,
-    /// Whether a background reservation is in flight.
-    refreshing: Arc<AtomicBool>,
+    /// Single flight for reservation writes, remembering the last failure
+    /// so a failing disk is retried at most once per backoff.
+    writer: tokio::sync::Mutex<Option<ReservationFailure>>,
+    /// Whether a background top-up is queued or running.
+    topping_up: Arc<AtomicBool>,
 }
 
-impl RevisionLedger {
-    fn reserve(store: Arc<ReservationStore>, start: SceneRevision, block: u64) -> Self {
-        let block = block.max(2);
-        let ceiling = start.saturating_add(block);
-        if let Err(error) = store.persist_at_least(ceiling) {
-            tracing::warn!(
-                %error,
-                ceiling,
-                "Failed to persist the scene revision reservation; the next run relies on the clock alone"
-            );
-        }
+#[derive(Debug)]
+struct ReservationFailure {
+    at: Instant,
+    reason: String,
+}
+
+impl RevisionReservation {
+    fn new(store: Arc<ReservationStore>, block: u64) -> Self {
         Self {
             store,
-            block,
-            ceiling,
-            refresh_at: ceiling.saturating_sub(block / 2),
-            refreshing: Arc::new(AtomicBool::new(false)),
+            block: block.max(2),
+            writer: tokio::sync::Mutex::new(None),
+            topping_up: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Make `revision` safe to hand out.
+    /// The highest ceiling known to be durable on disk.
+    pub(crate) fn durable(&self) -> SceneRevision {
+        self.store.persisted()
+    }
+
+    /// Whether `revision` is below the durable ceiling, so a later run is
+    /// certain to start above it.
+    pub(crate) fn covers(&self, revision: SceneRevision) -> bool {
+        revision < self.durable()
+    }
+
+    /// Make `needed` covered, persisting a further block on the blocking
+    /// pool when it is not. Never call this while holding a scene lock.
     ///
-    /// Called under the commit sequencer's lock. Past the middle of a
-    /// block it starts reserving the next block on the blocking pool and
-    /// returns at once; it writes inline only when `revision` reaches a
-    /// ceiling that write has not yet raised, which a run never does
-    /// unless it commits half a block faster than one small file write.
-    pub(crate) fn cover(&mut self, revision: SceneRevision) {
-        let persisted = self.store.persisted();
-        if persisted > self.ceiling {
-            self.ceiling = persisted;
-            self.refresh_at = persisted.saturating_sub(self.block / 2);
+    /// # Errors
+    ///
+    /// [`RevisionsUnavailable`] when the write fails, or failed less than
+    /// [`RESERVATION_RETRY_BACKOFF`] ago.
+    pub(crate) async fn ensure(
+        self: &Arc<Self>,
+        needed: SceneRevision,
+    ) -> Result<(), RevisionsUnavailable> {
+        if self.covers(needed) {
+            self.top_up_if_low(needed);
+            return Ok(());
         }
-        if revision >= self.ceiling {
-            let ceiling = revision.saturating_add(self.block);
-            if let Err(error) = self.store.persist_at_least(ceiling) {
-                tracing::warn!(
-                    %error,
-                    ceiling,
-                    "Failed to persist the scene revision reservation; the next run relies on the clock alone"
-                );
-            }
-            self.ceiling = ceiling;
-            self.refresh_at = ceiling.saturating_sub(self.block / 2);
-            return;
+        let mut failure = self.writer.lock().await;
+        if self.covers(needed) {
+            return Ok(());
         }
-        if revision < self.refresh_at || self.refreshing.swap(true, Ordering::AcqRel) {
-            return;
+        if let Some(previous) = failure.as_ref()
+            && previous.at.elapsed() < RESERVATION_RETRY_BACKOFF
+        {
+            return Err(RevisionsUnavailable::new(previous.reason.clone()));
         }
-        // One background attempt per ceiling. If it fails, the inline
-        // write at the ceiling is the retry.
-        self.refresh_at = self.ceiling;
-        let target = self.ceiling.saturating_add(self.block);
+        let target = needed.max(self.durable()).saturating_add(self.block);
         let store = Arc::clone(&self.store);
-        let refreshing = Arc::clone(&self.refreshing);
-        let extend = move || {
-            if let Err(error) = store.persist_at_least(target) {
-                tracing::warn!(
-                    %error,
-                    ceiling = target,
-                    "Failed to reserve the next scene revision block ahead of time"
-                );
-            }
-            refreshing.store(false, Ordering::Release);
+        let written = tokio::task::spawn_blocking(move || store.persist_at_least(target)).await;
+        let outcome = match written {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(format!("{error:#}")),
+            Err(error) => Err(format!("reservation write did not finish: {error}")),
         };
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn_blocking(extend)),
-            Err(_) => extend(),
+        match outcome {
+            Ok(()) => {
+                *failure = None;
+                Ok(())
+            }
+            Err(reason) => {
+                tracing::error!(
+                    error = %reason,
+                    ceiling = target,
+                    "Failed to persist the scene revision reservation; scene writes past the durable ceiling are refused"
+                );
+                *failure = Some(ReservationFailure {
+                    at: Instant::now(),
+                    reason: reason.clone(),
+                });
+                Err(RevisionsUnavailable::new(reason))
+            }
         }
+    }
+
+    /// Start persisting the next block in the background once less than
+    /// half a block of headroom is left above `revision`. Safe to call
+    /// under any lock and on the render thread: it only spawns, and without
+    /// a runtime it does nothing at all rather than write inline.
+    pub(crate) fn top_up_if_low(self: &Arc<Self>, revision: SceneRevision) {
+        let durable = self.durable();
+        if durable.saturating_sub(revision) > self.block / 2 {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if self.topping_up.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let this = Arc::clone(self);
+        let clear = ClearOnDrop(Arc::clone(&self.topping_up));
+        runtime.spawn(async move {
+            let _clear = clear;
+            // Errors are logged and remembered by `ensure`.
+            let _ = this.ensure(durable).await;
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_writes_for_test(&self, fail: bool) {
+        self.store.fail_writes_for_test(fail);
+    }
+}
+
+/// Clears the top-up flag however its task ends, cancelled included, so a
+/// runtime that drops the task never wedges future top-ups.
+struct ClearOnDrop(Arc<AtomicBool>);
+
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -248,80 +361,4 @@ fn fresh_epoch() -> Arc<str> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use super::*;
-    use crate::domain::commit::SceneCommitSequencer;
-    use hypercolor_core::bus::HypercolorBus;
-
-    fn on_disk(dir: &Path) -> u64 {
-        read_reservation(&dir.join(SCENE_REVISIONS_FILE))
-            .ok()
-            .flatten()
-            .expect("the reservation is on disk")
-    }
-
-    /// Every revision handed out is below the ceiling on disk at the
-    /// moment it is handed out, whether the next block was reserved inline
-    /// or ahead of time.
-    fn assert_every_revision_is_covered(dir: &Path, commits: u64) {
-        let run = SceneRun::resume_with_block(dir, UNIX_EPOCH + Duration::from_secs(1_000), 8);
-        let (_, start, ledger) = run.into_parts();
-        let sequencer = Arc::new(SceneCommitSequencer::resuming(start, ledger));
-        let bus = Arc::new(HypercolorBus::new());
-        let mut last = start;
-        for _ in 0..commits {
-            let ticket = sequencer.admit(Arc::clone(&bus));
-            last = ticket.generation();
-            assert!(
-                on_disk(dir) > last,
-                "revision {last} was handed out at or above the persisted ceiling"
-            );
-            ticket.release(Vec::new());
-        }
-        let next = SceneRun::resume_with_block(dir, UNIX_EPOCH, 8);
-        assert!(next.start_revision() > last);
-    }
-
-    #[test]
-    fn a_run_without_a_runtime_reserves_each_block_before_using_it() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert_every_revision_is_covered(dir.path(), 100);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_run_reserves_its_next_block_off_the_commit_path() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().to_path_buf();
-        // On the blocking pool, so the ledger sees a runtime and reserves
-        // ahead of time through it.
-        tokio::task::spawn_blocking(move || assert_every_revision_is_covered(&path, 100))
-            .await
-            .expect("the commit loop finishes");
-    }
-
-    #[test]
-    fn an_unwritable_reservation_falls_back_to_the_clock() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // A directory where the file should be makes every read and write
-        // fail.
-        std::fs::create_dir_all(dir.path().join(SCENE_REVISIONS_FILE)).expect("blocker");
-        let now = UNIX_EPOCH + Duration::from_secs(42);
-        let run = SceneRun::resume_with_block(dir.path(), now, 4);
-        assert_eq!(run.start_revision(), 42_000_000);
-    }
-
-    #[test]
-    fn the_store_never_lowers_the_ceiling_on_disk() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = ReservationStore::new(dir.path().join(SCENE_REVISIONS_FILE));
-        store.persist_at_least(10).expect("write");
-        store
-            .persist_at_least(5)
-            .expect("a lower ceiling is a no-op");
-        assert_eq!(on_disk(dir.path()), 10);
-        assert_eq!(store.persisted(), 10);
-    }
-}
+mod tests;
