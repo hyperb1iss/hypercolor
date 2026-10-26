@@ -40,18 +40,6 @@ pub fn update_request_from_layer(layer: &SceneLayer) -> ReplaceLayerRequest {
 
 pub type LayerStackOutcome = MutationOutcome<LayerStackResponse>;
 
-pub async fn list_layers(zone_id: &str) -> ApiResult<LayerStackResponse> {
-    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    let zone = scene
-        .zones
-        .into_iter()
-        .find(|zone| zone.id.to_string() == zone_id)
-        .ok_or_else(|| {
-            ApiError::Parse(format!("Zone {zone_id} is not present in the live scene"))
-        })?;
-    Ok(layer_stack(zone, scene.revision))
-}
-
 pub async fn create_layer(
     zone_id: &str,
     request: &CreateLayerRequest,

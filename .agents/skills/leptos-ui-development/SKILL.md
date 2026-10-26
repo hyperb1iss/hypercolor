@@ -202,12 +202,12 @@ let status_resource = api::daemon_resource(api::fetch_status);
 
 // Reactive inputs are read in the sync part of the closure; the async block
 // owns them. Reading a signal inside the future would not register it.
-let layers_resource = api::daemon_resource(move || {
-    let zone_id = selected_surface_id.get();
+let face_resource = api::daemon_resource(move || {
+    let display_id = selected_display_id.get();
     async move {
-        match zone_id {
-            Some(zone_id) => api::list_layers(&zone_id).await,
-            None => Ok(empty_layer_stack()),
+        match display_id {
+            Some(display_id) => api::fetch_display_face(&display_id).await,
+            None => Ok(None),
         }
     }
 });
