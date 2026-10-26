@@ -20,6 +20,7 @@ use super::{
     prepare_members_replay, written,
 };
 use crate::components::layout_builder::keyed::{self, Answer};
+use crate::components::layout_builder::writer;
 use crate::{api, toasts};
 
 /// What a zone delete removed, kept so its undo can rebuild the zone.
@@ -684,6 +685,7 @@ impl StudioHistory {
                 changes,
                 assignment: None,
             };
+            let through = writer::edit_mark();
             match edit_members(&request, &Fence::of(&scene)).await {
                 Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                     revision = response.document.revision;
@@ -714,7 +716,7 @@ impl StudioHistory {
                     return TakeDown::Unknown(Box::new(Pending {
                         fence,
                         key,
-                        write: HeldWrite::Members(request),
+                        write: HeldWrite::Members { request, through },
                     }));
                 }
             }

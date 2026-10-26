@@ -320,15 +320,23 @@ pub(crate) fn edit(scene_id: SceneId, zone_id: &str, edited: &[Output]) -> bool 
     })
 }
 
-/// Drop pending placement edits for `output_ids`: a membership write of
-/// ours placed those outputs, and a leftover edit must not land over it.
-pub(crate) fn forget(scene_id: SceneId, output_ids: &[String]) {
+/// A mark that every placement edit made from now on comes after, to take
+/// as a membership write goes out.
+pub(crate) fn edit_mark() -> u64 {
+    super::ledger::edit_mark()
+}
+
+/// Drop pending placement edits for `output_ids` made up to `through`, the
+/// [`edit_mark`] taken as a membership write of ours went out: it placed
+/// those outputs, and an edit made before it must not land over it. Edits
+/// made since are newer, and still go out.
+pub(crate) fn forget(scene_id: SceneId, output_ids: &[String], through: u64) {
     with_writer(|writer| {
         if writer.ledgers.scene_id() != Some(scene_id) {
             return;
         }
         for (_, ledger) in writer.ledgers.zones_mut() {
-            ledger.forget(output_ids);
+            ledger.forget(output_ids, through);
         }
     });
 }

@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 
 use super::placement::{self, Footprint};
 pub(crate) use crate::api::Fence;
-use crate::components::layout_builder::keyed;
+use crate::components::layout_builder::{keyed, writer};
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint, PatchZoneRequest,
@@ -989,6 +989,7 @@ impl StudioHistory {
         point: Option<NormalizedPosition>,
     ) -> Sent {
         let scene_id = request.scene_id;
+        let through = writer::edit_mark();
         let result = edit_members(&request, &fence).await;
         if !self.is_current(generation) {
             return Sent::Superseded;
@@ -1006,7 +1007,7 @@ impl StudioHistory {
                 return Sent::Unknown(Box::new(held::Pending {
                     fence,
                     key,
-                    write: held::HeldWrite::Members(request),
+                    write: held::HeldWrite::Members { request, through },
                 }));
             }
         };
@@ -1016,13 +1017,14 @@ impl StudioHistory {
         let placed = point.map_or_else(Vec::new, |point| {
             center_arrivals(&response.changes, point, canvas)
         });
-        self.accept(response);
+        self.accept(response, through);
         if !placed.is_empty() {
             let request = EditMembersRequest {
                 scene_id,
                 changes: placed,
                 assignment: None,
             };
+            let through = writer::edit_mark();
             let result = edit_members(&request, &fence.at(landed)).await;
             if !self.is_current(generation) {
                 return Sent::Superseded;
@@ -1031,7 +1033,7 @@ impl StudioHistory {
                 Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                     landed = response.document.revision;
                     fold_placements(&mut changes, &response.changes);
-                    self.accept(response);
+                    self.accept(response, through);
                 }
                 _ => {
                     toasts::toast_info("Assigned, but it could not be placed where you dropped it")
@@ -1076,16 +1078,10 @@ impl StudioHistory {
         }
     }
 
-    fn accept(self, response: EditMembersResponse) {
-        // The membership write placed these outputs; a leftover layout edit
-        // for them must not land over it.
-        let moved: Vec<String> = response
-            .changes
-            .iter()
-            .filter_map(|change| change.after.as_ref().or(change.before.as_ref()))
-            .map(|state| state.output.id.clone())
-            .collect();
-        crate::components::layout_builder::writer::forget(response.document.id, &moved);
+    /// Take in the receipt of a membership write that went out at the
+    /// edit mark `through`.
+    fn accept(self, response: EditMembersResponse, through: u64) {
+        retire_placed(response.document.id, &response.changes, through);
         self.latest.set(Some(response.document));
     }
 
@@ -1230,6 +1226,7 @@ impl StudioHistory {
                         changes,
                         assignment: None,
                     };
+                    let through = writer::edit_mark();
                     let result = edit_members(&request, &Fence::of(&scene)).await;
                     if !self.is_current(generation) {
                         return;
@@ -1262,7 +1259,7 @@ impl StudioHistory {
                                     j.complete(redo);
                                 });
                                 self.announce_replay();
-                                self.accept(response);
+                                self.accept(response, through);
                                 toasts::toast_success(if redo {
                                     "Assignment redone and saved"
                                 } else {
@@ -1288,6 +1285,18 @@ impl StudioHistory {
             }
         }
     }
+}
+
+/// A membership write of ours that went out at the edit mark `through`
+/// placed the outputs `changes` name: a layout edit made before it must not
+/// land over it. Edits made since are newer, and still go out.
+fn retire_placed(scene_id: SceneId, changes: &[MemberEdit], through: u64) {
+    let placed: Vec<String> = changes
+        .iter()
+        .filter_map(|change| change.after.as_ref().or(change.before.as_ref()))
+        .map(|state| state.output.id.clone())
+        .collect();
+    writer::forget(scene_id, &placed, through);
 }
 
 fn settle(done: Option<EditDone>, applied: Option<u64>) {
@@ -1745,6 +1754,48 @@ mod replay_tests {
             ],
         }))
         .expect("valid scene fixture")
+    }
+
+    #[test]
+    fn a_settled_membership_move_retires_only_the_layout_edits_made_before_it() {
+        use hypercolor_types::api::scene::MemberState;
+        let scene = two_zone_scene(4, 0.2);
+        let zone = &scene.zones[1];
+        let zone_id = zone.id.to_string();
+        writer::observe(
+            &scene,
+            crate::render_canvas::DEFAULT_RENDER_CANVAS,
+            Some(&zone_id),
+        );
+        let confirmed = writer::display(scene.id, &zone_id).expect("a confirmed zone");
+        let mut edited = confirmed.clone();
+        edited[0].position.x = 0.6;
+        assert!(writer::edit(scene.id, &zone_id, &edited));
+        // The move goes out here; the user drags again before it settles.
+        let through = writer::edit_mark();
+        edited[0].position.y = 0.3;
+        assert!(writer::edit(scene.id, &zone_id, &edited));
+        let keys = api::zone_outputs(zone).remove(0);
+        let state = MemberState {
+            zone_id: zone.id,
+            output: keys,
+            index: 0,
+        };
+        let changes = vec![MemberEdit {
+            before: Some(state.clone()),
+            after: Some(state),
+        }];
+        retire_placed(scene.id, &changes, through);
+        let shown = writer::display(scene.id, &zone_id).expect("the zone");
+        assert!(
+            (shown[0].position.x - confirmed[0].position.x).abs() < f32::EPSILON,
+            "the edit the move overtook retires"
+        );
+        assert!(
+            (shown[0].position.y - 0.3).abs() < f32::EPSILON,
+            "the edit made after the move stands"
+        );
+        assert!(writer::pending(scene.id, &zone_id));
     }
 
     #[test]

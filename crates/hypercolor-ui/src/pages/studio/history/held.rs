@@ -20,7 +20,7 @@ use leptos::prelude::*;
 
 use super::super::placement::Footprint;
 use super::zones::{DeletedZone, live_scene, zone_patch_before};
-use super::{Fence, StudioEdit, StudioHistory};
+use super::{Fence, StudioEdit, StudioHistory, retire_placed};
 use crate::api;
 use crate::components::layout_builder::keyed::{self, Answer};
 use crate::toasts;
@@ -34,8 +34,12 @@ pub(super) enum HeldWrite {
         record: DeletedZone,
         release: Vec<MemberEdit>,
     },
-    /// A membership edit; its receipt is what the journal keeps.
-    Members(EditMembersRequest),
+    /// A membership edit, which went out at the edit mark `through`; its
+    /// receipt is what the journal keeps.
+    Members {
+        request: EditMembersRequest,
+        through: u64,
+    },
     /// A zone create.
     Create { name: String, color: Option<String> },
     /// A zone patch, with the fields it changed as they were before.
@@ -287,16 +291,18 @@ impl StudioHistory {
                 };
                 Some(resolve_deletion(deleted, record, release))
             }
-            HeldWrite::Members(request) => {
+            HeldWrite::Members { request, through } => {
                 let told = told(item.scene_id, fence, live, || {
                     api::zones::edit_members(request, fence, key)
                 })
                 .await?;
                 match told {
-                    // The receipt, possibly a replay of the first answer:
-                    // layout edits made since stand, so nothing is forgotten.
+                    // The receipt, possibly a replay of the first answer. The
+                    // write placed its outputs, so layout edits made before it
+                    // retire; edits made since are newer and stand.
                     Told::Answer(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                         let changes = response.changes;
+                        retire_placed(item.scene_id, &changes, *through);
                         self.adopt(response.document);
                         Some((!changes.is_empty()).then_some(StudioEdit::Members(changes)))
                     }
@@ -308,6 +314,7 @@ impl StudioHistory {
                     // zone since can stop it, as with any undo.
                     Told::Read(scene) => {
                         if members_landed(&scene, &request.changes) {
+                            retire_placed(item.scene_id, &request.changes, *through);
                             return Some(Some(StudioEdit::Members(request.changes.clone())));
                         }
                         if request.changes.is_empty() {

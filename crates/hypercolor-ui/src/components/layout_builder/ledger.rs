@@ -77,8 +77,22 @@
 //! unique to the page, so a reply can only ever settle the write it
 //! answers.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{Orientation, Output};
+
+/// The newest intent sequence number handed out. One sequence serves every
+/// ledger of the page, so a mark taken before an operation is older than
+/// every edit made after it, in any zone, whatever scene the ledgers hold.
+static LAST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A mark that every edit made from now on comes after: given to
+/// [`ZoneLedger::forget`], it reaches only edits made before it.
+#[must_use]
+pub fn edit_mark() -> u64 {
+    LAST_SEQ.load(Ordering::Relaxed)
+}
 
 /// One placement field of an output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -140,6 +154,7 @@ impl Field {
 /// A local edit to one field of one output, not yet confirmed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Intent {
+    /// Unique to the page, and greater than every edit's made before it.
     pub seq: u64,
     pub output_id: String,
     pub field: Field,
@@ -210,7 +225,6 @@ pub struct ZoneLedger {
     /// The daemon started a new run: the next read is taken whatever its
     /// revision, and nothing goes out until it comes.
     reanchor: bool,
-    next_seq: u64,
 }
 
 fn apply(outputs: &mut [Output], intents: &[Intent]) {
@@ -370,9 +384,8 @@ impl ZoneLedger {
             for field in Field::ALL {
                 let value = field.read(local);
                 if value != field.read(shown) {
-                    self.next_seq += 1;
                     self.pending.push(Intent {
-                        seq: self.next_seq,
+                        seq: LAST_SEQ.fetch_add(1, Ordering::Relaxed) + 1,
                         output_id: shown.id.clone(),
                         field,
                         value,
@@ -384,13 +397,14 @@ impl ZoneLedger {
         changed
     }
 
-    /// Drop the pending intents for `output_ids`: a newer local operation
-    /// placed those outputs itself, so a leftover edit must not land over
-    /// it, not even through a write already out, whose outcome still
-    /// settles the rest.
-    pub fn forget(&mut self, output_ids: &[String]) {
+    /// Drop the pending intents for `output_ids` made up to `through`, an
+    /// [`edit_mark`] taken as a local operation that placed those outputs
+    /// itself went out: an edit made before it must not land over it, not
+    /// even through a write already out, whose outcome still settles the
+    /// rest. An edit made after it is newer, and goes out as usual.
+    pub fn forget(&mut self, output_ids: &[String], through: u64) {
         self.pending
-            .retain(|intent| !output_ids.contains(&intent.output_id));
+            .retain(|intent| intent.seq > through || !output_ids.contains(&intent.output_id));
     }
 
     /// Whether any edit waits for the daemon, sent or not.

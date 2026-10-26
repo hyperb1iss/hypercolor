@@ -60,7 +60,7 @@ use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDi
 use hypercolor_ui::components::layout_builder::keyed::tells;
 use hypercolor_ui::components::layout_builder::ledger::{
     Admission, Cancelled, Cause, Field, Intent, Lapse, SceneLedgers, SceneRead, Value, Write,
-    ZoneLedger, ZoneRead,
+    ZoneLedger, ZoneRead, edit_mark,
 };
 
 const ZONE: &str = "main";
@@ -1869,13 +1869,61 @@ fn a_membership_move_of_ours_drops_the_leftover_placement_edit() {
     // A membership write of ours places "a" itself. Studio's history sends
     // it only once the writer has nothing out, unless the writer is paused;
     // the edit that waited behind it must not go out after it.
-    model.ledger_mut().forget(&["a".to_owned()]);
+    let through = edit_mark();
+    model.ledger_mut().forget(&["a".to_owned()], through);
     assert!(model.ledger().pending().is_empty());
     assert!(model.ledger().in_flight(), "the write out still settles");
     model.deliver_write(false);
     while model.deliver(0) {}
     assert!(!model.ledger().has_pending());
     assert!(model.ledgers.take_write(ZONE).is_none());
+}
+
+#[test]
+fn a_membership_move_settled_later_keeps_the_edits_made_after_it() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    model.lose_request();
+    while model.deliver(0) {}
+    // A membership write of ours places "a" while the layout write waits,
+    // and no answer comes back for it either. By the time it settles, the
+    // user has moved "a" and "b" again.
+    let through = edit_mark();
+    model.edit("a", Field::Y, 0.6);
+    model.edit("b", Field::X, 0.8);
+    model.ledger_mut().forget(&["a".to_owned()], through);
+    let left: Vec<(String, Field)> = model
+        .ledger()
+        .pending()
+        .iter()
+        .map(|intent| (intent.output_id.clone(), intent.field))
+        .collect();
+    assert_eq!(
+        left,
+        vec![("a".to_owned(), Field::Y), ("b".to_owned(), Field::X)],
+        "only the edit made before the move retires"
+    );
+}
+
+#[test]
+fn edit_marks_order_edits_across_every_ledger() {
+    let desk = SceneId::new();
+    let mut ledgers = ledgers();
+    let read = scene_read(desk, 3, &[("main", 0.2), ("side", 0.2)]);
+    ledgers.observe(&read, Some("main"));
+    ledgers.observe(&read, Some("side"));
+    moved(&mut ledgers, "main", 0.4);
+    let through = edit_mark();
+    moved(&mut ledgers, "side", 0.6);
+    let newest = |ledgers: &SceneLedgers, zone: &str| {
+        ledgers
+            .zone(zone)
+            .and_then(|ledger| ledger.pending().last().map(|intent| intent.seq))
+            .expect("an intent")
+    };
+    assert!(newest(&ledgers, "main") <= through);
+    assert!(newest(&ledgers, "side") > through);
 }
 
 #[test]
