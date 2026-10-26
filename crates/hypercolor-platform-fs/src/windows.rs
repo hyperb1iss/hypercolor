@@ -1,3 +1,5 @@
+mod directory;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::windows::ffi::OsStrExt;
@@ -17,6 +19,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     FileAttributeTagInfo, FileBasicInfo, FileCaseSensitiveInfo, FileIdInfo,
     GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     OPEN_EXISTING,
+};
+
+pub use directory::{
+    WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind, WindowsEntryMetadata,
+    WindowsFileLock, WindowsGrant, WindowsSecurity, WindowsSid,
 };
 
 const REPLACE_FLAGS: u32 = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
