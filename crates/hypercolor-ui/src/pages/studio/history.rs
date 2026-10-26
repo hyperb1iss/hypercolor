@@ -2249,6 +2249,92 @@ mod replay_tests {
     }
 
     #[test]
+    fn an_unanswered_forward_fill_keeps_one_recoverable_creation_step() {
+        use hypercolor_types::api::scene::MemberState;
+
+        let owner = Owner::new();
+        owner.with(|| {
+            for landed in [true, false] {
+                let scene = two_zone_scene(9, 0.2);
+                let zone = &scene.zones[1];
+                let history = history(Some(scene.clone()), false, None, &zone.id.to_string());
+                let original = MemberState {
+                    zone_id: scene.zones[0].id,
+                    output: api::zone_outputs(&scene.zones[0]).remove(0),
+                    index: 0,
+                };
+                let mut destination = original.clone();
+                destination.zone_id = zone.id;
+                destination.output.position.x = 0.7;
+                let changes = vec![MemberEdit {
+                    before: Some(original.clone()),
+                    after: Some(destination.clone()),
+                }];
+                let request = EditMembersRequest {
+                    scene_id: scene.id,
+                    changes: changes.clone(),
+                    assignment: None,
+                };
+                let fence = Fence::of(&scene);
+                history.record_created_zone(
+                    scene.id,
+                    zone,
+                    Vec::new(),
+                    Some(Box::new(held::Pending {
+                        fence: fence.clone(),
+                        key: "forward-fill".to_owned(),
+                        write: held::HeldWrite::Members {
+                            request: request.clone(),
+                            through: 42,
+                        },
+                    })),
+                );
+                let item = history
+                    .unresolved
+                    .with_value(|held| held.first().cloned())
+                    .expect("the unanswered fill stays available to reconnect");
+                assert_eq!(item.pending.key, "forward-fill");
+                assert_eq!(item.pending.fence, fence);
+                let held::HeldWrite::Members {
+                    request: held_request,
+                    through,
+                } = &item.pending.write
+                else {
+                    panic!("the fill keeps its membership request");
+                };
+                assert_eq!(held_request, &request);
+                assert_eq!(*through, 42);
+                history.replay(false);
+                history.journal.with_untracked(|journal| {
+                    assert_eq!(journal.recorded(), 1);
+                    assert_eq!(journal.cursor, 1, "Undo waits for the fill");
+                    assert!(journal.waiting_on(false).is_some());
+                });
+
+                let receipt = landed.then(|| StudioEdit::Members(changes.clone()));
+                assert!(history.settle_if_held(&item, receipt));
+                assert!(!history.has_unresolved());
+                history.journal.with_untracked(|journal| {
+                    assert_eq!(journal.recorded(), 1, "settling adds no extra step");
+                    let Some(StudioEdit::ZoneCreated { filled, .. }) = journal.undo_edit() else {
+                        panic!("the creation remains undoable");
+                    };
+                    assert_eq!(
+                        filled.as_slice(),
+                        if landed { changes.as_slice() } else { &[] }
+                    );
+                    if landed {
+                        let undo = flip(filled[0].clone());
+                        assert_eq!(undo.before, Some(destination.clone()));
+                        assert_eq!(undo.after, Some(original.clone()));
+                    }
+                });
+            }
+        });
+        owner.cleanup();
+    }
+
+    #[test]
     fn a_held_undo_or_redo_settles_into_the_step_it_replays() {
         use hypercolor_types::api::scene::MemberState;
         let owner = Owner::new();

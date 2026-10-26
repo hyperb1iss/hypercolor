@@ -442,6 +442,7 @@ impl StudioHistory {
             };
             let mut moved = Moved::Unchanged;
             let mut filled = Vec::new();
+            let mut pending = None;
             if let Some(plan) = plan {
                 let live = live_scene(scene.id).await;
                 if !self.is_current(generation) {
@@ -458,12 +459,13 @@ impl StudioHistory {
                                     moved = Moved::Landed;
                                 }
                                 Sent::Failed => moved = Moved::Failed,
-                                Sent::Unknown(_) => {
+                                Sent::Unknown(unanswered) => {
                                     toasts::toast_info(&format!(
                                         "Created {}, but no answer came back for the move, so it may not have happened. Check the canvas.",
                                         zone.name
                                     ));
                                     moved = Moved::Failed;
+                                    pending = Some(unanswered);
                                 }
                                 Sent::Superseded => {
                                     self.overtaken(outcome);
@@ -481,17 +483,43 @@ impl StudioHistory {
                     }
                 }
             }
-            self.journal.update(|journal| {
-                journal.record(StudioEdit::ZoneCreated {
-                    zone_id: zone.id.to_string(),
-                    name: zone.name.clone(),
-                    color: zone.color.clone(),
-                    filled,
-                });
-            });
+            self.record_created_zone(scene.id, &zone, filled, pending);
             outcome(NewZone::Created { zone, moved });
             self.release(generation).await;
         });
+    }
+
+    /// Record the creation and keep an unanswered fill in the same place
+    /// until its receipt says what the operation must undo.
+    pub(super) fn record_created_zone(
+        self,
+        scene_id: SceneId,
+        zone: &api::ZoneResource,
+        filled: Vec<MemberEdit>,
+        pending: Option<Box<Pending>>,
+    ) {
+        let id = self.journal.try_update(|journal| {
+            journal.record(StudioEdit::ZoneCreated {
+                zone_id: zone.id.to_string(),
+                name: zone.name.clone(),
+                color: zone.color.clone(),
+                filled,
+            })
+        });
+        if let (Some(id), Some(pending)) = (id, pending) {
+            let name = &zone.name;
+            self.hold_place(
+                scene_id,
+                id,
+                format!("creating {name}"),
+                *pending,
+                Then::Fill {
+                    zone_id: zone.id.to_string(),
+                    name: zone.name.clone(),
+                    color: zone.color.clone(),
+                },
+            );
+        }
     }
 
     /// Send a move plan into `zone`, a zone of `scene`.
