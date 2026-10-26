@@ -33,7 +33,8 @@ mod zones;
 pub use announce::{DeviceLookup, ZoneLookup, replay_announcement};
 
 pub use zones::{
-    DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
+    DeletedZone, light_neighbor, rename_is_noop, resolve_deletion, restore_layer_requests,
+    zone_patch_before,
 };
 pub(crate) use zones::{Moved, NewZone};
 
@@ -285,6 +286,9 @@ pub(crate) struct StudioHistory {
     announcer: StoredValue<Option<Announcer>>,
     /// What to announce once the undo or redo in flight lands.
     replay_words: StoredValue<Option<String>>,
+    /// Deletes whose outcome a lost connection hid, until a scene read
+    /// settles them.
+    unresolved: StoredValue<Vec<zones::Unresolved>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
     generation: RwSignal<u64>,
@@ -308,10 +312,12 @@ impl StudioHistory {
         let pending_layout = RwSignal::new(None);
         let latest = RwSignal::new(None);
         let generation = RwSignal::new(0_u64);
+        let unresolved = StoredValue::new(Vec::new());
         let scene_id = Memo::new(move |_| scene.with(|s| s.as_ref().map(|s| s.id)));
         Effect::new(move |_| {
             scene_id.get();
             journal.set(StudioJournal::default());
+            unresolved.try_set_value(Vec::new());
             pending_layout.set(None);
             latest.set(None);
             generation.update(|g| *g = g.wrapping_add(1));
@@ -322,7 +328,7 @@ impl StudioHistory {
                 operation.stand_down();
             }
         });
-        Self {
+        let history = Self {
             journal,
             busy,
             committing,
@@ -331,6 +337,7 @@ impl StudioHistory {
             editor: StoredValue::new(None),
             announcer: StoredValue::new(None),
             replay_words: StoredValue::new(None),
+            unresolved,
             pending_layout,
             scene,
             latest,
@@ -344,7 +351,26 @@ impl StudioHistory {
             can_redo: Signal::derive(move || {
                 !busy.get() && journal.with(|j| j.redo_edit().is_some())
             }),
-        }
+        };
+        // A delete whose outcome a lost connection hid settles on a scene
+        // read taken once the connection is back: the next scene or the
+        // next socket open sends one.
+        let reconnects = use_context::<crate::app::WsContext>().map(|ws| ws.connection_generation);
+        Effect::new(move |_| {
+            scene.track();
+            if let Some(reconnects) = reconnects {
+                reconnects.track();
+            }
+            if !history.has_unresolved() {
+                return;
+            }
+            leptos::task::spawn_local(async move {
+                if let Ok(live) = api::fetch_active_scene().await {
+                    history.resolve_unresolved(&live);
+                }
+            });
+        });
+        history
     }
 
     /// The newest scene document Studio knows. `None` once Studio is gone,
@@ -1305,6 +1331,7 @@ mod replay_tests {
             editor: StoredValue::new(None),
             announcer: StoredValue::new(None),
             replay_words: StoredValue::new(None),
+            unresolved: StoredValue::new(Vec::new()),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),
             can_redo: Signal::stored(false),
@@ -1615,6 +1642,29 @@ mod replay_tests {
                 Some(history.journal.with_untracked(StudioJournal::recorded)),
                 "a policy change records no undo step"
             );
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn an_unknown_delete_becomes_the_entry_that_undoes_what_it_did() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let history = history(None, false, None, "11111111-1111-4111-8111-111111111111");
+            let scene = two_zone_scene(9, 0.2);
+            let gone = DeletedZone::of(&scene.zones[1], 1, 1);
+            let mut after = scene.clone();
+            after.zones.remove(1);
+            history.hold_unresolved(scene.id, gone, Vec::new());
+            assert!(history.has_unresolved());
+            history.resolve_unresolved(&after);
+            assert!(!history.has_unresolved());
+            assert!(matches!(
+                history
+                    .journal
+                    .with_untracked(|journal| journal.undo_edit().cloned()),
+                Some(StudioEdit::ZoneDeleted(_))
+            ));
         });
         owner.cleanup();
     }

@@ -206,6 +206,39 @@ enum TakeDown {
     /// The outputs left, but the delete failed and they could not be put
     /// back: the release that stranded them, for the journal to undo.
     Stranded(Vec<MemberEdit>),
+    /// The delete was lost in transit and the scene could not be read to
+    /// learn whether it landed: the release, held with the zone's record
+    /// until the scene can be read.
+    Unknown(Vec<MemberEdit>),
+}
+
+/// A zone delete whose outcome is not known yet, kept whole (layers
+/// included) until a scene read can tell what it was.
+#[derive(Clone, Debug)]
+pub(super) struct Unresolved {
+    pub scene_id: SceneId,
+    pub record: DeletedZone,
+    pub release: Vec<MemberEdit>,
+}
+
+/// What a delete whose outcome was unknown turned out to be, judged from a
+/// scene read after it: a delete when the zone is gone, so Undo rebuilds
+/// it from its record; the release of its devices when the zone is still
+/// there, so Undo puts them back; nothing when nothing changed.
+#[must_use]
+pub fn resolve_deletion(
+    scene: &api::SceneDocument,
+    record: &DeletedZone,
+    release: &[MemberEdit],
+) -> Option<StudioEdit> {
+    let present = scene
+        .zones
+        .iter()
+        .any(|zone| zone.id.to_string() == record.zone_id);
+    if !present {
+        return Some(StudioEdit::ZoneDeleted(Box::new(record.clone())));
+    }
+    (!release.is_empty()).then(|| StudioEdit::Members(release.to_vec()))
 }
 
 /// Why undoing a zone's creation left the zone in place.
@@ -245,6 +278,50 @@ impl StudioHistory {
     fn overtaken(self, outcome: Box<dyn FnOnce(NewZone)>) {
         if self.alive() {
             outcome(NewZone::NotCreated);
+        }
+    }
+
+    /// Keep a delete whose outcome is unknown until a scene read settles it.
+    pub(super) fn hold_unresolved(
+        self,
+        scene_id: SceneId,
+        record: DeletedZone,
+        release: Vec<MemberEdit>,
+    ) {
+        self.unresolved.try_update_value(|held| {
+            held.push(Unresolved {
+                scene_id,
+                record,
+                release,
+            });
+        });
+    }
+
+    /// Whether a delete waits for a scene read to settle it.
+    pub(super) fn has_unresolved(self) -> bool {
+        self.unresolved
+            .try_with_value(|held| !held.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Settle the unknown deletes of `scene` from a read of it taken after
+    /// they failed: each becomes the journal entry that undoes what it
+    /// really did.
+    pub(super) fn resolve_unresolved(self, scene: &api::SceneDocument) {
+        let settled = self
+            .unresolved
+            .try_update_value(|held| {
+                let (now, later): (Vec<_>, Vec<_>) = std::mem::take(held)
+                    .into_iter()
+                    .partition(|item: &Unresolved| item.scene_id == scene.id);
+                *held = later;
+                now
+            })
+            .unwrap_or_default();
+        for item in settled {
+            if let Some(entry) = resolve_deletion(scene, &item.record, &item.release) {
+                self.journal.update(|journal| journal.record(entry));
+            }
         }
     }
 
@@ -545,6 +622,9 @@ impl StudioHistory {
                     TakeDown::Stranded(released) => self.journal.update(|journal| {
                         journal.record(StudioEdit::Members(released));
                     }),
+                    TakeDown::Unknown(released) => {
+                        self.hold_unresolved(scene.id, record, released);
+                    }
                     TakeDown::Kept => {}
                 }
             }
@@ -629,6 +709,15 @@ impl StudioHistory {
             && !live.zones.iter().any(|zone| zone.id == zone_key)
         {
             return TakeDown::Deleted;
+        }
+        // Lost in transit with no scene to check: it may have landed or not,
+        // so the record waits, whole, for the next scene read to say which.
+        if outcome.is_err() && live.is_err() {
+            toasts::toast_info(&format!(
+                "Lost the connection while deleting {}. Once the scene loads again, Undo can bring back what was removed.",
+                record.name
+            ));
+            return TakeDown::Unknown(release);
         }
         let put_back = record.outputs.is_empty()
             || match live {
@@ -884,6 +973,10 @@ impl StudioHistory {
                                 StudioEdit::Members(released),
                                 settle,
                             );
+                        }
+                        TakeDown::Unknown(released) => {
+                            self.replay_words.try_set_value(None);
+                            self.hold_unresolved(scene_id, record, released);
                         }
                         TakeDown::Kept => {}
                     }

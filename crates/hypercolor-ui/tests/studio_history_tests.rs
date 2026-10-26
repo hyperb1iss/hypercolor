@@ -7,7 +7,7 @@ use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
     DeletedZone, StudioEdit, StudioJournal, light_neighbor, prepare_members_replay, rename_is_noop,
-    replay_announcement, restore_layer_requests, zone_patch_before,
+    replay_announcement, resolve_deletion, restore_layer_requests, zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -475,4 +475,36 @@ fn a_legacy_main_zone_is_announced_and_renamed_by_the_name_its_tab_shows() {
     assert!(rename_is_noop(zone, "  "));
     assert!(rename_is_noop(zone, "Default zone"));
     assert!(!rename_is_noop(zone, "Desk"));
+}
+
+#[test]
+fn an_unknown_delete_resolves_by_what_the_scene_shows_after_it() {
+    let scene = scene();
+    let mut layered = scene.zones[0].clone();
+    layered.layers = vec![layer("Glow", [1.0, 0.0, 0.5, 1.0], BlendMode::Screen, 0.5)];
+    let record = DeletedZone::of(&layered, 0, 3);
+    let release = vec![MemberEdit {
+        before: Some(MemberState {
+            zone_id: scene.zones[0].id,
+            output: hypercolor_ui::api::zone_outputs(&scene.zones[0]).remove(0),
+            index: 0,
+        }),
+        after: None,
+    }];
+    // The zone is gone: the delete landed, and its record, layers and all,
+    // is what Undo rebuilds from.
+    let mut without = scene.clone();
+    without.zones.clear();
+    match resolve_deletion(&without, &record, &release) {
+        Some(StudioEdit::ZoneDeleted(deleted)) => assert_eq!(deleted.layers.len(), 1),
+        other => panic!("expected a delete, got {other:?}"),
+    }
+    // The zone is still there: only the release happened.
+    assert_eq!(
+        resolve_deletion(&scene, &record, &release),
+        Some(StudioEdit::Members(release.clone()))
+    );
+    // Still there and nothing was released (a zone of layers alone):
+    // nothing changed.
+    assert_eq!(resolve_deletion(&scene, &record, &[]), None);
 }
