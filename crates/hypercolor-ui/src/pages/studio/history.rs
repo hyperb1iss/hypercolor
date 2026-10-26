@@ -1047,7 +1047,7 @@ impl StudioHistory {
     /// Read the live scene after a stale reply, so the next operation does
     /// not fail against the same old revision.
     async fn resync(self, generation: u64) {
-        if let Ok(live) = api::fetch_active_scene().await
+        if let Ok(live) = api::fetch_active_scene_promptly().await
             && self.is_current(generation)
         {
             self.adopt(live);

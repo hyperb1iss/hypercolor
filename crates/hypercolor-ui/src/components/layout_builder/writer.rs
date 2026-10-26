@@ -545,7 +545,7 @@ enum Fresh {
 /// Read the scene afresh for the ledgers `ticket` names. A read that
 /// falls behind what the ledgers hold is read again, up to a streak.
 async fn read_for(ticket: Ticket, streaks: &mut Streaks) -> Fresh {
-    let Ok(scene) = api::fetch_active_scene().await else {
+    let Ok(scene) = api::fetch_active_scene_promptly().await else {
         return Fresh::Failed;
     };
     let read = scene_read(&scene, canvas());

@@ -153,7 +153,7 @@ enum Settle {
 /// operation. A scene activated elsewhere since the operation began is
 /// refused, so no step lands outside the scene it started in.
 pub(super) async fn live_scene(scene_id: SceneId) -> Result<api::SceneDocument, &'static str> {
-    match api::fetch_active_scene().await {
+    match api::fetch_active_scene_promptly().await {
         Ok(scene) if scene.id == scene_id => Ok(scene),
         Ok(_) => Err("another scene is active now"),
         Err(_) => Err("the scene could not be read"),

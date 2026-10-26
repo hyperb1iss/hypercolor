@@ -28,7 +28,7 @@ Studio reads from three app-root contexts and provides its own. The rule of thum
 
 ### Shared state at the app root
 
-The live scene is one resource for the whole app. `api::fetch_active_scene` reads the canonical `SceneDocument` from `GET /api/v1/scene`, and gives up after `SCENE_READ_DEADLINE` (10 s) so a stalled daemon cannot hold up what waits on the read. `provide_scene_contexts()` in `zones.rs` exposes that document as one shared memo on both `ZonesContext` and `ScenesContext`. Derived memos build surface lists and presentation state from the same document and its single `revision`.
+The live scene is one resource for the whole app. `api::fetch_active_scene` reads the canonical `SceneDocument` from `GET /api/v1/scene`. The writer's and history's recovery reads go through `fetch_active_scene_promptly`, which gives up after `SCENE_READ_DEADLINE` (10 s) so a stalled daemon cannot hold a recovery up; the shared resource waits, keeping the document it has. `provide_scene_contexts()` in `zones.rs` exposes that document as one shared memo on both `ZonesContext` and `ScenesContext`. Derived memos build surface lists and presentation state from the same document and its single `revision`.
 
 WebSocket scene events are freshness hints for the REST snapshot. Structural scene events refetch `GET /scene`; control-only events do not force a whole-document fetch at slider frequency. `EffectControlChanged` identifies the affected zone and real layer for consumers that update control state directly. `daemon_resource` also reads `connection_generation`, so a socket reconnect performs a fresh REST read instead of assuming missed events will be replayed.
 

@@ -708,7 +708,9 @@ pub async fn sleep(delay: Duration) {
 }
 
 /// Off the browser there is no clock to wait on, so this never finishes:
-/// a deadline never expires there, and nothing that waits runs there.
+/// a deadline never expires there, and nothing that waits runs there. A
+/// native test must not reach a path that waits (a retry's backoff), or it
+/// hangs.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn sleep(_delay: Duration) {
     std::future::pending::<()>().await;

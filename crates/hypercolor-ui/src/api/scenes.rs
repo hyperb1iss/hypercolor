@@ -24,10 +24,15 @@ pub struct ZoneEffectRef<'a> {
     pub preset_id: Option<PresetId>,
 }
 
-/// Read the active scene, waiting no longer than
-/// [`client::SCENE_READ_DEADLINE`], so a stalled daemon cannot hold up
-/// whatever waits on the read.
 pub async fn fetch_active_scene() -> ApiResult<SceneDocument> {
+    client::fetch_json("/api/v1/scene").await
+}
+
+/// Read the active scene for a recovery that waits on it (settling a write,
+/// re-anchoring), giving up after [`client::SCENE_READ_DEADLINE`] so a
+/// stalled daemon cannot hold the recovery up. The shared scene resource
+/// reads without one: a read that stalls there keeps the document it has.
+pub async fn fetch_active_scene_promptly() -> ApiResult<SceneDocument> {
     client::fetch_json_within("/api/v1/scene", client::SCENE_READ_DEADLINE).await
 }
 
