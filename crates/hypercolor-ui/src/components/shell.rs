@@ -102,11 +102,12 @@ pub fn Shell(children: Children) -> impl IntoView {
         });
     }
 
-    // Global keyboard shortcuts
+    // Global keyboard shortcuts, heard on the window so they work before
+    // anything on the page has focus. The handle goes with the shell.
     let navigate = use_navigate();
     // Extension-contributed nav items (empty in the standalone OSS app).
     let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
-    let keydown_handler = move |ev: leptos::ev::KeyboardEvent| {
+    let keydown = window_event_listener(leptos::ev::keydown, move |ev| {
         let key = ev.key();
         let ctrl_or_meta = ev.ctrl_key() || ev.meta_key();
 
@@ -116,7 +117,7 @@ pub fn Shell(children: Children) -> impl IntoView {
             return;
         }
 
-        if key == "Escape" && palette_open.get() {
+        if key == "Escape" && palette_open.get_untracked() {
             set_palette_open.set(false);
             return;
         }
@@ -134,14 +135,11 @@ pub fn Shell(children: Children) -> impl IntoView {
             ev.prevent_default();
             focus_page_search();
         }
-    };
+    });
+    on_cleanup(move || keydown.remove());
 
     view! {
-        <div
-            class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-clip noise-overlay"
-            on:keydown=keydown_handler
-            tabindex="-1"
-        >
+        <div class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-clip noise-overlay">
             <Sidebar />
             <main class="flex flex-col flex-1 min-h-0 min-w-0 overflow-clip
                          max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
