@@ -432,7 +432,6 @@ impl StudioHistory {
                             write: HeldWrite::Create {
                                 name: name.clone(),
                                 color: color.clone(),
-                                before: scene.zones.iter().map(|zone| zone.id).collect(),
                             },
                         },
                     );
@@ -882,7 +881,6 @@ impl StudioHistory {
                         write: HeldWrite::Create {
                             name: record.name.clone(),
                             color: record.color.clone(),
-                            before: live.zones.iter().map(|zone| zone.id).collect(),
                         },
                     },
                     Then::Resume(Box::new(Resume::Rebuild {
@@ -1566,7 +1564,6 @@ impl StudioHistory {
                         write: HeldWrite::Create {
                             name: name.clone(),
                             color: color.clone(),
-                            before: live.zones.iter().map(|zone| zone.id).collect(),
                         },
                     },
                     Then::Resume(Box::new(Resume::Recreate {

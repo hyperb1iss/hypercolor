@@ -35,7 +35,7 @@ mod zones;
 
 pub use announce::{DeviceLookup, ZoneLookup, replay_announcement};
 
-pub use held::{Made, members_landed, resolve_deletion, settles_by_key, zone_it_made};
+pub use held::{members_landed, resolve_deletion, settles_by_key};
 pub use zones::{
     DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
 };
@@ -92,9 +92,13 @@ pub enum StudioEdit {
     },
 }
 
-/// A journal entry's identity. It never changes while the entry lives,
-/// however settling other entries moves it.
+/// A journal entry's identity, unique to the page: it never changes while
+/// the entry lives, however settling other entries moves it, and no other
+/// journal (another scene's, or this scene's after a switch) ever reuses it.
 pub type EntryId = u64;
+
+/// The last entry identity handed out, for the life of the page.
+static LAST_ENTRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
@@ -123,8 +127,6 @@ pub struct StudioJournal {
     cursor: usize,
     /// Edits recorded so far; replays do not count.
     recorded: u64,
-    /// The last entry id handed out.
-    last_id: EntryId,
 }
 
 impl StudioJournal {
@@ -132,10 +134,10 @@ impl StudioJournal {
     /// the identity of its place.
     pub fn record(&mut self, edit: StudioEdit) -> EntryId {
         self.recorded = self.recorded.wrapping_add(1);
-        self.last_id += 1;
+        let id = LAST_ENTRY.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         self.entries.truncate(self.cursor);
         self.entries.push(Entry {
-            id: self.last_id,
+            id,
             edit,
             replaying: false,
         });
@@ -143,7 +145,7 @@ impl StudioJournal {
             self.entries.remove(0);
         }
         self.cursor = self.entries.len();
-        self.last_id
+        id
     }
     pub fn undo_edit(&self) -> Option<&StudioEdit> {
         self.cursor
@@ -468,6 +470,9 @@ pub(crate) struct StudioHistory {
     replay_words: StoredValue<Option<String>>,
     /// Writes whose outcome a lost connection hid, until they settle.
     unresolved: StoredValue<Vec<held::Unresolved>>,
+    /// Moves each time a scene switch replaces the journal, so a settlement
+    /// started for one journal never touches another's held writes.
+    lifetime: StoredValue<u64>,
     /// Whether the held writes are being settled.
     settling: StoredValue<held::Settling>,
     scene: Signal<Option<api::SceneDocument>>,
@@ -504,20 +509,6 @@ impl StudioHistory {
                 previous.copied().flatten(),
             )
         });
-        Effect::new(move |_| {
-            scene_id.get();
-            journal.set(StudioJournal::default());
-            unresolved.try_set_value(Vec::new());
-            pending_layout.set(None);
-            latest.set(None);
-            generation.update(|g| *g = g.wrapping_add(1));
-            busy.set(false);
-            committing.set(false);
-            let dropped = waiting.try_update_value(std::mem::take).unwrap_or_default();
-            for operation in dropped {
-                operation.stand_down();
-            }
-        });
         let mut history = Self {
             journal,
             busy,
@@ -528,6 +519,7 @@ impl StudioHistory {
             announcer: StoredValue::new(None),
             replay_words: StoredValue::new(None),
             unresolved,
+            lifetime: StoredValue::new(0),
             settling: StoredValue::new(held::Settling::Idle),
             pending_layout,
             scene,
@@ -544,12 +536,17 @@ impl StudioHistory {
                 !busy.get() && journal.with(|j| j.redo_edit().is_some())
             }),
         };
-        // A write no answer came back for settles once the connection is
-        // back: sent again under its own key in its own daemon run, or read
-        // from the scene once that run has ended.
         let socket = use_context::<crate::app::WsContext>()
             .map(|ws| (ws.connection_generation, ws.run_epoch));
         history.run = socket.map(|(_, run)| run);
+        // Another active scene starts a fresh journal.
+        Effect::new(move |_| {
+            scene_id.get();
+            history.start_journal();
+        });
+        // A write no answer came back for settles once the connection is
+        // back: sent again under its own key in its own daemon run, or read
+        // from the scene once that run has ended.
         Effect::new(move |_| {
             scene.track();
             if let Some((opened, run)) = socket {
@@ -561,6 +558,26 @@ impl StudioHistory {
             }
         });
         history
+    }
+
+    /// Start a fresh journal for a newly active scene: the old one's
+    /// steps, held writes, and waiting operations go with it.
+    fn start_journal(self) {
+        self.journal.set(StudioJournal::default());
+        self.unresolved.try_set_value(Vec::new());
+        self.lifetime.try_update_value(|lifetime| *lifetime += 1);
+        self.pending_layout.set(None);
+        self.latest.set(None);
+        self.generation.update(|g| *g = g.wrapping_add(1));
+        self.busy.set(false);
+        self.committing.set(false);
+        let dropped = self
+            .waiting
+            .try_update_value(std::mem::take)
+            .unwrap_or_default();
+        for operation in dropped {
+            operation.stand_down();
+        }
     }
 
     /// The daemon run the socket last named.
@@ -1648,6 +1665,7 @@ mod replay_tests {
             announcer: StoredValue::new(None),
             replay_words: StoredValue::new(None),
             unresolved: StoredValue::new(Vec::new()),
+            lifetime: StoredValue::new(1),
             settling: StoredValue::new(held::Settling::Idle),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),
@@ -2065,25 +2083,68 @@ mod replay_tests {
                 ));
                 assert!(matches!(journal.entries[1].edit, StudioEdit::Members(_)));
             });
-            // A scene switch while a held write settles drops it with the
-            // journal that held its place; its answer settles nothing.
+            // A scene switch while a held write is out replaces the journal.
+            // The old write's late answer settles nothing of the new scene's,
+            // not even a write held where the old one was.
+            let made = || StudioEdit::ZoneCreated {
+                zone_id: gone.zone_id.clone(),
+                name: gone.name.clone(),
+                color: None,
+                filled: Vec::new(),
+            };
+            let held_create = |name: &str| {
+                let name = name.to_owned();
+                let entry = history
+                    .journal
+                    .try_update(|journal| {
+                        journal.record(StudioEdit::Unresolved { name: name.clone() })
+                    })
+                    .expect("a journal");
+                history.hold(
+                    scene.id,
+                    entry,
+                    name,
+                    item.pending.clone(),
+                    held::Then::Record,
+                );
+                entry
+            };
+            let old = held_create("creating Old");
+            let stale = history
+                .unresolved
+                .with_value(|held| held.last().cloned())
+                .expect("held");
+            history.start_journal();
+            let new = held_create("creating New");
+            assert_ne!(new, old, "a new journal never reuses a place");
+            let reused = held::Unresolved {
+                entry: new,
+                ..stale.clone()
+            };
+            assert!(!history.settle_if_held(&stale, Some(made())));
+            assert!(!history.settle_if_held(&reused, Some(made())));
+            assert_eq!(
+                history.unresolved.with_value(Vec::len),
+                1,
+                "the new scene's write stays held"
+            );
+            history.journal.with_untracked(|journal| {
+                assert_eq!(
+                    journal.undo_edit(),
+                    Some(&StudioEdit::Unresolved {
+                        name: "creating New".to_owned()
+                    })
+                );
+            });
+            // A place the journal does not hold is never held.
             history.hold(
                 scene.id,
-                7,
-                name.clone(),
+                old,
+                "creating Old".to_owned(),
                 item.pending.clone(),
                 held::Then::Record,
             );
-            history.unresolved.set_value(Vec::new());
-            let switched = held::Unresolved {
-                scene_id: scene.id,
-                entry: 7,
-                name,
-                pending: item.pending.clone(),
-                then: held::Then::Record,
-                learned: None,
-            };
-            assert!(!history.settle_if_held(&switched, None));
+            assert_eq!(history.unresolved.with_value(Vec::len), 1);
         });
         owner.cleanup();
     }
@@ -2114,6 +2175,7 @@ mod replay_tests {
             },
             then,
             learned: None,
+            lifetime: 1,
         }
     }
 

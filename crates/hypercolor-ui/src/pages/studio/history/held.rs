@@ -19,7 +19,7 @@
 //! it can.
 
 use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, PatchZoneRequest};
-use hypercolor_types::scene::{SceneId, ZoneId};
+use hypercolor_types::scene::SceneId;
 use leptos::prelude::*;
 
 use super::super::placement::Footprint;
@@ -44,13 +44,9 @@ pub(super) enum HeldWrite {
         request: EditMembersRequest,
         through: u64,
     },
-    /// A zone create, with the zones the scene held as it went out, so a
-    /// read can tell the zone it made from the others of its name.
-    Create {
-        name: String,
-        color: Option<String>,
-        before: Vec<ZoneId>,
-    },
+    /// A zone create. Only its key's answer can say which zone it made:
+    /// zones may share a name, and another client may make one.
+    Create { name: String, color: Option<String> },
     /// A zone patch, with the fields it changed as they were before.
     Patch {
         zone_id: String,
@@ -174,6 +170,8 @@ pub(super) struct Unresolved {
     /// What it did, once known, for an undo or redo whose rest has to wait
     /// for the next settling: it is not asked again.
     pub learned: Option<StudioEdit>,
+    /// The journal it belongs to (see [`StudioHistory::lives`]).
+    pub lifetime: u64,
 }
 
 /// The step an undo's landed write leaves on the redo side: a membership
@@ -225,55 +223,32 @@ enum Told<T> {
     Read(api::SceneDocument),
 }
 
-/// Ask what became of a write held under `fence` and its key, with the
-/// scene `live` as read just now: in the write's own run, `attempt` sends
-/// it again under its key. `None` while nothing can tell yet.
-async fn told<T, F, Fut>(
-    scene_id: SceneId,
-    fence: &Fence,
-    live: api::SceneDocument,
-    attempt: F,
-) -> Option<Told<T>>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = api::client::KeyedResponse<T>>,
-{
-    if !settles_by_key(&fence.run, &live.run_epoch) {
-        return Some(Told::Read(live));
-    }
-    match keyed::resend(&fence.run, attempt).await {
-        Answer::Final { outcome, .. } => Some(Told::Answer(outcome)),
-        // The first request may have committed after `live` was read and
-        // before its answer went, so a read from now tells.
-        Answer::Forgotten => live_scene(scene_id).await.ok().map(Told::Read),
-        Answer::OtherRun | Answer::Lost(_) => None,
-    }
+/// What a held create said about the zone it made.
+#[derive(Debug, PartialEq)]
+enum CreateSays {
+    /// Its key's answer named the zone it made.
+    Made(StudioEdit),
+    /// Its key's answer refused it.
+    Refused,
+    /// Only a read was left to ask, and no read can say whether it made
+    /// a zone, or which: zones may share a name, and another client may
+    /// make one. Nothing may undo or fill a zone on its word.
+    Unproven,
 }
 
-/// Which zone a create named `name` made, as a read of the scene tells.
-#[derive(Debug)]
-pub enum Made<'a> {
-    /// No zone of that name is new since the create went out.
-    None,
-    /// The one new zone of that name.
-    One(&'a api::ZoneResource),
-    /// More than one is, so the read cannot tell which.
-    Several,
-}
-
-/// The zone a create named `name` made, judged from `scene` and the zones
-/// the scene held as the create went out (`before`): the zone of that
-/// name that is new since.
-#[must_use]
-pub fn zone_it_made<'a>(scene: &'a api::SceneDocument, name: &str, before: &[ZoneId]) -> Made<'a> {
-    let mut new = scene
-        .zones
-        .iter()
-        .filter(|zone| zone.name == name && !before.contains(&zone.id));
-    match (new.next(), new.next()) {
-        (None, _) => Made::None,
-        (Some(zone), None) => Made::One(zone),
-        (Some(_), Some(_)) => Made::Several,
+/// What a held create did, as `told` says.
+fn create_says(told: Told<api::ZoneResource>) -> CreateSays {
+    match told {
+        Told::Answer(Ok(api::zones::ZoneOutcome::Applied(zone))) => {
+            CreateSays::Made(StudioEdit::ZoneCreated {
+                zone_id: zone.id.to_string(),
+                name: zone.name,
+                color: zone.color,
+                filled: Vec::new(),
+            })
+        }
+        Told::Answer(_) => CreateSays::Refused,
+        Told::Read(_) => CreateSays::Unproven,
     }
 }
 
@@ -330,7 +305,8 @@ pub fn members_landed(scene: &api::SceneDocument, changes: &[MemberEdit]) -> boo
 impl StudioHistory {
     /// Hold `pending`, whose outcome is unknown, at the journal place
     /// `entry`, which already shows as unresolved, until it settles into
-    /// what `then` says.
+    /// what `then` says. Places are unique to the page, so a journal that
+    /// does not hold `entry` is another scene's, and nothing is held.
     pub(super) fn hold(
         self,
         scene_id: SceneId,
@@ -339,6 +315,16 @@ impl StudioHistory {
         pending: Pending,
         then: Then,
     ) {
+        let ours = self
+            .journal
+            .try_with_untracked(|journal| journal.edit(entry).is_some())
+            .unwrap_or(false);
+        let Some(lifetime) = self.lifetime.try_get_value() else {
+            return;
+        };
+        if !ours {
+            return;
+        }
         self.unresolved.try_update_value(|unresolved| {
             unresolved.push(Unresolved {
                 scene_id,
@@ -347,6 +333,7 @@ impl StudioHistory {
                 pending,
                 then,
                 learned: None,
+                lifetime,
             });
         });
     }
@@ -394,8 +381,12 @@ impl StudioHistory {
     }
 
     /// Hold `item` again, its place still waiting, for the next settling
-    /// to go on from what it already learned it `did`.
+    /// to go on from what it already learned it `did`, unless its journal
+    /// is gone.
     pub(super) fn hold_again(self, item: Unresolved, did: StudioEdit) {
+        if !self.lives(item.lifetime) {
+            return;
+        }
         self.unresolved.try_update_value(|unresolved| {
             unresolved.push(Unresolved {
                 learned: Some(did),
@@ -465,6 +456,9 @@ impl StudioHistory {
     /// meanwhile dropped every held write of the old scene, along with the
     /// journal that held their places. Reports whether it settled.
     pub(super) fn settle_if_held(self, item: &Unresolved, did: Option<StudioEdit>) -> bool {
+        if !self.lives(item.lifetime) {
+            return false;
+        }
         let held = self
             .unresolved
             .try_update_value(|unresolved| {
@@ -478,17 +472,64 @@ impl StudioHistory {
         held
     }
 
+    /// Whether the journal `lifetime` names is still the one Studio holds:
+    /// a scene switch replaces it, and with it every held write. A
+    /// settlement checks this after every wait before it touches anything.
+    pub(super) fn lives(self, lifetime: u64) -> bool {
+        self.lifetime.try_get_value() == Some(lifetime)
+    }
+
+    /// Ask what became of `item`'s write, with the scene `live` as read
+    /// just now: in the write's own run, `attempt` sends it again under its
+    /// key. `None` while nothing can tell yet, or once its journal is gone.
+    async fn told<T, F, Fut>(
+        self,
+        item: &Unresolved,
+        live: api::SceneDocument,
+        attempt: F,
+    ) -> Option<Told<T>>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = api::client::KeyedResponse<T>>,
+    {
+        let fence = &item.pending.fence;
+        if !settles_by_key(&fence.run, &live.run_epoch) {
+            return Some(Told::Read(live));
+        }
+        let answer = keyed::resend(&fence.run, attempt).await;
+        if !self.lives(item.lifetime) {
+            return None;
+        }
+        match answer {
+            Answer::Final { outcome, .. } => Some(Told::Answer(outcome)),
+            // The first request may have committed after `live` was read and
+            // before its answer went, so a read from now tells.
+            Answer::Forgotten => {
+                let read = live_scene(item.scene_id).await.ok();
+                if !self.lives(item.lifetime) {
+                    return None;
+                }
+                read.map(Told::Read)
+            }
+            Answer::OtherRun | Answer::Lost(_) => None,
+        }
+    }
+
     /// The entry that undoes what a held write did (`None` for nothing),
     /// or `None` while that cannot be told yet.
     async fn what_it_did(self, item: &Unresolved) -> Option<Option<StudioEdit>> {
         let live = live_scene(item.scene_id).await.ok()?;
+        if !self.lives(item.lifetime) {
+            return None;
+        }
         let Pending { fence, key, write } = &item.pending;
         match write {
             HeldWrite::Delete { record, release } => {
-                let told = told(item.scene_id, fence, live, || {
-                    api::zones::delete_zone(&record.zone_id, fence, key)
-                })
-                .await?;
+                let told = self
+                    .told(item, live, || {
+                        api::zones::delete_zone(&record.zone_id, fence, key)
+                    })
+                    .await?;
                 let deleted = match told {
                     Told::Answer(outcome) => {
                         matches!(outcome, Ok(api::zones::ZoneOutcome::Applied(())))
@@ -505,10 +546,9 @@ impl StudioHistory {
                 Some(resolve_deletion(deleted, record, release))
             }
             HeldWrite::Members { request, through } => {
-                let told = told(item.scene_id, fence, live, || {
-                    api::zones::edit_members(request, fence, key)
-                })
-                .await?;
+                let told = self
+                    .told(item, live, || api::zones::edit_members(request, fence, key))
+                    .await?;
                 match told {
                     // The receipt, possibly a replay of the first answer. The
                     // write placed its outputs, so layout edits made before it
@@ -544,48 +584,24 @@ impl StudioHistory {
                     }
                 }
             }
-            HeldWrite::Create {
-                name,
-                color,
-                before,
-            } => {
-                let told = told(item.scene_id, fence, live, || {
-                    api::zones::create_zone(name, color.as_deref(), fence, key)
-                })
-                .await?;
-                match told {
-                    Told::Answer(Ok(api::zones::ZoneOutcome::Applied(zone))) => {
-                        Some(Some(StudioEdit::ZoneCreated {
-                            zone_id: zone.id.to_string(),
-                            name: zone.name,
-                            color: zone.color,
-                            filled: Vec::new(),
-                        }))
-                    }
-                    Told::Answer(_) => {
+            HeldWrite::Create { name, color } => {
+                let told = self
+                    .told(item, live, || {
+                        api::zones::create_zone(name, color.as_deref(), fence, key)
+                    })
+                    .await?;
+                match create_says(told) {
+                    CreateSays::Made(made) => Some(Some(made)),
+                    CreateSays::Refused => {
                         did_not_land(&item.name);
                         Some(None)
                     }
-                    // Zones may share a name, so only a zone of that name the
-                    // scene did not hold as the create went out can be its.
-                    Told::Read(scene) => match zone_it_made(&scene, name, before) {
-                        Made::One(zone) => Some(Some(StudioEdit::ZoneCreated {
-                            zone_id: zone.id.to_string(),
-                            name: zone.name.clone(),
-                            color: zone.color.clone(),
-                            filled: Vec::new(),
-                        })),
-                        Made::None => {
-                            did_not_land(&item.name);
-                            Some(None)
-                        }
-                        Made::Several => {
-                            toasts::toast_info(&format!(
-                                "{name} may have been made, but more than one new zone has that name. Check the scene."
-                            ));
-                            Some(None)
-                        }
-                    },
+                    CreateSays::Unproven => {
+                        toasts::toast_info(&format!(
+                            "Couldn't confirm whether {name} was created; check the tabs."
+                        ));
+                        Some(None)
+                    }
                 }
             }
             HeldWrite::Patch {
@@ -593,10 +609,11 @@ impl StudioHistory {
                 before,
                 after,
             } => {
-                let told = told(item.scene_id, fence, live, || {
-                    api::zones::update_zone_keyed(zone_id, after, fence, key)
-                })
-                .await?;
+                let told = self
+                    .told(item, live, || {
+                        api::zones::update_zone_keyed(zone_id, after, fence, key)
+                    })
+                    .await?;
                 let landed = match told {
                     Told::Answer(outcome) => {
                         matches!(outcome, Ok(api::zones::ZoneOutcome::Applied(_)))
@@ -665,5 +682,57 @@ impl StudioHistory {
         };
         self.journal
             .update(|journal| journal.settle(item.entry, settled));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scene_with_desks(desks: usize) -> api::SceneDocument {
+        let zones: Vec<serde_json::Value> = (0..desks)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("11111111-1111-4111-8111-11111111111{index}"),
+                    "name": "Desk", "role": "custom", "enabled": true, "brightness": 1,
+                    "layers": [], "members": [], "layout": { "placements": [] },
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "id": "33333333-3333-4333-8333-333333333333", "name": "Rig", "kind": "named",
+            "is_default": false, "revision": 4, "zones": zones,
+        }))
+        .expect("valid scene fixture")
+    }
+
+    #[test]
+    fn no_read_says_which_zone_a_held_create_made() {
+        // However the scene reads (no zone of the name, one, or another
+        // client's one beside it), only the key's answer can name the zone.
+        for desks in 0..3 {
+            assert_eq!(
+                create_says(Told::Read(scene_with_desks(desks))),
+                CreateSays::Unproven
+            );
+        }
+        let made = scene_with_desks(1).zones.remove(0);
+        assert_eq!(
+            create_says(Told::Answer(Ok(api::zones::ZoneOutcome::Applied(
+                made.clone()
+            )))),
+            CreateSays::Made(StudioEdit::ZoneCreated {
+                zone_id: made.id.to_string(),
+                name: made.name,
+                color: made.color,
+                filled: Vec::new(),
+            })
+        );
+        assert_eq!(
+            create_says(Told::Answer(Ok(api::zones::ZoneOutcome::Stale {
+                current: 5
+            }))),
+            CreateSays::Refused
+        );
     }
 }

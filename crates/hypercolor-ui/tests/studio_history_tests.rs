@@ -6,9 +6,9 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, Made, Settled, StudioEdit, StudioJournal, held_document, held_scene,
-    light_neighbor, members_landed, prepare_members_replay, rename_is_noop, replay_announcement,
-    resolve_deletion, restore_layer_requests, settles_by_key, zone_it_made, zone_patch_before,
+    DeletedZone, Settled, StudioEdit, StudioJournal, held_document, held_scene, light_neighbor,
+    members_landed, prepare_members_replay, rename_is_noop, replay_announcement, resolve_deletion,
+    restore_layer_requests, settles_by_key, zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -408,29 +408,6 @@ fn a_held_step_settles_in_place_and_a_held_write_that_did_nothing_goes() {
     assert_eq!(journal.undo_edit(), Some(&landed));
     journal.complete(false);
     assert_eq!(journal.undo_edit(), None);
-}
-
-#[test]
-fn a_read_names_the_zone_a_held_create_made_only_when_one_is_new() {
-    let mut scene = scene();
-    let before: Vec<ZoneId> = scene.zones.iter().map(|zone| zone.id).collect();
-    // The scene already held a zone of that name as the create went out.
-    scene.zones[0].name = "Desk".to_owned();
-    assert!(matches!(zone_it_made(&scene, "Desk", &before), Made::None));
-    let mut made = scene.zones[0].clone();
-    made.id = ZoneId::new();
-    scene.zones.push(made.clone());
-    match zone_it_made(&scene, "Desk", &before) {
-        Made::One(zone) => assert_eq!(zone.id, made.id),
-        other => panic!("expected the new zone, found {other:?}"),
-    }
-    let mut another = made;
-    another.id = ZoneId::new();
-    scene.zones.push(another);
-    assert!(matches!(
-        zone_it_made(&scene, "Desk", &before),
-        Made::Several
-    ));
 }
 
 fn zones_scene(zones: &[(&str, &str)]) -> SceneDocument {
