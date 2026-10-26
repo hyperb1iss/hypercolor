@@ -471,8 +471,10 @@ struct CommitLane {
     /// The scene the queued commits belong to.
     scene_id: Option<hypercolor_types::scene::SceneId>,
     queue: commit::CommitQueue,
-    /// Whether a task is writing the queue now.
-    draining: bool,
+    /// The drain writing the queue now, by its history generation. Only
+    /// that drain clears it, so one a scene switch replaced cannot mark a
+    /// newer drain as finished.
+    draining: Option<u64>,
 }
 
 type SharedLane = std::sync::Arc<std::sync::Mutex<CommitLane>>;
@@ -849,8 +851,12 @@ pub(crate) fn ZoneLayoutProvider(
                             generation: Option<u64>,
                             scene_id: hypercolor_types::scene::SceneId,
                             shared: SharedLane| async move {
-        let shown =
-            move || generation.is_some_and(|generation| studio_history.is_current(generation));
+        // The canvas still shows this write: its lane is alive, and no newer
+        // operation or scene replaced the drain.
+        let shown = move || {
+            lane.try_with_value(|_| ()).is_some()
+                && generation.is_some_and(|generation| studio_history.is_current(generation))
+        };
         let overtaken =
             move || generation.is_some_and(|generation| studio_history.is_superseded(generation));
         let cached = studio_history
@@ -926,7 +932,7 @@ pub(crate) fn ZoneLayoutProvider(
         let Some(generation) = studio_history.begin_commit() else {
             return;
         };
-        with_lane(&shared, |lane| lane.draining = true);
+        with_lane(&shared, |lane| lane.draining = Some(generation));
         leptos::task::spawn_local(async move {
             while !studio_history.is_superseded(generation) {
                 let Some(pending) = with_lane(&shared, |lane| lane.queue.pop()) else {
@@ -934,7 +940,11 @@ pub(crate) fn ZoneLayoutProvider(
                 };
                 commit_zone(pending, Some(generation), scene_id, shared.clone()).await;
             }
-            with_lane(&shared, |lane| lane.draining = false);
+            with_lane(&shared, |lane| {
+                if lane.draining == Some(generation) {
+                    lane.draining = None;
+                }
+            });
             studio_history.end_commit(generation);
         });
     };
@@ -946,7 +956,10 @@ pub(crate) fn ZoneLayoutProvider(
             return;
         };
         let (idle, scene_id) = with_lane(&shared, |lane| {
-            (!lane.draining && !lane.queue.is_empty(), lane.scene_id)
+            (
+                lane.draining.is_none() && !lane.queue.is_empty(),
+                lane.scene_id,
+            )
         });
         let (true, Some(scene_id)) = (idle, scene_id) else {
             return;
