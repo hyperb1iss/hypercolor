@@ -28,7 +28,7 @@ Studio reads from three app-root contexts and provides its own. The rule of thum
 
 ### Shared state at the app root
 
-The live scene is one resource for the whole app. `api::fetch_active_scene` reads the canonical `SceneDocument` from `GET /api/v1/scene`. `provide_scene_contexts()` in `zones.rs` exposes that document as one shared memo on both `ZonesContext` and `ScenesContext`. Derived memos build surface lists and presentation state from the same document and its single `revision`.
+The live scene is one resource for the whole app. `api::fetch_active_scene` reads the canonical `SceneDocument` from `GET /api/v1/scene`, and gives up after `SCENE_READ_DEADLINE` (10 s) so a stalled daemon cannot hold up what waits on the read. `provide_scene_contexts()` in `zones.rs` exposes that document as one shared memo on both `ZonesContext` and `ScenesContext`. Derived memos build surface lists and presentation state from the same document and its single `revision`.
 
 WebSocket scene events are freshness hints for the REST snapshot. Structural scene events refetch `GET /scene`; control-only events do not force a whole-document fetch at slider frequency. `EffectControlChanged` identifies the affected zone and real layer for consumers that update control state directly. `daemon_resource` also reads `connection_generation`, so a socket reconnect performs a fresh REST read instead of assuming missed events will be replayed.
 
@@ -56,13 +56,13 @@ Three writers move it:
 
 ### StudioContext: the page-local view
 
-`StudioContext` (`pages/studio/mod.rs`) holds what is specifically Studio's, provided once from `StudioPage` so the tab strip, the pane, and the Stage read one source of truth. The shared active scene is re-exposed here as `active_scene` for convenience, but everything else is page-local:
+`StudioContext` (`pages/studio/mod.rs`) holds what is specifically Studio's, provided once from `StudioPage` so the tab strip, the pane, and the Stage read one source of truth. The shared active scene is re-exposed here as `active_scene`, held through a failed read (`history::held_document`): a failed read is no news about the scene, so a drag under way and the selection go on as they were. Everything else is page-local:
 
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `history` | `StudioHistory` | The page's undo journal and write queue (also provided as its own context) |
 | `selected_surface_id` | `RwSignal<Option<String>>` | The open tab's zone, or the selected Screen; the single selection source |
-| `active_scene` | `Signal<Option<SceneDocument>>` | Re-exposed shared active-scene document |
+| `active_scene` | `Signal<Option<SceneDocument>>` | Re-exposed shared active-scene document, the last one read through a failed read |
 | `refresh_scene` | `Callback<()>` | Re-fetch the shared active scene after a zone mutation |
 | `composition_open` | `RwSignal<bool>` | Whether the composition slide-over is open |
 | `screen_face`, `refresh_screen_face` | `Signal<Option<DisplayFaceResponse>>`, `Callback<()>` | The selected Screen's live face and its refetch |
@@ -210,7 +210,7 @@ The canvas shows confirmed with every pending intent applied in order. A write c
 
 - **Applied**: the intents it carried retire, and the reply's zone is adopted when its revision is newer.
 - **Stale**: nothing retires. The zone is read afresh, any field whose fresh value already equals its latest intent drops its intents, and the rest goes out again.
-- **Unknown** (no answer came back): the same write goes out again under the same `Idempotency-Key`, after 250 ms, 1 s, and 3 s, without holding the scene while it waits. The daemon applies a key at most once and answers a repeat with its first answer, waiting for the first request when that one is still under way, so a lost request that commits late is never applied twice and never followed by a resend that would undo a later remote write. Whatever comes back settles the write as above. When four tries get no answer the writer pauses with the edit still pending, and the next socket opening or edit sends it again under the same key.
+- **Unknown** (no answer came back): the same write goes out again under the same `Idempotency-Key`, with the same body and headers, after 250 ms, 1 s, and 3 s, without holding the scene while it waits. A write with no answer within `KEYED_WRITE_DEADLINE` (10 s) is given up on and its browser request aborted, and a `503` with code `service_unavailable` (the daemon cannot take the write right now, as when too many keyed writes are in flight, and kept nothing under its key) counts as no answer too. The daemon applies a key at most once and answers a repeat with its first answer, waiting for the first request when that one is still under way, so a lost request that commits late is never applied twice and never followed by a resend that would undo a later remote write. Whatever comes back settles the write as above. When four tries get no answer the writer pauses with the edit still pending, and the next socket opening or edit sends it again under the same key.
 
 Between clients the daemon's order decides: a remote write that lands after ours wins, and a local intent that reaches the daemon later wins. Undo and redo are edits like any other and make intents the same way.
 
