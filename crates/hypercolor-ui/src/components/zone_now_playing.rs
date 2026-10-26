@@ -35,19 +35,25 @@ pub fn split_zone_rows(
 }
 
 /// Flip one zone's `enabled` flag through the revision-guarded zone
-/// PATCH. A stale scene revision means the document changed under us:
-/// refresh the shared scene and ask the user to retry — never clobber.
+/// PATCH. While Studio is open the patch goes through its history, so
+/// it is an undo step like the tab menu's pause. A stale scene revision
+/// means the document changed under us: refresh the shared scene and ask
+/// the user to retry, never clobber.
 pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool) {
+    let request = api::zones::PatchZoneRequest {
+        enabled: Some(enabled),
+        ..Default::default()
+    };
+    if let Some(patch) = zones_ctx.studio_zone_patch.try_get_value().flatten() {
+        patch.run((zone_id, request));
+        return;
+    }
     let Some(scene) = zones_ctx.active_scene.get_untracked() else {
         toasts::toast_error("No active scene is available");
         return;
     };
     let revision = scene.revision;
     spawn_local(async move {
-        let request = api::zones::PatchZoneRequest {
-            enabled: Some(enabled),
-            ..Default::default()
-        };
         match api::zones::update_zone(&zone_id, &request, revision).await {
             Ok(ZoneOutcome::Applied(_)) => zones_ctx.refresh.run(()),
             Ok(ZoneOutcome::Stale { .. }) => {

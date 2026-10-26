@@ -469,6 +469,16 @@ pub fn StudioPage() -> impl IntoView {
         render_canvas_size,
     );
     provide_context(history);
+    // A zone paused from the sidebar is an undo step here too, the same
+    // one the tab menu's pause records.
+    zones_ctx
+        .studio_zone_patch
+        .set_value(Some(Callback::new(move |(zone_id, request)| {
+            history.patch_zone(zone_id, request, "Couldn't update the zone");
+        })));
+    on_cleanup(move || {
+        zones_ctx.studio_zone_patch.try_set_value(None);
+    });
 
     let studio = StudioContext {
         history,

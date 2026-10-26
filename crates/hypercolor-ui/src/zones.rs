@@ -45,6 +45,9 @@ pub struct ZonesContext {
     pub focused_zone: RwSignal<Option<String>>,
     /// Refetch the shared active-scene resource.
     pub refresh: Callback<()>,
+    /// The zone patch Studio records as an undo step, while Studio is
+    /// open. Elsewhere it is `None`, and a zone patch writes directly.
+    pub studio_zone_patch: StoredValue<Option<Callback<(String, api::zones::PatchZoneRequest)>>>,
 }
 
 impl ZonesContext {
@@ -400,6 +403,7 @@ pub fn provide_scene_contexts(
         scene_resolved,
         focused_zone: RwSignal::new(None),
         refresh: refresh_active,
+        studio_zone_patch: StoredValue::new(None),
     };
     let scenes_ctx = ScenesContext {
         scenes,
