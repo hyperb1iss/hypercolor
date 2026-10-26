@@ -628,9 +628,31 @@ pub(crate) fn ZoneLayoutProvider(
                 .expect("selected editor was initialized");
             reconcile_replay(&current, &replay.previous, &mut snapshot);
             set_layout.apply_snapshot(snapshot);
-            set_layout.update_without_history(|current| {
-                if let Some(layout) = current.take() {
-                    *current = Some(layout_geometry::normalize_layout_for_editor(layout));
+            // Only the outputs the replay moved: normalizing is not always a
+            // fixed point, and an untouched box must not read as an edit.
+            set_layout.update_without_history(|layout| {
+                let Some(layout) = layout.as_mut() else {
+                    return;
+                };
+                let aspect =
+                    layout_geometry::canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
+                for output in &mut layout.zones {
+                    let moved = current
+                        .zones
+                        .iter()
+                        .find(|before| before.id == output.id)
+                        .is_none_or(|before| {
+                            crate::pages::studio::placement::Footprint::of(before)
+                                != crate::pages::studio::placement::Footprint::of(output)
+                        });
+                    if moved {
+                        output.size = layout_geometry::normalize_zone_size_for_editor(
+                            output.size,
+                            &output.topology,
+                            output.shape.as_ref(),
+                            aspect,
+                        );
+                    }
                 }
             });
         }
