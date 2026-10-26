@@ -1185,6 +1185,7 @@ async fn whole_scene_put_holds_effect_admission_through_scene_commit() {
         crate::domain::scene_tree::scene_document(
             manager.get(&scene_id).expect("named scene should exist"),
             state.scene_manager.revision(),
+            state.scene_manager.run_epoch(),
         )
     };
     let barrier = state.domains.effects.pause_next_resolution_for_test();
@@ -1402,6 +1403,7 @@ async fn scene_effect_writes_reject_unknown_and_retired_ids() {
                 .get(&named_scene_id)
                 .expect("named scene should remain stored"),
             revision,
+            state.scene_manager.run_epoch(),
         );
         ReplaceSceneRequest::from(&document)
     };

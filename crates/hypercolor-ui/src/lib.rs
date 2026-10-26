@@ -11,7 +11,6 @@
 pub mod ambient;
 pub mod api;
 pub mod app;
-pub mod apply_target;
 pub mod async_helpers;
 pub mod channel_names;
 pub mod color;

@@ -147,7 +147,8 @@ async fn preflight_from_native_app_origin_permits_versioned_mutations() {
     // The desktop app serves the UI from a tauri origin, so every daemon
     // call is cross-origin and the browser preflights any request that
     // carries a non-simple header. Optimistic-concurrency writes send
-    // `If-Match`; a preflight that omits it from the allow-list makes the
+    // `If-Match`, and retried scene writes send `Idempotency-Key`; a
+    // preflight that omits either from the allow-list makes the
     // browser drop the request before it ever reaches the daemon.
     let response = test_app()
         .oneshot(
@@ -158,7 +159,7 @@ async fn preflight_from_native_app_origin_permits_versioned_mutations() {
                 .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
                 .header(
                     header::ACCESS_CONTROL_REQUEST_HEADERS,
-                    "authorization,content-type,if-match",
+                    "authorization,content-type,if-match,idempotency-key",
                 )
                 .body(Body::empty())
                 .expect("failed to build request"),
@@ -175,7 +176,12 @@ async fn preflight_from_native_app_origin_permits_versioned_mutations() {
         .to_str()
         .expect("allow-headers should be ASCII")
         .to_ascii_lowercase();
-    for required in ["authorization", "content-type", "if-match"] {
+    for required in [
+        "authorization",
+        "content-type",
+        "if-match",
+        "idempotency-key",
+    ] {
         assert!(
             allowed
                 .split(',')
@@ -210,10 +216,17 @@ async fn cross_origin_responses_expose_the_revision_etag() {
         .to_str()
         .expect("expose-headers should be ASCII")
         .to_ascii_lowercase();
-    assert!(
-        exposed.split(',').map(str::trim).any(|name| name == "etag"),
-        "exposed headers {exposed:?} should include etag"
-    );
+    // The run epoch says which daemon run the revision belongs to, and a
+    // replayed write says so; a client reads both beside the ETag.
+    for required in ["etag", "hypercolor-run-epoch", "idempotency-replayed"] {
+        assert!(
+            exposed
+                .split(',')
+                .map(str::trim)
+                .any(|name| name == required),
+            "exposed headers {exposed:?} should include {required}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -75,6 +75,7 @@ where
     LayoutTransactionAuthority::new(spatial_engine, scene_manager, scene_transactions)
         .apply_under_guard_with_persistence(guard, layout, persist)
         .await
+        .map(|_| ())
 }
 
 async fn commit_scene_mutation(

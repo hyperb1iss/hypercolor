@@ -11,15 +11,22 @@ from ...models.reorder_layers_request import ReorderLayersRequest
 from ...models.reorder_live_zone_layers_response_200 import (
     ReorderLiveZoneLayersResponse200,
 )
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     zone: str,
     *,
     body: ReorderLayersRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "patch",
@@ -89,6 +96,11 @@ def _parse_response(
 
         return response_500
 
+    if response.status_code == 503:
+        response_503 = ApiErrorBody.from_dict(response.json())
+
+        return response_503
+
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -111,11 +123,15 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReorderLiveZoneLayersResponse200]:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -132,6 +148,8 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -146,11 +164,15 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReorderLiveZoneLayersResponse200 | None:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -168,6 +190,8 @@ def sync(
         zone=zone,
         client=client,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -176,11 +200,15 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ReorderLiveZoneLayersResponse200]:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -197,6 +225,8 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -209,11 +239,15 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ReorderLayersRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | ReorderLiveZoneLayersResponse200 | None:
     """Reorder live zone layers
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ReorderLayersRequest): `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
             `order` names every layer in the zone exactly once, bottom to top;
@@ -232,5 +266,7 @@ async def asyncio(
             zone=zone,
             client=client,
             body=body,
+            if_match=if_match,
+            idempotency_key=idempotency_key,
         )
     ).parsed

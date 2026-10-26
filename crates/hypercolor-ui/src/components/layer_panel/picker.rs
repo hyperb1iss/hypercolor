@@ -41,8 +41,8 @@ impl NewLayerDraft {
 #[component]
 pub fn AddLayerPicker(
     #[prop(into)] assets: Signal<Vec<api::MediaAssetRecord>>,
-    /// Scopes the new layer can target (§6.6); a list shorter than two
-    /// hides the selector — there is nothing to scope to.
+    /// Where the new layer can go; a list shorter than two hides the
+    /// selector, since there is nothing to choose between.
     #[prop(into)]
     scopes: Signal<Vec<AddLayerScope>>,
     /// Role of the selected surface. Combined with the active target

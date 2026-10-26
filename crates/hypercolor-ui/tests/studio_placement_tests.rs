@@ -1,0 +1,739 @@
+//! Contract tests for where outputs land on a zone canvas: rig seeding,
+//! the first-arrival fit, the Fit transform, and drop centering.
+
+use hypercolor_types::api::scene::SceneDocument;
+use hypercolor_types::spatial::{
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
+    SpatialLayout, StripDirection, Winding, ZoneShape,
+};
+use hypercolor_ui::api::DeviceSummary;
+use hypercolor_ui::pages::studio::placement::{
+    Arrival, FIT_MARGIN, Fallback, Footprint, Seed, assignment_seeds, center_seeds_on, fit_outputs,
+    move_edits, offset_to_center, place_arrivals, rig_footprint, rig_layouts,
+};
+
+const CANVAS: (u32, u32) = (640, 480);
+const ASPECT: f32 = 640.0 / 480.0;
+const EPSILON: f32 = 1e-4;
+
+fn output(id: &str, device: &str, segment: &str, x: f32, y: f32, w: f32, h: f32) -> Output {
+    Output {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        device_id: device.to_owned(),
+        zone_name: Some(segment.to_owned()),
+        position: NormalizedPosition::new(x, y),
+        size: NormalizedPosition::new(w, h),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 10,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+fn component(mut output: Output, slot: &str, instance: u32) -> Output {
+    output.attachment = Some(OutputComponent {
+        template_id: "fan".to_owned(),
+        slot_id: slot.to_owned(),
+        instance,
+        led_start: None,
+        led_count: None,
+        led_mapping: None,
+    });
+    output
+}
+
+fn layout(outputs: Vec<Output>) -> SpatialLayout {
+    SpatialLayout {
+        id: "rig".to_owned(),
+        name: "Rig".to_owned(),
+        description: None,
+        canvas_width: 640,
+        canvas_height: 480,
+        zones: outputs,
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    }
+}
+
+fn arrival(id: Option<&str>, device: &str, segment: &str, fallback: Fallback) -> Arrival {
+    Arrival {
+        output_id: id.map(str::to_owned),
+        device_id: device.to_owned(),
+        segment: Some(segment.to_owned()),
+        fallback,
+    }
+}
+
+fn assert_close(actual: f32, expected: f32) {
+    assert!(
+        (actual - expected).abs() < EPSILON,
+        "expected {expected}, got {actual}"
+    );
+}
+
+fn assert_position(footprint: Footprint, x: f32, y: f32) {
+    assert_close(footprint.position.x, x);
+    assert_close(footprint.position.y, y);
+}
+
+fn landed(landings: &[Option<Footprint>], index: usize) -> Footprint {
+    landings[index].expect("arrival is placed")
+}
+
+// ── Rig seeding ─────────────────────────────────────────────────────────
+
+#[test]
+fn arrival_lands_at_its_rig_position_beside_members_at_theirs() {
+    let rig = vec![vec![
+        output("fan", "case", "Fan", 0.2, 0.3, 0.1, 0.1),
+        output("strip", "desk", "Main", 0.7, 0.6, 0.3, 0.05),
+    ]];
+    let members = [output("fan", "case", "Fan", 0.2, 0.3, 0.1, 0.1)];
+    let landings = place_arrivals(
+        &rig,
+        &members,
+        &[arrival(None, "desk", "Main", Fallback::None)],
+        CANVAS,
+    );
+    let strip = landed(&landings, 0);
+    assert_position(strip, 0.7, 0.6);
+    assert_close(strip.size.x, 0.3);
+    assert_close(strip.size.y, 0.05);
+}
+
+#[test]
+fn arrival_wears_the_scale_and_offset_its_zone_members_wear() {
+    let rig = vec![vec![
+        output("a", "case", "A", 0.4, 0.4, 0.1, 0.1),
+        output("b", "case", "B", 0.6, 0.6, 0.1, 0.1),
+        output("c", "desk", "Main", 0.5, 0.5, 0.1, 0.1),
+    ]];
+    // The zone doubled the members' spread around the canvas center.
+    let members = [
+        output("a", "case", "A", 0.3, 0.3, 0.2, 0.2),
+        output("b", "case", "B", 0.7, 0.7, 0.2, 0.2),
+    ];
+    let landings = place_arrivals(
+        &rig,
+        &members,
+        &[arrival(Some("c"), "desk", "Main", Fallback::None)],
+        CANVAS,
+    );
+    let c = landed(&landings, 0);
+    assert_position(c, 0.5, 0.5);
+    assert_close(c.size.x, 0.2);
+    assert_close(c.size.y, 0.2);
+}
+
+#[test]
+fn a_device_the_rig_does_not_know_is_left_to_the_daemon() {
+    let rig = vec![vec![output("fan", "case", "Fan", 0.2, 0.3, 0.1, 0.1)]];
+    let members = [output("fan", "case", "Fan", 0.2, 0.3, 0.1, 0.1)];
+    let default = Footprint::of(&output("x", "new", "Main", 0.5, 0.5, 0.2, 0.1));
+    let seeded = Footprint::of(&output("x", "new", "Pads", 0.3, 0.7, 0.2, 0.2));
+    let landings = place_arrivals(
+        &rig,
+        &members,
+        &[
+            arrival(None, "new", "Main", Fallback::None),
+            arrival(None, "new", "Main", Fallback::Default(default)),
+            arrival(None, "new", "Pads", Fallback::Placed(seeded)),
+        ],
+        CANVAS,
+    );
+    assert_eq!(landings[0], None);
+    assert_eq!(
+        landings[1], None,
+        "defaults only seed a zone's first arrival"
+    );
+    assert_eq!(
+        landings[2],
+        Some(seeded),
+        "a known placement lands as it is"
+    );
+}
+
+#[test]
+fn every_output_of_a_device_is_seeded_from_its_own_segment() {
+    let rig = vec![vec![
+        output("top", "nollie", "Channel 1", 0.3, 0.2, 0.4, 0.05),
+        output("side", "nollie", "Channel 2", 0.8, 0.5, 0.05, 0.4),
+    ]];
+    let members = [output("other", "desk", "Main", 0.5, 0.9, 0.2, 0.05)];
+    let landings = place_arrivals(
+        &rig,
+        &members,
+        &[
+            arrival(None, "nollie", "Channel 1", Fallback::None),
+            arrival(None, "nollie", "Channel 2", Fallback::None),
+        ],
+        CANVAS,
+    );
+    assert_position(landed(&landings, 0), 0.3, 0.2);
+    assert_position(landed(&landings, 1), 0.8, 0.5);
+}
+
+#[test]
+fn a_segment_split_into_components_spans_every_instance() {
+    let rig = vec![vec![
+        output("raw", "nollie", "Channel 2", 0.1, 0.1, 0.05, 0.05),
+        component(
+            output("fan-0", "nollie", "channel-2", 0.2, 0.5, 0.1, 0.1),
+            "channel-2",
+            0,
+        ),
+        component(
+            output("fan-1", "nollie", "channel-2", 0.6, 0.5, 0.1, 0.1),
+            "channel-2",
+            1,
+        ),
+    ]];
+    let span = rig_footprint(&rig, None, "nollie", Some("Channel 2"), ASPECT).expect("found");
+    assert_position(span, 0.4, 0.5);
+    assert_close(span.size.x, 0.5);
+    assert_close(span.size.y, 0.1);
+}
+
+#[test]
+fn a_segment_with_one_component_keeps_its_turn_and_shape() {
+    let mut ring = turned_ring(0.5, 0.5);
+    ring.zone_name = Some("channel-1".to_owned());
+    let rig = vec![vec![component(ring, "channel-1", 0)]];
+    let only = rig_footprint(&rig, None, "fan", Some("Channel 1"), ASPECT).expect("found");
+    assert!(only.circular);
+    assert_close(only.rotation, std::f32::consts::FRAC_PI_4);
+}
+
+#[test]
+fn rig_lookup_prefers_the_output_id_over_its_segment() {
+    let rig = vec![vec![
+        output("first", "case", "Lighting", 0.1, 0.1, 0.1, 0.1),
+        output("second", "case", "Lighting", 0.9, 0.9, 0.1, 0.1),
+    ]];
+    let by_id = rig_footprint(&rig, Some("second"), "case", Some("Lighting"), ASPECT);
+    assert_position(by_id.expect("found"), 0.9, 0.9);
+    let by_segment = rig_footprint(&rig, Some("unknown"), "case", Some("Lighting"), ASPECT);
+    assert_position(by_segment.expect("found"), 0.1, 0.1);
+}
+
+#[test]
+fn an_arrival_carried_off_the_canvas_is_pulled_back_on() {
+    let rig = vec![vec![
+        output("a", "case", "A", 0.5, 0.5, 0.1, 0.1),
+        output("far", "desk", "Main", 0.95, 0.5, 0.1, 0.1),
+    ]];
+    // The zone blew its member up four times around the center.
+    let members = [output("a", "case", "A", 0.5, 0.5, 0.4, 0.4)];
+    let landings = place_arrivals(
+        &rig,
+        &members,
+        &[arrival(Some("far"), "desk", "Main", Fallback::None)],
+        CANVAS,
+    );
+    let bounds = landed(&landings, 0).bounds(ASPECT);
+    assert!(bounds.min_x >= -EPSILON && bounds.max_x <= ASPECT + EPSILON);
+    assert!(bounds.min_y >= -EPSILON && bounds.max_y <= 1.0 + EPSILON);
+}
+
+#[test]
+fn a_single_zone_scene_reads_its_primary_zone_before_the_active_layout() {
+    let single: SceneDocument = scene(&[("primary", &[("fan", "case", "Fan", 0.2, 0.2)])], &[]);
+    let rig = layout(vec![output("fan", "case", "Fan", 0.9, 0.9, 0.1, 0.1)]);
+    let sources = rig_layouts(&single, Some(&rig));
+    assert_eq!(sources.len(), 2);
+    assert_close(sources[0][0].position.x, 0.2);
+
+    let multi = scene(
+        &[
+            ("primary", &[("fan", "case", "Fan", 0.2, 0.2)]),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let sources = rig_layouts(&multi, Some(&rig));
+    assert_eq!(sources.len(), 1);
+    assert_close(sources[0][0].position.x, 0.9);
+}
+
+// ── First arrivals and Fit ──────────────────────────────────────────────
+
+#[test]
+fn first_arrivals_fill_the_canvas_inside_the_margin() {
+    let rig = vec![vec![
+        output("grid", "roli", "Grid", 0.15, 0.15, 0.1, 0.1),
+        output("keys", "keys", "Keys", 0.25, 0.15, 0.1, 0.05),
+    ]];
+    let spread = |grid: Footprint, keys: Footprint| {
+        let (grid, keys) = (grid.bounds(ASPECT), keys.bounds(ASPECT));
+        (keys.max_x - grid.min_x) / (grid.max_y - grid.min_y)
+    };
+    let before = spread(Footprint::of(&rig[0][0]), Footprint::of(&rig[0][1]));
+    let landings = place_arrivals(
+        &rig,
+        &[],
+        &[
+            arrival(None, "roli", "Grid", Fallback::None),
+            arrival(None, "keys", "Keys", Fallback::None),
+        ],
+        CANVAS,
+    );
+    let grid = landed(&landings, 0).bounds(ASPECT);
+    let keys = landed(&landings, 1).bounds(ASPECT);
+    let width = keys.max_x - grid.min_x;
+    let height = grid.max_y - grid.min_y;
+    let usable = 1.0 - 2.0 * FIT_MARGIN;
+    // The group touches the margin on its tighter axis and is centered.
+    assert!((width - ASPECT * usable).abs() < EPSILON || (height - usable).abs() < EPSILON);
+    assert_close((grid.min_x + keys.max_x) * 0.5, ASPECT * 0.5);
+    assert_close((grid.min_y + grid.max_y) * 0.5, 0.5);
+    // The arrangement survives the scale.
+    assert_close(spread(landed(&landings, 0), landed(&landings, 1)), before);
+}
+
+#[test]
+fn a_first_arrival_the_rig_does_not_know_fits_its_default() {
+    let default = Footprint::of(&output("x", "new", "Main", 0.5, 0.5, 0.3, 0.05));
+    let landings = place_arrivals(
+        &[],
+        &[],
+        &[arrival(None, "new", "Main", Fallback::Default(default))],
+        CANVAS,
+    );
+    let fitted = landed(&landings, 0);
+    assert_position(fitted, 0.5, 0.5);
+    assert_close(fitted.size.x, 1.0 - 2.0 * FIT_MARGIN);
+}
+
+#[test]
+fn fit_scales_uniformly_and_centers_the_group() {
+    let mut outputs = vec![
+        output("a", "case", "A", 0.1, 0.1, 0.1, 0.1),
+        output("b", "case", "B", 0.3, 0.2, 0.1, 0.1),
+    ];
+    let before_ratio = {
+        let a = Footprint::of(&outputs[0]).bounds(ASPECT);
+        let b = Footprint::of(&outputs[1]).bounds(ASPECT);
+        (b.max_x - a.min_x) / (b.max_y - a.min_y)
+    };
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
+    let a = Footprint::of(&outputs[0]).bounds(ASPECT);
+    let b = Footprint::of(&outputs[1]).bounds(ASPECT);
+    let (width, height) = (b.max_x - a.min_x, b.max_y - a.min_y);
+    assert_close(width / height, before_ratio);
+    assert_close((a.min_x + b.max_x) * 0.5, ASPECT * 0.5);
+    assert_close((a.min_y + b.max_y) * 0.5, 0.5);
+    let usable = 1.0 - 2.0 * FIT_MARGIN;
+    assert!(width <= ASPECT * usable + EPSILON && height <= usable + EPSILON);
+    assert!((width - ASPECT * usable).abs() < EPSILON || (height - usable).abs() < EPSILON);
+    // Both boxes grew by the same factor.
+    assert_close(outputs[0].size.x / outputs[0].size.y, 1.0);
+    assert_close(outputs[1].size.x, outputs[0].size.x);
+}
+
+#[test]
+fn fit_fills_the_canvas_with_a_single_member() {
+    let mut outputs = vec![output("keyboard", "kb", "Main", 0.2, 0.2, 0.34, 0.13)];
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
+    let fitted = Footprint::of(&outputs[0]);
+    assert_position(fitted, 0.5, 0.5);
+    assert_close(fitted.size.x, 1.0 - 2.0 * FIT_MARGIN);
+    assert_close(fitted.size.x / fitted.size.y, 0.34 / 0.13);
+}
+
+#[test]
+fn fit_measures_rotated_boxes_by_their_drawn_extent() {
+    let mut strip = output("strip", "case", "Main", 0.5, 0.5, 0.3, 0.02);
+    strip.rotation = std::f32::consts::FRAC_PI_2;
+    let mut outputs = vec![strip];
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
+    let bounds = Footprint::of(&outputs[0]).bounds(ASPECT);
+    // Turned upright, the strip's length runs down the canvas.
+    assert_close(bounds.height(), 1.0 - 2.0 * FIT_MARGIN);
+    assert_close(outputs[0].rotation, std::f32::consts::FRAC_PI_2);
+}
+
+/// A fan ring, square in pixels on the 640 by 480 canvas, turned 45
+/// degrees.
+fn turned_ring(x: f32, y: f32) -> Output {
+    let mut ring = output("ring", "fan", "Fan", x, y, 0.2, 0.2 * ASPECT);
+    ring.shape = Some(ZoneShape::Ring);
+    ring.topology = LedTopology::Ring {
+        count: 24,
+        start_angle: 0.0,
+        direction: Winding::Clockwise,
+    };
+    ring.rotation = std::f32::consts::FRAC_PI_4;
+    ring
+}
+
+#[test]
+fn fit_measures_a_turned_ring_as_the_circle_it_draws() {
+    let mut outputs = vec![turned_ring(0.3, 0.4)];
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
+    // A circle's turn does not widen it, so its diameter (its pixel width)
+    // fills the canvas height inside the margin, rather than the turned
+    // square around it doing so.
+    assert_close(outputs[0].size.x * ASPECT, 1.0 - 2.0 * FIT_MARGIN);
+    let bounds = Footprint::of(&outputs[0]).bounds(ASPECT);
+    assert_close(bounds.width(), bounds.height());
+}
+
+#[test]
+fn a_turned_ring_centers_by_the_circle_it_draws() {
+    let ring = turned_ring(0.5, 0.5);
+    let (dx, _) = offset_to_center(
+        [Footprint::of(&ring)],
+        NormalizedPosition::new(1.0, 0.5),
+        CANVAS,
+    )
+    .expect("a ring has bounds");
+    // Pushed to the right edge, the circle's own edge meets it.
+    let diameter = 0.2 * ASPECT;
+    assert_close(0.5 + dx, 1.0 - diameter / ASPECT * 0.5);
+}
+
+#[test]
+fn fit_frames_the_shown_boxes_and_carries_the_rest_along() {
+    let mut outputs = vec![
+        output("shown", "case", "A", 0.2, 0.2, 0.1, 0.1),
+        // A channel the canvas does not draw, far from the shown box.
+        output("raw", "hub", "B", 0.9, 0.9, 0.1, 0.1),
+    ];
+    assert!(fit_outputs(&mut outputs, CANVAS, |output| output.id == "shown"));
+    let shown = Footprint::of(&outputs[0]);
+    assert_position(shown, 0.5, 0.5);
+    assert_close(shown.size.y, 1.0 - 2.0 * FIT_MARGIN);
+    let raw = Footprint::of(&outputs[1]).bounds(ASPECT);
+    assert!(raw.min_x >= -EPSILON && raw.max_x <= ASPECT + EPSILON);
+    assert!(raw.min_y >= -EPSILON && raw.max_y <= 1.0 + EPSILON);
+}
+
+#[test]
+fn fit_on_an_empty_zone_reports_nothing_to_fit() {
+    assert!(!fit_outputs(&mut [], CANVAS, |_| true));
+}
+
+// ── Drop centering ──────────────────────────────────────────────────────
+
+fn boxed(cx: f32, cy: f32, w: f32, h: f32, rotation: f32) -> Footprint {
+    Footprint {
+        position: NormalizedPosition::new(cx, cy),
+        size: NormalizedPosition::new(w, h),
+        rotation,
+        scale: 1.0,
+        orientation: None,
+        circular: false,
+    }
+}
+
+fn assert_offset(actual: Option<(f32, f32)>, x: f32, y: f32) {
+    let (dx, dy) = actual.expect("a group has bounds");
+    assert_close(dx, x);
+    assert_close(dy, y);
+}
+
+#[test]
+fn a_dropped_group_centers_on_the_point() {
+    let group = [
+        boxed(0.2, 0.2, 0.1, 0.1, 0.0),
+        boxed(0.4, 0.2, 0.1, 0.1, 0.0),
+    ];
+    // Bounds 0.15..0.45 by 0.15..0.25, centered on (0.3, 0.2).
+    let offset = offset_to_center(group, NormalizedPosition::new(0.5, 0.5), CANVAS);
+    assert_offset(offset, 0.2, 0.3);
+}
+
+#[test]
+fn a_group_dropped_near_an_edge_stays_on_the_canvas() {
+    let group = [boxed(0.5, 0.5, 0.4, 0.2, 0.0)];
+    let offset = offset_to_center(group, NormalizedPosition::new(0.95, 0.02), CANVAS);
+    // The box spans 0.4 by 0.2, so its center stops at 0.8 and 0.1.
+    assert_offset(offset, 0.3, -0.4);
+}
+
+#[test]
+fn a_rotated_box_is_kept_on_the_canvas_by_its_drawn_extent() {
+    // A quarter turn draws the 0.3 by 0.1 box 0.075 wide and 0.4 tall, so
+    // its center stops at 0.9625 and 0.2.
+    let group = [boxed(0.5, 0.5, 0.3, 0.1, std::f32::consts::FRAC_PI_2)];
+    let offset = offset_to_center(group, NormalizedPosition::new(0.99, 0.02), CANVAS);
+    assert_offset(offset, 0.4625, -0.3);
+}
+
+#[test]
+fn a_scaled_box_is_kept_on_the_canvas_by_its_drawn_extent() {
+    let mut scaled = boxed(0.5, 0.5, 0.2, 0.2, 0.0);
+    scaled.scale = 2.0;
+    let offset = offset_to_center([scaled], NormalizedPosition::new(0.0, 1.0), CANVAS);
+    assert_offset(offset, -0.3, 0.3);
+}
+
+#[test]
+fn a_group_larger_than_the_canvas_centers_on_that_axis() {
+    let group = [boxed(0.3, 0.3, 1.2, 0.2, 0.0)];
+    let offset = offset_to_center(group, NormalizedPosition::new(0.9, 0.6), CANVAS);
+    assert_offset(offset, 0.2, 0.3);
+}
+
+#[test]
+fn no_footprints_have_no_offset() {
+    let offset = offset_to_center([], NormalizedPosition::new(0.5, 0.5), CANVAS);
+    assert_eq!(offset, None);
+}
+
+// ── Assignment and move adapters ────────────────────────────────────────
+
+type MemberSpec<'a> = (&'a str, &'a str, &'a str, f32, f32);
+
+fn scene(zones: &[(&str, &[MemberSpec<'_>])], displays: &[&str]) -> SceneDocument {
+    let ids = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+        "44444444-4444-4444-8444-444444444444",
+    ];
+    let mut json_zones: Vec<serde_json::Value> = zones
+        .iter()
+        .zip(ids)
+        .map(|((role, members), id)| {
+            serde_json::json!({
+                "id": id, "name": role, "role": role, "enabled": true, "brightness": 1,
+                "members": members.iter().map(|(member, device, segment, _, _)| serde_json::json!({
+                    "id": member, "device_id": device, "segment": segment, "name": member,
+                })).collect::<Vec<_>>(),
+                "layout": { "placements": members.iter().map(|(member, _, _, x, y)| serde_json::json!({
+                    "member": member, "position": { "x": x, "y": y }, "size": { "x": 0.1, "y": 0.1 },
+                    "topology": { "type": "strip", "count": 10, "direction": "left_to_right" },
+                })).collect::<Vec<_>>() },
+                "layers": [],
+            })
+        })
+        .collect();
+    for (index, name) in displays.iter().enumerate() {
+        json_zones.push(serde_json::json!({
+            "id": format!("55555555-5555-4555-8555-55555555555{index}"), "name": name,
+            "role": "display", "enabled": true, "brightness": 1, "members": [], "layers": [],
+        }));
+    }
+    serde_json::from_value(serde_json::json!({
+        "id": "33333333-3333-4333-8333-333333333333", "name": "Fixture", "kind": "named",
+        "is_default": false, "revision": 7, "zones": json_zones,
+    }))
+    .expect("valid scene fixture")
+}
+
+fn device(id: &str, segments: serde_json::Value) -> DeviceSummary {
+    serde_json::from_value(serde_json::json!({
+        "id": id, "layout_device_id": id, "name": "Fixture device",
+        "origin": { "driver_id": "fixture", "backend_id": "usb", "transport": "usb", "protocol_id": "fixture/test" },
+        "presentation": { "label": "Fixture" }, "status": "connected", "brightness": 100,
+        "total_leds": 40, "segments": segments,
+    }))
+    .expect("valid device fixture")
+}
+
+#[test]
+fn assignment_seeds_seed_each_light_segment_from_the_rig() {
+    let scene = scene(
+        &[
+            ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let rig = layout(vec![
+        output("fan", "case", "Fan", 0.2, 0.3, 0.1, 0.1),
+        output("top", "strip", "Top", 0.4, 0.1, 0.3, 0.04),
+        output("bottom", "strip", "Bottom", 0.4, 0.9, 0.3, 0.04),
+    ]);
+    let strip = device(
+        "strip",
+        serde_json::json!([
+            { "id": "top", "name": "Top", "led_count": 20, "topology": "strip" },
+            { "id": "bottom", "name": "Bottom", "led_count": 20, "topology": "strip" },
+            { "id": "lcd", "name": "Screen", "led_count": 1, "topology": "display",
+              "topology_hint": { "type": "display", "width": 480, "height": 480, "circular": true } },
+        ]),
+    );
+    let zone_id = scene.zones[0].id.to_string();
+    let seeds = assignment_seeds(&scene, Some(&rig), &strip, &zone_id, &[], CANVAS);
+    assert_eq!(seeds.len(), 2, "the screen segment mints no LED output");
+    assert_eq!(seeds[0].segment.as_deref(), Some("Top"));
+    assert_close(seeds[0].footprint.position.y, 0.1);
+    assert_eq!(seeds[1].segment.as_deref(), Some("Bottom"));
+    assert_close(seeds[1].footprint.position.y, 0.9);
+}
+
+#[test]
+fn a_channel_assignment_seeds_only_its_own_segment() {
+    let scene = scene(
+        &[
+            ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let strip = device(
+        "strip",
+        serde_json::json!([
+            { "id": "top", "name": "Top", "led_count": 20, "topology": "strip" },
+            { "id": "bottom", "name": "Bottom", "led_count": 20, "topology": "strip" },
+        ]),
+    );
+    // Into the empty zone: the one channel fits the canvas on its own.
+    let zone_id = scene.zones[1].id.to_string();
+    let seeds = assignment_seeds(
+        &scene,
+        None,
+        &strip,
+        &zone_id,
+        &["Bottom".to_owned()],
+        CANVAS,
+    );
+    assert_eq!(seeds.len(), 1);
+    assert_eq!(seeds[0].segment.as_deref(), Some("Bottom"));
+    assert_close(seeds[0].footprint.position.x, 0.5);
+    assert_close(seeds[0].footprint.position.y, 0.5);
+}
+
+#[test]
+fn assignment_seeds_leave_an_unknown_device_in_a_populated_zone_to_the_daemon() {
+    let scene = scene(
+        &[
+            ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let lamp = device(
+        "lamp",
+        serde_json::json!([{ "id": "main", "name": "Main", "led_count": 30, "topology": "strip" }]),
+    );
+    let zone_id = scene.zones[0].id.to_string();
+    assert!(assignment_seeds(&scene, None, &lamp, &zone_id, &[], CANVAS).is_empty());
+}
+
+#[test]
+fn assignment_seeds_fit_a_zone_s_first_device() {
+    let scene = scene(
+        &[
+            ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let lamp = device(
+        "lamp",
+        serde_json::json!([{ "id": "main", "name": "Main", "led_count": 30, "topology": "strip" }]),
+    );
+    let zone_id = scene.zones[1].id.to_string();
+    let seeds = assignment_seeds(&scene, None, &lamp, &zone_id, &[], CANVAS);
+    assert_eq!(seeds.len(), 1);
+    assert_close(seeds[0].footprint.position.x, 0.5);
+    assert_close(seeds[0].footprint.position.y, 0.5);
+    let footprint = seeds[0].footprint;
+    let bounds = footprint.bounds(ASPECT);
+    let usable = 1.0 - 2.0 * FIT_MARGIN;
+    assert!(
+        (bounds.width() - ASPECT * usable).abs() < EPSILON
+            || (bounds.height() - usable).abs() < EPSILON
+    );
+}
+
+#[test]
+fn moving_into_an_empty_zone_fits_the_moved_outputs_and_keeps_their_source() {
+    let scene = scene(
+        &[
+            (
+                "primary",
+                &[
+                    ("fan", "case", "Fan", 0.2, 0.3),
+                    ("kb", "keyboard", "Main", 0.6, 0.8),
+                ],
+            ),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let target = scene.zones[1].id.to_string();
+    let edits = move_edits(&scene, None, &target, &["kb".to_owned()], CANVAS);
+    assert_eq!(edits.len(), 1);
+    let before = edits[0].before.as_ref().expect("before state");
+    assert_eq!(before.zone_id, scene.zones[0].id);
+    assert_eq!(before.index, 1);
+    assert_close(before.output.position.x, 0.6);
+    let after = edits[0].after.as_ref().expect("after state");
+    assert_eq!(after.zone_id, scene.zones[1].id);
+    assert_eq!(after.index, 0);
+    assert_close(after.output.position.x, 0.5);
+    assert_close(after.output.position.y, 0.5);
+    assert!(after.output.size.x > before.output.size.x);
+    assert_eq!(after.output.device_id, before.output.device_id);
+    assert_eq!(after.output.zone_name, before.output.zone_name);
+}
+
+#[test]
+fn moving_into_a_populated_zone_lands_at_the_rig_position() {
+    let scene = scene(
+        &[
+            ("primary", &[("kb", "keyboard", "Main", 0.6, 0.8)]),
+            ("custom", &[("fan", "case", "Fan", 0.2, 0.3)]),
+        ],
+        &["Screen"],
+    );
+    let rig = layout(vec![
+        output("fan", "case", "Fan", 0.2, 0.3, 0.1, 0.1),
+        output("kb", "keyboard", "Main", 0.4, 0.7, 0.1, 0.1),
+    ]);
+    let target = scene.zones[1].id.to_string();
+    let edits = move_edits(&scene, Some(&rig), &target, &["kb".to_owned()], CANVAS);
+    let after = edits[0].after.as_ref().expect("after state");
+    assert_close(after.output.position.x, 0.4);
+    assert_close(after.output.position.y, 0.7);
+    assert_eq!(after.index, 1);
+}
+
+#[test]
+fn a_dropped_ring_seed_centers_by_the_circle_it_draws() {
+    let ring = turned_ring(0.5, 0.5);
+    let mut seeds = vec![Seed {
+        segment: Some("Fan".to_owned()),
+        footprint: Footprint::of(&ring),
+    }];
+    assert!(center_seeds_on(
+        &mut seeds,
+        NormalizedPosition::new(1.0, 0.5),
+        CANVAS
+    ));
+    // Its radius on the x axis is half its width, not half a turned square.
+    assert_close(seeds[0].footprint.position.x, 1.0 - 0.1);
+    assert!(seeds[0].footprint.circular);
+    assert_eq!(seeds[0].hint().segment.as_deref(), Some("Fan"));
+}
+
+#[test]
+fn a_fan_device_seeds_its_rings_as_circles() {
+    let scene = scene(&[("primary", &[]), ("custom", &[])], &[]);
+    let fan = device(
+        "fan",
+        serde_json::json!([{ "id": "ring", "name": "Ring", "led_count": 24, "topology": "ring",
+                             "topology_hint": { "type": "ring", "count": 24 } }]),
+    );
+    let zone_id = scene.zones[1].id.to_string();
+    let seeds = assignment_seeds(&scene, None, &fan, &zone_id, &[], CANVAS);
+    assert_eq!(seeds.len(), 1);
+    assert!(seeds[0].footprint.circular);
+}

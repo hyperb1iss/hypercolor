@@ -1,191 +1,128 @@
 +++
 title = "Zones"
-description = "Zones are flexible canvas partitions: create, rename, color, enable, and delete them, plus the Default zone and the Unassigned entry."
+description = "Zones are partitions of a scene, one tab each: add, rename, color, pause, reorder, and delete them, plus the Main zone and the Unassigned section."
 weight = 40
 +++
 
-A **zone** is a flexible partition of a scene's canvas. Each zone owns its own
-layer stack and its own spatial layout, and it is the switchable unit you light
-independently. One scene can hold a single zone covering everything, or several
-zones that each drive a different slice of your hardware with a different effect.
+A **zone** is a partition of a scene. Each zone claims its own device outputs and owns its own layer stack and its own canvas, so it lights its slice of the rig independently. One scene can hold a single zone covering everything, or several zones that each drive a different slice of your hardware with a different look.
 
-Zones live in the left column of Studio, the **zone tree**. Every zone shows up
-as a card there with its devices nested beneath it. This page covers the full
-zone lifecycle (create, rename, recolor, enable, delete), the permanent
-**Default zone**, and the **Unassigned** entry that catches hardware no zone
-has claimed.
+Every LED zone is a tab in the Studio header, in the scene's zone order. The tab you open is the zone the device pane, the Stage, and the composition panel describe. This page covers the zone lifecycle (add, rename, recolor, pause, reorder, delete), the permanent **Main** zone, and the **Unassigned** section for hardware no zone has claimed.
 
-{{< img path="img/ui/studio.webp" alt="The Studio workspace with the zone tree on the left" />}}
+{{< img path="img/ui/studio.webp" alt="The Studio zone tab strip with the Main tab open and a + after the tabs" />}}
 
 {% <callout type="info"> %}
-Zones are partitions of a scene, never "rooms." A scene is a whole-rig config;
-a zone is a part of that scene. Switching scenes swaps your entire setup,
-while zones split one scene into independently lit regions.
+A scene is a whole-rig config; a zone is a part of that scene. Switching scenes swaps your entire setup, while zones split one scene into independently lit parts.
 {% </callout> %}
 
 ## Single-zone and multi-zone scenes
 
-Every scene starts with one zone, the **Default zone**, which covers all your
-LED hardware. That is a complete, useful setup on its own: pick an effect, and
-it plays across everything.
+Every scene starts with one zone, **Main**, which covers your LED hardware. That is a complete, useful setup on its own: pick an effect, and it plays across everything.
 
-A scene becomes **multi-zone** the moment it holds more than one LED zone. That
-single fact changes how the zone tree behaves:
+A single-zone scene keeps zones out of the way. Studio shows one **Main** tab with a **+** after it, and no other page shows a zone selector at all. The **Unassigned** section appears in the device pane only when some hardware is actually unclaimed.
 
-- **Single-zone.** Connected devices that belong to no zone fold directly under
-  the sole zone as one-tap **Available** rows. There is no separate Unassigned
-  bucket to manage, because there is nowhere ambiguous for a device to land.
-- **Multi-zone.** Each zone lists only its own devices, and a dedicated
-  **Unassigned** entry appears for hardware that no zone has claimed. This is
-  where output-level assignment and the unassigned-lights policy come into play.
+A scene becomes **multi-zone** the moment it holds more than one LED zone. Then:
 
-This progressive split keeps the simple case simple. You only meet the
-Unassigned entry once you actually have multiple zones to assign devices across.
+- The tab strip shows a tab per zone, and the device pane lists the other zones under the open one.
+- The **Unassigned** section stays in the pane even when empty, as a place to move devices out to.
+- The Dashboard and Effects previews grow compact zone tabs, the sidebar's Now Playing panel shows a row per zone, and the command palette names the zone an apply lands in.
 
-## The Default zone
+This progressive split keeps the simple case simple. You meet the multi-zone surfaces once you have more than one zone to compose.
 
-The Default zone is the **Primary** zone of a scene, and it is permanent. You
-can rename it, recolor it, disable it, and move devices in and out of it, but
-you cannot delete it through the zone controls. Every scene always has exactly
-one Default zone so there is always a home for your lights.
+## The Main zone
 
-Until you give it a name, the zone tree shows it as **"Default zone"** rather
-than its internal seed label. Rename it and your name takes over immediately.
+The Main zone is the scene's **primary** zone, and it is permanent. You can rename it, recolor it, pause it, reorder it, and move devices in and out of it, but you cannot delete it: its **Delete zone** menu item is disabled. Every scene keeps one Main zone so there is always a home for your lights.
+
+New scenes name it **Main**. A primary zone with a blank name, or with a name older versions seeded ("Primary" or "Default zone"), shows as **Main** too. Rename it and your name takes over immediately.
 
 {% <callout type="tip"> %}
-The Default zone is a real zone at every scale. In a single-zone scene it is
-just the zone, with no special chrome. You can still open its settings to rename
-or recolor it.
+In a single-zone scene, the Main zone's canvas is your rig's layout: moving a device there updates the active named layout that every single-zone scene reads. Once a scene has a second LED zone, every zone's canvas belongs to that scene alone. See [Layouts](@/studio/layouts.md#where-a-canvas-edit-lands).
 {% </callout> %}
 
-## Creating a zone
+## Adding a zone
 
-Click **+ New zone** at the bottom of the zone tree. The button expands into an
-inline name input, no modal. Type a name and press **Enter** to create the zone;
-press **Escape** to cancel.
+Click **+** after the tabs. Studio creates a zone named **New zone** (or **New zone 2** and up when that name is taken), opens its tab, and selects the name so you can type over it. Type a name and press **Enter**. Press **Escape** to keep the default name.
 
 ```text
-Zones
-  ▸ Default zone        3 devices
-  ▸ Desk strip          1 device
-  ─────────────────────────────
-  + New zone            ← click, type a name, Enter
+● Main   ● Desk strips   ┊  ▢ Screens 2   +
+                                          └─ click: a "New zone" tab opens, name selected
 ```
 
-A blank name is rejected with an error toast, and the input stays open so you
-can fix it. On success the new zone is selected automatically and a confirmation
-toast names it. The **+ New zone** control only appears once the daemon reports
-it is ready to accept zone creation, so on a freshly started daemon it may take
-a moment to show up.
+A new zone starts empty: no devices, no layers. Its canvas reads **Drag devices here, or add them from Unassigned**, and the device pane expands every other zone's row so the devices you might bring in are in view. Those rows fold up again once the zone has its first device or you leave its tab. Bring hardware in from the [device pane](@/studio/device-assignment.md); the first devices you add are placed from your rig and fitted to the canvas.
 
-A new zone starts empty. Add hardware to it from the
-[device assignment](@/studio/device-assignment.md) flow, then arrange those devices
-on its [layout canvas](@/studio/layouts.md).
+Two other routes make a zone and fill it in one move:
 
-## Zone settings: rename, color, enable
+- A device card's **Move to** menu ends with **A new zone**. It creates a zone named after the device, moves the device in, and opens the tab with the name ready to type over.
+- Dragging a device from the pane onto **+** does the same thing.
 
-Every zone card has a settings affordance (the **⋯** kebab on the zone header)
-that reveals the per-zone control cluster. This row is available on every zone,
-including the Default zone, so a single-zone scene still has a route to rename or
-recolor its one zone.
+Making a zone is one step in Studio's undo history, and so is making one from a device, move included. `Ctrl+Z` removes the new zone again and puts back any device it took in. If the zone has gained devices or layers since, undo keeps it, says "Kept" and the zone's name, and carries on past that step.
 
-**Rename.** Click **Rename** to turn the label into an inline input. Press
-**Enter** or click away to commit, **Escape** to cancel. Empty names are ignored
-rather than saved.
+The **+** button and the **A new zone** item appear only once the daemon reports it can create zones, so on a freshly started daemon they may take a moment to show up.
 
-**Color.** The accent swatch opens a color picker. The color you choose tints
-the zone's dot in the tree and the unassigned-lights "Follow" options. It is an
-identity cue for the zone, not a lighting color, so it never changes what your
-LEDs display.
+## Zone settings: rename, color, pause, reorder
 
-**Enable / disable.** The power toggle turns a zone's output on or off. A
-disabled zone dims in the tree and stops driving its devices, but it keeps its
-layers, layout, and color so you can bring it back exactly as it was.
+Every zone's settings live on its tab. Open the zone menu with the **⋯** button on the open tab, by right-clicking any tab, or with **Shift+F10** on a focused tab. The menu offers **Rename**, **Color**, **Pause zone** or **Resume zone**, **Move left**, **Move right**, and **Delete zone**. The Main zone has the same menu, so a single-zone scene can still rename or recolor its one zone.
 
-{{< img path="img/ui/ui-studio-zones.webp" alt="Zones in the Hypercolor Studio workspace" />}}
+**Rename.** Choose **Rename**, double-click the tab, or press **F2** on a focused tab, and the tab becomes a text field. Press **Enter** or click away to commit, **Escape** to cancel. A blank or unchanged name is ignored rather than saved.
 
-**Per-zone brightness.** A zone carries its own `brightness` multiplier,
-clamped to `0.0`-`1.0`, on top of global output brightness. Studio has no
-control for it today; set it over the API with
-`PATCH /api/v1/scene/zones/{zone}` and a `brightness` field. See
-[zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the route
-and its revision guard.
+**Color.** **Color** opens a row of eight identity swatches (Purple, Cyan, Coral, Green, Yellow, Blue, Orange, and Red), a custom color picker, and **No color**. The color tints the zone's dot on its tab, in the device pane, in the preview's zone tabs, and on its Now Playing row in the sidebar. It is an identity cue for the zone, not a lighting color, so it never changes what your LEDs display.
+
+**Pause and resume.** **Pause zone** stops the zone driving its devices while it keeps its layers, canvas, and color, so **Resume zone** brings it back exactly as it was. A paused zone's tab shows a pause glyph, and its row under **Other zones** is dimmed. The per-zone pause buttons in the sidebar's Now Playing panel flip the same switch; while Studio is open they are undo steps too.
+
+**Reorder.** **Move left** and **Move right** step the zone one tab over; dragging a tab along the strip drops it anywhere. Tab order is the scene's zone order, which the preview's zone tabs and the sidebar rows follow too.
+
+Every rename, recolor, pause or resume, and reorder made in Studio is one step in the undo history, so `Ctrl+Z` takes it back and `Ctrl+Shift+Z` puts it back, in order with your device moves and canvas edits.
+
+{{< img path="img/ui/ui-studio-zones.webp" alt="The zone menu open on a Studio tab: Rename, Color, Pause zone, Move left, Move right, Delete zone" />}}
+
+**Per-zone brightness.** A zone carries its own `brightness` multiplier, clamped to `0.0`-`1.0`, on top of global output brightness. Studio has no control for it today; set it over the API with `PATCH /api/v1/scene/zones/{zone}` and a `brightness` field. See [zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the route and its revision guard.
 
 ## Deleting a zone
 
-Delete is a two-step confirm so a stray click never destroys a zone. Click the
-trash icon in the settings cluster; the control swaps to a red **Delete**
-button alongside a cancel **✕**. Click **Delete** to remove the zone, or **✕**
-to back out.
+Choose **Delete zone** from the zone menu. The Main zone and a scene's last LED zone cannot be deleted; for those the item is disabled and carries the reason, such as "The main zone can't be deleted".
 
-Only Custom zones expose a delete control. The Default zone has no delete
-affordance at all, because every scene must keep one.
+An empty zone deletes immediately. A zone that holds devices asks once first: the dialog names the zone and how many devices become unassigned, and offers **Keep zone** and **Delete zone**. **Keep zone** has focus, and **Escape** or a click outside the dialog also keeps the zone.
+
+Either way, a bar at the bottom of the Stage then reads **Deleted** and the zone's name, with an **Undo** button, for eight seconds. The delete is also one step in the undo history, so `Ctrl+Z` works the same way after the bar has gone. The two share one record: whichever you use restores the zone, and the zone never comes back twice.
+
+Undo rebuilds the zone: its name, color, layers, brightness, paused state, its position among the tabs, and the devices it held, back where they sat on its canvas. A device you moved somewhere else in the meantime stays where you put it. When the deleted zone was open, the tab to its left (or, for the first tab, its right) opens in its place.
 
 {% <callout type="warning"> %}
-Deleting a zone removes its layer stack and its layout for the current scene.
-The physical devices are untouched, but their assignment to that zone, and any
-effects layered on it, are gone. The devices return to the Unassigned pool.
+Deleting a zone releases its devices to Unassigned and removes its layer stack from the scene. Undo brings both back. Once you switch scenes or leave Studio the undo history is gone, so a delete is final from then on. The physical devices are never touched.
 {% </callout> %}
 
-## The Unassigned entry
+## The Unassigned section
 
-In a multi-zone scene, the **Unassigned** entry collects any device output that
-no zone has claimed. It sits below your zones in the tree, marked with a dashed
-border and a "Hardware in no zone" caption.
+The **Unassigned** section at the bottom of the device pane collects every device that no zone has claimed. It is not a zone: it has no tab, no layer stack, and no canvas. It answers one question: what should hardware do when it belongs to no zone?
 
-Unassigned is not a zone. It has no layer stack and no layout editor of its own.
-It exists to answer one question: what should hardware do when it belongs to no
-zone? Selecting it opens the **unassigned-lights policy** on the Stage instead of
-a layout editor.
+### Unassigned policy
 
-### Unassigned-lights policy
-
-The policy decides how unclaimed outputs behave while the scene is live:
+The section header carries the scene's policy for unclaimed outputs as a compact select. Its options list in full, however long the zone names, and the select is disabled for a moment while another Studio write runs. Changing it is not an undo step.
 
 | Option | What it does |
 | --- | --- |
-| **Turn off** | Unclaimed outputs go dark. |
+| **Off** | Unclaimed outputs go dark. |
 | **Hold last colors** | They keep whatever they were last showing. |
-| **Follow a zone** | They mirror a zone you choose, so they share that zone's effect. |
+| **Follow** a zone | They mirror the zone you choose, so they share that zone's look. |
 
-**Follow** lists one option per LED zone in the scene. Selecting it ties the
-unclaimed outputs to that zone's output. The Unassigned entry can never be its
-own follow target, so only real zones appear in that list.
+The select lists one **Follow** option per LED zone in the scene, Main included.
 
-The policy is editable only when the daemon advertises the
-`scene-unassigned-behavior-write` capability. When it does not, the Stage shows
-the current policy in plain words as a read-only value rather than a picker.
+The policy is editable only when the daemon advertises the `scene-unassigned-behavior-write` capability. When it does not, the header shows the current policy in plain words as a read-only label.
 
-{{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
+{{< img path="img/ui/studio.webp" alt="The Unassigned section of the Studio device pane, with its policy select set to Off" />}}
 
-The cleanest fix for unclaimed hardware is usually to assign it. Use the green
-`+` on the device's card under the Unassigned entry, which opens a picker
-listing every LED zone in the scene. See
-[device assignment](@/studio/device-assignment.md) for the assignment flow.
+The cleanest fix for unclaimed hardware is usually to assign it. Each Unassigned card has a **+** that adds the device to the open tab's zone, and you can also drag a card onto a canvas, a tab, or a zone row. See [device assignment](@/studio/device-assignment.md) for every route.
 
 ## How zone edits stay safe under concurrent changes
 
-Studio shares one active scene across every client, the CLI, and the MCP server.
-Two people, or you and an agent, can be editing the same scene at once. To keep
-edits from clobbering each other, every zone mutation carries the scene's
-current revision as a precondition.
+Studio shares one active scene across every client, the CLI, and the MCP server. Two people, or you and an agent, can be editing the same scene at once. To keep edits from clobbering each other, every zone change carries the scene's current revision as a precondition.
 
-If the scene changed somewhere else between when you loaded it and when you
-saved, your edit does not silently overwrite the newer state. Studio reloads the
-scene, shows a "Scene changed elsewhere — reloaded, try again" toast, and lets
-you reapply your change against the fresh state. This applies to every zone
-action on this page: create, rename, color, enable, delete, and the
-unassigned-lights policy.
+If the scene changed somewhere else between when you loaded it and when your edit went out, your edit does not silently overwrite the newer state. Studio reloads the scene, shows a "Scene changed elsewhere. Reloaded, try again." toast, and lets you reapply your change against the fresh state. This applies to every zone action on this page: add, rename, color, pause, reorder, delete, and the Unassigned policy.
 
-The full revision model, REST routes, and stale-retry semantics live in
-[zone API and concurrency](@/studio/zone-api-and-concurrency.md).
+The full revision model, REST routes, and stale-retry semantics live in [zone API and concurrency](@/studio/zone-api-and-concurrency.md).
 
 ## Where to go next
 
-- [Device assignment](@/studio/device-assignment.md) puts hardware into your zones
-  and splits outputs across them.
-- [Layouts](@/studio/layouts.md) arranges each zone's devices on its own spatial
-  canvas.
+- [Device assignment](@/studio/device-assignment.md) brings hardware into your zones and splits outputs across them.
+- [Layouts](@/studio/layouts.md) arranges each zone's devices on its own canvas.
 - [Layers](@/studio/layers.md) stacks effects, media, and faces on a zone.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md) builds a
-  two-zone scene end to end.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md) builds a multi-zone scene step by step.

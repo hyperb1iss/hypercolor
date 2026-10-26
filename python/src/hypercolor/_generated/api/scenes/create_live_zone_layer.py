@@ -9,15 +9,22 @@ from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
 from ...models.create_layer_request import CreateLayerRequest
 from ...models.create_live_zone_layer_response_201 import CreateLiveZoneLayerResponse201
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     zone: str,
     *,
     body: CreateLayerRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "post",
@@ -87,6 +94,11 @@ def _parse_response(
 
         return response_500
 
+    if response.status_code == 503:
+        response_503 = ApiErrorBody.from_dict(response.json())
+
+        return response_503
+
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -109,11 +121,15 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: CreateLayerRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | CreateLiveZoneLayerResponse201]:
     """Create a live zone layer
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
@@ -130,6 +146,8 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -144,11 +162,15 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: CreateLayerRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | CreateLiveZoneLayerResponse201 | None:
     """Create a live zone layer
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
@@ -166,6 +188,8 @@ def sync(
         zone=zone,
         client=client,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -174,11 +198,15 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: CreateLayerRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | CreateLiveZoneLayerResponse201]:
     """Create a live zone layer
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
@@ -195,6 +223,8 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -207,11 +237,15 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: CreateLayerRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | CreateLiveZoneLayerResponse201 | None:
     """Create a live zone layer
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
@@ -230,5 +264,7 @@ async def asyncio(
             zone=zone,
             client=client,
             body=body,
+            if_match=if_match,
+            idempotency_key=idempotency_key,
         )
     ).parsed

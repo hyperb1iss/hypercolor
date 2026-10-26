@@ -43,11 +43,13 @@ console_log = "1"
 web-sys = { version = "0.3", features = [
     "AbortController",
     "AbortSignal",
+    "AddEventListenerOptions",
     "Blob",
     "BlobPropertyBag",
     "File",
     "FileList",
     "FileReader",
+    "FocusOptions",
     "FormData",
     "ReadableStream",
     "ReadableStreamDefaultReader",
@@ -62,6 +64,7 @@ web-sys = { version = "0.3", features = [
     "History",
     "CanvasRenderingContext2d",
     "DomRect",
+    "DomRectReadOnly",
     "ImageData",
     "ImageBitmap",
     "ImageBitmapRenderingContext",
@@ -93,6 +96,8 @@ web-sys = { version = "0.3", features = [
     "console",
     "DragEvent",
     "DataTransfer",
+    "ResizeObserver",
+    "ResizeObserverEntry",
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

@@ -272,7 +272,7 @@ curl http://localhost:9420/api/v1/layouts | jq .data.items
 curl http://localhost:9420/api/v1/layouts/active | jq
 ```
 
-**Create a layout** from the web UI or via REST with a JSON zone definition. The web UI is the recommended tool here: open `http://localhost:9420`, go to Studio, select a zone, and drag its device outputs around the Stage canvas. Once you're satisfied, save the layout from the Stage toolbar.
+**Create a layout** from the web UI or via REST with a JSON zone definition. The web UI is the recommended tool here: open `http://localhost:9420`, go to Studio, open a zone's tab, and drag its device outputs around the Stage canvas. Each edit commits when you release it, so there is no save step. In a scene with a single zone, those edits update the active named layout.
 
 From the CLI, you can create a layout by providing a JSON definition:
 
@@ -299,7 +299,7 @@ hypercolor layouts delete "Old Layout"
 ```
 
 {% <callout type="tip"> %}
-The Studio workspace offers a full visual editor for spatial layouts. Open `http://localhost:9420`, click the Studio tab, and drag device outputs into position on the selected zone's Stage canvas. See [Studio overview](@/studio/overview.md) and [Layouts](@/studio/layouts.md) for the full walkthrough.
+The Studio workspace offers a full visual editor for spatial layouts. Open `http://localhost:9420`, click the Studio tab, and drag device outputs into position on the open zone's Stage canvas. See [Studio overview](@/studio/overview.md) and [Layouts](@/studio/layouts.md) for the full walkthrough.
 {% </callout> %}
 
 ## 8. Set up audio-reactive effects
@@ -420,10 +420,10 @@ hypercolor scenes delete "Old Scene" --yes
 For live and snapshot mutation modes, boot restore, and external automation, see [Scenes and snapshots](@/guide/scenes-and-snapshots.md).
 
 {% <callout type="tip"> %}
-Studio is the visual authoring surface for scenes. The Studio workspace lets you build multi-zone scenes with per-zone effects, inspect the composition in a live canvas preview, and manage scene groups without writing JSON. See [Studio scenes](@/studio/scenes.md) and [Studio zones](@/studio/zones.md).
+Studio is the visual authoring surface for scenes. The Studio workspace lets you build multi-zone scenes with per-zone effects, inspect each zone's composition on a live canvas, and create, duplicate, and switch scenes without writing JSON. See [Studio scenes](@/studio/scenes.md) and [Studio zones](@/studio/zones.md).
 {% </callout> %}
 
-{{< img path="img/ui/ui-scenes.webp" alt="The scene switcher in the Hypercolor web UI" />}}
+{{< img path="img/ui/ui-scenes.webp" alt="The scene picker in the Hypercolor web UI" />}}
 
 ## 11. Tour the web UI
 
@@ -436,8 +436,8 @@ The UI is organized into panels:
 - **Effects browser**: search and filter the full effect catalog, preview effects in the canvas panel before committing to hardware
 - **Controls panel**: per-parameter sliders for the active effect; equivalent to `effects patch` but much easier for exploration
 - **Devices panel**: connection status for every discovered device, per-device brightness, and an identify button to flash a test pattern
-- **Studio Stage**: the spatial layout editor, always on for the selected lighting zone; drag, resize, and rotate that zone's device outputs on its own canvas
-- **Scenes**: the Studio header's scene selector creates, renames, deletes, and switches scenes, and the dashboard's scene pill switches between them; snapshotting the live rig is CLI and REST only (`hypercolor scenes snapshot`)
+- **Studio Stage**: the spatial layout editor, always on for the open zone tab; drag, resize, and rotate that zone's device outputs on its own canvas
+- **Scenes**: the scene picker in the Dashboard, Effects, and Studio headers switches, creates, renames, and deletes scenes; **Duplicate current** copies the running scene into a new editable one, while a snapshot-locked capture is CLI and REST only (`hypercolor scenes snapshot`)
 - **Studio**: the full multi-zone authoring workspace (see below)
 
 The canvas preview shows exactly what the render loop is producing, updated at the daemon's current target FPS.
@@ -452,10 +452,10 @@ Open Studio from the top navigation, or navigate directly to `http://localhost:9
 
 What Studio adds on top of the basic effects browser:
 
-- **Zone canvas**: position and resize device outputs visually; zones are flexible canvas partitions, not rooms
+- **Zone canvas**: position and resize device outputs visually; each zone is a partition of your rig with its own canvas
 - **Per-zone effect layers**: assign a different effect to each zone, with independent control values and its own bottom-to-top layer order
 - **Layer compositing**: stack effects with blend modes to create layered lighting compositions
-- **Scene authoring**: save the full multi-zone composition as a scene that can be recalled with one click
+- **Scene authoring**: every edit lands in the active scene as you make it, and the scene picker recalls the whole multi-zone composition with one click
 - **Display faces**: when an effect supports it, you can target specific display faces (front, top, rear) of a device; see [Display faces](@/effects/display-faces.md) for how effects declare and use face geometry
 
 For the full Studio walkthrough, see [Studio overview](@/studio/overview.md) and the [workspace tour](@/studio/workspace-tour.md).

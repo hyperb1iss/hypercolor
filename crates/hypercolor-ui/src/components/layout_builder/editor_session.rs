@@ -4,19 +4,12 @@ use leptos::prelude::*;
 
 use crate::api;
 use crate::compound_selection::CompoundDepth;
-use crate::layout_history::RemovedOutputCache;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::LayoutWriteHandle;
 
 #[cfg(test)]
 mod tests;
-
-#[derive(Clone)]
-pub(super) struct ZoneDraft {
-    pub baseline: SpatialLayout,
-    pub snapshot: crate::layout_history::LayoutEditorSnapshot,
-}
 
 /// Apply an edit's placement delta without replacing fields changed elsewhere.
 fn apply_placement_delta(
@@ -56,40 +49,6 @@ fn apply_placement_delta(
     }
 }
 
-pub(super) fn merge_draft(
-    canonical: &SpatialLayout,
-    draft: &ZoneDraft,
-) -> crate::layout_history::LayoutEditorSnapshot {
-    let mut snapshot = draft.snapshot.clone();
-    snapshot.zones = canonical
-        .zones
-        .iter()
-        .map(|output| {
-            let mut merged = output.clone();
-            if let Some(local) = draft
-                .snapshot
-                .zones
-                .iter()
-                .find(|local| local.id == output.id)
-                && let Some(saved) = draft
-                    .baseline
-                    .zones
-                    .iter()
-                    .find(|saved| saved.id == output.id)
-                && local.device_id == output.device_id
-                && local.zone_name == output.zone_name
-            {
-                apply_placement_delta(&mut merged, saved, local);
-            }
-            merged
-        })
-        .collect();
-    snapshot
-        .selected_zone_ids
-        .retain(|id| snapshot.zones.iter().any(|output| &output.id == id));
-    snapshot
-}
-
 pub(super) fn reconcile_replay(
     current: &SpatialLayout,
     previous: &crate::layout_history::LayoutEditorSnapshot,
@@ -119,7 +78,8 @@ pub(super) fn reconcile_replay(
         .retain(|id| snapshot.zones.iter().any(|output| &output.id == id));
 }
 
-/// Shared layout editor state — provided via context to palette, canvas, and zone properties.
+/// Shared layout editor state, provided via context to the canvas and the
+/// zone properties panel.
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutEditorContext {
     pub layout: Signal<Option<SpatialLayout>>,
@@ -138,8 +98,6 @@ pub(crate) struct LayoutEditorContext {
     pub set_is_dirty: WriteSignal<bool>,
     pub set_hidden_zones: WriteSignal<HashSet<String>>,
     pub set_keep_aspect_ratio: WriteSignal<bool>,
-    pub removed_zone_cache: Signal<RemovedOutputCache>,
-    pub set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     /// Push the current in-flight layout to the daemon's preview engine.
     /// Used by the canvas during drag to keep the LED preview live without
     /// committing intermediate state to the layout signal.
@@ -179,8 +137,6 @@ pub(super) fn embedded_attachment_profiles(
 #[derive(Clone, Copy)]
 pub(super) struct LayoutEditorSession {
     pub(super) layout: ReadSignal<Option<SpatialLayout>>,
-    pub(super) saved_layout: ReadSignal<Option<SpatialLayout>>,
-    pub(super) set_saved_layout: WriteSignal<Option<SpatialLayout>>,
     pub(super) selected_zone_ids: ReadSignal<HashSet<String>>,
     pub(super) set_selected_zone_ids: WriteSignal<HashSet<String>>,
     pub(super) compound_depth: ReadSignal<CompoundDepth>,
@@ -191,8 +147,6 @@ pub(super) struct LayoutEditorSession {
     pub(super) set_hidden_zones: WriteSignal<HashSet<String>>,
     pub(super) hovered_zone_ids: ReadSignal<HashSet<String>>,
     pub(super) set_hovered_zone_ids: WriteSignal<HashSet<String>>,
-    pub(super) removed_zone_cache: ReadSignal<RemovedOutputCache>,
-    pub(super) set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     pub(super) write: LayoutWriteHandle,
     pub(super) layout_signal: Signal<Option<SpatialLayout>>,
     pub(super) can_undo: Signal<bool>,
@@ -208,13 +162,11 @@ impl LayoutEditorSession {
         selected_surface: Signal<Option<String>>,
     ) -> Self {
         let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
-        let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
         let (selected_zone_ids, set_selected_zone_ids) = signal(HashSet::<String>::new());
         let (compound_depth, set_compound_depth) = signal(CompoundDepth::Root);
         let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(keep_aspect_ratio_initial);
         let (hidden_zones, set_hidden_zones) = signal(HashSet::<String>::new());
         let (hovered_zone_ids, set_hovered_zone_ids) = signal(HashSet::<String>::new());
-        let (removed_zone_cache, set_removed_zone_cache) = signal(RemovedOutputCache::new());
         let (dirty, set_is_dirty) = signal(false);
         let pointer_zone_id = RwSignal::new(None::<String>);
         let write = LayoutWriteHandle {
@@ -224,18 +176,15 @@ impl LayoutEditorSession {
             set_selected_zone_ids,
             compound_depth,
             set_compound_depth,
-            removed_zone_cache,
-            set_removed_zone_cache,
             studio_history,
             selected_surface,
             interaction_start: RwSignal::new(None),
             set_dirty: set_is_dirty,
+            on_commit: StoredValue::new(None),
         };
 
         Self {
             layout,
-            saved_layout,
-            set_saved_layout,
             selected_zone_ids,
             set_selected_zone_ids,
             compound_depth,
@@ -246,8 +195,6 @@ impl LayoutEditorSession {
             set_hidden_zones,
             hovered_zone_ids,
             set_hovered_zone_ids,
-            removed_zone_cache,
-            set_removed_zone_cache,
             write,
             layout_signal: Signal::derive(move || layout.get()),
             can_undo: studio_history.can_undo,
@@ -272,8 +219,6 @@ impl LayoutEditorSession {
             set_keep_aspect_ratio: self.set_keep_aspect_ratio,
             compound_depth: Signal::derive(move || self.compound_depth.get()),
             set_compound_depth: self.set_compound_depth,
-            removed_zone_cache: Signal::derive(move || self.removed_zone_cache.get()),
-            set_removed_zone_cache: self.set_removed_zone_cache,
             push_preview,
             can_undo: self.can_undo,
             can_redo: self.can_redo,

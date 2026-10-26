@@ -168,6 +168,7 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
         Arc::clone(&event_bus),
         crate::scene_store::load_for_test(&scenes_path).expect("scene store"),
         Arc::new(ZoneLayoutPreviewStore::default()),
+        crate::domain::scene_run::SceneRun::ephemeral(),
     );
     let spatial = SpatialService::new(SpatialEngine::new(legacy_layout.clone()));
     let layout_context = LayoutContext::new_test_context(
@@ -592,6 +593,7 @@ async fn unscoped_display_target_remap_persists_one_zone_per_display() {
         Arc::clone(&event_bus),
         crate::scene_store::load_for_test(&scenes_path).expect("scene store"),
         Arc::new(ZoneLayoutPreviewStore::default()),
+        crate::domain::scene_run::SceneRun::ephemeral(),
     );
     let layout_context = LayoutContext::new_test_context(
         HashMap::new(),

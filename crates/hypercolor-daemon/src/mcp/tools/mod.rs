@@ -642,7 +642,9 @@ impl From<DomainError> for ToolError {
                 param: "request".to_owned(),
                 reason: message,
             },
-            error @ DomainError::ControlBound { .. } => Self::Conflict(error.to_string()),
+            error @ (DomainError::ControlBound { .. } | DomainError::IdempotencyKeyMismatch) => {
+                Self::Conflict(error.to_string())
+            }
             DomainError::Conflict { message, .. }
             | DomainError::Unauthorized { message }
             | DomainError::Forbidden { message, .. }
@@ -660,6 +662,7 @@ impl From<DomainError> for ToolError {
                 resource,
                 expected,
                 current,
+                ..
             } => Self::Conflict(format!(
                 "{resource} version mismatch: expected {expected}, current {current}"
             )),
@@ -756,6 +759,8 @@ mod tests {
             resource: ResourceKind::Scene,
             expected: 1,
             current: 2,
+            expected_epoch: None,
+            current_epoch: None,
         }
         .into();
         assert_eq!(precondition.error_code(), -32000);

@@ -1,6 +1,6 @@
-use super::{ZoneDraft, merge_draft, reconcile_replay};
+use super::reconcile_replay;
 use crate::compound_selection::CompoundDepth;
-use crate::layout_history::{LayoutEditorSnapshot, RemovedOutputCache};
+use crate::layout_history::LayoutEditorSnapshot;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -52,74 +52,7 @@ fn snapshot(layout: &SpatialLayout, selected: &[&str]) -> LayoutEditorSnapshot {
         zones: layout.zones.clone(),
         selected_zone_ids: selected.iter().map(|id| (*id).to_owned()).collect(),
         compound_depth: CompoundDepth::Root,
-        removed_zone_cache: RemovedOutputCache::new(),
     }
-}
-
-#[test]
-fn draft_merge_keeps_only_local_field_changes() {
-    let baseline = layout(vec![zone("one", 0.2)]);
-    let mut local = baseline.clone();
-    local.zones[0].position.x = 0.7;
-    let mut canonical = baseline.clone();
-    canonical.zones[0].rotation = 1.0;
-    canonical.zones[0].name = "Updated device name".to_owned();
-    canonical.zones.push(zone("new", 0.9));
-    let merged = merge_draft(
-        &canonical,
-        &ZoneDraft {
-            baseline,
-            snapshot: snapshot(&local, &["one"]),
-        },
-    );
-    assert_eq!(merged.zones[0].position.x, 0.7);
-    assert_eq!(merged.zones[0].rotation, 1.0);
-    assert_eq!(merged.zones[0].name, "Updated device name");
-    assert_eq!(merged.zones[1], canonical.zones[1]);
-}
-
-#[test]
-fn clean_draft_accepts_canonical_placement_changes() {
-    let baseline = layout(vec![zone("one", 0.2)]);
-    let canonical = layout(vec![zone("one", 0.8)]);
-    let merged = merge_draft(
-        &canonical,
-        &ZoneDraft {
-            snapshot: snapshot(&baseline, &[]),
-            baseline,
-        },
-    );
-    assert_eq!(merged.zones, canonical.zones);
-}
-
-#[test]
-fn brightness_draft_survives_refresh_and_replays_both_directions() {
-    let before = layout(vec![zone("one", 0.2)]);
-    let mut after = before.clone();
-    after.zones[0].brightness = Some(0.4);
-    let mut canonical = before.clone();
-    canonical.zones[0].position.x = 0.8;
-    let merged = merge_draft(
-        &canonical,
-        &ZoneDraft {
-            baseline: before.clone(),
-            snapshot: snapshot(&after, &["one"]),
-        },
-    );
-    assert_eq!(merged.zones[0].brightness, Some(0.4));
-    assert_eq!(merged.zones[0].position.x, 0.8);
-
-    canonical.zones = merged.zones;
-    let mut undo = snapshot(&before, &["one"]);
-    reconcile_replay(&canonical, &snapshot(&after, &[]), &mut undo);
-    assert_eq!(undo.zones[0].brightness, None);
-    assert_eq!(undo.zones[0].position.x, 0.8);
-
-    canonical.zones = undo.zones;
-    let mut redo = snapshot(&after, &["one"]);
-    reconcile_replay(&canonical, &snapshot(&before, &[]), &mut redo);
-    assert_eq!(redo.zones[0].brightness, Some(0.4));
-    assert_eq!(redo.zones[0].position.x, 0.8);
 }
 
 #[test]

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use crate::layout_geometry::{self, ResizeHandle};
+use crate::layout_geometry::{self, ResizeHandle, ResizeStart};
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 /// Drag/resize runtime — non-reactive state machine for an in-flight pointer
@@ -20,6 +20,9 @@ pub(super) struct DragRuntime {
     /// Every zone as it stood at the press, for a cancelled interaction.
     pub(super) base_zones: Vec<Output>,
     pub(super) current_zones: Vec<Output>,
+    /// The canvas extent in pixels, so edge clamps measure boxes as the
+    /// canvas draws them.
+    pub(super) canvas: (u32, u32),
     /// `data-zone-id` → element. Captured at interaction start so the RAF
     /// loop never has to query the DOM.
     pub(super) elements: HashMap<String, web_sys::HtmlElement>,
@@ -57,6 +60,16 @@ pub(super) enum InteractionKind {
 }
 
 impl DragRuntime {
+    /// The outputs a box drag carries; `None` for a resize.
+    pub(super) fn dragged_ids(&self) -> Option<Vec<String>> {
+        match &self.kind {
+            InteractionKind::Drag {
+                initial_positions, ..
+            } => Some(initial_positions.iter().map(|(id, _)| id.clone()).collect()),
+            InteractionKind::Resize { .. } => None,
+        }
+    }
+
     /// Apply the latest pending pointer position to the in-flight zone copy
     /// and paint the affected elements directly. Returns true if any zone
     /// position/size actually changed this frame.
@@ -69,6 +82,7 @@ impl DragRuntime {
         // back. We never clone the zone vec on the hot path.
         let mut working = SpatialLayoutShim {
             zones: std::mem::take(&mut self.current_zones),
+            canvas: self.canvas,
         }
         .into_layout();
         let changed = match &self.kind {
@@ -143,13 +157,17 @@ impl DragRuntime {
                 let force_locked =
                     layout_geometry::is_circular_zone(zone.shape.as_ref(), &zone.topology);
                 let (position, size) = layout_geometry::resize_zone_from_handle(
-                    *start_center,
-                    *start_size,
-                    *start_mouse,
-                    *handle,
+                    ResizeStart {
+                        center: *start_center,
+                        size: *start_size,
+                        rotation: *rotation,
+                        scale: zone.scale,
+                        mouse: *start_mouse,
+                        handle: *handle,
+                    },
                     mouse,
                     *keep_aspect_ratio || force_locked,
-                    *rotation,
+                    layout_geometry::canvas_pixel_aspect(self.canvas.0, self.canvas.1),
                 );
                 let changed = zone.position != position || zone.size != size;
                 if changed {
@@ -221,6 +239,7 @@ impl DragRuntime {
 /// the rest of the layout immutable and out of our hot loop.
 struct SpatialLayoutShim {
     zones: Vec<Output>,
+    canvas: (u32, u32),
 }
 
 impl SpatialLayoutShim {
@@ -229,8 +248,8 @@ impl SpatialLayoutShim {
             id: String::new(),
             name: String::new(),
             description: None,
-            canvas_width: 1,
-            canvas_height: 1,
+            canvas_width: self.canvas.0,
+            canvas_height: self.canvas.1,
             zones: self.zones,
             default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
             default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,

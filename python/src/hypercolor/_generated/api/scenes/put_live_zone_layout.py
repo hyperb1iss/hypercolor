@@ -9,15 +9,22 @@ from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
 from ...models.put_live_zone_layout_response_200 import PutLiveZoneLayoutResponse200
 from ...models.zone_layout_request import ZoneLayoutRequest
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     zone: str,
     *,
     body: ZoneLayoutRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "put",
@@ -87,6 +94,11 @@ def _parse_response(
 
         return response_500
 
+    if response.status_code == 503:
+        response_503 = ApiErrorBody.from_dict(response.json())
+
+        return response_503
+
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -109,11 +121,15 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ZoneLayoutRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | PutLiveZoneLayoutResponse200]:
     """Replace a live zone layout
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ZoneLayoutRequest): `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
             in the same compact shape the zone resource reads back.
 
@@ -128,6 +144,8 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -142,11 +160,15 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ZoneLayoutRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | PutLiveZoneLayoutResponse200 | None:
     """Replace a live zone layout
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ZoneLayoutRequest): `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
             in the same compact shape the zone resource reads back.
 
@@ -162,6 +184,8 @@ def sync(
         zone=zone,
         client=client,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -170,11 +194,15 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ZoneLayoutRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | PutLiveZoneLayoutResponse200]:
     """Replace a live zone layout
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ZoneLayoutRequest): `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
             in the same compact shape the zone resource reads back.
 
@@ -189,6 +217,8 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         body=body,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -201,11 +231,15 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ZoneLayoutRequest,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | PutLiveZoneLayoutResponse200 | None:
     """Replace a live zone layout
 
     Args:
         zone (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
         body (ZoneLayoutRequest): `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
             in the same compact shape the zone resource reads back.
 
@@ -222,5 +256,7 @@ async def asyncio(
             zone=zone,
             client=client,
             body=body,
+            if_match=if_match,
+            idempotency_key=idempotency_key,
         )
     ).parsed

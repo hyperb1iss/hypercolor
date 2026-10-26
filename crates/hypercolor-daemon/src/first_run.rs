@@ -80,7 +80,7 @@ pub(crate) async fn seed_scene(effects: &EffectContext) {
         controls: HashMap::new(),
         preset_id: None,
         target_zone: None,
-        expected_revision: None,
+        fence: None,
         transition: RequestedTransition::cut(),
         // Starting up never changes the output power a user chose.
         wake_output: false,

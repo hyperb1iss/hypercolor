@@ -251,7 +251,7 @@ impl LayoutPublication {
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
         driver_host: Arc<DaemonDriverHost>,
-    ) -> Result<(), LayoutUpdateError> {
+    ) -> Result<Option<crate::domain::scene::LayoutSceneReceipt>, LayoutUpdateError> {
         let persistence = self.persistence_context(driver_host);
         self.transactions
             .apply_under_guard_with_persistence(guard, layout, move |phase| {

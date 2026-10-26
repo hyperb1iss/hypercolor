@@ -155,8 +155,8 @@ pub(super) fn HeroGauges(
         })
     });
 
-    // Health gates for the warning tint: engine within 10% of target,
-    // frame time inside budget. Preview and clients stay neutral.
+    // Budget health for the tile dots: engine within 10% of target, frame
+    // time inside budget. Preview and clients have no budget.
     let engine_healthy = Memo::new(move |_| engine_value.get() >= engine_max.get() * 0.9);
     let frame_healthy = Memo::new(move |_| frame_value.get() <= frame_budget.get());
     let ws_clients =
@@ -182,7 +182,7 @@ pub(super) fn HeroGauges(
                     value=engine_primary
                     detail=engine_secondary
                     series=engine_fps_series
-                    color="var(--color-cyan)"
+                    stroke="var(--color-cyan)"
                     healthy=engine_healthy
                 />
                 <StatTile
@@ -190,7 +190,7 @@ pub(super) fn HeroGauges(
                     value=frame_primary
                     detail=frame_secondary
                     series=frame_time_series
-                    color="var(--color-accent)"
+                    stroke="var(--color-accent)"
                     healthy=frame_healthy
                 />
                 <StatTile
@@ -198,13 +198,12 @@ pub(super) fn HeroGauges(
                     value=preview_primary
                     detail=preview_secondary
                     series=preview_fps_series
-                    color="var(--color-coral)"
+                    stroke="var(--color-coral)"
                 />
                 <StatTile
                     label="Clients"
                     value=Memo::new(move |_| ws_clients.get().to_string())
                     detail=Signal::derive(|| "ws connected".to_owned())
-                    color="var(--color-status-warning)"
                 />
             </div>
         </div>
@@ -212,39 +211,35 @@ pub(super) fn HeroGauges(
 }
 
 /// One KPI in the performance strip: a hero number with its context line
-/// and a thin sparkline. The colored dot carries series identity so the
-/// number itself stays in text tokens; it only takes the warning tint
-/// when `healthy` reports false, and the detail line's target/budget
-/// text says why, so state is never color-alone.
+/// and a thin sparkline whose stroke carries the series identity. A tile
+/// with a budget shows one status dot, success inside the budget and
+/// warning outside it, and its detail line names the target, so state is
+/// never color alone. Tiles without a budget carry no dot.
 #[component]
 fn StatTile(
     label: &'static str,
     #[prop(into)] value: Signal<String>,
     #[prop(into)] detail: Signal<String>,
     #[prop(optional, into)] series: Option<Signal<Vec<f64>>>,
-    #[prop(default = "var(--color-cyan)")] color: &'static str,
+    #[prop(default = "var(--color-cyan)")] stroke: &'static str,
     #[prop(optional, into)] healthy: Option<Signal<bool>>,
 ) -> impl IntoView {
-    let value_style = move || match healthy {
-        Some(h) if !h.get() => "color: var(--color-status-warning)",
-        _ => "",
-    };
-
     view! {
         <div class="rounded-md bg-surface-overlay/20 px-3 pt-2.5 pb-2 flex flex-col gap-1 min-w-0">
             <div class="flex items-center justify-between gap-2">
                 <span class="text-[9px] font-mono uppercase tracking-[0.16em] text-fg-tertiary">
                     {label}
                 </span>
-                <span
-                    class="w-1.5 h-1.5 rounded-full shrink-0"
-                    style=format!("background: {color}; box-shadow: 0 0 6px {color}")
-                />
+                {healthy.map(|healthy| view! {
+                    <span
+                        class="w-1.5 h-1.5 rounded-full shrink-0"
+                        class=("bg-status-success", move || healthy.get())
+                        class=("bg-status-warning", move || !healthy.get())
+                        title=move || if healthy.get() { "Within budget" } else { "Over budget" }
+                    />
+                })}
             </div>
-            <div
-                class="text-xl font-semibold tabular-nums leading-none text-fg-primary"
-                style=value_style
-            >
+            <div class="text-xl font-semibold tabular-nums leading-none text-fg-primary">
                 {move || value.get()}
             </div>
             <div class="text-[10px] font-mono text-fg-tertiary/70 truncate">
@@ -252,7 +247,7 @@ fn StatTile(
             </div>
             {series.map(|s| view! {
                 <div class="h-7 mt-0.5">
-                    <Sparkline values=s stroke=color />
+                    <Sparkline values=s stroke=stroke />
                 </div>
             })}
         </div>

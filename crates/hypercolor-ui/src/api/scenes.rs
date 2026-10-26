@@ -5,6 +5,7 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
+use hypercolor_types::scene::SceneMutationMode;
 use hypercolor_types::spatial::Output;
 
 use super::http_transport::HttpMethod;
@@ -12,6 +13,7 @@ use super::{ApiError, ApiResult, client};
 
 pub use hypercolor_types::api::scenes::{
     ActivateSceneRequest, CreateSceneRequest, ReplaceSceneRequest, SceneListResponse, SceneSummary,
+    SnapshotSceneRequest,
 };
 
 /// The selected topmost effect layer inside one canonical zone resource.
@@ -24,6 +26,14 @@ pub struct ZoneEffectRef<'a> {
 
 pub async fn fetch_active_scene() -> ApiResult<SceneDocument> {
     client::fetch_json("/api/v1/scene").await
+}
+
+/// Read the active scene for a recovery that waits on it (settling a write,
+/// re-anchoring), giving up after [`client::SCENE_READ_DEADLINE`] so a
+/// stalled daemon cannot hold the recovery up. The shared scene resource
+/// reads without one: a read that stalls there keeps the document it has.
+pub async fn fetch_active_scene_promptly() -> ApiResult<SceneDocument> {
+    client::fetch_json_within("/api/v1/scene", client::SCENE_READ_DEADLINE).await
 }
 
 pub async fn deactivate_scene() -> ApiResult<()> {
@@ -96,7 +106,7 @@ pub async fn list_scenes() -> ApiResult<Vec<SceneSummary>> {
         .map(|response| response.items)
 }
 
-/// Create a scene. The daemon seeds it with a Default zone (§5.2).
+/// Create a scene. The daemon seeds it with a primary zone (§5.2).
 pub async fn create_scene(name: &str) -> ApiResult<SceneSummary> {
     let request = CreateSceneRequest {
         name: name.to_owned(),
@@ -105,23 +115,52 @@ pub async fn create_scene(name: &str) -> ApiResult<SceneSummary> {
     client::post_json("/api/v1/scenes", &request).await
 }
 
+/// Save the running scene as a new scene through the snapshot route,
+/// which copies the live zones, layers, and layout. The daemon stores the
+/// copy snapshot-locked, and a locked scene refuses every runtime edit, so
+/// a duplicate meant for editing follows this with [`unlock_scene`].
+pub async fn snapshot_active_scene(name: &str) -> ApiResult<SceneSummary> {
+    let request = SnapshotSceneRequest {
+        name: name.to_owned(),
+        description: None,
+    };
+    client::post_json("/api/v1/scenes/snapshot", &request).await
+}
+
+/// Switch a stored scene to live so it accepts runtime edits.
+pub async fn unlock_scene(scene_id: &str) -> ApiResult<()> {
+    replace_stored_scene(scene_id, |document| {
+        document.mutation_mode = SceneMutationMode::Live;
+    })
+    .await
+}
+
 /// Rename a scene through the guarded whole-document replacement route.
 pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
+    replace_stored_scene(scene_id, |document| name.clone_into(&mut document.name)).await
+}
+
+/// Read one stored scene, edit it, and write it back at the revision it
+/// was read at, so a concurrent change is refused rather than clobbered.
+async fn replace_stored_scene(
+    scene_id: &str,
+    edit: impl FnOnce(&mut SceneDocument),
+) -> ApiResult<()> {
     let url = format!("/api/v1/scenes/{scene_id}");
     let mut document = client::fetch_json::<SceneDocument>(&url).await?;
-    document.name = name.to_owned();
+    edit(&mut document);
     let request = ReplaceSceneRequest::from(&document);
     match client::send_json_versioned::<_, SceneDocument>(
         HttpMethod::Put,
         &url,
         Some(&request),
-        Some(document.revision),
+        Some(&client::Fence::of(&document)),
     )
     .await?
     {
         client::MutationOutcome::Applied(_) => Ok(()),
         client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
-            "Scene changed while it was being renamed; reload revision {current}"
+            "Scene changed while it was being saved; reload revision {current}"
         ))),
     }
 }

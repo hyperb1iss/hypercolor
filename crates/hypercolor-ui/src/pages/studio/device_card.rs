@@ -1,10 +1,13 @@
-//! The device card for the Studio zone tree.
+//! The device card for the Studio device pane.
 //!
-//! Each physical device under a zone renders as a card carrying its
-//! brand identity: a duotone accent strip, the vendor mark, the LED
-//! count, and a per-channel breakdown with live component data. The
-//! card body selects the parent zone; trailing actions hide every
-//! output, identify the hardware, and remove it from the zone.
+//! Each physical device renders as a card carrying its brand identity: a
+//! duotone accent strip, the vendor mark, the LED count, and a
+//! per-channel breakdown with live component data. In the active zone
+//! the card body lights the device's outputs on the canvas, and two
+//! trailing icons hide every output and open the operations menu. A
+//! device split across zones lists only this zone's channels, plus a
+//! quiet line naming where the rest live. An Unassigned card offers
+//! identify and a one-tap add into the active zone instead.
 
 use std::collections::HashSet;
 
@@ -12,7 +15,9 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
+use hypercolor_leptos_ext::events::document as browser_document;
 use hypercolor_types::scene::ZoneRole;
+use hypercolor_types::spatial::Output;
 
 use crate::api::{self, DeviceSummary, SegmentTopologySummary};
 use crate::channel_names;
@@ -22,33 +27,67 @@ use crate::components::device_card::{
 };
 use crate::icons::*;
 use crate::layout_utils;
+use crate::pointer_gesture::listener_element;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
 use super::device_assignment::ZoneDeviceRow;
-use super::zone_add_device::{assign_device_to_zone, zone_display_name};
+use super::device_pane::reveal_pane_zone;
+use super::drag::{DragController, FocusReturn};
+use super::drag_model::{DropAction, MovePayload, Origin};
+use super::move_menu::{MoveMenuAnchor, is_menu_key};
+use super::moves::{light_segment_count, perform, zone_name_in};
+use super::pane_model::elsewhere_label;
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
+
+/// Element id of a device card's body, keyed by the zone it speaks for
+/// (`"unassigned"` for an Unassigned card).
+#[must_use]
+pub fn device_card_dom_id(zone_key: &str, device_id: &str) -> String {
+    format!("device-card-{zone_key}-{device_id}")
+}
+
+/// The zone key an Unassigned card's ids use.
+pub const UNASSIGNED_KEY: &str = "unassigned";
+
+/// Element id of a placed device card's kebab.
+#[must_use]
+pub fn device_menu_dom_id(zone_id: &str, device_id: &str) -> String {
+    format!("device-menu-{zone_id}-{device_id}")
+}
+
+/// Element id of a channel row.
+#[must_use]
+pub fn channel_row_dom_id(zone_key: &str, device_id: &str, slot_id: &str) -> String {
+    format!("channel-row-{zone_key}-{device_id}-{slot_id}")
+}
 
 /// How a device card behaves, which decides its trailing actions and
 /// whether it carries an in-zone layout (hidden state, per-output toggles).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CardMode {
-    /// The device is placed in this zone: hide-all, identify, remove.
+    /// The device has outputs in the zone named by `select`: hide-all and
+    /// the operations kebab (identify, move, remove).
     #[default]
     Placed,
-    /// The device is connected but in no zone — the single-zone fold
-    /// (§3.3). Identify, plus a one-tap add into the zone named by
-    /// `select`.
-    Available,
-    /// The multi-zone Unassigned bucket: identify only. Assignment happens
-    /// in the Stage layout view.
+    /// The device is in no zone: identify, plus a one-tap add into the
+    /// zone named by `select`, the active tab.
     Unassigned,
+}
+
+/// Outputs of a split device that another zone claims, as the card's
+/// "more outputs" line names them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Elsewhere {
+    pub zone_id: String,
+    pub zone_name: String,
+    pub outputs: usize,
 }
 
 /// One row in the per-channel breakdown beneath the card body.
 ///
-/// Captures the channel's identity — slot id, zone name, and display
-/// name — so the component-binding match helper can surface live
+/// Captures the channel's identity (slot id, zone name, and display
+/// name) so the component-binding match helper can surface live
 /// attachment data against the channel's aliases, plus the output id
 /// when the channel has an output in this zone so the row can be
 /// hidden individually.
@@ -57,30 +96,35 @@ struct ComponentRow {
     name: String,
     shape: TopologyShapeKind,
     led_count: usize,
-    /// `Output.id` (`Output.id`) when this channel has an output
-    /// in the current zone — `None` for the Unassigned bucket or a
-    /// channel with no placed output, in which case the row offers no
-    /// hide toggle.
+    /// `Output.id` when this channel has an output in the current zone;
+    /// `None` for an Unassigned card or a channel with no placed output,
+    /// in which case the row offers no hide toggle.
     output_id: Option<String>,
     slot_id: String,
     zone_name: Option<String>,
     display_name: String,
+    /// What dragging the row, or choosing it in "Move to", moves.
+    payload: MovePayload,
+    dom_id: String,
 }
 
-/// One physical device under a zone. The card body selects the parent zone
-/// (or the Unassigned entry) named by `select`; trailing actions identify
-/// the hardware and, inside a real zone, remove it.
+/// One physical device. `select` names the zone the card speaks for: the
+/// zone holding its outputs, or, for an Unassigned card, the active tab
+/// its "+" adds into.
 #[component]
 pub fn StudioDeviceCard(
     row: ZoneDeviceRow,
     device: Option<DeviceSummary>,
     select: String,
-    /// Placed by default; the single-zone fold passes `Available`, the
-    /// multi-zone Unassigned bucket passes `Unassigned`.
+    /// Placed by default; the Unassigned section passes `Unassigned`.
     #[prop(optional)]
     mode: CardMode,
+    /// Other zones holding the rest of a split device's outputs.
+    #[prop(optional)]
+    elsewhere: Vec<Elsewhere>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let drag = expect_context::<DragController>();
     let row_device_id = row.device_id.clone();
 
     let Some(device) = device else {
@@ -94,7 +138,7 @@ pub fn StudioDeviceCard(
     let (primary, secondary) = brand_colors(&brand);
     let vendor = brand_vendor(&brand);
     // A daemon-reported display topology hint is the authoritative
-    // "this is a screen" signal — and it carries the real resolution.
+    // "this is a screen" signal, and it carries the real resolution.
     let resolution = display_resolution(&device);
     let class_icon = if resolution.is_some() {
         LuMonitor
@@ -115,7 +159,8 @@ pub fn StudioDeviceCard(
     });
     let transport = transport_label(&device.connection.transport);
     let device_name = device.name.clone();
-    // A screen has no addressable LED tally — its layout topology is a
+    let name_title = device.name.clone();
+    // A screen has no addressable LED tally: its layout topology is a
     // pixel grid. Show the real resolution; LED devices show the count.
     let leds = match resolution {
         Some((width, height)) => format!("{width} \u{d7} {height}"),
@@ -123,20 +168,31 @@ pub fn StudioDeviceCard(
     };
 
     // Project the current zone's placements once to resolve channel ids and
-    // gather the bulk-hide id set. The Unassigned bucket has no placements.
+    // gather the bulk-hide id set, plus the outputs other zones hold so a
+    // split device lists only this zone's channels. An Unassigned card has
+    // no placements.
     let placed = mode == CardMode::Placed;
-    let zone_outputs = if placed {
+    let (zone_outputs, outputs_elsewhere): (Option<Vec<Output>>, Vec<Output>) = if placed {
         studio.active_scene.with_untracked(|scene| {
-            scene.as_ref().and_then(|scene| {
-                scene
-                    .zones
-                    .iter()
-                    .find(|zone| zone.id.to_string() == select)
-                    .map(api::zone_outputs)
-            })
+            let Some(scene) = scene.as_ref() else {
+                return (None, Vec::new());
+            };
+            let here = scene
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == select)
+                .map(api::zone_outputs);
+            let elsewhere = scene
+                .zones
+                .iter()
+                .filter(|zone| zone.id.to_string() != select && zone.role != ZoneRole::Display)
+                .flat_map(api::zone_outputs)
+                .filter(|output| output.device_id == device.layout_device_id)
+                .collect();
+            (here, elsewhere)
         })
     } else {
-        None
+        (None, Vec::new())
     };
     let scene_key: Option<String> = placed
         .then(|| {
@@ -159,10 +215,23 @@ pub fn StudioDeviceCard(
         .unwrap_or_default();
 
     let total_components = device.segments.len();
+    let zone_key = if placed {
+        select.clone()
+    } else {
+        UNASSIGNED_KEY.to_owned()
+    };
+    let claimed_elsewhere = |channel_name: &str| {
+        outputs_elsewhere.iter().any(|output| {
+            layout_utils::channel_name_matches_slot_alias(
+                output.zone_name.as_deref(),
+                Some(channel_name),
+            )
+        })
+    };
     let component_rows: Vec<ComponentRow> = device
         .segments
         .iter()
-        .map(|channel| {
+        .filter_map(|channel| {
             let display_name =
                 channel_names::effective_channel_name(&device.id, &channel.id, &channel.name);
             let output_id = zone_outputs.as_ref().and_then(|outputs| {
@@ -177,21 +246,74 @@ pub fn StudioDeviceCard(
                     })
                     .map(|output| output.id.clone())
             });
-            ComponentRow {
+            // A channel another zone holds belongs to that zone's card; one
+            // no zone holds still shows, as it always has.
+            if output_id.is_none() && claimed_elsewhere(&channel.name) {
+                return None;
+            }
+            // A channel this zone holds moves as its output; one no zone
+            // holds is claimed by its segment.
+            let origin = if output_id.is_some() {
+                Origin::Zone(select.clone())
+            } else {
+                Origin::Unassigned
+            };
+            let payload = MovePayload::channel(
+                &device.layout_device_id,
+                &device.name,
+                &display_name,
+                origin,
+                output_id.clone(),
+                Some(channel.name.clone()),
+            );
+            Some(ComponentRow {
                 name: display_name.clone(),
                 shape: topology_shape_kind(&channel.topology),
                 led_count: channel.led_count as usize,
                 output_id,
+                dom_id: channel_row_dom_id(&zone_key, &device.layout_device_id, &channel.id),
                 slot_id: channel.id.clone(),
                 zone_name: Some(channel.name.clone()),
                 display_name,
-            }
+                payload,
+            })
         })
         .collect();
     let show_components = total_components > 1;
+    let channels_open = RwSignal::new(mode == CardMode::Placed);
 
-    // Live component bindings for this device — fetched once per card
-    // mount, shared via the Studio context cache so each row reads it
+    // What the card moves as a whole, then each channel it lists, for the
+    // drag and its "Move to" menu.
+    let whole = if placed {
+        MovePayload::zone_device(
+            &device.layout_device_id,
+            &device.name,
+            &select,
+            device_output_ids.clone(),
+        )
+    } else {
+        MovePayload::unassigned_device(
+            &device.layout_device_id,
+            &device.name,
+            light_segment_count(&device),
+        )
+    };
+    let mut scopes = vec![("Whole device".to_owned(), whole.clone())];
+    if show_components {
+        scopes.extend(
+            component_rows
+                .iter()
+                .map(|row| (row.display_name.clone(), row.payload.clone())),
+        );
+    }
+    let scopes = StoredValue::new(scopes);
+    // A display with no boxes here has nothing to drag.
+    let draggable = !placed || !device_output_ids.is_empty();
+    let body_dom_id = device_card_dom_id(&zone_key, &device.layout_device_id);
+    let body_focus = StoredValue::new(body_dom_id.clone());
+
+    // Live component bindings for this device, fetched once per card
+    // mount and shared via the Studio context cache so each row reads it
     // reactively without re-fetching.
     let physical_id_for_fetch = device.id.clone();
     Effect::new(move |_| {
@@ -199,7 +321,7 @@ pub fn StudioDeviceCard(
     });
     let physical_id_for_rows = device.id.clone();
 
-    // A single smooth diagonal brand wash — the duotone left strip carries
+    // A single smooth diagonal brand wash; the duotone left strip carries
     // the hardware identity. Low-alpha radial gradients banded and
     // pixelated against the dark surface, so the card stays linear.
     let card_style = format!(
@@ -212,6 +334,7 @@ pub fn StudioDeviceCard(
         format!("background: linear-gradient(180deg, rgb({primary}), rgb({secondary}))");
     let icon_style = format!("color: rgba({primary}, 0.9)");
     let list_style = format!("border-color: rgba({primary}, 0.12)");
+    let hint_style = list_style.clone();
     let shape_style = format!("color: rgba({primary}, 0.7)");
 
     let select_body = select.clone();
@@ -230,18 +353,16 @@ pub fn StudioDeviceCard(
         studio.rail_disclosure,
         format!("device-menu::{select}::{row_device_id}"),
     );
-    let menu_select = select.clone();
     let menu_physical_id = device.id.clone();
-    let menu_output_ids = device_output_ids.clone();
-    // An Available card carries the device record so its add action can
+    let kebab_id = device_menu_dom_id(&select, &row_device_id);
+    let menu_kebab_id = kebab_id.clone();
+    // An Unassigned card carries the device record so its add action can
     // mint outputs and assign them into the zone.
-    let add_device =
-        matches!(mode, CardMode::Available | CardMode::Unassigned).then(|| device.clone());
-    let unassigned_add_device = matches!(mode, CardMode::Unassigned).then(|| device.clone());
+    let add_device = (mode == CardMode::Unassigned).then(|| device.clone());
 
     // The device's outputs in this zone drive the canvas highlight: clicking
-    // selects them, hovering previews them. Empty for an unplaced (Available)
-    // device, which owns no box on the spatial canvas.
+    // selects them, hovering previews them. Empty for an Unassigned device,
+    // which owns no box on the spatial canvas.
     let click_outputs = device_output_ids.clone();
     let enter_outputs = device_output_ids.clone();
     let sel_check_ids = device_output_ids.clone();
@@ -278,7 +399,7 @@ pub fn StudioDeviceCard(
             class="group/card relative w-full overflow-hidden rounded-lg transition-[border-color,box-shadow,outline-color] duration-150"
             style=card_outline_style
         >
-            // A flat low-alpha hover wash — clean and bandless, no scale,
+            // A flat low-alpha hover wash: clean and bandless, no scale,
             // no brightness pump. Replaces card-hover, which squished the
             // whole card on click and pumped a janky radial glow. The same
             // wash answers the canvas: pointing at a box lights its card.
@@ -289,7 +410,40 @@ pub fn StudioDeviceCard(
             <div class="flex items-stretch">
                 <button
                     type="button"
-                    class="flex min-w-0 flex-1 items-stretch gap-2.5 px-2.5 py-2 text-left"
+                    id=body_dom_id
+                    class="flex min-w-0 flex-1 touch-pan-y select-none items-stretch gap-2.5 px-2.5 py-2 text-left [-webkit-touch-callout:none]"
+                    on:pointerdown=move |ev: web_sys::PointerEvent| {
+                        if draggable {
+                            drag.press(&ev, whole.clone());
+                        }
+                    }
+                    on:contextmenu=move |ev: web_sys::MouseEvent| {
+                        if drag.holds_touch() {
+                            return;
+                        }
+                        ev.prevent_default();
+                        drag.menu.set(Some(MoveMenuAnchor::at(
+                            f64::from(ev.client_x()),
+                            f64::from(ev.client_y()),
+                            scopes.get_value(),
+                            0,
+                            FocusReturn { target: body_focus.get_value(), fallback: None },
+                        )));
+                    }
+                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                        if !is_menu_key(&ev) {
+                            return;
+                        }
+                        ev.prevent_default();
+                        if let Some(element) = listener_element(&ev) {
+                            drag.menu.set(Some(MoveMenuAnchor::below(
+                                &element,
+                                scopes.get_value(),
+                                0,
+                                FocusReturn { target: body_focus.get_value(), fallback: None },
+                            )));
+                        }
+                    }
                     on:click=move |_| {
                         // A display with no boxes in this zone lives on its
                         // Screen surface; one with boxes is selected here like
@@ -315,25 +469,32 @@ pub fn StudioDeviceCard(
                 >
                     <div class="w-1 shrink-0 self-stretch rounded-full" style=strip_style />
                     <div class="min-w-0 flex-1 space-y-1">
-                        <div class="flex items-center gap-1.5">
-                            {match vendor {
-                                Some(v) => {
-                                    view! { <VendorMark vendor=v size=VendorMarkSize::Xs /> }
-                                        .into_any()
-                                }
-                                None => {
-                                    view! {
-                                        <Icon
-                                            icon=class_icon
-                                            width="13px"
-                                            height="13px"
-                                            style=icon_style
-                                        />
+                        // Names wrap to a second line before they truncate:
+                        // the pane is narrow and model suffixes matter.
+                        <div class="flex items-start gap-1.5">
+                            <span class="mt-0.5 flex shrink-0">
+                                {match vendor {
+                                    Some(v) => {
+                                        view! { <VendorMark vendor=v size=VendorMarkSize::Xs /> }
+                                            .into_any()
                                     }
-                                        .into_any()
-                                }
-                            }}
-                            <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-fg-primary">
+                                    None => {
+                                        view! {
+                                            <Icon
+                                                icon=class_icon
+                                                width="13px"
+                                                height="13px"
+                                                style=icon_style
+                                            />
+                                        }
+                                            .into_any()
+                                    }
+                                }}
+                            </span>
+                            <span
+                                class="line-clamp-2 min-w-0 flex-1 break-words text-[12px] font-medium leading-4 text-fg-primary"
+                                title=name_title
+                            >
                                 {device_name}
                             </span>
                         </div>
@@ -364,6 +525,7 @@ pub fn StudioDeviceCard(
                 </button>
                 {card_actions(CardActionsArgs {
                     studio,
+                    drag,
                     mode,
                     select,
                     physical_id: Some(physical_id),
@@ -371,6 +533,7 @@ pub fn StudioDeviceCard(
                     scene_key: scene_key.clone(),
                     add_device,
                     ops_open,
+                    kebab_id,
                 })}
             </div>
             {(mode == CardMode::Placed)
@@ -379,38 +542,85 @@ pub fn StudioDeviceCard(
                         <div class=("hidden", move || !ops_open.get())>
                             {card_ops_menu(
                                 studio,
+                                drag,
                                 ops_open,
                                 menu_physical_id,
-                                menu_select,
-                                row_device_id,
-                                menu_output_ids,
+                                menu_kebab_id,
+                                scopes,
                             )}
-                        </div>
-                    }
-                })}
-            {unassigned_add_device
-                .map(move |device| {
-                    view! {
-                        <div class=("hidden", move || !ops_open.get())>
-                            {unassigned_add_menu(studio, ops_open, device)}
                         </div>
                     }
                 })}
             {show_components
                 .then(move || {
                     let scene_key = scene_key.clone();
+                    let channel_count = component_rows.len();
                     view! {
-                        <div class="space-y-0.5 border-t px-1.5 py-1.5" style=list_style>
+                        // An Unassigned card folds its channels away until
+                        // asked; they matter once the device is in a zone.
+                        {(mode == CardMode::Unassigned)
+                            .then(|| {
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="flex w-full items-center gap-1.5 border-t px-2.5 py-1 text-left text-[10px] text-fg-tertiary/80 transition-colors hover:text-fg-secondary"
+                                        style=list_style.clone()
+                                        aria-expanded=move || channels_open.get().to_string()
+                                        on:click=move |_| channels_open.update(|open| *open = !*open)
+                                    >
+                                        <Icon
+                                            icon=LuChevronRight
+                                            width="10px"
+                                            height="10px"
+                                            {..}
+                                            class=("rotate-90", move || channels_open.get())
+                                        />
+                                        {format!("{channel_count} channels")}
+                                    </button>
+                                }
+                            })}
+                        <div
+                            class="space-y-0.5 border-t px-1.5 py-1.5"
+                            class=("hidden", move || !channels_open.get())
+                            style=list_style.clone()
+                        >
                             {component_rows
                                 .into_iter()
                                 .map(|row| {
                                     component_row_view(
                                         studio,
+                                        drag,
                                         scene_key.clone(),
                                         physical_id_for_rows.clone(),
                                         row,
                                         shape_style.clone(),
+                                        scopes,
                                     )
+                                })
+                                .collect_view()}
+                        </div>
+                    }
+                })}
+            {(!elsewhere.is_empty())
+                .then(move || {
+                    view! {
+                        <div class="space-y-0.5 border-t px-2.5 py-1" style=hint_style>
+                            {elsewhere
+                                .into_iter()
+                                .map(|hint| {
+                                    let zone_id = hint.zone_id.clone();
+                                    view! {
+                                        <button
+                                            type="button"
+                                            class="flex w-full items-center gap-1 text-left text-[10px] text-fg-tertiary/80 transition-colors hover:text-fg-secondary"
+                                            on:click=move |_| reveal_pane_zone(studio, &zone_id)
+                                        >
+                                            <span class="min-w-0 truncate">
+                                                {elsewhere_label(hint.outputs, &hint.zone_name)}
+                                            </span>
+                                            <Icon icon=LuChevronRight width="10px" height="10px" />
+                                        </button>
+                                    }
                                 })
                                 .collect_view()}
                         </div>
@@ -423,6 +633,7 @@ pub fn StudioDeviceCard(
 
 struct CardActionsArgs {
     studio: StudioContext,
+    drag: DragController,
     mode: CardMode,
     select: String,
     physical_id: Option<String>,
@@ -430,17 +641,17 @@ struct CardActionsArgs {
     scene_key: Option<String>,
     add_device: Option<DeviceSummary>,
     ops_open: RwSignal<bool>,
+    kebab_id: String,
 }
 
-/// The trailing-edge action cluster, capped at two icons. Hide-all toggles
-/// every output of a placed device in unison. The second slot depends on
-/// `mode`: a placed device gets a kebab that opens the inline operations
-/// menu (identify / move / remove), an available device gets identify plus
-/// a one-tap add into the zone, and an Unassigned-bucket row gets identify
-/// plus a zone picker, since a multi-zone scene has to be told where.
+/// The trailing-edge action cluster, capped at two icons. A placed device
+/// gets hide-all, which toggles every output in unison, and a kebab that
+/// opens the inline operations menu (identify / move / remove). An
+/// Unassigned device gets identify and a one-tap add into the active tab.
 fn card_actions(args: CardActionsArgs) -> impl IntoView {
     let CardActionsArgs {
         studio,
+        drag,
         mode,
         select,
         physical_id,
@@ -448,8 +659,14 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
         scene_key,
         add_device,
         ops_open,
+        kebab_id,
     } = args;
     let (identifying, set_identifying) = signal(false);
+    // Only an Unassigned card shows identify, and it carries the device.
+    let identify_label = add_device.as_ref().map_or_else(
+        || "Identify".to_owned(),
+        |device| format!("Identify {}", device.name),
+    );
     // Hide-all is only meaningful when the card sits in a real zone
     // (so it has a scene_key) and the device actually owns outputs
     // there (otherwise there is nothing to toggle).
@@ -522,6 +739,7 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                             type="button"
                             class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary disabled:cursor-wait disabled:opacity-60"
                             title="Identify (flash the hardware)"
+                            aria-label=identify_label.clone()
                             disabled=move || identifying.get()
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
@@ -542,8 +760,10 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     view! {
                         <button
                             type="button"
+                            id=kebab_id
                             class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary/55 transition-colors hover:text-fg-secondary"
                             class=("text-fg-secondary", move || ops_open.get())
+                            aria-expanded=move || ops_open.get().to_string()
                             title="Device options"
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
@@ -555,44 +775,37 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     }
                     .into_any(),
                 ),
-                CardMode::Available => {
-                    add_device
-                        .map(|device| {
-                            let select = select.clone();
-                            view! {
-                                <button
-                                    type="button"
-                                    class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
-                                    style="color: rgba(80, 250, 123, 0.78)"
-                                    title="Add to this zone"
-                                    disabled=move || studio.history.busy.get()
-                                    class=("opacity-40", move || studio.history.busy.get())
-                                    on:click=move |ev: web_sys::MouseEvent| {
-                                        ev.stop_propagation();
-                                        assign_device_to_zone(studio, device.clone(), select.clone());
-                                    }
-                                >
-                                    <Icon icon=LuPlus width="13px" height="13px" />
-                                </button>
-                            }
-                            .into_any()
+                CardMode::Unassigned => add_device.map(|device| {
+                    // Read live, so a zone renamed after this card mounted
+                    // is the one the button names.
+                    let target = {
+                        let select = select.clone();
+                        Memo::new(move |_| {
+                            studio
+                                .active_scene
+                                .with(|scene| zone_name_in(scene.as_ref(), &select))
                         })
-                }
-                // An Unassigned-bucket row opens a zone picker: the scene is
-                // multi-zone here, so "add" has to say where.
-                CardMode::Unassigned => add_device.map(|_| {
+                    };
+                    let device_name = device.name.clone();
                     view! {
                         <button
                             type="button"
-                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
-                            class=("bg-surface-hover/40", move || ops_open.get())
-                            style="color: rgba(80, 250, 123, 0.78)"
-                            title="Add to a zone"
+                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-accent transition-colors hover:bg-accent-subtle disabled:opacity-40"
+                            title=move || format!("Add to {}", target.get())
+                            aria-label=move || format!("Add {device_name} to {}", target.get())
                             disabled=move || studio.history.busy.get()
-                            class=("opacity-40", move || studio.history.busy.get())
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
-                                ops_open.update(|open| *open = !*open);
+                                let payload = MovePayload::unassigned_device(
+                                    &device.layout_device_id,
+                                    &device.name,
+                                    light_segment_count(&device),
+                                );
+                                let focus = FocusReturn {
+                                    target: device_card_dom_id(&select, &device.layout_device_id),
+                                    fallback: None,
+                                };
+                                perform(drag, payload, DropAction::MoveTo(select.clone()), Some(focus));
                             }
                         >
                             <Icon icon=LuPlus width="13px" height="13px" />
@@ -605,98 +818,21 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
     }
 }
 
-/// The Unassigned-bucket card's picker: one row per LED zone, each a
-/// single click that mints the device's outputs into that zone.
-fn unassigned_add_menu(
-    studio: StudioContext,
-    ops_open: RwSignal<bool>,
-    device: DeviceSummary,
-) -> impl IntoView {
-    let device = StoredValue::new(device);
-    let zone_options = Memo::new(move |_| {
-        studio.active_scene.with(|scene| {
-            scene
-                .as_ref()
-                .map(|scene| {
-                    scene
-                        .zones
-                        .iter()
-                        .filter(|group| group.role != ZoneRole::Display)
-                        .map(|group| (group.id.to_string(), zone_display_name(group)))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        })
-    });
-    let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
-               text-[11px] transition-colors";
-    view! {
-        <div class="space-y-0.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-1.5">
-            {move || {
-                zone_options
-                    .get()
-                    .into_iter()
-                    .map(|(zone_id, zone_name)| {
-                        view! {
-                            <button
-                                type="button"
-                                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
-                                on:click=move |ev: web_sys::MouseEvent| {
-                                    ev.stop_propagation();
-                                    ops_open.set(false);
-                                    assign_device_to_zone(studio, device.get_value(), zone_id.clone());
-                                }
-                                disabled=move || studio.history.busy.get()
-                                class=("opacity-40", move || studio.history.busy.get())
-                            >
-                                <Icon icon=LuPlus width="12px" height="12px" />
-                                <span>{format!("Add to {zone_name}")}</span>
-                            </button>
-                        }
-                    })
-                    .collect_view()
-            }}
-        </div>
-    }
-}
-
-/// The Placed device card's operations menu — identify, move-to-zone, and
-/// remove — folded behind the card's kebab so the action cluster stays at
-/// two icons. Expands inline below the card body, mirroring the zone node's
-/// settings kebab. Every row closes the menu, then runs its action. The
-/// move rows are one per other LED zone (none in a single-zone scene), so a
-/// move is a single click rather than a nested picker.
+/// The Placed device card's operations menu, folded behind the card's
+/// kebab so the action cluster stays at two icons. Expands inline below
+/// the card body. "Move to" opens the shared menu of what moves and where;
+/// "Remove from this zone" releases the whole device.
 fn card_ops_menu(
     studio: StudioContext,
+    drag: DragController,
     ops_open: RwSignal<bool>,
     physical_id: String,
-    current_zone_id: String,
-    device_id: String,
-    output_ids: Vec<String>,
+    kebab_id: String,
+    scopes: StoredValue<Vec<(String, MovePayload)>>,
 ) -> impl IntoView {
     let (identifying, set_identifying) = signal(false);
     let identify_id = StoredValue::new(physical_id);
-    let current = StoredValue::new(current_zone_id);
-    let remove_device_id = StoredValue::new(device_id);
-    let ids = StoredValue::new(output_ids);
-
-    // Every non-display zone except the one this device already sits in.
-    let zone_options = Memo::new(move |_| {
-        studio.active_scene.with(|scene| {
-            scene
-                .as_ref()
-                .map(|scene| {
-                    scene
-                        .zones
-                        .iter()
-                        .filter(|zone| zone.role != ZoneRole::Display)
-                        .filter(|zone| zone.id.to_string() != current.get_value())
-                        .map(|zone| (zone.id.to_string(), zone_display_name(zone)))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        })
-    });
+    let kebab_id = StoredValue::new(kebab_id);
 
     let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
                text-[11px] transition-colors";
@@ -716,88 +852,54 @@ fn card_ops_menu(
                 <Icon icon=LuZap width="12px" height="12px" />
                 <span>"Identify"</span>
             </button>
-            {move || {
-                zone_options
-                    .get()
-                    .into_iter()
-                    .map(|(zone_id, zone_name)| {
-                        view! {
-                            <button
-                                type="button"
-                                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
-                                on:click=move |ev: web_sys::MouseEvent| {
-                                    ev.stop_propagation();
-                                    ops_open.set(false);
-                                    move_outputs_to_zone(studio, zone_id.clone(), ids.get_value());
-                                }
-                                disabled=move || studio.history.busy.get()
-                                class=("opacity-40", move || studio.history.busy.get())
-                            >
-                                <Icon icon=LuArrowRightLeft width="12px" height="12px" />
-                                <span>{format!("Move to {zone_name}")}</span>
-                            </button>
-                        }
-                    })
-                    .collect_view()
-            }}
             <button
                 type="button"
-                class=format!("{row} hover:bg-surface-hover/40")
-                style="color: rgba(255, 99, 99, 0.85)"
+                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40 disabled:opacity-40")
+                aria-haspopup="menu"
+                disabled=move || studio.history.busy.get()
+                on:click=move |ev: web_sys::MouseEvent| {
+                    ev.stop_propagation();
+                    // Hang the menu under the kebab: this drawer collapses as
+                    // the menu opens, so a menu hung from this row would
+                    // float over the next card.
+                    let kebab = browser_document()
+                        .and_then(|doc| doc.get_element_by_id(&kebab_id.get_value()));
+                    let Some(element) = kebab.or_else(|| listener_element(&ev)) else {
+                        return;
+                    };
+                    let anchor = MoveMenuAnchor::below(
+                        &element,
+                        scopes.get_value(),
+                        0,
+                        FocusReturn { target: kebab_id.get_value(), fallback: None },
+                    );
+                    ops_open.set(false);
+                    drag.menu.set(Some(anchor));
+                }
+            >
+                <Icon icon=LuArrowRightLeft width="12px" height="12px" />
+                <span class="flex-1">"Move to"</span>
+                <Icon icon=LuChevronRight width="11px" height="11px" />
+            </button>
+            <button
+                type="button"
+                class=format!("{row} text-status-error hover:bg-surface-hover/40 disabled:opacity-40")
+                disabled=move || studio.history.busy.get()
                 on:click=move |ev: web_sys::MouseEvent| {
                     ev.stop_propagation();
                     ops_open.set(false);
-                    remove_device_from_zone(studio, current.get_value(), remove_device_id.get_value());
+                    let Some(whole) = scopes.with_value(|scopes| scopes.first().map(|(_, whole)| whole.clone())) else {
+                        return;
+                    };
+                    let focus = FocusReturn { target: kebab_id.get_value(), fallback: None };
+                    perform(drag, whole, DropAction::Unassign, Some(focus));
                 }
-                disabled=move || studio.history.busy.get()
-                class=("opacity-40", move || studio.history.busy.get())
             >
                 <Icon icon=LuTrash2 width="12px" height="12px" />
-                <span>"Remove from zone"</span>
+                <span>"Remove from this zone"</span>
             </button>
         </div>
     }
-}
-
-/// Move a set of device outputs into `target_zone_id` by reassigning them
-/// as existing outputs in one call. The daemon moves each output out of
-/// whatever zone currently holds it.
-fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_ids: Vec<String>) {
-    use hypercolor_types::api::scene::{MemberEdit, MemberState};
-    let history = studio.history;
-    let Some(scene) = history.current_scene() else {
-        return;
-    };
-    let Some(target) = scene
-        .zones
-        .iter()
-        .find(|zone| zone.id.to_string() == target_zone_id)
-    else {
-        return;
-    };
-    let mut changes = Vec::new();
-    for zone in &scene.zones {
-        if zone.id == target.id {
-            continue;
-        }
-        for (index, output) in api::zone_outputs(zone).into_iter().enumerate() {
-            if output_ids.contains(&output.id) {
-                changes.push(MemberEdit {
-                    before: Some(MemberState {
-                        zone_id: zone.id,
-                        output: output.clone(),
-                        index,
-                    }),
-                    after: Some(MemberState {
-                        zone_id: target.id,
-                        output,
-                        index: target.members.len() + changes.len(),
-                    }),
-                });
-            }
-        }
-    }
-    history.edit_members(changes);
 }
 
 /// Render one per-channel row beneath the card body.
@@ -806,15 +908,16 @@ fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_id
 /// component badge listing what is bound to this channel, the channel's
 /// LED count, and a per-output hide toggle when the channel has an output
 /// in the current zone. Hidden state is per-(scene, zone) client UI state,
-/// not the daemon's `layout_auto_exclusions`. Moving a single channel
-/// between zones is not surfaced here; the card's operations menu moves the
-/// whole device.
+/// not the daemon's `layout_auto_exclusions`. The row drags on its own,
+/// and its context menu (or Shift+F10) opens "Move to" for this channel.
 fn component_row_view(
     studio: StudioContext,
+    drag: DragController,
     scene_key: Option<String>,
     physical_device_id: String,
     row: ComponentRow,
     shape_style: String,
+    scopes: StoredValue<Vec<(String, MovePayload)>>,
 ) -> impl IntoView {
     let ComponentRow {
         name,
@@ -824,11 +927,20 @@ fn component_row_view(
         slot_id,
         zone_name,
         display_name,
+        payload,
+        dom_id,
     } = row;
+    // The row's own entry in the card's "Move to" scopes.
+    let scope =
+        scopes.with_value(|scopes| scopes.iter().position(|(_, scoped)| *scoped == payload));
+    let focus = StoredValue::new(FocusReturn {
+        target: dom_id.clone(),
+        fallback: None,
+    });
 
-    // Bindings that target THIS channel, filtered through the alias
-    // helper the palette card uses so slot id, zone name, and display
-    // name are all accepted as matches.
+    // Bindings that target THIS channel, filtered through the shared
+    // alias helper so slot id, zone name, and display name are all
+    // accepted as matches.
     let binding_device = physical_device_id;
     let binding_slot_id = slot_id;
     let binding_zone_name = zone_name;
@@ -855,7 +967,7 @@ fn component_row_view(
     });
 
     // The eye toggle only renders when both the scene_key and the
-    // output id are known — i.e. the row sits in a real zone and the
+    // output id are known, so the row sits in a real zone and the
     // channel has a placed output to hide.
     let hide_pair: Option<(String, String)> = match (&scene_key, &output_id) {
         (Some(key), Some(id)) => Some((key.clone(), id.clone())),
@@ -873,7 +985,7 @@ fn component_row_view(
 
     // A channel with a placed output is interactive: click highlights it on
     // the canvas, hover previews it. A channel with no output in this zone
-    // (Unassigned bucket, unplaced segment) just reads as a label.
+    // (an Unassigned card, an unplaced segment) just reads as a label.
     let interactive = output_id.is_some();
     let click_output = output_id.clone();
     let key_output = output_id.clone();
@@ -900,7 +1012,8 @@ fn component_row_view(
 
     view! {
         <div
-            class="flex items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+            id=dom_id
+            class="flex touch-pan-y select-none items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 [-webkit-touch-callout:none]"
             class=("cursor-pointer", move || interactive)
             class=("bg-accent/12", move || is_row_selected.get())
             class=("bg-surface-hover/30", move || is_row_under_canvas_pointer.get())
@@ -912,7 +1025,33 @@ fn component_row_view(
                     select_output_in_zone(studio, row_zone_id.as_deref(), id);
                 }
             }
+            on:pointerdown=move |ev: web_sys::PointerEvent| drag.press(&ev, payload.clone())
+            on:contextmenu=move |ev: web_sys::MouseEvent| {
+                let Some(index) = scope.filter(|_| !drag.holds_touch()) else {
+                    return;
+                };
+                ev.prevent_default();
+                drag.menu.set(Some(MoveMenuAnchor::at(
+                    f64::from(ev.client_x()),
+                    f64::from(ev.client_y()),
+                    scopes.get_value(),
+                    index,
+                    focus.get_value(),
+                )));
+            }
             on:keydown=move |ev: web_sys::KeyboardEvent| {
+                if is_menu_key(&ev) {
+                    ev.prevent_default();
+                    if let (Some(index), Some(element)) = (scope, listener_element(&ev)) {
+                        drag.menu.set(Some(MoveMenuAnchor::below(
+                            &element,
+                            scopes.get_value(),
+                            index,
+                            focus.get_value(),
+                        )));
+                    }
+                    return;
+                }
                 if matches!(ev.key().as_str(), "Enter" | " ")
                     && let Some(id) = key_output.clone()
                 {
@@ -1022,11 +1161,11 @@ fn component_row_view(
 
 /// Lazily populate the Studio-wide attachment cache for one device.
 ///
-/// Cards trigger this once on mount. The check on the cache lets the
-/// same device's card unmount and remount (zone collapsed and reopened)
-/// without re-fetching, and lets every card across the tree share one
+/// Cards trigger this once on mount, and the pane's search for every
+/// device once. The check on the cache lets the same device's card
+/// unmount and remount without re-fetching, and lets every card share one
 /// cache entry per physical device.
-fn fetch_attachments_if_needed(studio: StudioContext, physical_device_id: &str) {
+pub(super) fn fetch_attachments_if_needed(studio: StudioContext, physical_device_id: &str) {
     if physical_device_id.is_empty() {
         return;
     }
@@ -1057,39 +1196,6 @@ fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
         }
         set_identifying.set(false);
     });
-}
-
-/// Unassign every output this device has in `zone_id`. The removals run in
-/// sequence because each one bumps the scene revision; threading the new
-/// revision into the next call lets a multi-output controller leave the
-/// zone in a single user action.
-pub(super) fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
-    use hypercolor_types::api::scene::{MemberEdit, MemberState};
-    let history = studio.history;
-    let Some(scene) = history.current_scene() else {
-        return;
-    };
-    let Some(zone) = scene
-        .zones
-        .iter()
-        .find(|zone| zone.id.to_string() == zone_id)
-    else {
-        return;
-    };
-    let changes = api::zone_outputs(zone)
-        .into_iter()
-        .enumerate()
-        .filter(|(_, output)| output.device_id == device_id)
-        .map(|(index, output)| MemberEdit {
-            before: Some(MemberState {
-                zone_id: zone.id,
-                output,
-                index,
-            }),
-            after: None,
-        })
-        .collect();
-    history.edit_members(changes);
 }
 
 /// Group a number's digits in threes: `230400` → `"230,400"`.

@@ -31,16 +31,64 @@ fn membership_edit_declares_its_required_revision_header() {
         .expect("required If-Match header is discoverable by generated clients");
     assert_eq!(header["required"], true);
     assert_eq!(header["schema"]["type"], "string");
+    let description = header["description"]
+        .as_str()
+        .expect("header format is described");
     assert!(
-        header["description"]
-            .as_str()
-            .expect("header format is described")
-            .contains("quoted or bare integer")
+        description.contains("<run_epoch>:<revision>"),
+        "the epoch-qualified fence is documented: {description}"
+    );
+    assert!(
+        description.contains("bare revision"),
+        "the bare numeric fence is documented: {description}"
     );
     assert_eq!(
         operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/EditMembersRequest"
     );
+}
+
+#[test]
+fn keyed_writes_document_their_capacity_refusal() {
+    let document = openapi_document();
+    let mut keyed = 0;
+    for (path, item) in document["paths"].as_object().expect("paths") {
+        for (method, operation) in item.as_object().expect("path item") {
+            let declares_key = operation["parameters"]
+                .as_array()
+                .is_some_and(|parameters| {
+                    parameters
+                        .iter()
+                        .any(|parameter| parameter["name"] == "Idempotency-Key")
+                });
+            let refusal = &operation["responses"]["503"];
+            if !declares_key {
+                continue;
+            }
+            keyed += 1;
+            assert_eq!(
+                refusal["content"]["application/json"]["schema"]["$ref"],
+                "#/components/schemas/ApiErrorBody",
+                "{method} {path} documents the 503 a full pending table answers"
+            );
+            let description = refusal["description"].as_str().expect("described");
+            assert!(
+                description.contains("service_unavailable") && description.contains("same key"),
+                "{method} {path}: {description}"
+            );
+            assert!(
+                refusal["headers"]
+                    .as_object()
+                    .is_none_or(serde_json::Map::is_empty),
+                "{method} {path}: a refusal that is never recorded is never replayed"
+            );
+            assert!(
+                operation["responses"]["409"]["headers"]["idempotency-replayed"].is_object(),
+                "{method} {path}: recorded answers do declare the replay header"
+            );
+        }
+    }
+    assert_eq!(keyed, 13);
 }
 
 fn isolated_state() -> AppState {

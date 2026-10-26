@@ -61,6 +61,7 @@ fn blank_patch() -> ZoneMetaPatch {
         brightness: None,
         enabled: None,
         make_primary: None,
+        index: None,
     }
 }
 
@@ -108,7 +109,7 @@ fn create_command(name: &str) -> CreateZone {
         name: name.to_owned(),
         color: None,
         fallback_canvas: (640, 480),
-        expected_revision: None,
+        fence: None,
     }
 }
 
@@ -174,7 +175,7 @@ async fn a_stale_scene_revision_is_refused_before_the_mutation() {
     let current = state.scene_manager.revision();
 
     let mut command = create_command("Shelf");
-    command.expected_revision = Some(current.saturating_sub(1));
+    command.fence = Some(current.saturating_sub(1).into());
     let error = create_zone(&state.domains.scene, command)
         .await
         .expect_err("a stale revision must not mutate");
@@ -215,7 +216,7 @@ async fn a_cosmetic_zone_patch_honors_the_scene_revision() {
                 name: Some("Desk Left".to_owned()),
                 ..blank_patch()
             },
-            expected_revision: Some(current),
+            fence: Some(current.into()),
         },
     )
     .await
@@ -239,7 +240,7 @@ async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
                 make_primary: Some(true),
                 ..blank_patch()
             },
-            expected_revision: Some(0),
+            fence: Some(0.into()),
         },
     )
     .await
@@ -275,7 +276,7 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
         &state.domains.scene,
         DeleteZone {
             zone_id: created.zone.id,
-            expected_revision: None,
+            fence: None,
         },
     )
     .await
@@ -325,7 +326,7 @@ async fn delete_zone_refuses_the_primary_zone() {
         &state.domains.scene,
         DeleteZone {
             zone_id: primary_id,
-            expected_revision: None,
+            fence: None,
         },
     )
     .await
@@ -345,7 +346,7 @@ async fn delete_zone_refuses_an_unknown_zone() {
         &state.domains.scene,
         DeleteZone {
             zone_id: ZoneId::new(),
-            expected_revision: None,
+            fence: None,
         },
     )
     .await

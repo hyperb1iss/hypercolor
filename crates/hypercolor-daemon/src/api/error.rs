@@ -3,14 +3,17 @@
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail};
+use hypercolor_types::api::scene::SceneFence;
 
 use super::envelope::response_meta;
-use crate::domain::{DomainError, DomainErrorDetails};
+use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
 
 const fn status(error: &DomainError) -> StatusCode {
     match error {
         DomainError::NotFound { .. } => StatusCode::NOT_FOUND,
-        DomainError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        DomainError::Validation { .. } | DomainError::IdempotencyKeyMismatch => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         DomainError::Malformed { .. } => StatusCode::BAD_REQUEST,
         DomainError::Conflict { .. } | DomainError::ControlBound { .. } => StatusCode::CONFLICT,
         DomainError::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
@@ -29,21 +32,30 @@ const fn status(error: &DomainError) -> StatusCode {
 /// Wire projection for one typed recovery-context payload.
 fn details_json(details: &DomainErrorDetails) -> serde_json::Value {
     match details {
+        // Both revisions are one run's, named the way a 412 names its
+        // fences, so a socket client (which sees no headers) can still tell
+        // which run they count in.
         DomainErrorDetails::SceneCommitSuperseded {
             expected_revision,
             current_revision,
+            run_epoch,
         } => serde_json::json!({
             "kind": "scene_commit_superseded",
             "expected_revision": expected_revision,
             "current_revision": current_revision,
+            "expected_epoch": run_epoch.as_ref(),
+            "current_epoch": run_epoch.as_ref(),
         }),
         DomainErrorDetails::EffectIdMigrationSuperseded {
             expected_revision,
             current_revision,
+            run_epoch,
         } => serde_json::json!({
             "kind": "effect_id_migration_superseded",
             "expected_revision": expected_revision,
             "current_revision": current_revision,
+            "expected_epoch": run_epoch.as_ref(),
+            "current_epoch": run_epoch.as_ref(),
         }),
         DomainErrorDetails::EffectResolutionSuperseded {
             expected_generation,
@@ -88,8 +100,21 @@ pub(crate) fn client_details(error: &DomainError) -> Option<serde_json::Value> {
         | DomainError::ServiceUnavailable { details, .. } => details.as_ref().map(details_json),
         DomainError::ControlBound { keys } => Some(serde_json::json!({ "bound": keys })),
         DomainError::PreconditionFailed {
-            expected, current, ..
-        } => Some(serde_json::json!({ "expected": expected, "current": current })),
+            expected,
+            current,
+            expected_epoch,
+            current_epoch,
+            ..
+        } => {
+            let mut details = serde_json::json!({ "expected": expected, "current": current });
+            if let Some(epoch) = expected_epoch {
+                details["expected_epoch"] = serde_json::json!(epoch.as_ref());
+            }
+            if let Some(epoch) = current_epoch {
+                details["current_epoch"] = serde_json::json!(epoch.as_ref());
+            }
+            Some(details)
+        }
         DomainError::PayloadTooLarge {
             limit_bytes: Some(limit_bytes),
         } => Some(serde_json::json!({ "limit_bytes": limit_bytes })),
@@ -143,10 +168,23 @@ impl IntoResponse for DomainError {
             meta: response_meta(),
         };
         let mut response = (status, axum::Json(body)).into_response();
-        if let Self::PreconditionFailed { current, .. } = &self
-            && let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\""))
+        // A stale scene fence names the fence to rebase onto, epoch-qualified
+        // exactly as a successful read serves it. No other counter is ever
+        // served as the scene's `ETag`.
+        if let Self::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            current,
+            current_epoch,
+            ..
+        } = &self
         {
-            response.headers_mut().insert(header::ETAG, etag);
+            let fence = match current_epoch {
+                Some(epoch) => SceneFence::new(epoch.as_ref(), *current),
+                None => SceneFence::revision_only(*current),
+            };
+            if let Ok(etag) = HeaderValue::from_str(&fence.to_etag()) {
+                response.headers_mut().insert(header::ETAG, etag);
+            }
         }
         response
     }
@@ -182,24 +220,55 @@ mod tests {
         }
     }
 
+    fn etag(response: &Response) -> Option<&str> {
+        response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+    }
+
     #[tokio::test]
     async fn precondition_failure_renders_412_with_etag_and_details() {
+        let response = DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: 4,
+            current: 7,
+            expected_epoch: Some(std::sync::Arc::from("old-run")),
+            current_epoch: Some(std::sync::Arc::from("run")),
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(etag(&response), Some("\"run:7\""));
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["details"]["expected"], 4);
+        assert_eq!(json["error"]["details"]["current"], 7);
+        assert_eq!(json["error"]["details"]["expected_epoch"], "old-run");
+        assert_eq!(json["error"]["details"]["current_epoch"], "run");
+
+        let bare = DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: 4,
+            current: 7,
+            expected_epoch: None,
+            current_epoch: None,
+        }
+        .into_response();
+        assert_eq!(etag(&bare), Some("\"7\""));
+    }
+
+    #[tokio::test]
+    async fn only_a_scene_refusal_serves_the_scene_fence() {
         let response = DomainError::PreconditionFailed {
             resource: ResourceKind::Zone,
             expected: 4,
             current: 7,
+            expected_epoch: None,
+            current_epoch: None,
         }
         .into_response();
         assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::ETAG)
-                .and_then(|value| value.to_str().ok()),
-            Some("\"7\"")
-        );
+        assert_eq!(etag(&response), None);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["details"]["expected"], 4);
         assert_eq!(json["error"]["details"]["current"], 7);
     }
 
@@ -258,6 +327,36 @@ mod tests {
         );
         let json = body_json(conflict.into_response()).await;
         assert_eq!(json["error"]["details"]["current_revision"], 4);
+    }
+
+    #[tokio::test]
+    async fn a_superseded_commit_names_the_run_its_revisions_count_in() {
+        let superseded = DomainError::conflict_details(
+            "scene state changed",
+            DomainErrorDetails::SceneCommitSuperseded {
+                expected_revision: 6,
+                current_revision: 7,
+                run_epoch: std::sync::Arc::from("run"),
+            },
+        );
+        let json = body_json(superseded.into_response()).await;
+        let details = &json["error"]["details"];
+        assert_eq!(details["kind"], "scene_commit_superseded");
+        assert_eq!(details["expected_revision"], 6);
+        assert_eq!(details["current_revision"], 7);
+        assert_eq!(details["expected_epoch"], "run");
+        assert_eq!(details["current_epoch"], "run");
+
+        let migration = DomainError::conflict_details(
+            "migration superseded",
+            DomainErrorDetails::EffectIdMigrationSuperseded {
+                expected_revision: 6,
+                current_revision: 7,
+                run_epoch: std::sync::Arc::from("run"),
+            },
+        );
+        let json = body_json(migration.into_response()).await;
+        assert_eq!(json["error"]["details"]["current_epoch"], "run");
     }
 
     #[tokio::test]

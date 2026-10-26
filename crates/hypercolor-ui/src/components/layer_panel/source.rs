@@ -46,7 +46,6 @@ impl LayerSourceKind {
 pub enum EffectPickerMode {
     Effects,
     Faces,
-    Mixed,
 }
 
 impl EffectPickerMode {
@@ -54,7 +53,7 @@ impl EffectPickerMode {
     pub const fn tab_label(self) -> &'static str {
         match self {
             Self::Faces => "Face",
-            Self::Effects | Self::Mixed => "Effect",
+            Self::Effects => "Effect",
         }
     }
 
@@ -62,7 +61,7 @@ impl EffectPickerMode {
     pub const fn search_placeholder(self) -> &'static str {
         match self {
             Self::Faces => "Search faces and effects...",
-            Self::Effects | Self::Mixed => "Search effects...",
+            Self::Effects => "Search effects...",
         }
     }
 
@@ -70,7 +69,7 @@ impl EffectPickerMode {
     pub const fn empty_detail(self) -> &'static str {
         match self {
             Self::Faces => "No matching faces or effects",
-            Self::Effects | Self::Mixed => "No matching effects",
+            Self::Effects => "No matching effects",
         }
     }
 
@@ -79,7 +78,7 @@ impl EffectPickerMode {
         let is_display = matches!(category, EffectCategory::Display);
         match self {
             Self::Effects => !is_display,
-            Self::Faces | Self::Mixed => true,
+            Self::Faces => true,
         }
     }
 
@@ -93,30 +92,24 @@ impl EffectPickerMode {
     }
 }
 
-/// Where an Add-layer action sends the new layer (§6.6). The spec's
-/// *Selected surfaces* scope, which rides the surface-rail multi-select,
-/// is deferred until that multi-select lands with multi-zone.
+/// Where an Add-layer action sends the new layer. A layer lands on the
+/// active tab. Screens share one tab, so on a screen the picker can also
+/// send the layer to every screen at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddLayerScope {
     /// The selected surface only — the default.
     ThisSurface,
-    /// Every LED zone.
-    AllZones,
     /// Every display-face screen.
     AllScreens,
-    /// Every surface in the scene.
-    WholeScene,
 }
 
 impl AddLayerScope {
-    /// User-facing label for the scope selector.
+    /// User-facing label for the scope selector, which only a screen shows.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::ThisSurface => "This surface",
-            Self::AllZones => "All zones",
+            Self::ThisSurface => "This screen",
             Self::AllScreens => "All screens",
-            Self::WholeScene => "Whole scene",
         }
     }
 }
@@ -126,17 +119,10 @@ pub fn effect_picker_mode(
     scope: AddLayerScope,
     selected_role: Option<ZoneRole>,
 ) -> EffectPickerMode {
-    match scope {
-        AddLayerScope::AllScreens => EffectPickerMode::Faces,
-        AddLayerScope::AllZones => EffectPickerMode::Effects,
-        AddLayerScope::WholeScene => EffectPickerMode::Mixed,
-        AddLayerScope::ThisSurface => {
-            if selected_role == Some(ZoneRole::Display) {
-                EffectPickerMode::Faces
-            } else {
-                EffectPickerMode::Effects
-            }
-        }
+    if scope == AddLayerScope::AllScreens || selected_role == Some(ZoneRole::Display) {
+        EffectPickerMode::Faces
+    } else {
+        EffectPickerMode::Effects
     }
 }
 
@@ -160,25 +146,23 @@ pub fn effect_picker_matches_query(name: &str, category: EffectCategory, query: 
             .contains(&query)
 }
 
-/// The scopes worth offering for a scene. With one surface there is
-/// nothing to scope to, and a scope that would target nothing is dropped
-/// (§6.6), so a result shorter than two means "show no selector".
+/// The scopes worth offering for the selected surface. An LED zone adds
+/// to itself alone; a screen can also add to every screen when the scene
+/// has more than one. A result shorter than two means "show no selector".
 #[must_use]
-pub fn available_add_layer_scopes(zones: &[ZoneResource]) -> Vec<AddLayerScope> {
-    if zones.len() < 2 {
-        return Vec::new();
+pub fn available_add_layer_scopes(
+    zones: &[ZoneResource],
+    selected_role: Option<ZoneRole>,
+) -> Vec<AddLayerScope> {
+    let screens = zones
+        .iter()
+        .filter(|zone| zone.role == ZoneRole::Display)
+        .count();
+    if selected_role == Some(ZoneRole::Display) && screens > 1 {
+        vec![AddLayerScope::ThisSurface, AddLayerScope::AllScreens]
+    } else {
+        Vec::new()
     }
-    let has_lights = zones.iter().any(|zone| zone.role != ZoneRole::Display);
-    let has_screens = zones.iter().any(|zone| zone.role == ZoneRole::Display);
-    let mut scopes = vec![AddLayerScope::ThisSurface];
-    if has_lights {
-        scopes.push(AddLayerScope::AllZones);
-    }
-    if has_screens {
-        scopes.push(AddLayerScope::AllScreens);
-    }
-    scopes.push(AddLayerScope::WholeScene);
-    scopes
 }
 
 /// Resolve a scope to the render-zone ids that should receive the layer,
@@ -192,17 +176,11 @@ pub fn resolve_add_layer_targets(
 ) -> Vec<String> {
     match scope {
         AddLayerScope::ThisSurface => vec![selected_zone_id.to_owned()],
-        AddLayerScope::AllZones => zones
-            .iter()
-            .filter(|zone| zone.role != ZoneRole::Display)
-            .map(|zone| zone.id.to_string())
-            .collect(),
         AddLayerScope::AllScreens => zones
             .iter()
             .filter(|zone| zone.role == ZoneRole::Display)
             .map(|zone| zone.id.to_string())
             .collect(),
-        AddLayerScope::WholeScene => zones.iter().map(|zone| zone.id.to_string()).collect(),
     }
 }
 

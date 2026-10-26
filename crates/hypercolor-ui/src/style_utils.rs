@@ -4,7 +4,6 @@
 use leptos::prelude::*;
 
 use hypercolor_color::Hsl;
-use hypercolor_leptos_ext::prelude::random_unit;
 
 /// Category -> (badge Tailwind classes, accent RGB triplet for inline styles).
 pub fn category_style(category: &str) -> (&'static str, &'static str) {
@@ -28,18 +27,6 @@ pub fn category_style(category: &str) -> (&'static str, &'static str) {
 /// Category -> accent RGB string for inline styles.
 pub fn category_accent_rgb(category: &str) -> &'static str {
     category_style(category).1
-}
-
-/// Generate a short pseudo-random hex ID (suitable for zone IDs in the editor).
-pub fn uuid_v4_hex() -> String {
-    let r = random_unit();
-    #[allow(
-        clippy::as_conversions,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
-    let n = (r * 4_294_967_295.0) as u32;
-    format!("{n:08x}")
 }
 
 /// Generate unique primary + secondary accent colors for a device based on its ID.

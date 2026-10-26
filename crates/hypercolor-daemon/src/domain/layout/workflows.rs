@@ -14,10 +14,10 @@ use crate::scene_transactions::LayoutUpdateGuard;
 
 use super::{
     LayoutContext, LayoutMutationResult, LayoutMutationTestOperation, LayoutMutationTestPoint,
-    LayoutPersistenceStatus, LayoutRuntime, await_layout_workflow, empty_default_layout,
-    layout_store_persistence_error, layout_summary, layout_update_domain_error,
-    normalize_layout_name, resolve_layout_key, validate_canvas_dimensions,
-    validate_layout_sampling_radii, validate_output_sampling_radii,
+    LayoutPersistenceStatus, LayoutRuntime, MirroredZoneSave, await_layout_workflow,
+    empty_default_layout, layout_store_persistence_error, layout_summary,
+    layout_update_domain_error, normalize_layout_name, resolve_layout_key,
+    validate_canvas_dimensions, validate_layout_sampling_radii, validate_output_sampling_radii,
 };
 
 impl LayoutContext {
@@ -349,9 +349,10 @@ impl LayoutContext {
     ///
     /// The stored entry is persisted first, then the published layout goes
     /// out under the caller's guard; a rejected publication restores the
-    /// stored entry. Returns whether a layout was published. The caller
-    /// runs connectivity convergence only after releasing the guard,
-    /// because that pass takes the guard itself.
+    /// stored entry. Answers whether a layout was published and what that
+    /// publication committed to the scene. The caller runs connectivity
+    /// convergence only after releasing the guard, because that pass takes
+    /// the guard itself.
     ///
     /// # Errors
     ///
@@ -364,7 +365,7 @@ impl LayoutContext {
         before: &[Output],
         after: &[Output],
         runtime: &LayoutRuntime,
-    ) -> Result<bool, DomainError> {
+    ) -> Result<MirroredZoneSave, DomainError> {
         let current = self.current();
         let layout_id = current.id.clone();
         let stored = self.catalog.entries().read().await.get(&layout_id).cloned();
@@ -409,25 +410,34 @@ impl LayoutContext {
                 ));
             }
         }
-        if published_changed
-            && let Err(error) = self
+        let mut receipt = None;
+        if published_changed {
+            match self
                 .admit_persisted_update_under_guard(guard, published, runtime)
                 .await
-        {
-            if stored_changed
-                && let Err(rollback_error) = self.restore_catalog_entry(&layout_id, stored).await
             {
-                return Err(DomainError::Internal(anyhow::anyhow!(
-                    "{error}; layout store rollback failed: {rollback_error}"
-                )));
+                Ok(committed) => receipt = committed,
+                Err(error) => {
+                    if stored_changed
+                        && let Err(rollback_error) =
+                            self.restore_catalog_entry(&layout_id, stored).await
+                    {
+                        return Err(DomainError::Internal(anyhow::anyhow!(
+                            "{error}; layout store rollback failed: {rollback_error}"
+                        )));
+                    }
+                    return Err(layout_update_domain_error(error));
+                }
             }
-            return Err(layout_update_domain_error(error));
         }
 
         if stored_changed || published_changed {
             self.publish_layout_changed(None, layout_id);
         }
-        Ok(published_changed)
+        Ok(MirroredZoneSave {
+            published: published_changed,
+            scene_commit: receipt,
+        })
     }
 
     async fn restore_catalog_entry(

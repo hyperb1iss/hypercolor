@@ -11,9 +11,10 @@
 //! - **Surface identity:** `active_scene` + `selected_zone_id` name the
 //!   `(scene id, zone id)` pair every mutation is addressed to. The panel
 //!   never displays the ids.
-//! - **Scene revision** — read from `layers_resource`; threaded as the
-//!   `If-Match` precondition on every mutation. A stale write is reported
-//!   and the stack refetched, never silently lost.
+//! - **Scene fence:** the stack's revision from `layers_resource`, in the
+//!   daemon run of the active scene; threaded as the `If-Match`
+//!   precondition on every mutation. A stale write is reported and the
+//!   stack refetched, never silently lost.
 //! - **Add-layer picker** — Add-layer opens [`picker::AddLayerPicker`],
 //!   covering effects/faces plus media assets.
 //! - **One mutation callback** — `on_layers_mutated: Callback<()>` fires
@@ -43,6 +44,7 @@ use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
 use crate::ws::messages::layer_health_key;
+use crate::zones::surface::zone_display_name;
 
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
@@ -61,7 +63,7 @@ pub fn LayerPanel(
     selected_zone_id: ReadSignal<Option<String>>,
     set_selected_zone_id: WriteSignal<Option<String>>,
     /// Surface name supplied by a host that owns surface selection
-    /// elsewhere (the Studio zone tree). When present the panel shows it
+    /// elsewhere (Studio's zone tabs). When present the panel shows it
     /// in the header and drops its own redundant zone selector.
     #[prop(optional, into)]
     surface_label: MaybeProp<String>,
@@ -124,7 +126,21 @@ pub fn LayerPanel(
             .map(|scene| scene.id.to_string())
             .unwrap_or_default()
     });
-    let revision = Signal::derive(move || scene_revision.get().unwrap_or_default());
+    // The daemon run the stack's revision belongs to. A stack and a scene
+    // read in different runs make a fence the daemon refuses, never one it
+    // takes wrongly.
+    let run = Signal::derive(move || {
+        active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .map(|scene| scene.run_epoch.clone())
+                .unwrap_or_default()
+        })
+    });
+    let fence = Signal::derive(move || api::Fence {
+        revision: scene_revision.get().unwrap_or_default(),
+        run: run.get(),
+    });
     let row_keys = Memo::new(move |_| {
         let scene = scene_id.get();
         let zone = selected_zone_id.get().unwrap_or_default();
@@ -151,19 +167,15 @@ pub fn LayerPanel(
                 scene
                     .zones
                     .into_iter()
-                    .map(|zone| (zone.id.to_string(), zone.name))
+                    .map(|zone| {
+                        let name = zone_display_name(&zone.name, zone.role);
+                        (zone.id.to_string(), name)
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
     });
 
-    // The Add-layer target scopes worth offering for the current scene.
-    let scopes = Signal::derive(move || {
-        active_scene
-            .get()
-            .map(|scene| available_add_layer_scopes(&scene.zones))
-            .unwrap_or_default()
-    });
     let selected_zone_role = Signal::derive(move || {
         let selected = selected_zone_id.get()?;
         active_scene
@@ -172,6 +184,13 @@ pub fn LayerPanel(
             .into_iter()
             .find(|zone| zone.id.to_string() == selected)
             .map(|zone| zone.role)
+    });
+    // The Add-layer target scopes worth offering for the selected surface.
+    let scopes = Signal::derive(move || {
+        active_scene
+            .get()
+            .map(|scene| available_add_layer_scopes(&scene.zones, selected_zone_role.get()))
+            .unwrap_or_default()
     });
 
     let add_layer = Callback::new(move |(draft, scope): (NewLayerDraft, AddLayerScope)| {
@@ -186,10 +205,11 @@ pub fn LayerPanel(
         };
         let targets = resolve_add_layer_targets(scope, &scene.zones, &zone_id);
         if targets.is_empty() {
-            toasts::toast_error("No target surfaces for that scope");
+            toasts::toast_error("There is nothing to add the layer to");
             return;
         }
         let expected_revision = scene_revision.get_untracked();
+        let run = run.get_untracked();
         let existing_layer_count = layers_resource
             .get_untracked()
             .and_then(Result::ok)
@@ -198,12 +218,18 @@ pub fn LayerPanel(
         leptos::task::spawn_local(async move {
             let mut applied = 0_usize;
             let mut failed = 0_usize;
-            let mut revision = expected_revision;
+            let mut fence = expected_revision.map(|revision| api::Fence {
+                revision,
+                run: run.clone(),
+            });
             for (index, target) in targets.iter().enumerate() {
-                match api::create_layer(target, &request, revision).await {
+                match api::create_layer(target, &request, fence.as_ref()).await {
                     Ok(api::LayerStackOutcome::Applied(stack)) => {
                         applied += 1;
-                        revision = Some(stack.revision);
+                        fence = Some(api::Fence {
+                            revision: stack.revision,
+                            run: run.clone(),
+                        });
                     }
                     Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => {
                         failed += targets.len() - index;
@@ -215,13 +241,13 @@ pub fn LayerPanel(
             if failed == 0 {
                 toasts::toast_success(&match applied {
                     1 => "Layer added".to_owned(),
-                    count => format!("Layer added to {count} surfaces"),
+                    count => format!("Layer added to {count} screens"),
                 });
             } else if applied == 0 {
                 toasts::toast_error("Layer add failed");
             } else {
                 toasts::toast_error(&format!(
-                    "Layer added to {applied} surfaces, {failed} failed"
+                    "Layer added to {applied} screens, {failed} failed"
                 ));
             }
         });
@@ -312,7 +338,7 @@ pub fn LayerPanel(
                                     layer=current_layer.into()
                                     stack_index=stack_index
                                     stack=layers.into()
-                                    revision=revision
+                                    fence=fence
                                     media_names=media_names
                                     effect_names=effect_names
                                     effect_cache=effect_cache
@@ -358,13 +384,13 @@ fn LayerLoadingSkeleton() -> impl IntoView {
 fn update_layer(
     zone_id: String,
     layer: SceneLayer,
-    revision: u64,
+    fence: api::Fence,
     on_layers_mutated: Callback<()>,
 ) {
     let layer_id = layer.id.to_string();
     let request = api::update_request_from_layer(&layer);
     leptos::task::spawn_local(async move {
-        match api::update_layer(&zone_id, &layer_id, &request, Some(revision)).await {
+        match api::update_layer(&zone_id, &layer_id, &request, Some(&fence)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());
@@ -376,9 +402,14 @@ fn update_layer(
 }
 
 /// Remove a layer, guarded by the `If-Match` precondition.
-fn delete_layer(zone_id: String, layer_id: String, revision: u64, on_layers_mutated: Callback<()>) {
+fn delete_layer(
+    zone_id: String,
+    layer_id: String,
+    fence: api::Fence,
+    on_layers_mutated: Callback<()>,
+) {
     leptos::task::spawn_local(async move {
-        match api::delete_layer(&zone_id, &layer_id, Some(revision)).await {
+        match api::delete_layer(&zone_id, &layer_id, Some(&fence)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => {
                 on_layers_mutated.run(());
                 toasts::toast_success("Layer removed");
@@ -398,7 +429,7 @@ fn reorder_layer(
     stack: Vec<SceneLayer>,
     index: usize,
     delta: isize,
-    revision: u64,
+    fence: api::Fence,
     on_layers_mutated: Callback<()>,
 ) {
     let Some(target) = index.checked_add_signed(delta) else {
@@ -411,7 +442,7 @@ fn reorder_layer(
     let mut layer_ids = stack.iter().map(|layer| layer.id).collect::<Vec<_>>();
     layer_ids.swap(index, target);
     leptos::task::spawn_local(async move {
-        match api::reorder_layers(&zone_id, layer_ids, Some(revision)).await {
+        match api::reorder_layers(&zone_id, layer_ids, Some(&fence)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());

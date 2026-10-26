@@ -9,11 +9,6 @@ use hypercolor_types::scene::ZoneRole;
 
 use crate::api::ZoneResource;
 
-/// Synthetic rail-entry id for the §9.4 Unassigned entry. It is not a
-/// surface — it has no layer stack and no Stage — so it never collides
-/// with a real `ZoneId` (a UUID, which this is not).
-pub const UNASSIGNED_SURFACE_ID: &str = "__unassigned__";
-
 /// Which rail section a surface belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceKind {
@@ -31,8 +26,8 @@ pub struct Surface {
     pub name: String,
     pub kind: SurfaceKind,
     pub enabled: bool,
-    /// Semantic role of the backing zone. `Primary` is the §9.2
-    /// Default zone — it cannot be deleted through the zone endpoints.
+    /// Semantic role of the backing zone. The `Primary` zone (§9.2)
+    /// cannot be deleted through the zone endpoints.
     pub role: ZoneRole,
     /// Optional UI accent color for the zone swatch (§9.2).
     pub color: Option<String>,
@@ -50,13 +45,36 @@ pub struct Surface {
     pub top_layer: Option<String>,
 }
 
-impl Surface {
-    /// Whether this surface is an LED zone the user may delete. The
-    /// `Primary` Default zone is permanent; `Custom` zones are removable.
-    #[must_use]
-    pub fn is_deletable_zone(&self) -> bool {
-        self.kind == SurfaceKind::Light && self.role == ZoneRole::Custom
-    }
+/// The primary LED zone: the `Primary` role, else the first LED zone.
+#[must_use]
+pub fn primary_led_zone(zones: &[Surface]) -> Option<&Surface> {
+    zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .or_else(|| zones.iter().find(|zone| zone.kind == SurfaceKind::Light))
+}
+
+/// The LED zone effect applies, presets, controls, and the preview
+/// target: the focused zone while it is still an LED zone of the scene,
+/// otherwise the primary zone.
+#[must_use]
+pub fn target_zone<'a>(zones: &'a [Surface], focused: Option<&str>) -> Option<&'a Surface> {
+    focused
+        .and_then(|id| {
+            zones
+                .iter()
+                .find(|zone| zone.id == id && zone.kind == SurfaceKind::Light)
+        })
+        .or_else(|| primary_led_zone(zones))
+}
+
+/// The zone an effect apply names. The primary zone is the daemon's
+/// default target, so it goes unnamed and keeps the primary apply path.
+#[must_use]
+pub fn apply_zone_id(target: Option<&Surface>) -> Option<String> {
+    target
+        .filter(|zone| zone.role != ZoneRole::Primary)
+        .map(|zone| zone.id.clone())
 }
 
 /// Count of LED-role zones in a scene. A scene is multi-zone when
@@ -85,7 +103,7 @@ pub fn surfaces_from_zones(zones: &[ZoneResource]) -> Vec<Surface> {
             };
             Surface {
                 id: zone.id.to_string(),
-                name: surface_name(zone, kind),
+                name: zone_display_name(&zone.name, zone.role),
                 kind,
                 enabled: zone.enabled,
                 role: zone.role,
@@ -143,28 +161,21 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
     }
 }
 
-/// Display name for a surface. A non-`Primary` zone shows its stored
-/// name. The `Primary` zone is the Default zone (§3): it shows the
-/// user's typed name, or **"Default zone"** while still unnamed. The
-/// default zone is a zone at every scale.
-fn surface_name(zone: &ZoneResource, kind: SurfaceKind) -> String {
-    if kind != SurfaceKind::Light || zone.role != ZoneRole::Primary {
-        return zone.name.clone();
-    }
-    if is_blank_default_name(&zone.name) {
-        "Default zone".to_owned()
-    } else {
-        zone.name.clone()
-    }
-}
-
-/// Whether the `Primary` zone still carries its un-customized name. The
-/// daemon seeds the Default zone as "Primary"; until the user renames it,
-/// the rail shows the friendlier "Default zone" instead of leaking that
-/// internal label.
-fn is_blank_default_name(name: &str) -> bool {
+/// The name a zone shows everywhere in the UI: its stored name, trimmed.
+/// The primary zone reads **"Main"** while it has no name of its own:
+/// an empty name, or one of the names older daemons seeded ("Primary",
+/// "Default zone"), in any case.
+#[must_use]
+pub fn zone_display_name(name: &str, role: ZoneRole) -> String {
     let trimmed = name.trim();
-    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary")
+    let unnamed = trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("primary")
+        || trimmed.eq_ignore_ascii_case("default zone");
+    if role == ZoneRole::Primary && unnamed {
+        "Main".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 /// What the Stage's now-playing chip names for a surface.

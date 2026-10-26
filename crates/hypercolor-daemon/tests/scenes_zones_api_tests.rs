@@ -297,7 +297,14 @@ async fn a_stale_body_revision_is_a_precondition_failure() {
             .headers()
             .get(http::header::ETAG)
             .and_then(|value| value.to_str().ok()),
-        Some(format!("\"{current_revision}\"").as_str())
+        Some(
+            hypercolor_types::api::scene::SceneFence::new(
+                state.scene_manager.run_epoch(),
+                current_revision
+            )
+            .to_etag()
+            .as_str()
+        )
     );
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "precondition_failed");

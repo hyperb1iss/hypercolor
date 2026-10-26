@@ -180,6 +180,22 @@ async fn hello_reports_a_destructive_stop_as_not_running_and_paused() {
     assert!(!hello.running);
     assert!(hello.paused);
 }
+
+#[tokio::test]
+async fn hello_names_the_run_and_revision_of_the_scene_it_reports() {
+    let state = AppState::new();
+    let (_, revision) = state.scene_manager.snapshot_with_revision().await;
+
+    let hello = build_hello_state(&state).await;
+    let scene = hello.scene.expect("an active scene always exists");
+    assert_eq!(scene.revision, revision);
+    assert_eq!(scene.run_epoch, state.scene_manager.run_epoch());
+    assert!(!scene.run_epoch.is_empty());
+
+    let wire = serde_json::to_value(&scene).expect("scene ref serializes");
+    assert_eq!(wire["revision"], revision);
+    assert_eq!(wire["run_epoch"], state.scene_manager.run_epoch());
+}
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::app_state::AppState;
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -5960,6 +5976,36 @@ async fn command_response_from_http_unwraps_error_envelope() {
         }
         _ => panic!("expected response variant"),
     }
+}
+
+#[tokio::test]
+async fn a_socket_conflict_names_the_run_its_revisions_count_in() {
+    // A socket reply carries no headers, so the run epoch the HTTP answer
+    // stamps never reaches it: the conflict details must name the run.
+    let response = crate::domain::DomainError::conflict_details(
+        "scene state changed",
+        crate::domain::DomainErrorDetails::SceneCommitSuperseded {
+            expected_revision: 6,
+            current_revision: 7,
+            run_epoch: std::sync::Arc::from("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"),
+        },
+    )
+    .into_response();
+    let message = command_response_from_http("cmd_conflict".to_owned(), response).await;
+    let ServerMessage::Response { status, error, .. } = message else {
+        panic!("expected response variant");
+    };
+    assert_eq!(status, 409);
+    let details = &error.expect("the conflict rides through")["details"];
+    assert_eq!(details["current_revision"], 7);
+    assert_eq!(
+        details["current_epoch"],
+        "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+    );
+    assert_eq!(
+        details["expected_epoch"],
+        "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+    );
 }
 
 #[tokio::test]

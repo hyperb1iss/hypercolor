@@ -1,212 +1,163 @@
 +++
 title = "Multi-zone walkthrough"
-description = "Build a second zone, split devices, run different effects per zone, switch between zones, and set the unassigned-lights policy."
+description = "Build a multi-zone scene step by step: start a scene, add zones, bring devices in, let the rig place them, give every zone its own look, and undo anything."
 weight = 90
 +++
 
-By the end of this walkthrough your rig runs two effects at once: one effect on
-the keyboard and case, a different effect on the desk strips, switched together
-when you change scenes and tunable independently while they play. You will build
-a second zone, move device outputs into it, give each zone its own effect, hop
-between zones, and decide what happens to any output you leave behind.
+By the end of this walkthrough one scene runs three looks at once: the keyboard does its own thing, the desk strips do another, and everything else keeps the main look. You will start a scene, add zones from the tab strip, bring devices into them, let Studio place them from your rig, give each zone an effect, and tidy the zones up. Every step commits as you take it, and anything you change can be put back.
 
-{{< img path="img/ui/studio.webp" alt="Hypercolor Studio with the zone tree, the live Stage canvas, and the composition panel" />}}
+{{< img path="img/ui/studio.webp" alt="Studio with three zone tabs, the Keyboard tab open, its device fitted to the canvas, and an effect rendering under it" />}}
 
-This is the end-to-end version of the focused pages. If you want the model
-first, read [Zones](@/studio/zones.md), [Device assignment](@/studio/device-assignment.md),
-and [Layers](@/studio/layers.md), then come back here to put it together.
+This is the end-to-end version of the focused pages. For the details behind each step, see [Zones](@/studio/zones.md), [Device assignment](@/studio/device-assignment.md), [Layouts](@/studio/layouts.md), and [Layers](@/studio/layers.md).
 
 {% <callout type="info"> %}
-A **scene** is the whole-rig configuration. A **zone** is a flexible partition
-of that scene's canvas. One scene holds many zones, each driving a disjoint set
-of device outputs. Switching scenes swaps every zone together; this walkthrough
-lives entirely inside one scene.
+A **scene** is the whole-rig configuration. A **zone** is a partition of that scene with its own canvas and its own layers. One scene holds many zones, each driving its own set of device outputs. Switching scenes swaps every zone together; this walkthrough builds one scene.
 {% </callout> %}
 
 ## Before you start
 
-Open Studio in the web UI and confirm two things:
+Open Studio in the web UI and check two things:
 
-- More than one LED device (or one device with multiple addressable channels)
-  is connected, so there is something to split. See [Finding devices](@/guide/finding-devices.md)
-  if your rig is empty.
-- A scene is active. A fresh install gives you a default scene with a single
-  **Default zone** that already owns every device. That single zone is your
-  starting point.
-
-The left column is the **zone tree**. The center is the **Stage**. For a Light
-the Stage is the always-on spatial layout editor with the live effect rendering
-under the device boxes. There is no Preview/Layout toggle to hunt for.
-
-## 1. Create a second zone
-
-In the zone tree, use **New zone** under the Zones section. It opens an inline
-name field; type a name you will recognize later ("Desk strips", "Ambient") and
-press Enter to create the zone. Give it an identity color afterward from the
-zone's controls in the tree (see [Zones](@/studio/zones.md)). That color is the
-zone's swatch throughout Studio, including the zone tree you are about to use.
-
-The new zone starts empty: no device outputs, no layers. Your original **Default
-zone** still owns everything. Creating a zone never moves devices on its own;
-that is the next step, and it is deliberate.
+- More than one LED device (or one device with several channels) is connected, so there is something to split. See [Finding devices](@/guide/finding-devices.md) if your rig is empty.
+- Your devices sit roughly where they physically are on the **Main** tab's canvas. Zones place arriving devices from that arrangement, so a minute spent here pays off in every zone you build.
 
 {% <callout type="tip"> %}
-The moment a scene has more than one LED zone, Studio switches on the multi-zone
-affordances: a synthetic **Unassigned** entry appears in the tree, and each
-placed device card's kebab grows a **Move to `<zone>`** row per other zone. In
-a single-zone scene neither shows, because there is nothing to partition.
+In a scene with a single zone, the Main canvas is your rig's layout, shared with every single-zone scene. Arrange it there once and every zone you make later starts from it. See [Layouts](@/studio/layouts.md#where-a-canvas-edit-lands).
 {% </callout> %}
 
-## 2. Split devices across the two zones
+## 1. Start a scene for it
 
-Every device output starts in the Default zone. You move outputs out of it and
-into your new zone. The model's unit of assignment is an **output** (one device
-output or addressable segment), so a multi-channel controller can in principle
-have one channel in one zone and another elsewhere. Studio's rail always moves
-a device's outputs together; per-segment placement is API-only for now.
+Build the split in its own scene, so the scene you have now stays as it is.
 
-You have two ways to move a device between zones, both in the zone tree.
+1. Open the **scene picker** at the right of the Studio header.
+2. Choose **New scene**.
+3. Type a name, such as `Desk Session`.
+4. Leave **Duplicate current** selected. The new scene starts as a copy of the one running now: the same Main zone, the same device placement, the same look.
+5. Click **Create scene**.
 
-### Add a whole device to a zone
+Studio switches to the new scene. The header now shows `Desk Session`, and the tab strip shows one **Main** tab with a **+** after it.
 
-On the target zone, use the **Add device** control. It opens a picker of every
-device that is not already entirely in this zone. Each entry shows where the
-device currently lives, for example `Desk Strip (in Default zone)`, so you can
-see what the move pulls from.
+Choose **Blank** instead to start with one Main zone holding every device in your rig, and no effects yet. See [Scenes](@/studio/scenes.md) for both.
 
-Picking a device brings every output it has into this zone. A device already
-placed in another zone is **moved** (its outputs are reassigned out of their old
-owner). A device the scene has never placed is **minted** fresh, one output per
-channel. Either way the daemon resets each output's canvas placement on assign,
-so you re-place it in the target zone's layout editor afterward.
+## 2. Add a zone
 
-### Move a placed device out of its current zone
+Click **+** after the tabs. A tab named **New zone** opens with its name selected. Type `Keyboard` and press **Enter**.
 
-On a device already sitting in a zone, open the card's **⋯ kebab** ("Device
-options"). In a multi-zone scene the menu carries one **Move to `<zone>`** row
-per other LED zone, plus **Remove from zone**. One click reassigns every output
-the device has here, so you never leave the tree.
+The new zone starts empty:
 
-Splitting a single multi-channel controller across two zones is not available
-from the rail: both paths move the whole device. The wire supports it
-(`POST /api/v1/scene/zones/{zone}/members` takes a per-member `segment`), so an
-API client can place individual segments.
+- Its canvas reads **Drag devices here, or add them from Unassigned**.
+- Its tab carries a small warning triangle that means "no devices in this zone yet".
+- The device pane expands every other zone's row under **Other zones**, so the devices you can bring in are right there.
 
-{% <callout type="warning"> %}
-Each device output belongs to exactly one zone at a time. Assigning an output to
-a new zone always removes it from its previous owner. There is no "copy an output
-into two zones"; exclusivity is the invariant that keeps each zone's output
-correct.
+Your **Main** zone still holds everything. Making a zone never moves devices on its own; that is the next step.
+
+## 3. Bring devices in
+
+The keyboard is still in Main. Pick whichever route suits you; each one is a single move.
+
+- **Drag it.** Under **Other zones**, find the keyboard in the Main row and drag it onto the Keyboard canvas. It lands centered where you drop it.
+- **Use the menu.** Click the keyboard's row under **Other zones** to open **Move to**, then choose **Keyboard**.
+- **From the Main tab.** Open the keyboard's card, click **⋯**, then **Move to** and **Keyboard**. You can also drag the card straight onto the **Keyboard** tab. Hold it over the tab for about half a second and the tab springs open, so you can keep dragging onto its canvas.
+- **From Unassigned.** A device no zone claims has a **+** on its card that adds it to the open tab's zone.
+
+{% <callout type="tip" title="Steps 2 and 3 in one move"> %}
+On the Main tab, open the keyboard card's **⋯** menu and choose **Move to**, then **A new zone**. Studio creates a zone named after the keyboard, moves the keyboard in, and opens the tab with the name selected so you can type over it. One `Ctrl+Z` takes the whole thing back.
 {% </callout> %}
 
-## 3. Re-place outputs on each zone's canvas
+Screen readers hear the move announced, for example "Moved Razer Huntsman V2 to Keyboard from Main", and a toast confirms it saved.
 
-Each zone owns its **own** spatial canvas. Moving an output between zones keeps
-its topology and LED mapping but resets its position to the target zone's
-default, because a position is only meaningful against a specific canvas.
+## 4. Check where it landed
 
-Select a zone in the tree to switch the Stage to that zone's layout. Drag,
-resize, and rotate the device boxes to match the physical arrangement, then use
-**Save** in the Stage header. **Revert** discards unsaved edits; both light up
-only when the canvas is dirty. Undo and redo are `Ctrl+Z` and `Ctrl+Shift+Z`.
-The full editor is covered in [Layouts](@/studio/layouts.md).
+The keyboard arrives fitted to the Keyboard canvas: a zone's first devices scale up to fill it, keeping their physical arrangement, so the zone's effect covers them completely.
 
-Positions are normalized to `[0.0, 1.0]`, so a layout stays correct no matter
-what resolution the canvas runs at. The canvas defaults to 640×480 and is
-configurable.
+Bring in a second device, a mouse or a headset stand, and it lands where it sits relative to the keyboard in your rig, carried onto the canvas at the same scale. Nothing piles up in a corner. (A later device your rig does not place lands at its own built-in footprint, or at the daemon's default spot; drag it where it belongs.)
 
-## 4. Give each zone its own effect
+To tidy up by hand:
 
-Select a zone, then open its composition by clicking the **now-playing chip** in
-the Stage header. That slide-over hosts the layer stack for the selected zone.
-Add an effect layer, browse the catalog, and pick what you want. Each zone gets
-an independent effect, controls, and brightness.
+- Drag a box to move it, or grab a corner handle to resize it. The change commits when you release.
+- Click **Fit** in the Stage header to scale and center everything in the zone to fill the canvas again.
 
-Repeat for the second zone. Now the keyboard and case can run one effect while
-the desk strips run another, both live at once. The catalog and per-layer
-controls work the same as on any single-zone scene; see
-[Effects and controls](@/studio/effects-and-controls.md) and [Layers](@/studio/layers.md)
-for blend modes, opacity, and live tuning.
+Every zone keeps its own canvas, so arranging the Keyboard zone never moves anything on the Main canvas. See [Layouts](@/studio/layouts.md) for the full editor.
+
+## 5. Give the zone its look
+
+With the **Keyboard** tab open, use either route:
+
+- **From the Stage chip.** Click the now-playing chip at the left of the Stage header. It reads **No layers** for a new zone. The composition panel slides in; click **Add layer**, stay on the **Effect** tab, and pick an effect, such as Borealis. It renders under the keyboard's box right away.
+- **From the Effects page.** The Keyboard zone is now the app's target zone, and the preview's zone tabs show it selected. Click an effect card and it replaces the Keyboard zone's layers with that effect.
+
+Tune the effect from its controls in the composition panel. See [Effects and controls](@/studio/effects-and-controls.md) for live tuning and [Layers](@/studio/layers.md) for blend modes and stacking.
+
+## 6. Give every zone its own look
+
+Now repeat for the rest of the rig.
+
+1. Click **+** again and name the zone `Desk strips`.
+2. Bring the strips in. A controller can split, so you can move just the channel that drives them. Open the **Main** tab, find the controller's card (a Nollie, say), and drag its strip channel's row onto the **Desk strips** tab. Or open **Move to** from the card, pick that channel under **Move**, and choose **Desk strips**. The rest of the controller stays in Main, and its card there now shows a line such as `1 more output in Desk strips`.
+3. Open the **Desk strips** tab and give it an effect from its Stage chip.
+4. Open the **Main** tab and change its look too.
+
+All three zones render at once, each from its own canvas. Use **[** and **]** to step between the tabs, or the arrow keys with a tab focused.
 
 {% <callout type="info"> %}
-Every zone shares the daemon's global audio, screen-capture, and sensor inputs.
-An audio-reactive effect in one zone and a static effect in another both read
-the same audio; the static one simply ignores it. Per-zone input routing (a
-zone capturing its own monitor) is future work.
+Every zone shares the daemon's global audio, screen-capture, and sensor inputs. An audio-reactive effect in one zone and a static effect in another both read the same audio; the static one ignores it. Per-zone input routing (a zone capturing its own monitor) is future work.
 {% </callout> %}
 
-## 5. Switch between zones
+## 7. Pause, rename, recolor, and reorder
 
-Selecting a zone in the tree is how you move between them. The selected LED zone
-is also Studio's app-wide **apply target**, so a quick-apply from the dashboard,
-the sidebar, or the command palette lands in the zone you are composing rather
-than spraying every device.
+Every zone setting lives on its tab. Right-click a tab, or click the **⋯** on the open tab:
 
-Per-zone now-playing rows in the sidebar let you pause and resume a single zone
-without touching the others. The sidebar shows up to three of them and folds the
-rest behind a "more zones" link back into Studio. See
-[Now playing and transport](@/studio/now-playing-transport.md) for the transport
-surfaces.
+- **Rename** turns the tab into a text field. Double-clicking the tab does the same.
+- **Color** gives the zone an identity dot. Zone colors label the zone in Studio and elsewhere; they never change what your LEDs show.
+- **Pause zone** stops the zone driving its devices while keeping its layers and canvas. The tab shows a pause glyph until you choose **Resume zone**. The sidebar's Now Playing rows pause and resume zones too.
+- **Move left** and **Move right** reorder the tabs. Dragging a tab along the strip works as well.
 
-Switching the active **scene** is different: it swaps all zones together. Your
-two-zone arrangement is one configuration inside one scene. [Scenes](@/studio/scenes.md)
-covers creating, renaming, and switching whole-rig configurations.
+## 8. Undo anything
 
-## 6. Set the unassigned-lights policy
+Studio commits every step as you take it, so undo is how you back out.
 
-If you split devices and leave an output in no zone, it becomes **unassigned**.
-That happens deliberately (you moved everything out of the Default zone) or as a
-side effect (you deleted a zone, and its outputs fell out). The scene decides
-what those outputs do.
+Press `Ctrl+Z`, or use the **Undo** arrow button in the Stage header, to take back the last step. `Ctrl+Shift+Z` or **Redo** puts it back. One history holds every step in the order you made it:
 
-In a multi-zone scene the tree shows a synthetic **Unassigned** entry. It is not
-a surface (no layer stack, no canvas), so selecting it shows the scene-level
-policy instead. Pick one of:
+- **Device moves:** each move, drop, Unassigned **+**, and **Remove from this zone**. Undoing a move puts the device back where it was, in its old zone.
+- **Canvas edits:** each drag, resize, field change, and **Fit**.
+- **Zone changes:** each new zone, rename, recolor, pause or resume, and reorder. A **Move to** ▸ **A new zone** is one step, zone and all, so one undo puts the device back and removes the zone. If a zone you made has gained devices or layers since, undo keeps it and says so, then carries on.
+- **Deleted zones:** a delete is a step like any other, and the **Deleted** bar's **Undo** button offers the same restore for eight seconds. The zone comes back with its name, color, layers, brightness, paused state, place among the tabs, and devices.
 
-- **Turn off**: unassigned outputs are cleared to black. This is the default.
-- **Hold last colors**: unassigned outputs keep whatever they last rendered.
-- **Follow &lt;zone&gt;**: unassigned outputs are routed through a named zone,
-  so they mirror that zone's effect.
+Screen readers hear what each undo and redo did, such as "Undid: moved Razer Huntsman V2 back to Main" or "Redid: paused Main".
 
-The policy is editable only when the daemon advertises the
-`scene-unassigned-behavior-write` capability; otherwise the current setting
-shows read-only. The Unassigned Stage also reminds you to use the `+` on each
-device card in the rail, so you can pull those outputs into a real zone at any
-time.
+The undo history lasts while you stay in Studio on this scene. Switching scenes or leaving Studio starts it fresh.
 
-{% <callout type="tip"> %}
-A partially assigned multi-channel device is handled per output. Its assigned
-channels render from their zone; its unassigned channels follow the
-unassigned-lights policy. You never have to assign a whole device just to satisfy
-one channel.
-{% </callout> %}
+## 9. Decide what unassigned hardware does
+
+Anything you leave in no zone shows under **Unassigned** at the bottom of the device pane, for example after you delete a zone or choose **Remove from this zone** on a card. The section's header sets what that hardware shows:
+
+- **Off**: unassigned outputs go dark. This is the default.
+- **Hold last colors**: they keep whatever they last showed.
+- **Follow** a zone: they mirror that zone's look.
+
+The policy is editable when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it shows read-only. A device split across zones is handled per output: its claimed channels render from their zones, and its unclaimed channels follow the policy.
 
 ## What you built
 
-One scene, two zones, two effects, a defined fate for everything in between:
+One scene, three zones, three looks, and a defined fate for everything in between:
 
 {% <mermaid> %}
 graph TD
-    SCENE[Active scene] --> Z1[Default zone<br/>keyboard + case]
-    SCENE --> Z2[Desk strips zone]
+    SCENE[Desk Session scene] --> Z1[Main<br/>case fans, RAM, the rest]
+    SCENE --> Z2[Keyboard zone]
+    SCENE --> Z3[Desk strips zone]
     SCENE --> UN[Unassigned outputs]
-    Z1 --> E1[Effect A]
-    Z2 --> E2[Effect B]
-    UN --> POL[Unassigned-lights policy:<br/>off / hold / follow a zone]
+    Z1 --> E1[Main look]
+    Z2 --> E2[Keyboard look]
+    Z3 --> E3[Desk strips look]
+    UN --> POL[Unassigned policy:<br/>off / hold / follow a zone]
 {% </mermaid> %}
 
-Both zones render concurrently and switch together when the scene changes.
-Per-zone control edits change one zone without disturbing the others. To make
-the same split your everyday look, save it as part of a scene and switch to it
-whenever you want it back.
+All three zones render together and switch together when the scene changes. Changing one zone's look never disturbs the others. Switch back to the scene you started from with the scene picker any time; `Desk Session` waits in the list, exactly as you left it.
 
 ## Where to go next
 
-- [Zones](@/studio/zones.md): the full zone lifecycle: rename, color, enable,
-  delete.
-- [Device assignment](@/studio/device-assignment.md): the device card, channels,
-  hide, identify, and remove.
-- [Scenes](@/studio/scenes.md): saving and switching whole-rig configurations.
-- [Zone API and concurrency](@/studio/zone-api-and-concurrency.md): the REST
-  routes and the single scene `revision` concurrency contract behind every
-  move you just made.
+- [Zones](@/studio/zones.md): the full zone lifecycle: add, rename, color, pause, reorder, and delete.
+- [Device assignment](@/studio/device-assignment.md): every way to move devices and channels, and where arrivals land.
+- [Scenes](@/studio/scenes.md): creating, duplicating, and switching whole-rig configurations.
+- [Zone API and concurrency](@/studio/zone-api-and-concurrency.md): the REST routes and the single scene `revision` contract behind every move you just made.

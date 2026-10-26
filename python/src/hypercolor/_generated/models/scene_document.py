@@ -31,8 +31,9 @@ class SceneDocument:
                 renamed or deleted.
             kind (str):
             name (str):
-            revision (int): The commit generation. Served as `ETag`; the one wire version
-                token (Spec 78 §1.6).
+            revision (int): The commit generation, strictly increasing within a daemon run
+                (Spec 78 §1.6). Served with `run_epoch` as the epoch-qualified
+                `ETag`, `"<run_epoch>:<revision>"`; see [`SceneFence`].
             zones (list[ZoneResource]): Every authored zone with its full stack, declaration order.
             activation_brightness (float | None | Unset):
             description (None | str | Unset):
@@ -41,6 +42,11 @@ class SceneDocument:
             metadata (SceneDocumentMetadata | Unset):
             mutation_mode (str | Unset):
             priority (int | Unset):
+            run_epoch (str | Unset): Opaque identity of the daemon run `revision` belongs to, also
+                served on every response as the `hypercolor-run-epoch` header.
+                Compare by equality only: a change means the daemon restarted.
+                A fence that names another run is always stale. Empty from daemons
+                that predate it.
             transition (SceneDocumentTransition | Unset):
             unassigned_behavior (str | Unset):
     """
@@ -58,6 +64,7 @@ class SceneDocument:
     metadata: SceneDocumentMetadata | Unset = UNSET
     mutation_mode: str | Unset = UNSET
     priority: int | Unset = UNSET
+    run_epoch: str | Unset = UNSET
     transition: SceneDocumentTransition | Unset = UNSET
     unassigned_behavior: str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -106,6 +113,8 @@ class SceneDocument:
 
         priority = self.priority
 
+        run_epoch = self.run_epoch
+
         transition: dict[str, Any] | Unset = UNSET
         if not isinstance(self.transition, Unset):
             transition = self.transition.to_dict()
@@ -138,6 +147,8 @@ class SceneDocument:
             field_dict["mutation_mode"] = mutation_mode
         if priority is not UNSET:
             field_dict["priority"] = priority
+        if run_epoch is not UNSET:
+            field_dict["run_epoch"] = run_epoch
         if transition is not UNSET:
             field_dict["transition"] = transition
         if unassigned_behavior is not UNSET:
@@ -215,6 +226,8 @@ class SceneDocument:
 
         priority = d.pop("priority", UNSET)
 
+        run_epoch = d.pop("run_epoch", UNSET)
+
         _transition = d.pop("transition", UNSET)
         transition: SceneDocumentTransition | Unset
         if isinstance(_transition, Unset):
@@ -238,6 +251,7 @@ class SceneDocument:
             metadata=metadata,
             mutation_mode=mutation_mode,
             priority=priority,
+            run_epoch=run_epoch,
             transition=transition,
             unassigned_behavior=unassigned_behavior,
         )

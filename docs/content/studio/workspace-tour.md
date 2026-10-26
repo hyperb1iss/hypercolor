@@ -1,135 +1,139 @@
 +++
 title = "Workspace tour"
-description = "Guided tour of every Studio surface: the header and scene selector, the zone tree, the Stage, the composition slide-over, and the narrow-viewport drawer."
+description = "Guided tour of every Studio surface: the scene picker, the zone tab strip, the device pane, the Stage, the composition slide-over, and the narrow-viewport drawer."
 weight = 20
 template = "page.html"
 +++
 
-Studio is a two-column workspace. The zone tree lives on the left, the Stage fills the center, and the composition panel slides in over the Stage when you summon it. There is no permanent layer rail and no Preview/Layout toggle. This page walks every surface in order, so you know exactly what each control does before you start composing.
+Studio shows one zone at a time. The page header carries the scene picker and a tab for every zone; below it, the device pane sits on the left and the Stage fills the center, and the composition panel slides in over the Stage when you summon it. There is no Save button anywhere: every edit commits as you make it. This page walks every surface in order, so you know what each control does before you start composing.
 
-{{< img path="img/ui/studio.webp" alt="The Studio workspace: zone tree on the left, live Stage in the center" />}}
+{{< img path="img/ui/studio.webp" alt="The Studio workspace: the scene picker and zone tabs in the header, the device pane on the left, the live Stage in the center" />}}
 
 If you want the conceptual model first (what a scene, zone, layer, and layout are), read the [Studio overview](@/studio/overview.md). This page is the literal UI tour.
 
 ## The header
 
-The page header runs across the top of Studio. It carries the Studio title and the scene selector on the top row, and a device search box in the toolbar row below it.
+The page header has two rows. The title row carries **Studio** and, at its trailing edge, the scene picker. The second row is the zone tab strip.
 
-### Scene selector
+### The scene picker
 
-The scene selector sits at the trailing edge of the header. A scene is a whole-rig configuration: every zone, every layer, every layout in one switchable object. Exactly one scene is active at a time, and switching scenes here re-composes your entire rig. Scene CRUD (switch, create, rename, delete) lives in this control. See [Scenes](@/studio/scenes.md) for the full lifecycle.
+The scene picker names the active scene: a **Scene** label, the scene's name, and a chevron. A lock glyph marks a snapshot-locked scene, and a spinner turns while a switch is in flight.
 
-The active scene is shared app-wide. Studio reads it from the same source the dashboard, sidebar, and CLI write to, kept fresh over the WebSocket. A scene change made from another page, another client, or the command line lands in Studio without a manual refresh.
+Open it to see **Default** first, then every saved scene with a check on the active one, then the actions: **New scene**, **Rename**, and **Delete**. New scene duplicates the scene running now unless you pick **Blank**. Rename and Delete act on the active saved scene and do not appear while Default runs. The same picker sits in the same place on the Dashboard and the Effects page. See [Scenes](@/studio/scenes.md) for the full lifecycle.
 
-### Device search
+The active scene is shared app-wide and kept fresh over the WebSocket, so a scene change made from another page, another client, or the command line lands in Studio without a manual refresh.
 
-The search box in the header toolbar filters the zone tree. Type any part of a device name and the tree keeps only the matching device rows; an empty box leaves every row visible. The match is a case-insensitive substring on the device name, applied to both assigned and unassigned rows.
+### The zone tab strip
 
-{% <callout type="tip"> %}
-The selected LED zone in Studio is also the app-wide effect apply-target. A quick-apply from the dashboard, sidebar, or command palette lands in the zone you are composing. Selecting a Screen or the Unassigned entry is not an apply target, so the target falls back to the default zone.
+The second row holds one tab per LED zone, in the scene's zone order. Each tab shows the zone's identity dot (its color, or a neutral dot when it has none), its name, and at most one status glyph:
+
+- A **warning triangle** when a layer on the zone failed to render, or when the zone has no devices yet.
+- A **pause glyph** when the zone is paused.
+
+Hover a tab with a glyph for the reason; screen readers hear it as the tab's description, so the tab's name stays the zone's name. The selected tab carries the purple underline and the workspace's surface color, so it reads as joined to the pane and Stage below. Zone colors stay on the dots and never tint the tabs themselves.
+
+After the zone tabs come, in order:
+
+- A divider and a single **Screens** tab with the number of screens, whenever the scene drives display screens.
+- The **+** button, which makes a new zone and opens its tab with the name ready to type over. It appears when the daemon supports zone creation.
+
+The selected tab also carries a **⋯** button that opens the zone's menu: **Rename**, **Color**, **Pause zone** or **Resume zone**, **Move left**, **Move right**, and **Delete zone**. Right-clicking any tab opens the same menu, and double-clicking a tab renames it in place. Dragging a tab along the strip reorders the zones. See [Zones](@/studio/zones.md) for every zone action.
+
+When the strip runs out of room, tabs shrink to a minimum width and then the tail folds into a **N more** menu. The open tab always stays visible.
+
+{% <callout type="tip" title="Keyboard"> %}
+The strip is a standard tab list. With a tab focused, the arrow keys move between tabs and open them as they go, and **Home** and **End** jump to the ends. The preview's compact zone tabs on the Dashboard and Effects page share the same tab anatomy and key map. **F2** renames the focused zone, and **Shift+F10** or the context-menu key opens its menu. Anywhere on the page outside a text field, **[** and **]** step to the previous and next tab and move focus with them.
 {% </callout> %}
 
-## The zone tree (left column)
+## The device pane (left column)
 
-The zone tree answers one question: what hardware do I have, and how is it grouped? It replaces the old surface rail and the separate device palette: devices are visible here, nested under their zones, not hidden behind a drawer.
+The device pane answers one question about the open tab: what is in this zone, and what could be? It has a search field and up to three sections.
 
-The tree has up to three sections.
+### Search
 
-### Zones
+The search field sits at the top of the pane, and **/** jumps to it from anywhere on the page. It filters every section at once. It matches device names, channel names (the hardware's and your own renames), and the names of components bound to channels. Other zones with hits expand, other zones and the Unassigned section hide when they have none, and each count reads like `3 of 19` while a search is active. **Escape** clears the search; a second **Escape** leaves the field.
 
-Every light zone renders as a card with its color swatch (or a lightbulb icon when it has no color), its name, and a device count. Clicking a zone header selects it and drives the Stage. The selected zone gets a purple border.
+### This zone
 
-Each zone card has three interactive regions:
+The first section belongs to the open zone. Its header shows the zone's dot, its name, and how many devices it holds, and it stays pinned while the pane scrolls. Device cards list connected devices first, by name. Devices that are placed in the zone but not connected gather in an **Offline** subsection at the bottom.
 
-- **The chevron** on the left expands or collapses the zone's nested device list. Collapsed state is remembered per browser.
-- **The zone header** selects the zone.
-- **The kebab** (the three-dot menu on the right) opens zone settings: rename, recolor, enable, and delete. The kebab is always present so even a single-zone scene can rename or recolor its Default zone. Delete stays gated for zones that are not eligible. See [Zones](@/studio/zones.md) for the full set.
+A device whose outputs are split across zones shows only the channels this zone claims, plus a quiet line such as `2 more outputs in Push 2`. Click that line to open the other zone's row in the next section.
 
-A zone that has a failed or asset-missing layer shows a red warning triangle next to its name, so trouble is visible without opening the zone.
+See [Device assignment](@/studio/device-assignment.md) for the device card, its menu, and every way to move a device.
 
-Below the device list, each zone offers a way to add hardware. In a single-zone scene, devices that belong to no zone fold in here as one-tap "Available" rows; tap the plus to add one. See [Device assignment](@/studio/device-assignment.md) for the device card, channels, and output-level assignment.
+### Other zones
 
-An always-present **New zone** control sits at the bottom of the Zones section when the daemon supports zone creation.
-
-### Screens
-
-If your rig includes a display face (a small screen treated as a 1:1 surface), it appears under a separate **Screens** section. A screen row is a single surface with no nested devices; selecting it shows that device's live face on the Stage.
+The **Other zones** section lists every other LED zone as one collapsed row: identity dot, name, and device count. Clicking a row expands it into compact device rows and never switches tabs; switching zones is the tab strip's job. A paused zone's row is dimmed.
 
 ### Unassigned
 
-The **Unassigned** entry only appears in a genuinely multi-zone scene, when more than one LED zone exists. It collects device outputs that belong to no zone. In a single-zone scene there is no Unassigned bucket; those outputs fold under the sole zone as Available rows instead.
+The **Unassigned** section lists hardware that no zone claims. Each card has an **Identify** button (the lightning bolt) that flashes the hardware, and a **+** that adds the device to the open zone.
 
-Selecting Unassigned does not open a layout editor. The Unassigned entry is not a real surface (it has no composited output and no layer stack), so the Stage shows the scene's policy for those outputs instead (covered below).
+The section header carries the scene's policy for unclaimed outputs as a compact select: **Off**, **Hold last colors**, or **Follow** one of your zones, each listed in full. The select is disabled while another Studio write runs. The policy is editable when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it shows as a read-only label.
 
-### Resizing the tree
+In a multi-zone scene the section is always there, as a place to move devices out to. In a single-zone scene it appears only when something is actually unassigned.
 
-On wide viewports a drag handle sits between the tree and the Stage. Drag it to set the tree width, anywhere from 240 to 460 pixels. The width persists per browser, and the Stage takes whatever space is left.
+### Resizing the pane
+
+On wide viewports a drag handle sits between the pane and the Stage. Drag it to set the pane width, anywhere from 240 to 460 pixels. The width persists per browser, and the Stage takes the space that is left.
 
 ## The Stage (center column)
 
-The Stage is the center workspace for whatever you have selected. It dispatches on the selection.
+The Stage is the workspace for whatever tab is open.
 
-### A Light: the always-on layout editor
+### An LED zone: the live canvas
 
-For a light zone, the Stage *is* the spatial layout editor. The live effect renders under the device boxes, always on, with no view toggle. This is where you arrange device outputs on the zone's own canvas. The full editor (drag, resize, rotate, shapes, compound selection) is documented in [Layouts](@/studio/layouts.md).
+For an LED zone, the Stage *is* the spatial layout editor. The live effect renders under the device boxes, always on, and only the open zone's outputs appear. Boxes name themselves when their name fits; smaller boxes show their name on hover or selection. A press on overlapping boxes picks the smallest one under the pointer, and **Alt**-click reaches the boxes stacked beneath it. Below the canvas, a properties panel edits the selected output. The full editor is documented in [Layouts](@/studio/layouts.md).
 
-The Stage header for a Light carries the now-playing chip on the left and the zone-canvas controls on the right.
+A zone with no devices shows **Drag devices here, or add them from Unassigned** over the canvas.
 
-The zone-canvas controls appear only once the zone has a layout:
+The Stage header carries the now-playing chip on the left and three canvas actions on the right:
 
-- **Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Shift+Z`) for layout edits.
-- **Revert** and **Save** for the zone's layout. Save doubles as the dirty indicator: it glows green when you have unsaved changes and dims when the layout is clean. Revert discards your in-progress edits.
+- **Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Shift+Z`, or `Ctrl+Y`) step through one history of device moves, canvas edits, and zone changes.
+- **Fit** scales and centers the zone's devices to fill the canvas, keeping their arrangement.
 
-### A Screen: the live face
+There is no Save or Revert. A canvas edit commits when you release the drag or the slider, or when you press Enter in a property field or leave it. A device move commits when you make it.
 
-For a display-face screen, the Stage shows that device's live face. The header carries a Preview label and an external-link button that opens the face in a full-screen preview tab. A caption below the preview reports the screen's resolution as `width×height`.
+### The Screens tab: the live face
 
-{% <callout type="info"> %}
-Two screens of the same resolution are not yet fully distinguishable in the preview, because the preview frame stream does not carry a device id. The Stage accepts a frame only when its resolution matches the selected screen, which rejects in-flight frames from a previously selected screen. Daemon-side frame tagging is the planned fix.
-{% </callout> %}
+The Screens tab switches the pane to a list of the scene's screens, each with a live thumbnail of its face and its resolution. Screens with identical device names take the per-device label the canvas uses, such as `TL LCD 1` and `TL LCD 2`. Selecting a screen shows its live face on the Stage, with its resolution as `width×height` below the preview.
 
-### Unassigned: the policy panel
-
-Selecting the Unassigned entry shows the scene's unassigned-lights policy instead of an editor. Device outputs in no zone follow one of three behaviors:
-
-- **Turn off**: the outputs go dark.
-- **Hold last colors**: the outputs keep whatever they last showed.
-- **Follow `<zone>`**: the outputs mirror a chosen LED zone.
-
-This policy is editable only when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it renders as a read-only label. To give these outputs a real layer stack, assign them to a zone with the green `+` on a device card in the zone tree.
+The Stage header for a screen carries the now-playing chip, a **mounting** select that corrects a panel installed sideways or upside down, a **Preview** label, and a button that opens the face in a full-screen preview tab. Returning to the Screens tab reopens the screen you last had selected.
 
 ### The degraded banner
 
-When the selected surface has a layer that failed to render or is missing its asset, a red **Degraded** banner appears at the top of the Stage. It is the surface-level alarm; open the composition panel to see exactly which layer is unhappy.
+When the open zone or screen has a layer that failed to render or is missing its asset, a red **Degraded** banner appears at the top of the Stage. It is the surface-level alarm; open the composition panel to see which layer is unhappy.
 
 ## The now-playing chip
 
-The now-playing chip lives at the left of the Stage header for every surface, Light and Screen alike. It shows the name of the surface's top layer, or "No layers" when the stack is empty.
+The now-playing chip lives at the left of the Stage header for every zone and screen. It names the top layer of the stack (the effect's own name when the layer has no name of its own), or **No layers** when the stack is empty. A screen showing its display's stored default face adds a **Default** badge.
 
-Clicking the chip toggles the composition slide-over. This is the only way to summon layer editing in the two-column workspace, which is what keeps the Stage uncluttered.
+Clicking the chip toggles the composition slide-over. It is the way layer editing opens, which is what keeps the Stage uncluttered.
 
 ## The composition slide-over
 
-The composition panel slides in over the Stage from the right edge when you click the now-playing chip. It hosts the layer stack (the per-zone list of effects, faces, media, and other inputs), and it overlays only the Stage, never the zone tree.
+The composition panel slides in over the Stage from the right edge when you click the now-playing chip. It hosts the open zone's layer stack (the list of effects, faces, media, and other inputs), and it covers only the Stage, never the device pane or the tabs.
 
 Dismiss it three ways: click the scrim behind it, click the close button in its top-right corner, or press `Escape`.
 
-The panel is the same layer editor used elsewhere in the app, so what you learn here transfers directly. Layer mechanics (adding a layer, blend modes, opacity, transforms, reordering, and per-layer health) are covered in [Layers](@/studio/layers.md), and live effect controls in [Effects and controls](@/studio/effects-and-controls.md).
+The panel is the same layer editor used everywhere layers are edited, so what you learn here transfers directly. Layer mechanics (adding a layer, blend modes, opacity, transforms, reordering, and per-layer health) are covered in [Layers](@/studio/layers.md), and live effect controls in [Effects and controls](@/studio/effects-and-controls.md).
 
-Selecting the Unassigned entry and opening the panel shows a "No layer stack" note instead of an editor, because unassigned lights belong to no zone and have nothing to compose.
+## The undo bar
+
+Deleting a zone shows a bar at the bottom of the Stage that reads **Deleted** and the zone's name, with an **Undo** button. It stays for eight seconds. Undo rebuilds the zone with its name, color, layers, brightness, paused state, position, and the devices it held. The bar and `Ctrl+Z` share one record, so a zone comes back once whichever you use. See [Zones](@/studio/zones.md#deleting-a-zone).
 
 ## The narrow-viewport drawer
 
-On narrow viewports the zone tree collapses into a slide-over drawer to free the Stage. A **Zones** button appears in a strip below the header (it is hidden on wide viewports, where the tree sits permanently beside the Stage).
+On narrow viewports the device pane collapses into a slide-over drawer to free the Stage. A **Devices** button appears in a strip below the header (it is hidden on wide viewports, where the pane sits beside the Stage).
 
-Tapping **Zones** slides the tree in from the left over a dark scrim. Picking a zone from the drawer selects it and closes the drawer, revealing the Stage behind it. Tapping the scrim dismisses the drawer without changing your selection.
+Tapping **Devices** slides the pane in from the left over a dark scrim. Opening another tab closes the drawer and reveals the Stage behind it. Tapping the scrim dismisses the drawer, and focusing the search field opens it.
 
 ## Where to go next
 
-- [Studio overview](@/studio/overview.md): the Scene → Zone → Layers + Layout model.
+- [Studio overview](@/studio/overview.md): the Scene to Zone to Layers plus Layout model.
 - [Scenes](@/studio/scenes.md): switch, create, rename, and delete whole-rig configs.
-- [Zones](@/studio/zones.md): create, color, enable, and delete partitions.
-- [Device assignment](@/studio/device-assignment.md): the device card, channels, and assignment.
+- [Zones](@/studio/zones.md): add, rename, color, pause, reorder, and delete zones.
+- [Device assignment](@/studio/device-assignment.md): the device card, moves, and Unassigned.
 - [Layers](@/studio/layers.md): the layer stack, blend modes, and health.
-- [Layouts](@/studio/layouts.md): the spatial canvas, drag, resize, and save.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a second zone end to end.
+- [Layouts](@/studio/layouts.md): the zone canvas, rig placement, Fit, and undo.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a multi-zone scene step by step.

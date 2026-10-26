@@ -62,8 +62,10 @@ class HypercolorConflictError(HypercolorError):
 class HypercolorPreconditionError(HypercolorError):
     """Raised when an ``If-Match`` precondition fails (HTTP 412).
 
-    ``current_revision`` carries the authoritative revision from the
-    daemon's ``ETag`` reply when available — refetch, rebase, retry.
+    ``current_fence`` is the daemon's ``ETag`` reply, the current scene fence
+    (``"<run_epoch>:<revision>"``) to send as ``if_match`` after rebasing.
+    ``current_revision`` is the revision part of it, read from the ``ETag``
+    or the error details. Refetch, rebase, retry.
     """
 
     def __init__(
@@ -73,9 +75,11 @@ class HypercolorPreconditionError(HypercolorError):
         error: ApiErrorDetails | None = None,
         status_code: int | None = None,
         current_revision: int | None = None,
+        current_fence: str | None = None,
     ) -> None:
         super().__init__(message, error=error, status_code=status_code)
         self.current_revision = current_revision
+        self.current_fence = current_fence
 
 
 class HypercolorUnavailableError(HypercolorError):

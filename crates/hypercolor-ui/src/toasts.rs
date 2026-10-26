@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::time::Duration;
 
 use hypercolor_leptos_ext::prelude::spawn_timeout;
-use leptoaster::{ToastBuilder, ToastLevel, ToasterContext};
+use leptoaster::{ToastBuilder, ToastLevel, ToastPosition, ToasterContext};
 use leptos::prelude::{GetUntracked, Set, use_context};
 
 const TOAST_EXPIRY_MS: u32 = 2_500;
@@ -45,6 +45,7 @@ fn toast(msg: &str, level: ToastLevel) {
     toaster.toast(
         ToastBuilder::new(msg)
             .with_level(level)
+            .with_position(ToastPosition::BottomRight)
             .with_expiry(Some(TOAST_EXPIRY_MS)),
     );
 

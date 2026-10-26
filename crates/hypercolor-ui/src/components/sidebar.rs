@@ -24,6 +24,7 @@ use crate::route_ui::NowPlayingCanvasMode;
 use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
 use crate::zones::ZoneEffectState;
+use crate::zones::surface::apply_zone_id;
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::random_unit;
 
@@ -128,7 +129,7 @@ pub fn Sidebar() -> impl IntoView {
     }
 
     // The player acts on the zone the preview shows: the thumbnail's
-    // Default zone here, or the zone a page's picker focused.
+    // primary zone here, or the zone a page's picker focused.
     let preview_zone = use_context::<PreviewZoneContext>();
     let shown_zone_effect = Memo::new(move |last_seen: Option<&Option<ZoneEffectState>>| {
         let zone_id = preview_zone.and_then(|preview| preview.zone.get());
@@ -141,11 +142,12 @@ pub fn Sidebar() -> impl IntoView {
         })
     });
     let player = move || {
+        let target_zone = apply_zone_id(fx.zones.target_zone_untracked().as_ref());
         shown_zone_effect.with_untracked(|shown| {
             player_target(
                 shown.as_ref(),
                 fx.active_effect_id.get_untracked().as_deref(),
-                &fx.apply_target.get_untracked(),
+                target_zone.as_deref(),
             )
         })
     };
@@ -164,14 +166,14 @@ pub fn Sidebar() -> impl IntoView {
         }
         let PlayerTarget {
             current_effect,
-            apply_target,
+            apply_zone,
         } = player();
         let idx = current_effect
             .as_ref()
             .and_then(|id| list.iter().position(|e| &e.id == id))
             .unwrap_or(0);
         let next_idx = ((idx as i32 + direction).rem_euclid(list.len() as i32)) as usize;
-        fx.apply_effect_to(list[next_idx].id.clone(), apply_target);
+        fx.apply_effect_to(list[next_idx].id.clone(), apply_zone);
     };
 
     // Random effect
@@ -188,7 +190,7 @@ pub fn Sidebar() -> impl IntoView {
         }
         let PlayerTarget {
             current_effect,
-            apply_target,
+            apply_zone,
         } = player();
         let rand = random_unit();
         let mut idx = (rand * list.len() as f64) as usize;
@@ -199,7 +201,7 @@ pub fn Sidebar() -> impl IntoView {
             idx = (idx + 1) % list.len();
         }
         if let Some(effect) = list.get(idx) {
-            fx.apply_effect_to(effect.id.clone(), apply_target);
+            fx.apply_effect_to(effect.id.clone(), apply_zone);
         }
     };
 

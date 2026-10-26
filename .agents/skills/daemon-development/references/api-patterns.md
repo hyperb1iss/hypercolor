@@ -204,7 +204,7 @@ The `details` payload is `Option<DomainErrorDetails>`, a closed enum, not free-f
 
 The body types are `ApiErrorBody` and `ApiErrorDetail` in `hypercolor_types::api::envelope`. `details` carries `skip_serializing_if = "Option::is_none"`, so the key is absent rather than `null` when a variant has no structured context to hand back.
 
-`Internal` always renders `"internal error"` on the wire; the full chain goes to `tracing::error!`. `PreconditionFailed` renders `details: { "expected": N, "current": M }` and also attaches an `ETag` header carrying `current`, so a client rebases off `error.details.current` without a second read.
+`Internal` always renders `"internal error"` on the wire; the full chain goes to `tracing::error!`. `PreconditionFailed` renders `details: { "expected": N, "current": M }` plus `current_epoch` (and `expected_epoch` when the fence named a run). A scene refusal also attaches the current fence as `ETag`, `"<run_epoch>:<revision>"`, so a client rebases off it without a second read. The fence is checked in `scene_tree::check_scene_fence` against the commit candidate; transports only parse it (`api::scene::parse_if_match`).
 
 ## Route Registration
 

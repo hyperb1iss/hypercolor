@@ -1,19 +1,15 @@
-//! Shared layout zone CRUD helpers — used by layout palette, zone properties,
-//! and anywhere zones are added, removed, or restored from cache.
+//! Shared layout output helpers: display names, attachment slot matching,
+//! and identify targets for the outputs in a zone layout.
 
 use std::collections::{HashMap, HashSet};
 
-use leptos::prelude::*;
-
-use crate::api::{self, SegmentSummary};
+use crate::api;
 use crate::channel_names;
 use crate::layout_geometry;
-use crate::layout_history::RemovedOutputCache;
-use crate::style_utils::uuid_v4_hex;
 pub use hypercolor_types::attachment::{
     channel_name_matches_slot_alias, slot_id_matches_channel_name,
 };
-use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputIdentifyTarget {
@@ -34,245 +30,6 @@ pub struct EffectiveOutputDisplay {
     pub label: String,
     pub default_label: String,
     pub identify_target: Option<OutputIdentifyTarget>,
-}
-
-/// Compute the next `display_order` value for a new zone added to the layout.
-pub fn next_display_order(layout: &Signal<Option<SpatialLayout>>) -> i32 {
-    layout.with_untracked(|current| {
-        current
-            .as_ref()
-            .and_then(|l| l.zones.iter().map(|z| z.display_order).max())
-            .unwrap_or(-1)
-            + 1
-    })
-}
-
-/// Read canvas pixel dimensions from the layout signal.
-pub fn current_canvas_dimensions(layout: &Signal<Option<SpatialLayout>>) -> (u32, u32) {
-    layout.with_untracked(|current| {
-        current
-            .as_ref()
-            .map(|layout| (layout.canvas_width.max(1), layout.canvas_height.max(1)))
-            .unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
-    })
-}
-
-/// Create a default `Output` placed at canvas center.
-#[allow(clippy::too_many_arguments)]
-pub fn create_default_zone(
-    device_id: &str,
-    channel_device_id: &str,
-    device_name: &str,
-    zone: Option<&SegmentSummary>,
-    total_leds: usize,
-    canvas_width: u32,
-    canvas_height: u32,
-    display_order: i32,
-) -> Output {
-    let defaults = layout_geometry::default_zone_visuals(
-        device_name,
-        zone,
-        total_leds,
-        canvas_width,
-        canvas_height,
-    );
-    let zone_name = zone.map(|z| z.name.clone());
-    let display_name = zone.map_or_else(
-        || device_name.to_owned(),
-        |z| {
-            let channel_name =
-                channel_names::effective_channel_name(channel_device_id, &z.id, &z.name);
-            prefixed_channel_display_name(device_name, &channel_name)
-        },
-    );
-
-    Output {
-        id: format!("zone_{}", uuid_v4_hex()),
-        name: display_name,
-        device_id: device_id.to_string(),
-        zone_name,
-        position: NormalizedPosition::new(0.5, 0.5),
-        size: layout_geometry::normalize_zone_size_for_editor(
-            NormalizedPosition::new(0.5, 0.5),
-            defaults.size,
-            &defaults.topology,
-            defaults.shape.as_ref(),
-            layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height),
-        ),
-        rotation: 0.0,
-        scale: 1.0,
-        orientation: defaults.orientation,
-        topology: defaults.topology,
-        led_positions: Vec::new(),
-        led_mapping: None,
-        sampling_mode: None,
-        edge_behavior: None,
-        shape: defaults.shape,
-        shape_preset: defaults.shape_preset,
-        attachment: None,
-        brightness: None,
-        display_order,
-    }
-}
-
-/// Remove a device zone from the layout by device_id + zone_name,
-/// stashing it in the cache so re-adding restores its settings.
-pub fn remove_device_zone(
-    device_id: &str,
-    zone_name: Option<&str>,
-    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
-    set_selected_zone_ids: &WriteSignal<HashSet<String>>,
-    set_is_dirty: &WriteSignal<bool>,
-    set_removed_zone_cache: &WriteSignal<RemovedOutputCache>,
-) {
-    set_layout.update(|l| {
-        if let Some(layout) = l
-            && let Some(pos) = layout.zones.iter().position(|z| {
-                z.device_id == device_id
-                    && channel_name_matches_slot_alias(z.zone_name.as_deref(), zone_name)
-            })
-        {
-            let removed = layout.zones.remove(pos);
-            let key = (removed.device_id.clone(), removed.zone_name.clone());
-            set_removed_zone_cache.update(|cache| {
-                cache.insert(key, removed);
-            });
-        }
-    });
-    set_selected_zone_ids.set(HashSet::new());
-    set_is_dirty.set(true);
-}
-
-/// Remove ALL zones for a device from the layout,
-/// stashing each in the cache so re-adding restores settings.
-pub fn remove_all_device_zones(
-    device_id: &str,
-    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
-    set_selected_zone_ids: &WriteSignal<HashSet<String>>,
-    set_is_dirty: &WriteSignal<bool>,
-    set_removed_zone_cache: &WriteSignal<RemovedOutputCache>,
-) {
-    set_layout.update(|l| {
-        if let Some(layout) = l {
-            set_removed_zone_cache.update(|cache| {
-                for zone in layout.zones.iter().filter(|z| z.device_id == device_id) {
-                    let key = (zone.device_id.clone(), zone.zone_name.clone());
-                    cache.insert(key, zone.clone());
-                }
-            });
-            layout.zones.retain(|z| z.device_id != device_id);
-        }
-    });
-    set_selected_zone_ids.set(HashSet::new());
-    set_is_dirty.set(true);
-}
-
-/// Add ALL zones for a device to the layout, checking the cache first.
-#[allow(clippy::too_many_arguments)]
-pub fn add_all_device_zones(
-    device_id: &str,
-    channel_device_id: &str,
-    device_name: &str,
-    zones: &[SegmentSummary],
-    total_leds: usize,
-    layout: &Signal<Option<SpatialLayout>>,
-    set_layout: &crate::components::layout_builder::LayoutWriteHandle,
-    set_selected_zone_ids: &WriteSignal<HashSet<String>>,
-    set_is_dirty: &WriteSignal<bool>,
-    removed_zone_cache: &Signal<RemovedOutputCache>,
-    set_removed_zone_cache: &WriteSignal<RemovedOutputCache>,
-) {
-    let (canvas_width, canvas_height) = current_canvas_dimensions(layout);
-    let existing_zone_names: std::collections::HashSet<Option<String>> =
-        layout.with_untracked(|current| {
-            current
-                .as_ref()
-                .map(|l| {
-                    l.zones
-                        .iter()
-                        .filter(|z| z.device_id == device_id)
-                        .map(|z| z.zone_name.clone())
-                        .collect()
-                })
-                .unwrap_or_default()
-        });
-
-    let has_cached =
-        removed_zone_cache.with_untracked(|c| c.keys().any(|(did, _)| did == device_id));
-
-    if existing_zone_names.is_empty() && !has_cached {
-        let display_order = next_display_order(layout);
-        if let Some(seed) = layout_geometry::seeded_device_layout(
-            device_id,
-            device_name,
-            zones,
-            canvas_width,
-            canvas_height,
-            display_order,
-        ) {
-            let selected_zone_id = seed.zones.first().map(|zone| zone.id.clone());
-            set_layout.update(|l| {
-                if let Some(current_layout) = l {
-                    current_layout.zones.extend(seed.zones.clone());
-                }
-            });
-
-            if let Some(zone_id) = selected_zone_id {
-                set_selected_zone_ids.set(HashSet::from([zone_id]));
-            }
-            set_is_dirty.set(true);
-            return;
-        }
-    }
-
-    let mut first_new_id = None;
-    set_layout.update(|l| {
-        if let Some(current_layout) = l {
-            let mut order = current_layout
-                .zones
-                .iter()
-                .map(|z| z.display_order)
-                .max()
-                .unwrap_or(-1)
-                + 1;
-            for zone in zones {
-                let zn = Some(zone.name.clone());
-                if existing_zone_names.contains(&zn) {
-                    continue;
-                }
-                let cache_key = (device_id.to_string(), Some(zone.name.clone()));
-                let cached = removed_zone_cache.with_untracked(|c| c.get(&cache_key).cloned());
-                let new_zone = if let Some(mut restored) = cached {
-                    restored.id = format!("zone_{}", uuid_v4_hex());
-                    set_removed_zone_cache.update(|c| {
-                        c.remove(&cache_key);
-                    });
-                    restored
-                } else {
-                    create_default_zone(
-                        device_id,
-                        channel_device_id,
-                        device_name,
-                        Some(zone),
-                        total_leds,
-                        canvas_width,
-                        canvas_height,
-                        order,
-                    )
-                };
-                order += 1;
-                if first_new_id.is_none() {
-                    first_new_id = Some(new_zone.id.clone());
-                }
-                current_layout.zones.push(new_zone);
-            }
-        }
-    });
-
-    if let Some(id) = first_new_id {
-        set_selected_zone_ids.set(HashSet::from([id]));
-    }
-    set_is_dirty.set(true);
 }
 
 pub fn prefixed_channel_display_name(device_name: &str, channel_name: &str) -> String {
@@ -304,6 +61,20 @@ pub fn effective_zone_display(
     }
 
     effective_device_output_display(zone, device)
+}
+
+/// The pixel resolution of the display surface `zone` draws, from the
+/// device segment the daemon tags with a `Display` topology hint. `None`
+/// for LED outputs: a keyboard's matrix counts LEDs, not pixels.
+#[must_use]
+pub fn display_resolution(zone: &Output, devices: &[api::DeviceSummary]) -> Option<(u32, u32)> {
+    let device = devices
+        .iter()
+        .find(|device| device.layout_device_id == zone.device_id)?;
+    match resolve_device_segment_summary(device, zone.zone_name.as_deref())?.topology_hint {
+        Some(api::SegmentTopologySummary::Display { width, height, .. }) => Some((width, height)),
+        _ => None,
+    }
 }
 
 pub fn effective_device_name(
@@ -648,70 +419,6 @@ fn zone_id_matches_attachment_slot(binding_slot_id: &str, candidate: Option<&str
         binding_slot_id.eq_ignore_ascii_case(candidate)
             || slot_id_matches_channel_name(binding_slot_id, candidate)
     })
-}
-
-fn representative_zone_id_with_filter(
-    layout: &SpatialLayout,
-    mut filter: impl FnMut(&hypercolor_types::spatial::Output) -> bool,
-) -> Option<String> {
-    layout
-        .zones
-        .iter()
-        .enumerate()
-        .filter(|(_, zone)| filter(zone))
-        .min_by(|(left_index, left_zone), (right_index, right_zone)| {
-            left_zone
-                .display_order
-                .cmp(&right_zone.display_order)
-                .then_with(|| left_index.cmp(right_index))
-        })
-        .map(|(_, zone)| zone.id.clone())
-}
-
-pub fn representative_zone_id_for_device(
-    layout: &SpatialLayout,
-    device_id: &str,
-) -> Option<String> {
-    let suppressed = suppressed_attachment_source_zone_ids(layout);
-    representative_zone_id_with_filter(layout, |zone| {
-        zone.device_id == device_id && !suppressed.contains(&zone.id)
-    })
-    .or_else(|| representative_zone_id_with_filter(layout, |zone| zone.device_id == device_id))
-}
-
-pub fn representative_zone_id_for_device_slot(
-    layout: &SpatialLayout,
-    device_id: &str,
-    zone_name: Option<&str>,
-) -> Option<String> {
-    let suppressed = suppressed_attachment_source_zone_ids(layout);
-    representative_zone_id_with_filter(layout, |zone| {
-        zone.device_id == device_id
-            && channel_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
-            && !suppressed.contains(&zone.id)
-    })
-    .or_else(|| {
-        representative_zone_id_with_filter(layout, |zone| {
-            zone.device_id == device_id
-                && channel_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
-        })
-    })
-}
-
-pub fn selected_zone_matches_device_slot(
-    layout: &SpatialLayout,
-    selected_zone_id: &str,
-    device_id: &str,
-    zone_name: Option<&str>,
-) -> bool {
-    layout
-        .zones
-        .iter()
-        .find(|zone| zone.id == selected_zone_id)
-        .is_some_and(|zone| {
-            zone.device_id == device_id
-                && channel_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
-        })
 }
 
 pub fn suppressed_attachment_source_zone_ids(layout: &SpatialLayout) -> HashSet<String> {
