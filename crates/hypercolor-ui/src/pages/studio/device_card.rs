@@ -35,7 +35,7 @@ use super::device_pane::reveal_pane_zone;
 use super::drag::{DragController, FocusReturn};
 use super::drag_model::{DropAction, MovePayload, Origin};
 use super::move_menu::{MoveMenuAnchor, is_menu_key};
-use super::moves::{light_segment_count, perform, zone_name};
+use super::moves::{light_segment_count, perform, zone_name_in};
 use super::pane_model::elsewhere_label;
 use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
 
@@ -776,13 +776,23 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                     .into_any(),
                 ),
                 CardMode::Unassigned => add_device.map(|device| {
-                    let target = zone_name(studio, &select);
+                    // Read live, so a zone renamed after this card mounted
+                    // is the one the button names.
+                    let target = {
+                        let select = select.clone();
+                        Memo::new(move |_| {
+                            studio
+                                .active_scene
+                                .with(|scene| zone_name_in(scene.as_ref(), &select))
+                        })
+                    };
+                    let device_name = device.name.clone();
                     view! {
                         <button
                             type="button"
                             class="btn-press flex h-6 w-6 items-center justify-center rounded-md text-accent transition-colors hover:bg-accent-subtle disabled:opacity-40"
-                            title=format!("Add to {target}")
-                            aria-label=format!("Add {} to {target}", device.name)
+                            title=move || format!("Add to {}", target.get())
+                            aria-label=move || format!("Add {device_name} to {}", target.get())
                             disabled=move || studio.history.busy.get()
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();

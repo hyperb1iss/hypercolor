@@ -89,17 +89,21 @@ fn landing_dom_id(
 
 /// A zone's shown name, read at call time.
 pub(crate) fn zone_name(studio: StudioContext, zone_id: &str) -> String {
-    studio.active_scene.with_untracked(|scene| {
-        scene
-            .as_ref()
-            .and_then(|scene| {
-                surfaces_from_zones(&scene.zones)
-                    .into_iter()
-                    .find(|surface| surface.id == zone_id)
-                    .map(|surface| surface.name)
-            })
-            .unwrap_or_else(|| "this zone".to_owned())
-    })
+    studio
+        .active_scene
+        .with_untracked(|scene| zone_name_in(scene.as_ref(), zone_id))
+}
+
+/// A zone's shown name in `scene`.
+pub(crate) fn zone_name_in(scene: Option<&api::SceneDocument>, zone_id: &str) -> String {
+    scene
+        .and_then(|scene| {
+            surfaces_from_zones(&scene.zones)
+                .into_iter()
+                .find(|surface| surface.id == zone_id)
+                .map(|surface| surface.name)
+        })
+        .unwrap_or_else(|| "this zone".to_owned())
 }
 
 /// Every LED zone of `scene` as `(zone id, shown name, identity color)`,
