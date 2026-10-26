@@ -60,10 +60,11 @@
 //! write starts from; and `shown`, as the canvas draws it (sizes normalized
 //! for the canvas), which edits and the fresh-read checks compare against.
 //!
-//! [`SceneLedgers`] keeps the ledgers of the active scene. A read for any
-//! other scene, or one the writer started before the ledgers last changed
-//! scene or connection, is never admitted, and a read drops a zone's ledger
-//! only when it is at least as new as that ledger. Write ids and keys are
+//! [`SceneLedgers`] keeps the ledgers of the active scene. A read the
+//! writer started before the ledgers last changed scene or connection is
+//! never admitted; one that shows another scene switches them to it. A
+//! read drops a zone's ledger only when it is at least as new as that
+//! ledger. Write ids and keys are
 //! unique to the page, so a reply can only ever settle the write it
 //! answers.
 
@@ -589,6 +590,19 @@ pub enum Cause {
     SceneChanged,
 }
 
+/// What became of a read the writer started under a [`Ticket`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// Taken in. Holds the edits it cancelled.
+    Taken(Vec<Cancelled>),
+    /// It showed another scene than the one it was started for, while
+    /// nothing else changed the ledgers: the active scene changed, so the
+    /// ledgers switched to it. Holds the edits the switch cancelled.
+    Switched(Vec<Cancelled>),
+    /// The ledgers changed scene or connection while it was out.
+    Refused,
+}
+
 /// Pending edits that were cancelled before the daemon confirmed them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cancelled {
@@ -747,15 +761,17 @@ impl SceneLedgers {
 
     /// A read started under `ticket`, such as the writer's own after a
     /// stale or lost reply. Taken in only while the ledgers are still the
-    /// ones it was started for; `None` when it is not admitted.
-    pub fn admit(&mut self, ticket: Ticket, read: &SceneRead) -> Option<Vec<Cancelled>> {
-        if !self.admits(ticket)
-            || read.scene_id != ticket.scene_id
-            || read.connection != self.connection
-        {
-            return None;
+    /// ones it was started for. A read of another scene under a ticket that
+    /// still holds is newer news than the ledgers' own scene, so they
+    /// switch to it, as [`Self::observe`] would.
+    pub fn admit(&mut self, ticket: Ticket, read: &SceneRead) -> Admission {
+        if !self.admits(ticket) || read.connection != self.connection {
+            return Admission::Refused;
         }
-        Some(self.take_in(read))
+        if read.scene_id != ticket.scene_id {
+            return Admission::Switched(self.observe(read, None).unwrap_or_default());
+        }
+        Admission::Taken(self.take_in(read))
     }
 
     /// Whether some ledger needs a fresh read before it can go on.

@@ -55,8 +55,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use hypercolor_ui::components::layout_builder::ledger::{
-    Cancelled, Cause, Field, Intent, SceneLedgers, SceneRead, Settled, Value, Write, ZoneLedger,
-    ZoneRead,
+    Admission, Cancelled, Cause, Field, Intent, SceneLedgers, SceneRead, Settled, Value, Write,
+    ZoneLedger, ZoneRead,
 };
 
 const ZONE: &str = "main";
@@ -306,9 +306,10 @@ impl Model {
     fn writer_reads(&mut self) {
         let read = self.read_now();
         let ticket = self.ledgers.ticket().expect("a scene");
-        self.ledgers
-            .admit(ticket, &read)
-            .expect("the writer's own read is admitted");
+        assert!(
+            matches!(self.ledgers.admit(ticket, &read), Admission::Taken(_)),
+            "the writer's own read is admitted"
+        );
     }
 
     fn display(&self) -> Vec<Output> {
@@ -1361,7 +1362,7 @@ fn a_delayed_read_for_another_scene_never_touches_the_active_ones() {
     moved(&mut ledgers, "keys", 0.6);
     assert_eq!(
         ledgers.admit(ticket, &scene_read(desk, 4, &[("main", 0.2)])),
-        None
+        Admission::Refused
     );
     assert_eq!(ledgers.scene_id(), Some(stage));
     assert!(ledgers.zone("keys").is_some_and(ZoneLedger::has_pending));
@@ -1377,7 +1378,7 @@ fn switching_back_to_a_scene_does_not_admit_a_read_started_before_the_switch() {
     ledgers.observe(&scene_read(desk, 5, &[("main", 0.2)]), Some("main"));
     assert_eq!(
         ledgers.admit(ticket, &scene_read(desk, 4, &[("main", 0.4)])),
-        None
+        Admission::Refused
     );
 }
 
@@ -1392,22 +1393,19 @@ fn an_older_read_never_drops_a_zone_made_since() {
     moved(&mut ledgers, "fresh", 0.4);
     let ticket = ledgers.ticket().expect("a scene");
     // A read from before the zone existed comes back late.
-    let cancelled = ledgers
-        .admit(ticket, &scene_read(desk, 8, &[("main", 0.2)]))
-        .expect("the same scene");
-    assert!(cancelled.is_empty());
+    assert_eq!(
+        ledgers.admit(ticket, &scene_read(desk, 8, &[("main", 0.2)])),
+        Admission::Taken(Vec::new())
+    );
     assert!(ledgers.zone("fresh").is_some_and(ZoneLedger::has_pending));
     // A newer read without it means the zone is gone, and the edit with it.
-    let cancelled = ledgers
-        .admit(ticket, &scene_read(desk, 10, &[("main", 0.2)]))
-        .expect("the same scene");
     assert_eq!(
-        cancelled,
-        vec![Cancelled {
+        ledgers.admit(ticket, &scene_read(desk, 10, &[("main", 0.2)])),
+        Admission::Taken(vec![Cancelled {
             zone_id: "fresh".to_owned(),
             output_ids: vec!["a".to_owned()],
             cause: Cause::ZoneGone,
-        }]
+        }])
     );
     assert!(ledgers.zone("fresh").is_none());
 }
@@ -1451,7 +1449,7 @@ fn a_reanchor_refuses_reads_started_before_it_and_takes_the_next_one() {
     );
     assert_eq!(
         ledgers.admit(before, &scene_read_on(2, desk, 501, &[("main", 0.2)])),
-        None
+        Admission::Refused
     );
     // The new run's first read, far below confirmed, re-anchors.
     ledgers.observe(&scene_read_on(2, desk, 6, &[("main", 0.2)]), Some("main"));
@@ -1510,6 +1508,35 @@ fn a_read_on_a_newer_socket_opens_it_before_it_is_taken() {
     assert_eq!(ledgers.connection(), 2);
     assert!(!ledgers.admits(before));
     assert_eq!(ledgers.zone("main").and_then(ZoneLedger::revision), Some(1));
+}
+
+#[test]
+fn a_writer_read_that_shows_another_scene_switches_the_ledgers_to_it() {
+    let (desk, snapshot) = (SceneId::new(), SceneId::new());
+    let mut ledgers = ledgers();
+    ledgers.observe(&scene_read(desk, 3, &[("main", 0.2)]), Some("main"));
+    moved(&mut ledgers, "main", 0.4);
+    let ticket = ledgers.ticket().expect("a scene");
+    // Another scene became active (a snapshot keeps the same zone ids)
+    // with no Studio open to observe it: the writer's own read is the
+    // first to show it, and nothing would ever select it otherwise.
+    assert_eq!(
+        ledgers.admit(ticket, &scene_read(snapshot, 4, &[("main", 0.2)])),
+        Admission::Switched(vec![Cancelled {
+            zone_id: "main".to_owned(),
+            output_ids: vec!["a".to_owned()],
+            cause: Cause::SceneChanged,
+        }])
+    );
+    assert_eq!(ledgers.scene_id(), Some(snapshot));
+    assert!(
+        !ledgers.wants_read() && !ledgers.write_due(),
+        "nothing is left to read or send for"
+    );
+    assert!(
+        ledgers.take_write("main").is_none(),
+        "the old scene's edit never goes to the new one"
+    );
 }
 
 #[test]

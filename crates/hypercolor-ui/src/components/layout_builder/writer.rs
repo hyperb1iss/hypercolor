@@ -26,7 +26,9 @@ use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 use leptos::prelude::*;
 
-use super::ledger::{Cancelled, Cause, SceneLedgers, SceneRead, Settled, Ticket, Write, ZoneRead};
+use super::ledger::{
+    Admission, Cancelled, Cause, SceneLedgers, SceneRead, Settled, Ticket, Write, ZoneRead,
+};
 use crate::{api, toasts};
 
 /// How many stale rejections in a row the writer takes before it pauses.
@@ -477,17 +479,32 @@ fn canvas() -> (u32, u32) {
 }
 
 /// Read the scene afresh for the ledgers `ticket` names. `None` when the
-/// read failed; `Some(None)` when the ledgers moved on while it was out.
+/// read failed; `Some(None)` when the ledgers are no longer the ones it was
+/// started for: they changed while it was out, or the read showed another
+/// active scene and they switched to it.
 async fn read_for(ticket: Ticket) -> Option<Option<(api::SceneDocument, SceneRead)>> {
     let connection = with_writer(|writer| writer.ledgers.connection());
     let scene = api::fetch_active_scene().await.ok()?;
     let read = scene_read(&scene, connection, canvas());
-    let admitted = with_writer(|writer| writer.ledgers.admit(ticket, &read));
-    let Some(cancelled) = admitted else {
-        return Some(None);
-    };
-    report(&cancelled);
-    Some(Some((scene, read)))
+    let admission = with_writer(|writer| {
+        let admission = writer.ledgers.admit(ticket, &read);
+        if matches!(admission, Admission::Switched(_)) {
+            writer.paused = false;
+        }
+        admission
+    });
+    match admission {
+        Admission::Taken(cancelled) => {
+            report(&cancelled);
+            Some(Some((scene, read)))
+        }
+        Admission::Switched(cancelled) => {
+            report(&cancelled);
+            changed();
+            Some(None)
+        }
+        Admission::Refused => Some(None),
+    }
 }
 
 fn zone_in<'a>(read: &'a SceneRead, zone_id: &str) -> Option<&'a ZoneRead> {
@@ -519,8 +536,8 @@ async fn read_and_settle(
         );
         return Next::Stop(Ended::Paused);
     };
-    // The ledgers moved on while the read was out; the next turn starts
-    // from where they are now.
+    // The ledgers are not the ones the read was for any more; the next
+    // turn starts from where they are now.
     let Some((scene, read)) = read else {
         return Next::Go;
     };
@@ -547,25 +564,22 @@ async fn read_and_settle(
     // older than its ledger) would only ask for the same read again.
     let still_open = with_writer(|writer| writer.ledgers.zones().any(|(_, l)| l.unsettled()));
     share(scene);
+    // Every settled write is heard before the writer stops for any of them.
+    let mut stop: Option<String> = None;
     for (zone_id, settled) in settled {
         match settled {
             Settled::Resend => {
                 if let Some((_, error)) = answered.filter(|(zone, _)| *zone == zone_id) {
-                    pause(
-                        ticket,
-                        &format!(
-                            "Layout change not saved: {error}. It goes out again with your next edit."
-                        ),
-                    );
-                    return Next::Stop(Ended::Paused);
+                    stop = Some(format!(
+                        "Layout change not saved: {error}. It goes out again with your next edit."
+                    ));
+                    continue;
                 }
                 streaks.lost += 1;
                 if streaks.lost >= LOST_STREAK {
-                    pause(
-                        ticket,
-                        "Layout change not saved yet: replies keep getting lost. It goes out again when the connection is back or with your next edit.",
-                    );
-                    return Next::Stop(Ended::Paused);
+                    stop.get_or_insert_with(|| {
+                        "Layout change not saved yet: replies keep getting lost. It goes out again when the connection is back or with your next edit.".to_owned()
+                    });
                 }
             }
             Settled::Landed { unconfirmed } => {
@@ -579,10 +593,12 @@ async fn read_and_settle(
         }
     }
     if still_open {
-        pause(
-            ticket,
-            "Layout change not confirmed: the scene read did not show its zone. It is checked again when the connection is back or with your next edit.",
-        );
+        stop.get_or_insert_with(|| {
+            "Layout change not confirmed: the scene read did not show its zone. It is checked again when the connection is back or with your next edit.".to_owned()
+        });
+    }
+    if let Some(message) = stop {
+        pause(ticket, &message);
         return Next::Stop(Ended::Paused);
     }
     Next::Go
@@ -608,25 +624,26 @@ async fn after_stale(zone_id: &str, id: u64, streaks: &mut Streaks) -> Next {
         );
         return Next::Stop(Ended::Paused);
     };
-    let Some((scene, read)) = read else {
-        return Next::Go;
-    };
-    let cancelled = with_writer(|writer| {
-        let zone = zone_in(&read, zone_id)?;
-        Some(writer.ledgers.ledger_mut(zone_id)?.refetched(
-            read.revision,
-            zone.raw.clone(),
-            zone.shown.clone(),
-        ))
-    });
-    if let Some(output_ids) = cancelled {
-        report(&[Cancelled {
-            zone_id: zone_id.to_owned(),
-            output_ids,
-            cause: Cause::OutputLeft,
-        }]);
+    if let Some((scene, read)) = read {
+        let cancelled = with_writer(|writer| {
+            let zone = zone_in(&read, zone_id)?;
+            Some(writer.ledgers.ledger_mut(zone_id)?.refetched(
+                read.revision,
+                zone.raw.clone(),
+                zone.shown.clone(),
+            ))
+        });
+        if let Some(output_ids) = cancelled {
+            report(&[Cancelled {
+                zone_id: zone_id.to_owned(),
+                output_ids,
+                cause: Cause::OutputLeft,
+            }]);
+        }
+        share(scene);
     }
-    share(scene);
+    // Checked whatever became of the read, so stale rejections can never
+    // go on without end.
     if streaks.stale >= STALE_STREAK {
         pause(
             ticket,
