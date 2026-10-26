@@ -76,6 +76,9 @@ struct Writer {
     writing: bool,
     /// Set when the writer stopped on a failure, for the active scene.
     paused: bool,
+    /// Set while it holds for the socket to name a new daemon run, once the
+    /// user has been told.
+    holding: bool,
     hooks: Option<(u64, WriterHooks)>,
     next_hooks: u64,
     /// Whether the socket watch has started.
@@ -89,6 +92,7 @@ impl Writer {
             canvas: None,
             writing: false,
             paused: false,
+            holding: false,
             hooks: None,
             next_hooks: 0,
             watching: false,
@@ -240,9 +244,12 @@ pub(crate) fn watch_connection(opened: ReadSignal<u64>, run: ReadSignal<Option<S
 /// The socket opened, its handshake naming daemon run `run`: the ledgers
 /// enter that run, and a paused writer tries again.
 fn connected(run: Option<&str>) {
-    if let Some(run) = run {
-        with_writer(|writer| writer.ledgers.enter(run));
-    }
+    with_writer(|writer| {
+        if let Some(run) = run {
+            writer.ledgers.enter(run);
+        }
+        writer.holding = false;
+    });
     resume();
 }
 
@@ -413,14 +420,27 @@ fn pause(ticket: Ticket, message: &str) {
     }
 }
 
-/// Stop until the socket names the daemon run a read came from, without a
-/// word: the run is the daemon's own news, and nothing failed.
+/// Stop until the socket names the daemon run a read came from. Nothing
+/// failed, so the user hears of it once, and only while edits wait.
 fn hold(ticket: Ticket) {
-    with_writer(|writer| {
-        if writer.ledgers.admits(ticket) {
-            writer.paused = true;
+    let tell = with_writer(|writer| {
+        if !writer.ledgers.admits(ticket) {
+            return false;
         }
+        writer.paused = true;
+        let waiting = writer
+            .ledgers
+            .zones()
+            .any(|(_, ledger)| ledger.has_pending());
+        let tell = waiting && !writer.holding;
+        writer.holding = true;
+        tell
     });
+    if tell {
+        toasts::toast_info(
+            "Layout changes wait to be saved: the daemon restarted, and they go out once the connection catches up.",
+        );
+    }
 }
 
 /// What one turn of the writer does, for the ledgers `ticket` names.

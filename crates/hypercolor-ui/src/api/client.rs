@@ -602,7 +602,7 @@ fn save_api_key_impl(_api_key: &str) {}
 
 /// Build and send one JSON request. Attaches the stored API key, an
 /// optional `If-Match` version precondition, an optional idempotency key,
-/// and — when a body is supplied — serializes it with a `Content-Type:
+/// and, when a body is supplied, serializes it with a `Content-Type:
 /// application/json` header. Performs no status-code handling; callers
 /// classify the response.
 async fn send_request<Req>(
