@@ -389,7 +389,16 @@ fn a_bare_revision_is_still_a_fence_without_a_run() {
         Ok(SceneFence::revision_only(42))
     );
     assert_eq!(SceneFence::parse(" 42 "), Ok(SceneFence::revision_only(42)));
+    assert_eq!(SceneFence::parse("0"), Ok(SceneFence::revision_only(0)));
     assert_eq!(SceneFence::revision_only(42).to_etag(), "\"42\"");
+    assert_eq!(SceneFence::from(42), SceneFence::revision_only(42));
+}
+
+#[test]
+fn a_run_epoch_may_hold_colons_and_still_round_trips() {
+    let fence = SceneFence::new("host:run", 7);
+    assert_eq!(fence.to_etag(), "\"host:run:7\"");
+    assert_eq!(SceneFence::parse(&fence.to_etag()), Ok(fence));
 }
 
 #[test]
@@ -404,6 +413,15 @@ fn anything_else_is_not_a_scene_fence() {
         "run:abc",
         "run epoch:42",
         "-1",
+        "+42",
+        "042",
+        "run:042",
+        "run:+42",
+        "run:18446744073709551616",
+        "18446744073709551616",
+        "\"run\"x:42\"",
+        "\"run:42\", \"run:43\"",
+        "\"42",
     ] {
         assert!(SceneFence::parse(invalid).is_err(), "{invalid:?} parsed");
     }

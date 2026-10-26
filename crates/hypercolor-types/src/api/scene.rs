@@ -85,7 +85,10 @@ impl SceneFence {
     }
 
     /// Parse an `ETag` or `If-Match` value: the epoch-qualified form or a
-    /// bare revision, quoted or not. Weak tags and `*` are not fences.
+    /// bare revision, quoted or not. The revision is plain decimal as
+    /// [`to_etag`](Self::to_etag) writes it, so a sign or a leading zero
+    /// is refused rather than read as some other revision. Weak tags, `*`
+    /// and lists are not fences.
     ///
     /// # Errors
     ///
@@ -109,12 +112,27 @@ impl SceneFence {
         }) {
             return Err(invalid());
         }
-        let revision = revision.parse::<u64>().map_err(|_| invalid())?;
+        let revision = decimal_revision(revision).ok_or_else(invalid)?;
         Ok(Self {
             run_epoch: run_epoch.map(str::to_owned),
             revision,
         })
     }
+}
+
+impl From<u64> for SceneFence {
+    fn from(revision: u64) -> Self {
+        Self::revision_only(revision)
+    }
+}
+
+/// A revision written the one way [`SceneFence::to_etag`] writes it: ASCII
+/// digits, no sign, no leading zero, within `u64`.
+fn decimal_revision(digits: &str) -> Option<u64> {
+    let canonical = !digits.is_empty()
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+        && (digits.len() == 1 || !digits.starts_with('0'));
+    if canonical { digits.parse().ok() } else { None }
 }
 
 /// The `GET /scene` document: the full live tree.
