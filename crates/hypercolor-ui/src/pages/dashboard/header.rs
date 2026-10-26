@@ -90,6 +90,27 @@ pub fn fps_label(fps: f64) -> String {
     format!("{fps:.0} fps")
 }
 
+/// The values the status line shows after the health word, in line order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusValue {
+    Uptime,
+    Devices,
+    Fps,
+}
+
+/// Classes for the separator in front of `value`, given the values the
+/// line shows. Phones hide the health word, so there the first value
+/// shown leads the line and its separator hides with the word; wider
+/// screens keep every separator.
+#[must_use]
+pub fn separator_class(value: StatusValue, shown: &[StatusValue]) -> &'static str {
+    if shown.first() == Some(&value) {
+        "text-fg-tertiary/50 max-md:hidden"
+    } else {
+        "text-fg-tertiary/50"
+    }
+}
+
 #[component]
 pub(super) fn StatusLine() -> impl IntoView {
     let ws = expect_context::<WsContext>();
@@ -127,11 +148,31 @@ pub(super) fn StatusLine() -> impl IntoView {
             metrics
                 .as_ref()
                 .map(|metrics| stabilize_fps_for_display(metrics.fps.delivered, metrics.fps.target))
+                .filter(|fps| *fps > 0.0)
         })
     });
 
-    let separator = || {
-        view! { <span class="text-fg-tertiary/50" aria-hidden="true">"·"</span> }
+    let shown = Memo::new(move |_| {
+        [
+            uptime.with(Option::is_some).then_some(StatusValue::Uptime),
+            devices
+                .with(Option::is_some)
+                .then_some(StatusValue::Devices),
+            fps.with(Option::is_some).then_some(StatusValue::Fps),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+    });
+    let separator = move |value: StatusValue| {
+        view! {
+            <span
+                class=move || shown.with(|shown| separator_class(value, shown))
+                aria-hidden="true"
+            >
+                "·"
+            </span>
+        }
     };
 
     view! {
@@ -146,11 +187,11 @@ pub(super) fn StatusLine() -> impl IntoView {
             // Phones keep the dot and drop the word; readers keep both.
             <span class="shrink-0 max-md:sr-only">{move || health.get().label()}</span>
             {move || uptime.get().map(|uptime| view! {
-                {separator()}
+                {separator(StatusValue::Uptime)}
                 <span class="shrink-0">{format!("up {uptime}")}</span>
             })}
             {move || devices.get().map(|count| view! {
-                {separator()}
+                {separator(StatusValue::Devices)}
                 <A
                     href=crate::route_ui::route_href("/devices")
                     attr:class="shrink-0 rounded transition-colors hover:text-fg-primary"
@@ -159,8 +200,8 @@ pub(super) fn StatusLine() -> impl IntoView {
                     {device_count_label(count)}
                 </A>
             })}
-            {move || fps.get().filter(|fps| *fps > 0.0).map(|fps| view! {
-                {separator()}
+            {move || fps.get().map(|fps| view! {
+                {separator(StatusValue::Fps)}
                 <span class="shrink-0">{fps_label(fps)}</span>
             })}
         </div>
