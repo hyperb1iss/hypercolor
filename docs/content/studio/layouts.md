@@ -120,7 +120,7 @@ Canvas edits commit as you finish them: releasing a drag or a resize, releasing 
 
 **Undo** and **Redo** in the Stage header step through one history that holds canvas edits, device moves, and zone changes in the order you made them. The shortcuts are `Ctrl+Z` to undo and `Ctrl+Shift+Z` or `Ctrl+Y` to redo. They are ignored while you type in a text field or while a drag is in flight. Undoing an edit made in another zone opens that zone's tab first, so you see what changed. The history belongs to the current Studio visit and resets when you switch scenes or leave Studio.
 
-If someone changes the same scene from another client or the CLI while you edit, Studio writes only the fields you changed over the zone as it stands, so their edit to another output or another field survives. When the write still cannot land, a toast says the change was not saved, the edit stays on your canvas, and your next edit retries it.
+If someone changes the same scene from another client or the CLI while you edit, Studio sends only the fields you changed, so their edit to another output or another field survives; where you both changed the same field, whichever write reaches the daemon last wins. A write rejected as stale is checked against a fresh read and sent again. If the scene keeps changing, or a reply is lost and cannot be settled, a toast says the change is not saved yet, the edit stays on your canvas, and it goes out again with your next edit or when the connection is back. Edits keep landing even if you leave Studio before they are sent.
 
 ## Why an effect can run with dark LEDs
 

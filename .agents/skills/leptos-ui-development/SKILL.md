@@ -173,8 +173,8 @@ Studio lives in `src/pages/studio/`, one zone tab at a time:
 Rules the code depends on:
 
 - **Every membership and zone-structure write goes through `StudioHistory`** (`assign_device`, `edit_members`, `create_zone`, `create_zone_filled`, `patch_zone`, `delete_zone`, `undo_deletion`). It fences writes by scene revision, runs one at a time, queues the rest in order, and records the undo journal. Calling `api::zones::*` from a component skips undo and races the queue.
-- **Layout edits commit live.** `LayoutWriteHandle` records each finished gesture in the history and hands it to the commit queue in `components/layout_builder/commit.rs`, which writes field-level changes over the zone as it stands. There is no Save; never reintroduce a dirty-draft model.
-- **The rules are Leptos-free.** `tab_model`, `pane_model`, `placement`, `drag_model`, `history`, `commit`, and `layout_canvas/{picking,labels}` are tested from `tests/studio_*_tests.rs`. Change the rule and its test there, not inside a component.
+- **Layout edits commit live through a ledger.** `LayoutWriteHandle` records each finished edit in the history and turns it into per-field intents in the zone's ledger (`components/layout_builder/ledger.rs`; its module doc is the contract: confirmed state by revision plus ordered intents, writes fenced at the confirmed revision). The page-lifetime writer in `writer.rs` sends them, one write at a time, and outlives a Studio mount. There is no Save; never reintroduce a dirty-draft model or write fields that hold no intent.
+- **The rules are Leptos-free.** `tab_model`, `pane_model`, `placement`, `drag_model`, `history`, `layout_builder/ledger`, and `layout_canvas/{picking,labels}` are tested from `tests/studio_*_tests.rs`. Change the rule and its test there, not inside a component.
 - **Arrivals carry geometry.** An add from Unassigned sends `MemberPlacementHint`s computed from `StudioContext::rig_layout`; a move sends `MemberEdit`s whose `after` states already hold the placement. Never send an assignment that leaves the daemon's default cascade when the rig knows where the device sits.
 
 ## Never Poll: Events, Hints, and Epochs

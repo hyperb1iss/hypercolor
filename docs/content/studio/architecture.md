@@ -126,7 +126,8 @@ The rules behind the tab strip, the pane, placement, and moves live in Leptos-fr
 | `pages/studio/placement.rs` | Where arrivals land from the rig, the first-arrival fit, and Fit |
 | `pages/studio/drag_model.rs` | What a drag carries, what each drop target does with it, spring-loaded tabs, announcements, names for zones made from a device |
 | `pages/studio/history.rs`, `history/zones.rs` | The journal, replay preparation, zone structure steps, and the order waiting operations run in |
-| `components/layout_builder/commit.rs` | The live layout commit queue |
+| `components/layout_builder/ledger.rs` | The per-zone layout ledger: confirmed state, local intents, and how each write outcome settles them |
+| `components/layout_builder/gesture.rs` | Which placement fields a finished drag or resize carries into the editor |
 | `components/layout_canvas/{picking,labels}.rs` | Smallest-box hit testing with Alt cycling, and when a box names itself |
 | `zones/surface.rs` | `zone_display_name`, layer labels, the target-zone rule |
 
@@ -135,8 +136,8 @@ The rules behind the tab strip, the pane, placement, and moves live in Leptos-fr
 Every write that changes membership, changes zone structure, or replays a layout goes through `StudioHistory`. The scene revision fences each write, so one operation runs at a time:
 
 - `busy` marks a membership write, a zone operation, or a layout replay in flight. The Stage canvas is `inert` while it holds.
-- `committing` marks the layout commit queue draining. Editing carries on.
-- An operation asked for while either holds waits its turn in order instead of being dropped. Queued layout commits always go first, so an operation acts on a scene with every finished edit already written.
+- `committing` marks the layout writer holding the scene for a write. Editing carries on.
+- An operation asked for while either holds waits its turn in order instead of being dropped. Pending layout writes always go first, so an operation acts on a scene with every finished edit already written.
 
 The journal records five kinds of step:
 
@@ -173,7 +174,7 @@ One display detail worth knowing when you read the code: layers are authored bot
 
 `LayoutWorkspace` and `LayoutCanvas` (`components/layout_builder.rs`, `components/layout_canvas.rs`) form the single spatial editor. Studio's Stage is its only mount.
 
-`ZoneLayoutProvider` is the ownership seam. Studio's Stage wraps the editor in this provider, which loads the open zone's own placements and commits each finished edit through the per-zone layout route.
+`ZoneLayoutProvider` is the ownership seam. Studio's Stage wraps the editor in this provider, which shows the open zone from its layout ledger and turns each finished edit into ledger intents for the layout writer.
 
 ```rust
 <ZoneLayoutProvider
@@ -190,7 +191,7 @@ One display detail worth knowing when you read the code: layers are authored bot
 - `LayoutZoneDisplayContext`: the per-device attachment profiles resource.
 - `ZoneCanvasActions`: `fit`, `can_fit`, and `has_layout`, consumed by the Stage header's **Fit** button.
 
-The provider reloads the canvas from the shared scene and merges in any edit that has not landed yet, so a refetch never clobbers an edit in flight. It also connects the commit queue and the gesture state to `StudioHistory`, which is how a waiting undo knows to hold for a drag.
+The provider feeds every new scene read to the ledgers, so a refetch never clobbers an edit in flight. It also lends the writer `WriterHooks` and connects the gesture state to `StudioHistory`, which is how a write takes its turn with Studio's other operations and how a waiting undo knows to hold for a drag.
 
 {% <callout type="tip"> %}
 The drag and resize hot path is deliberately non-reactive. A single requestAnimationFrame scheduler paints positions directly to cached DOM elements, and the layout signal is written once on `pointerup`. Live drag preview goes to the daemon over the outbound WebSocket as JSON messages typed `zone_layout_preview` and `zone_layout_preview_clear` (sent by `send_zone_layout_preview` and `send_zone_layout_preview_clear` in `ws/preview.rs`), throttled to `PREVIEW_PUSH_INTERVAL_MS = 75.0`. It is not a REST route and does not touch the global `SpatialEngine`. See [zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the full hot path.
@@ -198,11 +199,22 @@ The drag and resize hot path is deliberately non-reactive. A single requestAnima
 
 ## Live layout commit
 
-There is no Save. `LayoutWriteHandle` records every finished edit (a released drag, resize, or slider, a property field's `change` event on Enter or blur, Fit) in `StudioHistory` and hands the zone to the commit queue (`components/layout_builder/commit.rs`):
+There is no Save. `LayoutWriteHandle` records every finished edit (a released drag, resize, or slider, a property field's `change` event on Enter or blur, Fit) in `StudioHistory`. A drag or resize carries only the placement fields it changed into the editor as the editor stands then (`gesture.rs`), so a change that arrived mid-gesture is never put back. The edit then becomes intents in the zone's ledger.
 
-- The queue keeps the newest state per zone, in the order zones were first queued, and drains one zone at a time because writes are revision-fenced.
-- A commit writes only what the editor changed against the zone it last loaded, field by field, over the zone as it stands when the write goes out. A concurrent edit to another output or another field is never put back.
-- On a `412`, the commit reads the live scene, lays the edit over it, and writes once more. An edit that still cannot land stays on the canvas, a toast says so, and it rides along with the zone's next commit.
+The ledger (`components/layout_builder/ledger.rs`) keeps two things per zone, and its module doc is the contract:
+
+- **Confirmed**: the zone as the daemon last reported it, with that report's scene revision. A scene read replaces it when its revision is at least as new; a write's reply only when it is newer.
+- **Pending intents**: the local edits the daemon has not confirmed, in order. Each names one output, one placement field, and the value the user gave it. An edit adds intents only for the fields it changed, so a field nobody touched never holds one.
+
+The canvas shows confirmed with every pending intent applied in order. A write carries every pending intent at its latest value, fenced at confirmed's revision; fields without intents go out as the daemon stores them, which under the fence changes nothing. One write is out at a time, and its outcome settles it:
+
+- **Applied**: the intents it carried retire, and the reply's zone is adopted when its revision is newer.
+- **Stale**: nothing retires. The zone is read afresh, any field whose fresh value already equals its latest intent drops its intents, and the rest goes out again.
+- **Unknown** (the reply was lost): the zone is read afresh first. If the scene is still at the write's fence, nothing landed and the write goes out again. Past the fence, the write is taken as landed and its intents retire, because resending could undo a later remote write; when the fresh zone does not hold what it carried, a toast says so.
+
+Between clients the daemon's order decides: a remote write that lands after ours wins, and a local intent that reaches the daemon later wins. Undo and redo are edits like any other and make intents the same way.
+
+The ledgers and the writer that sends them (`components/layout_builder/writer.rs`) live for the page, not for a Studio mount, in one queue for the active scene. An edit made just before Studio closes still lands, and a Studio opened again reads the ledgers its predecessor left. Selecting another scene drops them. While a Studio canvas is mounted it lends the writer `WriterHooks`, so each write claims the scene through `StudioHistory::begin_commit`, records what landed, and redraws the canvas. When a write fails, the scene cannot be read to settle one, or three stale rejections or lost replies come in a row, the writer pauses with a toast instead of retrying in a loop; a new edit or a reopened socket resumes it. The ledger's rules are tested from `tests/studio_layout_ledger_tests.rs`.
 
 The wire target is `PUT /scene/zones/{zone}/layout`. The write updates member placements while the daemon preserves member identity and topology; membership changes go through `POST /scene/members/edit` instead. Full route semantics are on the [zone API and concurrency](@/studio/zone-api-and-concurrency.md) page.
 

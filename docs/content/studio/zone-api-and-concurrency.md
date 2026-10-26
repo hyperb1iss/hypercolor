@@ -144,8 +144,10 @@ its restore (releasing the zone's outputs, then putting them back).
 {% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layout"> %}
 Write a compact zone layout containing member placements. Every placement names
 a member id from the live zone document, and the request names exactly the
-zone's current members, each once. Studio commits each finished canvas edit
-here, laying only the fields it changed over the zone as it stands.
+zone's current members, each once. Studio sends each finished canvas edit
+here, fenced at the revision it last confirmed for the zone. Only the fields
+you changed carry new values; every other field goes out as the daemon stored
+it, so under the fence it changes nothing.
 In a scene with no custom LED zones, a write to the primary zone also updates
 the active named layout.
 {% </api_endpoint> %}
