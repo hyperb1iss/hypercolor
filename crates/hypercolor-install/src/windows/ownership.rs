@@ -105,6 +105,11 @@ impl WindowsOwnershipPolicy {
         }
     }
 
+    /// Whether the policy trusts `sid` to change the installation.
+    pub(crate) fn trusts(&self, sid: &WindowsSid) -> bool {
+        self.trusted.contains(sid)
+    }
+
     fn require_trusted_owner(
         &self,
         security: &WindowsSecurity,

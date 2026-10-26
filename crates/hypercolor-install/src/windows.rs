@@ -7,7 +7,17 @@
 //! only the principals it trusts can change them, or replace anything on
 //! the path to them, before a transaction relies on either.
 
+mod manifest;
 mod ownership;
+mod payload;
 pub(crate) mod store;
 
+pub use manifest::{
+    MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
+    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, PermissionClass,
+};
 pub use ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
+pub use payload::{
+    ReleasePayloadError, retain_installed_release_unit, stage_release_payload,
+    validate_release_payload,
+};

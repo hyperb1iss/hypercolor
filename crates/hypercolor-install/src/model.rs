@@ -1,11 +1,13 @@
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::Arc;
 
 #[cfg(unix)]
 use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
+#[cfg(windows)]
+use hypercolor_platform_fs::{WindowsDirectory, WindowsEntryKind, WindowsEntryMetadata};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +71,10 @@ pub struct UnitRecord {
     directory: Arc<ReadOnlyDirectoryAuthority>,
     #[cfg(unix)]
     identity: UnitRootIdentity,
+    #[cfg(windows)]
+    directory: Arc<WindowsDirectory>,
+    #[cfg(windows)]
+    identity: WindowsEntryMetadata,
 }
 
 #[cfg(unix)]
@@ -112,6 +118,40 @@ impl UnitRecord {
         })
     }
 
+    /// Bind a unit record to an already-open exact directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained handle does not identify a
+    /// directory or its metadata cannot be inspected.
+    #[cfg(windows)]
+    pub(crate) fn new(
+        id: UnitId,
+        root_hint: impl Into<PathBuf>,
+        directory: WindowsDirectory,
+    ) -> std::io::Result<Self> {
+        let identity = directory.metadata()?;
+        if identity.kind() != WindowsEntryKind::Directory {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unit authority does not identify a directory",
+            ));
+        }
+        Ok(Self {
+            id,
+            root_hint: root_hint.into(),
+            directory: Arc::new(directory),
+            identity,
+        })
+    }
+
+    /// Borrow the exact opened unit directory.
+    #[must_use]
+    #[cfg(windows)]
+    pub fn directory(&self) -> &WindowsDirectory {
+        &self.directory
+    }
+
     /// Return the digest-derived unit identifier bound to this directory.
     #[must_use]
     pub fn id(&self) -> &UnitId {
@@ -132,7 +172,7 @@ impl std::fmt::Debug for UnitRecord {
         debug
             .field("id", &self.id)
             .field("root_hint", &self.root_hint);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         debug.field("identity", &self.identity);
         debug.finish_non_exhaustive()
     }
@@ -147,7 +187,11 @@ impl PartialEq for UnitRecord {
         {
             self.identity == other.identity
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.identity.same_entry(other.identity)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.root_hint == other.root_hint
         }

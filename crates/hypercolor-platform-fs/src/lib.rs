@@ -27,6 +27,7 @@ pub use unix::{
 pub use windows::{
     DestinationIdentity, WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind,
     WindowsEntryMetadata, WindowsFileLock, WindowsGrant, WindowsSecurity, WindowsSid,
+    windows_child_name_is_valid,
 };
 
 /// Atomically replace `destination` with `source` and make the replacement

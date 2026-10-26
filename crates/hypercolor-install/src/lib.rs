@@ -1,11 +1,13 @@
 //! Transactional release installer for Hypercolor.
 //!
 //! One durable install journal drives every install, upgrade, rollback and
-//! recovery through [`InstallCoordinator`]. Platforms apply and prove each
-//! step: [`LinuxInstallPlatform`] drives a per-user systemd service, and the
-//! `macos` module a launchd agent. The raw `hypercolor __install-release`
-//! command is one host of this library; others (an update activator, a
-//! daemon that observes its own installation) link it directly.
+//! recovery through [`InstallCoordinator`], on every platform. Platforms
+//! apply and prove each step: `LinuxInstallPlatform` drives a per-user
+//! systemd service, and the `macos` module a launchd agent. The `windows`
+//! module holds the machine-wide store and release units a Windows
+//! platform transacts on. The raw `hypercolor __install-release` command is
+//! one host of this library; others (an update activator, a daemon that
+//! observes its own installation) link it directly.
 
 mod coordinator;
 #[cfg(unix)]
@@ -69,3 +71,9 @@ pub use payload::{
 #[cfg(target_os = "macos")]
 pub use payload::{MacosReleaseProvenance, bind_macos_release_provenance};
 pub use store::{InstallLock, InstallStore, InstallStoreError, UnitCollection};
+#[cfg(windows)]
+pub use windows::{
+    MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
+    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError, stage_release_payload,
+    validate_release_payload,
+};

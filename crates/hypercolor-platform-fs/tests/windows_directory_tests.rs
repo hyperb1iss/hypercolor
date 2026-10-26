@@ -297,6 +297,10 @@ fn grant_classes_follow_the_access_mask() {
     // Read and execute.
     assert!(!grant(0x0012_00A9).writes());
     assert!(grant(0x0012_00A9).reads_and_executes());
+    assert!(grant(0x0012_00A9).reads());
+    // Read only, without execute.
+    assert!(grant(0x0012_0089).reads());
+    assert!(!grant(0x0012_0089).reads_and_executes());
     // Create files and folders only, as ProgramData grants users.
     assert!(grant(0x0000_0006).writes());
     assert!(!grant(0x0000_0006).replaces());

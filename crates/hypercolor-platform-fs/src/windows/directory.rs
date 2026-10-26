@@ -286,6 +286,13 @@ impl WindowsGrant {
         self.mask & REPLACE_CLASS_RIGHTS != 0
     }
 
+    /// Whether the grant lets its principal read the entry's contents.
+    #[must_use]
+    pub const fn reads(&self) -> bool {
+        let read = FILE_GENERIC_READ & !SYNCHRONIZE & !READ_CONTROL;
+        self.mask & (GENERIC_ALL | GENERIC_READ) != 0 || self.mask & read == read
+    }
+
     /// Whether the grant lets its principal read and execute the entry.
     #[must_use]
     pub const fn reads_and_executes(&self) -> bool {
@@ -1123,6 +1130,15 @@ fn mark_for_deletion(handle: &OwnedHandle) -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Whether `name` is one plain child name this authority accepts: no
+/// separators, stream markers or reserved characters, no trailing dot or
+/// space, and no reserved device name, so the Win32 layer reads it the way
+/// the handle-relative NT calls do.
+#[must_use]
+pub fn windows_child_name_is_valid(name: &OsStr) -> bool {
+    validate_name(name).is_ok()
 }
 
 /// Accept only one plain child name the Win32 layer reads the same way.
