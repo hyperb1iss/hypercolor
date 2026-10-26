@@ -77,6 +77,11 @@ fn rgba_display_readback_reports_a_buffer_lost_after_its_map_completed() {
         panic!("a readback destroyed after its map must report an error");
     };
     assert!(format!("{error:#}").contains("not mapped"), "{error:#}");
+    assert_eq!(
+        pending.unmap_count(),
+        1,
+        "the destroyed readback unmaps once"
+    );
     assert_eq!(compositor.display_finalize_readback_slots_in_use(), 0);
 }
 

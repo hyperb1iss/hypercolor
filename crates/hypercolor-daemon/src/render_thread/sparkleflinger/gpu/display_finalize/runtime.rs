@@ -9,7 +9,7 @@ use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::scene::ZoneId;
 
 use super::super::super::{DisplayFinalizeCacheKey, DisplayFinalizeParams};
-use super::super::readback::copy_mapped_readback_buffer_into_surface;
+use super::super::readback::copy_mapped_range_into_surface;
 use super::super::source::{GpuSourceFrame, gpu_source_frame, prepare_display_source_texture};
 #[cfg(test)]
 use super::super::telemetry::record_gpu_display_finalize_blocking_wait;
@@ -444,7 +444,7 @@ impl GpuSparkleFlinger {
                     pending.unmap();
                     anyhow::bail!("GPU display finalize surfaces changed before RGBA readback");
                 };
-                copy_mapped_readback_buffer_into_surface(
+                let copied = copy_mapped_range_into_surface(
                     &pending.buffer,
                     pending.used_bytes,
                     pending.width,
@@ -453,8 +453,9 @@ impl GpuSparkleFlinger {
                     &mut surfaces.readback_surfaces,
                     #[cfg(test)]
                     &mut surfaces.last_readback_bytes,
-                )
-                .map(|surface| {
+                );
+                pending.unmap();
+                copied.map(|surface| {
                     super::super::record_gpu_readback(
                         super::super::GpuReadbackKind::Display,
                         u64::from(pending.width) * u64::from(pending.height) * 4,

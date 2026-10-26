@@ -392,3 +392,43 @@ fn a_failed_display_readback_map_unmaps_its_buffer_once() {
     assert_eq!(pending.unmap_count(), 1, "a failed map unmaps once");
     assert_eq!(compositor.display_finalize_readback_slots_in_use(), 0);
 }
+
+/// A display readback that finishes normally unmaps its buffer once, for
+/// both formats, through the finalization's own unmap.
+#[test]
+fn finished_display_readbacks_unmap_their_buffer_once() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+    let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+    for (format, frame_format) in [
+        ("RGBA", DisplayFrameFormat::Rgb),
+        ("YUV", DisplayFrameFormat::Jpeg),
+    ] {
+        let params = display_finalize_params_for_format(2, 2, BlendMode::Replace, frame_format);
+        let dispatch = if frame_format == DisplayFrameFormat::Jpeg {
+            compositor.begin_finalize_display_face_yuv420(&scene, &face, params)
+        } else {
+            compositor.begin_finalize_display_face(&scene, &face, params)
+        };
+        let GpuDisplayFinalizeDispatch::Pending(mut pending) =
+            dispatch.expect("display finalize should dispatch")
+        else {
+            panic!("a 2x2 {format} display finalize should be admitted");
+        };
+        compositor.wait_for_gpu_idle();
+        assert!(
+            compositor
+                .try_finish_pending_display_finalization(&mut pending)
+                .expect("the finished readback should resolve")
+                .is_some(),
+            "the {format} readback finished on an idle GPU"
+        );
+        assert_eq!(
+            pending.unmap_count(),
+            1,
+            "a finished {format} readback unmaps once"
+        );
+    }
+}

@@ -13,7 +13,36 @@ pub(super) struct CachedReadbackSurface {
     pub(super) surface: PublishedSurface,
 }
 
+/// Copy a mapped readback into a surface and unmap the buffer, on success
+/// and on every error.
 pub(super) fn copy_mapped_readback_buffer_into_surface(
+    buffer: &wgpu::Buffer,
+    used_bytes: u64,
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+    surfaces: &mut RenderSurfacePool,
+    #[cfg(test)] last_readback_bytes: &mut u64,
+) -> Result<PublishedSurface> {
+    let copied = copy_mapped_range_into_surface(
+        buffer,
+        used_bytes,
+        width,
+        height,
+        padded_bytes_per_row,
+        surfaces,
+        #[cfg(test)]
+        last_readback_bytes,
+    );
+    // Unmapping resets the buffer's map state so its slot can map again; on
+    // a destroyed buffer it only raises a validation error.
+    buffer.unmap();
+    copied
+}
+
+/// Copy a mapped readback into a surface and leave the buffer mapped, for
+/// callers that own their buffer's unmap.
+pub(super) fn copy_mapped_range_into_surface(
     buffer: &wgpu::Buffer,
     used_bytes: u64,
     width: u32,
@@ -27,19 +56,9 @@ pub(super) fn copy_mapped_readback_buffer_into_surface(
         *last_readback_bytes = used_bytes;
     }
     let slice = buffer.slice(..used_bytes);
-    let mapped = match slice.get_mapped_range() {
-        Ok(mapped) => mapped,
-        Err(error) => {
-            // Unmapping resets the buffer's map state so its slot can map
-            // again; on a destroyed buffer it only raises a validation error.
-            buffer.unmap();
-            return Err(unmapped_readback_error(error));
-        }
-    };
+    let mapped = slice.get_mapped_range().map_err(unmapped_readback_error)?;
     let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
     let Some(mut lease) = surfaces.dequeue() else {
-        drop(mapped);
-        buffer.unmap();
         anyhow::bail!("GPU readback surface pool should provide a reusable slot");
     };
     let target = lease.canvas_mut().as_rgba_bytes_mut();
@@ -65,7 +84,6 @@ pub(super) fn copy_mapped_readback_buffer_into_surface(
         }
     }
     drop(mapped);
-    buffer.unmap();
 
     Ok(lease.submit(0, 0))
 }
