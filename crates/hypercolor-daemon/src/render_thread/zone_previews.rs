@@ -36,14 +36,12 @@ impl ZonePreviewDemand {
         state: &RenderThreadState,
         cadence: &PublicationCadenceState,
         scene_id: Option<SceneId>,
-        elapsed_ms: u64,
     ) -> Self {
         let receivers = state.event_bus.zone_preview_receiver_count();
         let tracked_receivers = state.preview_runtime.zone_preview_receiver_count();
         let demand = state.preview_runtime.zone_preview_demand();
         let active = scene_id.is_some() && receivers > 0;
-        let due = active
-            && cadence.zone_preview_due(elapsed_ms, receivers, tracked_receivers, demand.max_fps);
+        let due = active && cadence.zone_preview_due(receivers, tracked_receivers, demand.max_fps);
         Self::from_summary(active, due, receivers > tracked_receivers, demand)
             .with_selection(zone_preview_selection(state))
     }

@@ -457,6 +457,11 @@ pub(crate) async fn execute_frame(
         IdleGate::EnterIdle => true,
         IdleGate::Render => false,
     };
+    // Only frames that render count toward preview cadence: sleep and idle
+    // polls returned above.
+    frame_loop
+        .publication_cadence
+        .begin_render_frame(scene_snapshot.elapsed_us);
     if entering_idle {
         // The idle loop publishes nothing after this frame, so a preview the
         // cadence skipped here would keep the last live picture for good.
@@ -514,13 +519,11 @@ pub(crate) async fn execute_frame(
     let deferred_sample_done_at = Instant::now();
     let deferred_sample_us = micros_between(deferred_sample_start, deferred_sample_done_at);
     let canvas_preview_due = frame_loop.publication_cadence.canvas_preview_due(
-        scene_snapshot.elapsed_ms,
         state.preview_canvas_receiver_count(),
         state.preview_runtime.tracked_canvas_receiver_count(),
         state.preview_runtime.tracked_canvas_demand().max_fps,
     );
     let screen_canvas_preview_due = frame_loop.publication_cadence.screen_canvas_preview_due(
-        scene_snapshot.elapsed_ms,
         state.event_bus.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_receiver_count(),
         state.preview_runtime.screen_canvas_demand().max_fps,
@@ -595,7 +598,6 @@ pub(crate) async fn execute_frame(
         state,
         &frame_loop.publication_cadence,
         scene_snapshot.scene_runtime.active_scene_id,
-        scene_snapshot.elapsed_ms,
     );
     stage_gpu_zone_previews(
         &mut render.sparkleflinger,
