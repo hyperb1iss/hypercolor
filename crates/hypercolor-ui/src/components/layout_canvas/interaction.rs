@@ -20,6 +20,9 @@ pub(super) struct DragRuntime {
     /// Every zone as it stood at the press, for a cancelled interaction.
     pub(super) base_zones: Vec<Output>,
     pub(super) current_zones: Vec<Output>,
+    /// The canvas extent in pixels, so edge clamps measure boxes as the
+    /// canvas draws them.
+    pub(super) canvas: (u32, u32),
     /// `data-zone-id` → element. Captured at interaction start so the RAF
     /// loop never has to query the DOM.
     pub(super) elements: HashMap<String, web_sys::HtmlElement>,
@@ -79,6 +82,7 @@ impl DragRuntime {
         // back. We never clone the zone vec on the hot path.
         let mut working = SpatialLayoutShim {
             zones: std::mem::take(&mut self.current_zones),
+            canvas: self.canvas,
         }
         .into_layout();
         let changed = match &self.kind {
@@ -231,6 +235,7 @@ impl DragRuntime {
 /// the rest of the layout immutable and out of our hot loop.
 struct SpatialLayoutShim {
     zones: Vec<Output>,
+    canvas: (u32, u32),
 }
 
 impl SpatialLayoutShim {
@@ -239,8 +244,8 @@ impl SpatialLayoutShim {
             id: String::new(),
             name: String::new(),
             description: None,
-            canvas_width: 1,
-            canvas_height: 1,
+            canvas_width: self.canvas.0,
+            canvas_height: self.canvas.1,
             zones: self.zones,
             default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
             default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
