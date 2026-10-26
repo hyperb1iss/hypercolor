@@ -700,10 +700,10 @@ impl StudioHistory {
                 return None;
             }
             if !patched {
-                problems.push(if restyle.enabled.is_some() {
-                    "it could not be paused again"
-                } else {
-                    "its brightness could not be put back"
+                problems.push(match (restyle.enabled, restyle.brightness) {
+                    (Some(_), Some(_)) => "it could not be paused or dimmed again",
+                    (Some(_), None) => "it could not be paused again",
+                    _ => "its brightness could not be put back",
                 });
             }
         }
@@ -1042,7 +1042,9 @@ impl StudioHistory {
                 )),
             }
         }
-        self.selected.set(Some(zone.id.to_string()));
+        if self.is_current(generation) {
+            self.selected.set(Some(zone.id.to_string()));
+        }
         Some((
             StudioEdit::ZoneCreated {
                 zone_id: zone.id.to_string(),

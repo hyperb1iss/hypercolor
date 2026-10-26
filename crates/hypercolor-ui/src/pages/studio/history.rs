@@ -1402,7 +1402,7 @@ mod replay_tests {
     }
 
     #[test]
-    fn a_queued_zone_create_hears_exactly_once_when_the_scene_switches() {
+    fn a_queued_zone_create_that_stands_down_hears_it_was_not_made() {
         let owner = Owner::new();
         owner.with(|| {
             let zone = "11111111-1111-4111-8111-111111111111";
