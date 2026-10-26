@@ -8,8 +8,8 @@ Studio edits the always-present live tree under `/api/v1/scene`. Structural
 writes may carry the scene's fence, the `ETag` the last read or write returned,
 in `If-Match`; the daemon returns HTTP 412 when that fence is stale, and an
 epoch-qualified fence from before a daemon restart is always stale. Control
-values follow a different rule: they never use `If-Match` and instead address a real layer id from the
-live document.
+values follow a different rule: they never use `If-Match` and instead address a
+real layer id from the live document.
 
 {{< img path="img/ui/studio.webp" alt="Studio workspace with zone tabs, the device pane, and the open zone's canvas" />}}
 

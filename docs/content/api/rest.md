@@ -146,8 +146,9 @@ qualified by the daemon run that counted it. `GET /scene` returns `revision`
 and `run_epoch` in the document and the fence in the `ETag` header, as
 `"<run_epoch>:<revision>"`. Structural mutations may send that `ETag` back
 verbatim as `If-Match`; a stale fence, including any epoch-qualified fence
-from an earlier daemon run, returns `412 Precondition Failed` with the current fence instead
-of overwriting a concurrent edit. Treat the `ETag` as opaque. A bare revision
+from an earlier daemon run, returns `412 Precondition Failed` with the current
+fence instead of overwriting a concurrent edit. Treat the `ETag` as opaque. A
+bare revision
 (`"42"` or `42`) is still accepted and checks the revision alone, which is not
 safe across a daemon restart.
 
