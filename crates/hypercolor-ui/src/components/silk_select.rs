@@ -13,6 +13,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_leptos_ext::events::document as browser_document;
+use hypercolor_leptos_ext::prelude::viewport_width as browser_viewport_width;
 use leptos::portal::Portal;
 use leptos::prelude::*;
 
@@ -21,6 +22,21 @@ use crate::components::control_panel::{ControlDropdownDismissHandlers, dropdown_
 fn next_silk_select_id() -> u64 {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// A panel style that fits its options: at least `trigger_width` wide, as
+/// wide as its widest option, and never wider than `room`, the space left
+/// of the viewport's edge. `style` is the trigger-width panel style.
+#[must_use]
+pub fn fit_panel_width(style: &str, trigger_width: f64, room: f64) -> String {
+    style.replacen(
+        &format!("width: {trigger_width}px"),
+        &format!(
+            "min-width: {trigger_width}px; width: max-content; max-width: {}px",
+            room.max(trigger_width)
+        ),
+        1,
+    )
 }
 
 /// Next highlighted option index for a navigation key over `len` options.
@@ -65,6 +81,10 @@ pub fn SilkSelect(
     /// tweaks, e.g. `font-mono text-[10px]`).
     #[prop(into, optional)]
     label_class: String,
+    /// Let the option panel grow past the trigger so every option's label
+    /// reads in full.
+    #[prop(optional)]
+    fit_options: bool,
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let highlighted = RwSignal::new(None::<usize>);
@@ -244,7 +264,20 @@ pub fn SilkSelect(
                                    overflow-y-auto scrollbar-dropdown"
                             id=move || listbox_id_attr.get_value()
                             role="listbox"
-                            style=move || dropdown_panel_style(trigger_ref.get())
+                            style=move || {
+                                let trigger = trigger_ref.get();
+                                let style = dropdown_panel_style(trigger.clone());
+                                match trigger.filter(|_| fit_options) {
+                                    Some(trigger) => {
+                                        let rect = trigger.get_bounding_client_rect();
+                                        let room = browser_viewport_width(rect.right())
+                                            - rect.left()
+                                            - 12.0;
+                                        fit_panel_width(&style, rect.width(), room)
+                                    }
+                                    None => style,
+                                }
+                            }
                             on:pointerdown=|ev: leptos::ev::PointerEvent| ev.stop_propagation()
                         >
                             {move || options.get().into_iter().enumerate().map(|(index, (val, label))| {

@@ -11,13 +11,11 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use hypercolor_types::scene::ZoneRole;
 
-use crate::api::zones::ZoneOutcome;
 use crate::api::{self, DeviceSummary};
 use crate::app::{CapabilitiesContext, DevicesContext};
 use crate::channel_names;
@@ -756,27 +754,13 @@ fn UnassignedPolicy(lights: Memo<Vec<Surface>>) -> impl IntoView {
                 .unwrap_or_default()
         })
     });
+    // The policy is a scene write like any other, so it waits its turn.
     let on_change = Callback::new(move |picked: String| {
         let Some(behavior) = parse_unassigned_policy(&picked) else {
             toasts::toast_error("Unrecognized Unassigned option");
             return;
         };
-        let Some(revision) = studio
-            .active_scene
-            .with_untracked(|scene| scene.as_ref().map(|scene| scene.revision))
-        else {
-            return;
-        };
-        spawn_local(async move {
-            match api::zones::update_unassigned_behavior(&behavior, revision).await {
-                Ok(ZoneOutcome::Applied(_)) => studio.refresh_scene.run(()),
-                Ok(ZoneOutcome::Stale { .. }) => {
-                    toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
-                    studio.refresh_scene.run(());
-                }
-                Err(error) => toasts::toast_error(&format!("Policy update failed: {error}")),
-            }
-        });
+        studio.history.set_unassigned_behavior(behavior);
     });
     view! {
         <div class="w-32 min-w-0 shrink" title="What outputs in no zone show">
@@ -787,6 +771,8 @@ fn UnassignedPolicy(lights: Memo<Vec<Surface>>) -> impl IntoView {
                             value=Signal::derive(move || value.get())
                             options=Signal::derive(move || options.get())
                             on_change=on_change
+                            disabled=Signal::derive(move || studio.history.busy.get())
+                            fit_options=true
                             class="rounded-md border border-edge-subtle/60 bg-surface-overlay/40 px-2 py-1 text-[11px] text-fg-secondary"
                         />
                     }

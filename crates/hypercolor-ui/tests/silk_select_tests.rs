@@ -1,4 +1,4 @@
-use hypercolor_ui::components::silk_select::next_highlight;
+use hypercolor_ui::components::silk_select::{fit_panel_width, next_highlight};
 
 #[test]
 fn arrow_down_advances_and_wraps() {
@@ -40,4 +40,15 @@ fn other_keys_keep_the_current_highlight() {
 fn single_option_stays_pinned() {
     assert_eq!(next_highlight(Some(0), 1, "ArrowDown"), Some(0));
     assert_eq!(next_highlight(Some(0), 1, "ArrowUp"), Some(0));
+}
+
+#[test]
+fn a_fitted_panel_grows_past_its_trigger_to_the_viewport_edge() {
+    let style = "top: 40px; left: 300px; width: 128px; max-height: 320px";
+    assert_eq!(
+        fit_panel_width(style, 128.0, 600.0),
+        "top: 40px; left: 300px; min-width: 128px; width: max-content; max-width: 600px; max-height: 320px"
+    );
+    // A trigger with no room past it never shrinks below its own width.
+    assert!(fit_panel_width(style, 128.0, 40.0).contains("max-width: 128px"));
 }

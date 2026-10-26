@@ -223,7 +223,7 @@ impl StudioHistory {
     /// Release the scene after a zone write. Zone replies carry no
     /// revision, so the scene is read back first, and whatever waits next
     /// writes against the scene as this left it.
-    async fn release(self, generation: u64) {
+    pub(super) async fn release(self, generation: u64) {
         self.resync(generation).await;
         self.refresh.run(());
         self.finish(generation);

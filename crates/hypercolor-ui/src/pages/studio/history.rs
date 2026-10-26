@@ -15,6 +15,7 @@ use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint, PatchZoneRequest,
 };
+use hypercolor_types::scene::UnassignedBehavior;
 use hypercolor_types::spatial::NormalizedPosition;
 use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
@@ -187,6 +188,8 @@ enum Waiting {
     },
     /// The Undo bar's restore of the deletion this token names.
     UndoDeletion(u64),
+    /// The scene's policy for outputs in no zone.
+    UnassignedBehavior(UnassignedBehavior),
 }
 
 impl Waiting {
@@ -210,7 +213,8 @@ impl Waiting {
             Self::Replay { .. }
             | Self::PatchZone { .. }
             | Self::DeleteZone { .. }
-            | Self::UndoDeletion(_) => {}
+            | Self::UndoDeletion(_)
+            | Self::UnassignedBehavior(_) => {}
         }
     }
 }
@@ -584,6 +588,7 @@ impl StudioHistory {
             } => self.patch_zone_now(zone_id, after, failure),
             Waiting::DeleteZone { zone_id, deleted } => self.delete_zone_now(zone_id, deleted),
             Waiting::UndoDeletion(token) => self.undo_deletion_now(token),
+            Waiting::UnassignedBehavior(behavior) => self.set_unassigned_behavior_now(behavior),
         }
     }
 
@@ -733,6 +738,37 @@ impl StudioHistory {
             }),
         };
         Some((scene, request))
+    }
+
+    /// Set the scene's policy for outputs in no zone, in turn with every
+    /// other scene write.
+    pub fn set_unassigned_behavior(self, behavior: UnassignedBehavior) {
+        self.when_free(Waiting::UnassignedBehavior(behavior));
+    }
+
+    fn set_unassigned_behavior_now(self, behavior: UnassignedBehavior) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        if scene.unassigned_behavior == behavior {
+            return;
+        }
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let result = api::zones::update_unassigned_behavior(&behavior, scene.revision).await;
+            if self.is_current(generation) {
+                match result {
+                    Ok(api::zones::ZoneOutcome::Applied(_)) => {}
+                    Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                        toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
+                    }
+                    Err(error) => toasts::toast_error(&format!("Policy update failed: {error}")),
+                }
+            }
+            self.release(generation).await;
+        });
     }
 
     /// Remove outputs from the zone `zone_id` in one membership edit.
@@ -1587,6 +1623,30 @@ mod replay_tests {
         // A layout commit draining when Studio goes keeps going.
         assert!(!history.is_superseded(second));
         assert!(!history.is_current(second));
+    }
+
+    #[test]
+    fn the_unassigned_policy_waits_its_turn_behind_a_running_write() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let history = history(None, true, None, "11111111-1111-4111-8111-111111111111");
+            history.set_unassigned_behavior(UnassignedBehavior::Off);
+            assert!(
+                history.waiting.with_value(|waiting| waiting.len() == 1),
+                "the policy write queues instead of racing the write in flight"
+            );
+            history.replay(false);
+            let expected = history.waiting.with_value(|waiting| match waiting.back() {
+                Some(Waiting::Replay { recorded, .. }) => Some(*recorded),
+                _ => None,
+            });
+            assert_eq!(
+                expected,
+                Some(history.journal.with_untracked(StudioJournal::recorded)),
+                "a policy change records no undo step"
+            );
+        });
+        owner.cleanup();
     }
 
     #[test]
