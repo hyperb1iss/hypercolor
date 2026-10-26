@@ -686,9 +686,11 @@ pub(crate) fn ZoneLayoutProvider(
             && let Some(mut gesture) = gesture
         {
             // What changed elsewhere joins the press-time snapshot too, so
-            // undoing the gesture takes back the gesture alone.
+            // undoing the gesture takes back the gesture alone. A field the
+            // snapshot holds at an edit of its own (one still landing) keeps
+            // it.
             if let Some(previous) = previous_saved.as_ref() {
-                commit::rebase_onto(&mut gesture.zones, &previous.zones, &canonical.zones);
+                commit::rebase_unedited(&mut gesture.zones, &previous.zones, &canonical.zones);
             }
             set_layout.interaction_start.set(Some(gesture));
         }

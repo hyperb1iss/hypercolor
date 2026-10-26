@@ -3,7 +3,7 @@
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use hypercolor_ui::components::layout_builder::commit::{
-    CommitQueue, PendingCommit, commit_placements, merge_gesture, rebase_onto,
+    CommitQueue, PendingCommit, commit_placements, merge_gesture, rebase_onto, rebase_unedited,
 };
 
 fn output(id: &str, device: &str, x: f32) -> Output {
@@ -222,4 +222,19 @@ fn a_press_snapshot_takes_in_a_move_that_arrived_mid_drag() {
         pressed[1].position.x, 0.9,
         "undoing the drag leaves b where it went"
     );
+}
+
+#[test]
+fn a_press_snapshot_keeps_its_own_edits_when_an_earlier_write_lands() {
+    let saved = [output("a", "one", 0.2), output("b", "two", 0.5)];
+    // The press saw "a" at 0.6, an edit still waiting to be written.
+    let mut pressed = saved.clone();
+    pressed[0].position.x = 0.6;
+    // An earlier write of ours landed "a" at 0.4; another client moved "b".
+    let mut landed = saved.clone();
+    landed[0].position.x = 0.4;
+    landed[1].position.x = 0.9;
+    rebase_unedited(&mut pressed, &saved, &landed);
+    assert_eq!(pressed[0].position.x, 0.6, "the snapshot's own edit stays");
+    assert_eq!(pressed[1].position.x, 0.9, "the remote move joins it");
 }

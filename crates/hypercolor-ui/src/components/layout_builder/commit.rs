@@ -80,29 +80,60 @@ impl CommitQueue {
     }
 }
 
+/// Move one field from `from` to `to` when it changed. A `guarded` move
+/// also leaves a field that `target` holds at a value of its own.
+fn carry<T: PartialEq + Copy>(target: &mut T, from: T, to: T, guarded: bool) {
+    if to != from && (!guarded || *target == from) {
+        *target = to;
+    }
+}
+
+/// Carry the placement fields that changed from `baseline` to `edited`
+/// onto `target`. A `guarded` carry skips a field `target` itself changed
+/// from `baseline`.
+fn carry_placement(target: &mut Output, baseline: &Output, edited: &Output, guarded: bool) {
+    carry(
+        &mut target.position.x,
+        baseline.position.x,
+        edited.position.x,
+        guarded,
+    );
+    carry(
+        &mut target.position.y,
+        baseline.position.y,
+        edited.position.y,
+        guarded,
+    );
+    carry(&mut target.size.x, baseline.size.x, edited.size.x, guarded);
+    carry(&mut target.size.y, baseline.size.y, edited.size.y, guarded);
+    carry(
+        &mut target.rotation,
+        baseline.rotation,
+        edited.rotation,
+        guarded,
+    );
+    carry(&mut target.scale, baseline.scale, edited.scale, guarded);
+    carry(
+        &mut target.orientation,
+        baseline.orientation,
+        edited.orientation,
+        guarded,
+    );
+}
+
 /// Carry the placement fields `edited` changed from `baseline` onto
 /// `target`, leaving every other field as `target` has it.
 fn apply_edit(target: &mut Output, baseline: &Output, edited: &Output) {
-    if edited.position.x != baseline.position.x {
-        target.position.x = edited.position.x;
-    }
-    if edited.position.y != baseline.position.y {
-        target.position.y = edited.position.y;
-    }
-    if edited.size.x != baseline.size.x {
-        target.size.x = edited.size.x;
-    }
-    if edited.size.y != baseline.size.y {
-        target.size.y = edited.size.y;
-    }
-    if edited.rotation != baseline.rotation {
-        target.rotation = edited.rotation;
-    }
-    if edited.scale != baseline.scale {
-        target.scale = edited.scale;
-    }
-    if edited.orientation != baseline.orientation {
-        target.orientation = edited.orientation;
+    carry_placement(target, baseline, edited, false);
+}
+
+fn rebase(outputs: &mut [Output], before: &[Output], after: &[Output], guarded: bool) {
+    for output in outputs {
+        if let Some(from) = before.iter().find(|from| from.id == output.id)
+            && let Some(to) = after.iter().find(|to| to.id == output.id)
+        {
+            carry_placement(output, from, to, guarded);
+        }
     }
 }
 
@@ -110,13 +141,14 @@ fn apply_edit(target: &mut Output, baseline: &Output, edited: &Output) {
 /// `outputs`, matched by id: a snapshot taken before that change then
 /// reads as if it had come after it.
 pub fn rebase_onto(outputs: &mut [Output], before: &[Output], after: &[Output]) {
-    for output in outputs {
-        if let Some(from) = before.iter().find(|from| from.id == output.id)
-            && let Some(to) = after.iter().find(|to| to.id == output.id)
-        {
-            apply_edit(output, from, to);
-        }
-    }
+    rebase(outputs, before, after, false);
+}
+
+/// Like [`rebase_onto`], for a snapshot with edits of its own: a field the
+/// snapshot already changed from `before` keeps its value, and only what
+/// it still holds as `before` had it moves to `after`.
+pub fn rebase_unedited(outputs: &mut [Output], before: &[Output], after: &[Output]) {
+    rebase(outputs, before, after, true);
 }
 
 /// The editor's outputs once a canvas gesture ends: `current` as the
