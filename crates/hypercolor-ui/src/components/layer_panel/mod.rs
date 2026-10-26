@@ -62,7 +62,7 @@ pub fn LayerPanel(
     selected_zone_id: ReadSignal<Option<String>>,
     set_selected_zone_id: WriteSignal<Option<String>>,
     /// Surface name supplied by a host that owns surface selection
-    /// elsewhere (the Studio zone tree). When present the panel shows it
+    /// elsewhere (Studio's zone tabs). When present the panel shows it
     /// in the header and drops its own redundant zone selector.
     #[prop(optional, into)]
     surface_label: MaybeProp<String>,
