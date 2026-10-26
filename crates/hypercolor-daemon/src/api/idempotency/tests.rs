@@ -540,3 +540,89 @@ async fn a_new_key_past_the_pending_bound_answers_a_retryable_503() {
     assert!(!replayed(&retried), "the refused key was never recorded");
     assert_eq!(probe.applied.load(Ordering::SeqCst), 2);
 }
+
+struct OneGrant;
+
+impl crate::api::security::CredentialAuthority for OneGrant {
+    fn ceiling(&self) -> crate::api::security::CredentialTier {
+        crate::api::security::CredentialTier::Control
+    }
+
+    fn authenticate(&self, presented: &str) -> Option<crate::api::security::CredentialGrant> {
+        (presented == "hc_grant_token").then(|| {
+            crate::api::security::CredentialGrant::new(
+                crate::api::security::CredentialTier::Control,
+                "studio-tablet",
+                tokio_util::sync::CancellationToken::new(),
+            )
+        })
+    }
+}
+
+/// Through the real security layer: one key sent under two credentials is
+/// two writes, and a repeat under the first credential replays its own.
+#[tokio::test]
+async fn the_security_layer_scopes_one_key_per_credential() {
+    const CONTROL_KEY: &str = "hc_ak_control_scope_test";
+    let probe = probe(false);
+    let handler = {
+        let probe = Arc::clone(&probe);
+        move || {
+            let probe = Arc::clone(&probe);
+            async move {
+                let count = probe.applied.fetch_add(1, Ordering::SeqCst) + 1;
+                (StatusCode::CREATED, format!("applied {count}")).into_response()
+            }
+        }
+    };
+    let layer = IdempotencyLayer {
+        store: IdempotencyStore::default(),
+        routes: Arc::new(IdempotentRoutes::of(&[(Method::POST, "/things")])),
+    };
+    let app = Router::new()
+        .route("/api/v1/things", post(handler))
+        .layer(axum::middleware::from_fn_with_state(layer, guard))
+        .layer(axum::middleware::from_fn_with_state(
+            crate::api::security::SecurityState::with_keys(Some(CONTROL_KEY), None)
+                .with_credential_authority(Arc::new(OneGrant)),
+            crate::api::security::enforce_security,
+        ));
+    let as_credential =
+        |token: &str| {
+            let mut request = request("/api/v1/things", Some("shared-key"));
+            request.headers_mut().insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).expect("bearer"),
+            );
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                std::net::SocketAddr::from(([127, 0, 0, 1], 1042)),
+            ));
+            request
+        };
+
+    let environment = app
+        .clone()
+        .oneshot(as_credential(CONTROL_KEY))
+        .await
+        .expect("response");
+    assert_eq!(environment.status(), StatusCode::CREATED);
+    assert!(!replayed(&environment));
+    let granted = app
+        .clone()
+        .oneshot(as_credential("hc_grant_token"))
+        .await
+        .expect("response");
+    assert_eq!(granted.status(), StatusCode::CREATED);
+    assert!(
+        !replayed(&granted),
+        "another credential's identical key is its own write"
+    );
+    let again = app
+        .clone()
+        .oneshot(as_credential(CONTROL_KEY))
+        .await
+        .expect("response");
+    assert!(replayed(&again));
+    assert_eq!(text(again).await, "applied 1");
+    assert_eq!(probe.applied.load(Ordering::SeqCst), 2);
+}

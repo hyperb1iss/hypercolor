@@ -385,6 +385,12 @@ impl DeviceBindingMigrationContext {
         };
 
         for attempt in 1..=MAX_BINDING_MIGRATION_ATTEMPTS {
+            // Before any guard or persist: a refused reservation ends this
+            // sweep, and a later one retries.
+            self.layout
+                .reserve_scene_revision()
+                .await
+                .map_err(|error| anyhow::anyhow!("device binding migration deferred: {error}"))?;
             let prepared = self.prepare(&remaps).await?;
             let (persisted, persistence) = prepared.persist();
             if migration_was_superseded(&persistence) {

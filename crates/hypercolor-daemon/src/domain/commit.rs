@@ -200,6 +200,11 @@ impl SceneCommitSequencer {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn reservation_for_test(&self) -> Option<Arc<RevisionReservation>> {
+        self.reservation.clone()
+    }
+
     /// Start topping the reservation up in the background when headroom
     /// is low, without waiting and without I/O on the calling thread.
     pub(crate) fn top_up(&self) {

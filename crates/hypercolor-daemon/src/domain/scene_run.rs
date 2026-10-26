@@ -17,7 +17,9 @@
 //! pool off every commit path. A commit that finds its revision uncovered
 //! (that background write failed or has not landed) waits for a
 //! reservation before it takes any scene lock, and the render thread never
-//! waits: a layout publication it cannot cover is rejected and retried.
+//! waits: a layout publication it cannot cover is rejected before anything
+//! is published, and its caller answers `503`. The API side reserves before
+//! it queues one, so that only happens when the disk is refusing writes.
 //!
 //! **Degraded mode.** When the reservation cannot be persisted, scene
 //! commits past the durable ceiling are refused with
@@ -73,10 +75,13 @@ pub const MAX_TRUSTED_FLOOR: u64 = 1 << 53;
 pub const RESERVATION_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Why a scene commit was refused a revision.
+///
+/// Its message is what clients see, so it names no path; the underlying
+/// failure is logged where it happened and kept in [`reason`](Self::reason).
 #[derive(Debug, Clone, thiserror::Error)]
 #[error(
-    "scene revisions cannot be reserved durably ({reason}); scene writes are refused until \
-     the state directory accepts writes again"
+    "scene revisions cannot be reserved durably; scene writes are refused until the state \
+     directory accepts writes again"
 )]
 pub struct RevisionsUnavailable {
     reason: String,
@@ -95,7 +100,7 @@ impl RevisionsUnavailable {
         ))
     }
 
-    /// What kept the reservation from reaching disk.
+    /// What kept the reservation from reaching disk, for logs.
     #[must_use]
     pub fn reason(&self) -> &str {
         &self.reason
@@ -223,8 +228,15 @@ pub(crate) struct RevisionReservation {
     /// Single flight for reservation writes, remembering the last failure
     /// so a failing disk is retried at most once per backoff.
     writer: tokio::sync::Mutex<Option<ReservationFailure>>,
+    /// When the last write failed, readable without the async lock so a
+    /// top-up inside the backoff is never even spawned.
+    failed_at: std::sync::Mutex<Option<Instant>>,
     /// Whether a background top-up is queued or running.
     topping_up: Arc<AtomicBool>,
+    /// The runtime that was current when the run resumed (the daemon's
+    /// main runtime), so top-ups never land on the render thread's
+    /// blocking pool.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 #[derive(Debug)]
@@ -239,8 +251,24 @@ impl RevisionReservation {
             store,
             block: block.max(2),
             writer: tokio::sync::Mutex::new(None),
+            failed_at: std::sync::Mutex::new(None),
             topping_up: Arc::new(AtomicBool::new(false)),
+            runtime: tokio::runtime::Handle::try_current().ok(),
         }
+    }
+
+    fn note_failure(&self, at: Option<Instant>) {
+        *self
+            .failed_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = at;
+    }
+
+    fn failing_recently(&self) -> bool {
+        self.failed_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|at| at.elapsed() < RESERVATION_RETRY_BACKOFF)
     }
 
     /// The highest ceiling known to be durable on disk.
@@ -289,6 +317,7 @@ impl RevisionReservation {
         match outcome {
             Ok(()) => {
                 *failure = None;
+                self.note_failure(None);
                 Ok(())
             }
             Err(reason) => {
@@ -297,10 +326,12 @@ impl RevisionReservation {
                     ceiling = target,
                     "Failed to persist the scene revision reservation; scene writes past the durable ceiling are refused"
                 );
+                let at = Instant::now();
                 *failure = Some(ReservationFailure {
-                    at: Instant::now(),
+                    at,
                     reason: reason.clone(),
                 });
+                self.note_failure(Some(at));
                 Err(RevisionsUnavailable::new(reason))
             }
         }
@@ -308,14 +339,20 @@ impl RevisionReservation {
 
     /// Start persisting the next block in the background once less than
     /// half a block of headroom is left above `revision`. Safe to call
-    /// under any lock and on the render thread: it only spawns, and without
-    /// a runtime it does nothing at all rather than write inline.
+    /// under any lock and on the render thread: it only spawns, on the
+    /// runtime the run resumed under, and without one it does nothing at
+    /// all rather than write inline. Inside the failure backoff it does not
+    /// spawn either.
     pub(crate) fn top_up_if_low(self: &Arc<Self>, revision: SceneRevision) {
         let durable = self.durable();
-        if durable.saturating_sub(revision) > self.block / 2 {
+        if durable.saturating_sub(revision) > self.block / 2 || self.failing_recently() {
             return;
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        let Some(runtime) = self
+            .runtime
+            .clone()
+            .or_else(|| tokio::runtime::Handle::try_current().ok())
+        else {
             return;
         };
         if self.topping_up.swap(true, Ordering::AcqRel) {
@@ -333,6 +370,20 @@ impl RevisionReservation {
     #[cfg(test)]
     pub(crate) fn fail_writes_for_test(&self, fail: bool) {
         self.store.fail_writes_for_test(fail);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_attempts_for_test(&self) -> usize {
+        self.store.write_attempts_for_test()
+    }
+
+    /// Leave no revision past `revision` covered and refuse every write,
+    /// the way a run on a failing disk ends up once its block runs out.
+    #[cfg(test)]
+    pub(crate) fn exhaust_for_test(&self, revision: SceneRevision) {
+        self.store.fail_writes_for_test(true);
+        self.store
+            .set_persisted_for_test(revision.saturating_add(1));
     }
 }
 

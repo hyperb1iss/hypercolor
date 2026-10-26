@@ -472,6 +472,36 @@ async fn rejected_install_restores_the_previous_file_and_publication() {
     );
 }
 
+/// A migration whose scene revision cannot be reserved ends with the
+/// refusal. It must not persist a pass it cannot publish and loop on it.
+#[tokio::test]
+async fn a_refused_scene_reservation_ends_the_rescan_instead_of_looping() {
+    let temp = TempDir::new().expect("tempdir");
+    let fixture = late_migration_fixture(&temp).await;
+    fixture
+        .state
+        .scene_manager
+        .exhaust_revision_reservation_for_test();
+    let revision_before = fixture.state.scene_manager.revision();
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        fixture.state.domains.effects.rescan_registry(),
+    )
+    .await
+    .expect("the rescan returns instead of looping");
+    assert!(
+        matches!(outcome, Err(DomainError::ServiceUnavailable { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(fixture.state.scene_manager.revision(), revision_before);
+    let registry = fixture.state.domains.effects.registry_handle();
+    assert!(
+        registry.read().await.get(&fixture.legacy_id).is_some(),
+        "nothing was published"
+    );
+}
+
 #[tokio::test]
 async fn late_rescan_migrates_every_live_and_durable_reference_before_publication() {
     let temp = TempDir::new().expect("tempdir");

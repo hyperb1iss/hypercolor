@@ -878,6 +878,18 @@ impl SceneContext {
         self.scenes.read_with_revision(read).await
     }
 
+    /// Wait until the next scene revision is durably reserved. Multi-store
+    /// migrations call it before they take any lock or persist anything,
+    /// so a refused reservation ends them instead of looping.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::ServiceUnavailable`] when the reservation cannot be
+    /// persisted.
+    pub(crate) async fn reserve_next_revision(&self) -> Result<(), DomainError> {
+        self.scenes.reserve_next_revision().await
+    }
+
     /// The opaque identity of the daemon run the scene revisions belong to.
     #[must_use]
     pub fn run_epoch(&self) -> &str {

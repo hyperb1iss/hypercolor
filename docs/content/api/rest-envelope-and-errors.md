@@ -122,6 +122,7 @@ daemon's only error rendering; this is the complete mapping.
 | `forbidden` | `403 Forbidden` | Credentials are valid but lack the permission for this operation (for example, a read-only key attempting a write). |
 | `{resource}_not_found` | `404 Not Found` | The resource does not exist. The prefix names the kind that missed: `scene_not_found`, `layer_not_found`, `device_not_found`, `route_not_found` for an unmatched path, and so on. |
 | `conflict` | `409 Conflict` | A state conflict: a duplicate name, an ambiguous lookup, a mutation the current state refuses. |
+| `control_bound` | `409 Conflict` | A control write named keys that an input binding drives. `details.bound` lists them; drop those keys, or clear their bindings in the same request. |
 | `precondition_failed` | `412 Precondition Failed` | An `If-Match` version precondition failed. `details` carries `expected` and `current`, and the response repeats `current` in its `ETag`. |
 | `payload_too_large` | `413 Payload Too Large` | The request body exceeds the size limit. `details.limit_bytes` names the limit when the refusing route knows it (asset and effect uploads) and is omitted otherwise. |
 | `unsupported_media_type` | `415 Unsupported Media Type` | The `Content-Type` is not accepted for this endpoint. |
@@ -130,6 +131,7 @@ daemon's only error rendering; this is the complete mapping.
 | `rate_limited` | `429 Too Many Requests` | The request was throttled by the rate limiter. See below for retry headers. |
 | `internal_error` | `500 Internal Server Error` | An unexpected daemon-side failure. The `message` is intentionally generic; the `request_id` is your key to the daemon logs. |
 | `device_unavailable` | `503 Service Unavailable` | The device exists but cannot serve the request right now. |
+| `service_unavailable` | `503 Service Unavailable` | A daemon capability cannot serve the request right now. Scene writes answer this while their revisions cannot be reserved durably (until the state directory accepts writes again) and while too many keyed scene writes are in flight. Retry later; a keyed write retries with the same `Idempotency-Key`. |
 
 {% <callout type="danger"> %}
 `validation_error` maps to **422**, not 400. A well-formed request that fails a

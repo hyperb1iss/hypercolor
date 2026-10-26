@@ -1,6 +1,7 @@
-//! The reservation's one promise, under injected write failures: no
-//! revision is ever handed out unless the ceiling above it is already on
-//! disk, and nothing that waits for a reservation holds a scene lock.
+//! The reservation's promise, under injected write failures: no revision is
+//! ever handed out unless the ceiling above it is already on disk, a
+//! failing disk is refused loudly and retried at most once per backoff,
+//! and the render path rejects rather than waits.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -96,6 +97,9 @@ fn a_run_whose_first_reservation_fails_refuses_every_revision() {
     assert_eq!(sequencer.revision(), start);
 }
 
+/// Each committed revision is below the ceiling on disk once its commit
+/// returns; that it was below at hand-out is admission's own refusal,
+/// which the failure tests above pin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commits_wait_for_their_reservation_and_stay_below_the_disk() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -135,8 +139,11 @@ async fn a_failing_disk_refuses_commits_until_it_recovers() {
         last,
         "a refused commit leaves the scene alone"
     );
-    assert!(
-        commit(&scenes).await.is_err(),
+    let attempts = reservation.write_attempts_for_test();
+    assert!(commit(&scenes).await.is_err());
+    assert_eq!(
+        reservation.write_attempts_for_test(),
+        attempts,
         "inside the backoff a commit is refused without touching the disk"
     );
 

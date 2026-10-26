@@ -167,6 +167,10 @@ impl EffectContext {
         }
 
         let (parts, scene_migrated) = loop {
+            // Before any lock or persist: a refused reservation ends the
+            // migration here instead of persisting a pass it cannot publish
+            // and looping on it.
+            self.scene.reserve_next_revision().await?;
             let runtime = self.scene.begin_runtime_effect_id_migration().await;
             let scene = self.scene.prepare_effect_id_migration(&migrations).await?;
             let runtime = runtime.prepare(scene.candidate())?;

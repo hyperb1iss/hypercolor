@@ -54,6 +54,8 @@ pub(crate) struct ReservationStore {
     write: Mutex<()>,
     #[cfg(test)]
     fail_writes: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    write_attempts: std::sync::atomic::AtomicUsize,
 }
 
 impl ReservationStore {
@@ -66,7 +68,22 @@ impl ReservationStore {
             write: Mutex::new(()),
             #[cfg(test)]
             fail_writes: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            write_attempts: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Pretend the disk holds exactly `ceiling`, so a test can exhaust a
+    /// reservation without committing a block's worth of revisions.
+    #[cfg(test)]
+    pub(crate) fn set_persisted_for_test(&self, ceiling: u64) {
+        self.persisted.store(ceiling, Ordering::Release);
+    }
+
+    /// How many writes reached the disk, or were refused at it.
+    #[cfg(test)]
+    pub(crate) fn write_attempts_for_test(&self) -> usize {
+        self.write_attempts.load(Ordering::Acquire)
     }
 
     /// Make every later write fail, the way a full or read-only state tier
@@ -87,6 +104,8 @@ impl ReservationStore {
         if self.persisted() >= ceiling {
             return Ok(());
         }
+        #[cfg(test)]
+        self.write_attempts.fetch_add(1, Ordering::AcqRel);
         #[cfg(test)]
         if self.fail_writes.load(Ordering::Acquire) {
             anyhow::bail!("injected reservation write failure");
