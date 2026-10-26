@@ -15,7 +15,7 @@ use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint, PatchZoneRequest,
 };
-use hypercolor_types::scene::UnassignedBehavior;
+use hypercolor_types::scene::{SceneId, UnassignedBehavior};
 use hypercolor_types::spatial::NormalizedPosition;
 use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
@@ -37,6 +37,13 @@ pub use zones::{
     zone_patch_before,
 };
 pub(crate) use zones::{Moved, NewZone};
+
+/// The scene Studio's history belongs to: the scene read now, or, while a
+/// read has failed and none is known, the one it already belonged to.
+#[must_use]
+pub fn held_scene(read: Option<SceneId>, held: Option<SceneId>) -> Option<SceneId> {
+    read.or(held)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StudioEdit {
@@ -341,7 +348,14 @@ impl StudioHistory {
         let latest = RwSignal::new(None);
         let generation = RwSignal::new(0_u64);
         let unresolved = StoredValue::new(Vec::new());
-        let scene_id = Memo::new(move |_| scene.with(|s| s.as_ref().map(|s| s.id)));
+        // A failed read leaves no scene for a moment; that is not a switch to
+        // another scene, so the journal and the unresolved deletes stay.
+        let scene_id = Memo::new(move |previous: Option<&Option<SceneId>>| {
+            held_scene(
+                scene.with(|s| s.as_ref().map(|s| s.id)),
+                previous.copied().flatten(),
+            )
+        });
         Effect::new(move |_| {
             scene_id.get();
             journal.set(StudioJournal::default());

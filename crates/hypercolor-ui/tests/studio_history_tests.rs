@@ -6,8 +6,9 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, StudioEdit, StudioJournal, light_neighbor, prepare_members_replay, rename_is_noop,
-    replay_announcement, resolve_deletion, restore_layer_requests, zone_patch_before,
+    DeletedZone, StudioEdit, StudioJournal, held_scene, light_neighbor, prepare_members_replay,
+    rename_is_noop, replay_announcement, resolve_deletion, restore_layer_requests,
+    zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -507,4 +508,22 @@ fn an_unknown_delete_resolves_by_what_the_scene_shows_after_it() {
     // Still there and nothing was released (a zone of layers alone):
     // nothing changed.
     assert_eq!(resolve_deletion(&scene, &record, &[]), None);
+}
+
+#[test]
+fn a_failed_read_is_not_a_switch_to_another_scene() {
+    let desk = scene().id;
+    let other = hypercolor_types::scene::SceneId::new();
+    assert_eq!(
+        held_scene(None, Some(desk)),
+        Some(desk),
+        "a failed read keeps the scene"
+    );
+    assert_eq!(held_scene(Some(desk), Some(desk)), Some(desk));
+    assert_eq!(
+        held_scene(Some(other), Some(desk)),
+        Some(other),
+        "a real switch moves"
+    );
+    assert_eq!(held_scene(None, None), None);
 }
