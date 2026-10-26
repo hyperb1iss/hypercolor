@@ -525,13 +525,25 @@ pub fn LayoutCanvas() -> impl IntoView {
                 layout_geometry::canvas_pixel_aspect(l.canvas_width, l.canvas_height)
             })
         });
+        // Only boxes the gesture moved: normalizing is not always a fixed
+        // point, and an untouched box must not read as an edit.
         for zone in &mut runtime.current_zones {
-            zone.size = layout_geometry::normalize_zone_size_for_editor(
-                zone.size,
-                &zone.topology,
-                zone.shape.as_ref(),
-                aspect,
-            );
+            let moved = runtime
+                .base_zones
+                .iter()
+                .find(|base| base.id == zone.id)
+                .is_none_or(|base| {
+                    crate::pages::studio::placement::Footprint::of(base)
+                        != crate::pages::studio::placement::Footprint::of(zone)
+                });
+            if moved {
+                zone.size = layout_geometry::normalize_zone_size_for_editor(
+                    zone.size,
+                    &zone.topology,
+                    zone.shape.as_ref(),
+                    aspect,
+                );
+            }
         }
         // Only what the gesture changed lands, over the editor as it is now:
         // another client's move that arrived mid-drag is not put back.
