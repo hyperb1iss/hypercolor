@@ -14,8 +14,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use super::super::tab_model::describe_zone_failure;
+use super::held::{HeldWrite, Pending};
 use super::{
-    Fence, MovePlan, Sent, StudioEdit, StudioHistory, edit_members, prepare_members_replay,
+    Fence, MovePlan, Sent, StudioEdit, StudioHistory, Written, edit_members,
+    prepare_members_replay, written,
 };
 use crate::components::layout_builder::keyed::{self, Answer};
 use crate::{api, toasts};
@@ -150,7 +152,7 @@ enum Settle {
 /// The live scene, read fresh between the steps of a multi-request zone
 /// operation. A scene activated elsewhere since the operation began is
 /// refused, so no step lands outside the scene it started in.
-async fn live_scene(scene_id: SceneId) -> Result<api::SceneDocument, &'static str> {
+pub(super) async fn live_scene(scene_id: SceneId) -> Result<api::SceneDocument, &'static str> {
     match api::fetch_active_scene().await {
         Ok(scene) if scene.id == scene_id => Ok(scene),
         Ok(_) => Err("another scene is active now"),
@@ -159,17 +161,12 @@ async fn live_scene(scene_id: SceneId) -> Result<api::SceneDocument, &'static st
 }
 
 /// Create a zone fenced at `fence`, under an idempotency key of its own.
-async fn create_zone(
-    name: &str,
-    color: Option<&str>,
-    fence: &Fence,
-) -> api::ApiResult<api::zones::ZoneOutcome<api::ZoneResource>> {
+async fn create_zone(name: &str, color: Option<&str>, fence: &Fence) -> Written<api::ZoneResource> {
     let key = keyed::new_key();
-    keyed::send(&fence.run, || {
+    written(fence, key.clone(), || {
         api::zones::create_zone(name, color, fence.revision, &key)
     })
     .await
-    .into_result()
 }
 
 /// Patch a zone fenced at `fence`, under an idempotency key of its own.
@@ -177,13 +174,12 @@ async fn update_zone(
     zone_id: &str,
     request: &PatchZoneRequest,
     fence: &Fence,
-) -> api::ApiResult<api::zones::ZoneOutcome<api::ZoneResource>> {
+) -> Written<api::ZoneResource> {
     let key = keyed::new_key();
-    keyed::send(&fence.run, || {
+    written(fence, key.clone(), || {
         api::zones::update_zone_keyed(zone_id, request, fence.revision, &key)
     })
     .await
-    .into_result()
 }
 
 /// Delete a zone fenced at `fence`, under `key`.
@@ -218,7 +214,7 @@ async fn restore_outputs(
         assignment: None,
     };
     match edit_members(&request, fence).await {
-        Ok(api::zones::ZoneOutcome::Applied(_)) => Ok(()),
+        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => Ok(()),
         _ => Err(()),
     }
 }
@@ -231,7 +227,7 @@ async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRe
     };
     matches!(
         update_zone(zone_id, request, &Fence::of(&live)).await,
-        Ok(api::zones::ZoneOutcome::Applied(_))
+        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_)))
     )
 }
 
@@ -245,52 +241,9 @@ enum TakeDown {
     /// The outputs left, but the delete failed and they could not be put
     /// back: the release that stranded them, for the journal to undo.
     Stranded(Vec<MemberEdit>),
-    /// No answer came back for the delete: the release, held with the
-    /// zone's record and the delete's fence and key until it settles.
-    Unknown(Held),
-}
-
-/// What a delete no answer came back for leaves to settle it with.
-#[derive(Clone, Debug)]
-pub(super) struct Held {
-    pub release: Vec<MemberEdit>,
-    pub fence: Fence,
-    pub key: String,
-}
-
-/// A zone delete whose outcome is not known yet, kept whole (layers
-/// included) until it settles.
-#[derive(Clone, Debug)]
-pub(super) struct Unresolved {
-    pub scene_id: SceneId,
-    pub record: DeletedZone,
-    pub held: Held,
-}
-
-/// Whether a delete fenced in daemon run `fence_run` settles by going out
-/// again under its key, with the daemon's answer saying what it did, while
-/// the scene is read in run `live_run`. In any other run its own has
-/// ended and commits nothing more, so the read itself says whether it
-/// landed. A daemon that names no runs gets the read.
-#[must_use]
-pub fn settles_by_key(fence_run: &str, live_run: &str) -> bool {
-    !fence_run.is_empty() && fence_run == live_run
-}
-
-/// What a delete whose outcome was unknown turned out to be: a delete when
-/// it landed, so Undo rebuilds the zone from its record; the release of
-/// its devices when it did not, so Undo puts them back; nothing when
-/// nothing changed.
-#[must_use]
-pub fn resolve_deletion(
-    deleted: bool,
-    record: &DeletedZone,
-    release: &[MemberEdit],
-) -> Option<StudioEdit> {
-    if deleted {
-        return Some(StudioEdit::ZoneDeleted(Box::new(record.clone())));
-    }
-    (!release.is_empty()).then(|| StudioEdit::Members(release.to_vec()))
+    /// No answer came back for the release of its devices or for the
+    /// delete itself: what went out, held until it settles.
+    Unknown(Box<Pending>),
 }
 
 /// Why undoing a zone's creation left the zone in place.
@@ -300,6 +253,8 @@ enum Removal {
     Kept(&'static str),
     /// The delete did not go through; trying again may.
     Failed(String),
+    /// No answer came back for the delete.
+    Unknown,
 }
 
 fn flip(change: MemberEdit) -> MemberEdit {
@@ -310,7 +265,8 @@ fn flip(change: MemberEdit) -> MemberEdit {
 }
 
 impl StudioHistory {
-    fn next_token(self) -> u64 {
+    /// A fresh token for a deletion or a held place in the journal.
+    pub(super) fn next_token(self) -> u64 {
         let token = self.tokens.get_value().wrapping_add(1);
         self.tokens.set_value(token);
         token
@@ -331,79 +287,6 @@ impl StudioHistory {
         if self.alive() {
             outcome(NewZone::NotCreated);
         }
-    }
-
-    /// Keep a delete whose outcome is unknown until it settles.
-    pub(super) fn hold_unresolved(self, scene_id: SceneId, record: DeletedZone, held: Held) {
-        self.unresolved.try_update_value(|unresolved| {
-            unresolved.push(Unresolved {
-                scene_id,
-                record,
-                held,
-            });
-        });
-    }
-
-    /// Whether a delete waits to settle.
-    pub(super) fn has_unresolved(self) -> bool {
-        self.unresolved
-            .try_with_value(|held| !held.is_empty())
-            .unwrap_or(false)
-    }
-
-    /// Settle the deletes no answer came back for, now the connection may
-    /// be back (see [`settles_by_key`]). Each one's place in the journal
-    /// becomes the entry that undoes what it really did; one still without
-    /// an answer, or whose scene is not active, waits for the next try.
-    pub(super) async fn resolve_unresolved(self) {
-        // Taken out while they settle, so a second try meanwhile finds none.
-        let held = self
-            .unresolved
-            .try_update_value(std::mem::take)
-            .unwrap_or_default();
-        let mut waiting = Vec::new();
-        for item in held {
-            match self.what_the_delete_did(&item).await {
-                Some(deleted) => self.settle_held(&item, deleted),
-                None => waiting.push(item),
-            }
-        }
-        self.unresolved
-            .try_update_value(|unresolved| unresolved.extend(waiting));
-    }
-
-    /// Whether a held delete landed, or `None` while that cannot be told.
-    async fn what_the_delete_did(self, item: &Unresolved) -> Option<bool> {
-        let live = live_scene(item.scene_id).await.ok()?;
-        let gone = || {
-            !live
-                .zones
-                .iter()
-                .any(|zone| zone.id.to_string() == item.record.zone_id)
-        };
-        if !settles_by_key(&item.held.fence.run, &live.run_epoch) {
-            return Some(gone());
-        }
-        match delete_zone(&item.record.zone_id, &item.held.fence, &item.held.key).await {
-            Answer::Final {
-                outcome: Ok(api::zones::ZoneOutcome::Applied(())),
-                ..
-            } => Some(true),
-            // Not applied now: a zone that is gone anyway was deleted all the
-            // same (a key the daemon no longer keeps runs afresh, and finds
-            // the scene moved on).
-            Answer::Final { .. } => Some(gone()),
-            // The run ended while the delete went out again: the next try
-            // reads it from the scene.
-            Answer::OtherRun | Answer::Lost(_) => None,
-        }
-    }
-
-    /// Put the entry that undoes what a held delete did in its place.
-    pub(super) fn settle_held(self, item: &Unresolved, deleted: bool) {
-        let entry = resolve_deletion(deleted, &item.record, &item.held.release);
-        self.journal
-            .update(|journal| journal.settle_unresolved(item.record.token, entry));
     }
 
     /// Move the selection to `next` when it is on `zone_id`, a zone
@@ -498,15 +381,32 @@ impl StudioHistory {
                 return;
             }
             let zone = match created {
-                Ok(api::zones::ZoneOutcome::Applied(zone)) => zone,
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                Written::Answered(Ok(api::zones::ZoneOutcome::Applied(zone))) => zone,
+                Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                     toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                     outcome(NewZone::NotCreated);
                     self.release(generation).await;
                     return;
                 }
-                Err(error) => {
+                Written::Answered(Err(error)) => {
                     toasts::toast_error(&format!("Zone create failed: {error}"));
+                    outcome(NewZone::NotCreated);
+                    self.release(generation).await;
+                    return;
+                }
+                Written::Unknown(fence, key) => {
+                    self.record_held(
+                        scene.id,
+                        format!("creating {name}"),
+                        Pending {
+                            fence,
+                            key,
+                            write: HeldWrite::Create {
+                                name: name.clone(),
+                                color: color.clone(),
+                            },
+                        },
+                    );
                     outcome(NewZone::NotCreated);
                     self.release(generation).await;
                     return;
@@ -530,6 +430,13 @@ impl StudioHistory {
                                     moved = Moved::Landed;
                                 }
                                 Sent::Failed => moved = Moved::Failed,
+                                Sent::Unknown(_) => {
+                                    toasts::toast_info(&format!(
+                                        "Created {}, but no answer came back for the move, so it may not have happened. Check the canvas.",
+                                        zone.name
+                                    ));
+                                    moved = Moved::Failed;
+                                }
                                 Sent::Superseded => {
                                     self.overtaken(outcome);
                                     return;
@@ -634,6 +541,7 @@ impl StudioHistory {
         if before == after {
             return;
         }
+        let what = format!("the change to {}", zone.name);
         let Some(generation) = self.begin() else {
             return;
         };
@@ -643,17 +551,34 @@ impl StudioHistory {
                 return;
             }
             match result {
-                Ok(api::zones::ZoneOutcome::Applied(_)) => self.journal.update(|journal| {
-                    journal.record(StudioEdit::ZonePatched {
-                        zone_id,
-                        before,
-                        after,
+                Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => {
+                    self.journal.update(|journal| {
+                        journal.record(StudioEdit::ZonePatched {
+                            zone_id,
+                            before,
+                            after,
+                        });
                     });
-                }),
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                }
+                Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                     toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                 }
-                Err(error) => toasts::toast_error(&describe_zone_failure(failure, &error)),
+                Written::Answered(Err(error)) => {
+                    toasts::toast_error(&describe_zone_failure(failure, &error));
+                }
+                Written::Unknown(fence, key) => self.record_held(
+                    scene.id,
+                    what,
+                    Pending {
+                        fence,
+                        key,
+                        write: HeldWrite::Patch {
+                            zone_id,
+                            before,
+                            after,
+                        },
+                    },
+                ),
             }
             self.release(generation).await;
         });
@@ -703,13 +628,13 @@ impl StudioHistory {
                     TakeDown::Stranded(released) => self.journal.update(|journal| {
                         journal.record(StudioEdit::Members(released));
                     }),
-                    TakeDown::Unknown(held) => {
+                    TakeDown::Unknown(pending) => {
                         let token = record.token;
-                        let name = record.name.clone();
+                        let name = format!("deleting {}", record.name);
                         self.journal.update(|journal| {
                             journal.record(StudioEdit::Unresolved { token, name });
                         });
-                        self.hold_unresolved(scene.id, record, held);
+                        self.hold(scene.id, token, *pending);
                     }
                     TakeDown::Kept => {}
                 }
@@ -763,7 +688,7 @@ impl StudioHistory {
                 assignment: None,
             };
             match edit_members(&request, &Fence::of(&scene)).await {
-                Ok(api::zones::ZoneOutcome::Applied(response)) => {
+                Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                     revision = response.document.revision;
                     release.clone_from(&response.changes);
                     let mut released: Vec<_> = response
@@ -774,13 +699,26 @@ impl StudioHistory {
                     released.sort_by_key(|state| state.index);
                     record.outputs = released.into_iter().map(|state| state.output).collect();
                 }
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                     toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                     return TakeDown::Kept;
                 }
-                Err(error) => {
+                Written::Answered(Err(error)) => {
                     toasts::toast_error(&format!("Zone delete failed: {error}"));
                     return TakeDown::Kept;
+                }
+                // The devices may have left already: the release waits, so
+                // that whatever it did, Undo can put them back.
+                Written::Unknown(fence, key) => {
+                    toasts::toast_info(&format!(
+                        "Lost the connection while deleting {}. Its devices may have left it already; once the connection is back, Undo can put them back.",
+                        record.name
+                    ));
+                    return TakeDown::Unknown(Box::new(Pending {
+                        fence,
+                        key,
+                        write: HeldWrite::Members(request),
+                    }));
                 }
             }
         }
@@ -803,11 +741,14 @@ impl StudioHistory {
                     "Lost the connection while deleting {}. Once it is back, Undo can bring back what was removed.",
                     record.name
                 ));
-                return TakeDown::Unknown(Held {
-                    release,
+                return TakeDown::Unknown(Box::new(Pending {
                     fence,
                     key,
-                });
+                    write: HeldWrite::Delete {
+                        record: record.clone(),
+                        release,
+                    },
+                }));
             }
         };
         let live = live_scene(scene_id).await;
@@ -823,11 +764,14 @@ impl StudioHistory {
         // A restart with no scene to read yet: the record waits, whole, for
         // the next read to say what the delete did.
         if outcome.is_none() && live.is_err() {
-            return TakeDown::Unknown(Held {
-                release,
+            return TakeDown::Unknown(Box::new(Pending {
                 fence,
                 key,
-            });
+                write: HeldWrite::Delete {
+                    record: record.clone(),
+                    release,
+                },
+            }));
         }
         let put_back = record.outputs.is_empty()
             || match live {
@@ -876,13 +820,20 @@ impl StudioHistory {
             return None;
         }
         let zone = match created {
-            Ok(api::zones::ZoneOutcome::Applied(zone)) => zone,
-            Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+            Written::Answered(Ok(api::zones::ZoneOutcome::Applied(zone))) => zone,
+            Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                 toasts::toast_error("Scene changed elsewhere; the zone was not restored.");
                 return None;
             }
-            Err(error) => {
+            Written::Answered(Err(error)) => {
                 toasts::toast_error(&format!("Zone restore failed: {error}"));
+                return None;
+            }
+            Written::Unknown(..) => {
+                toasts::toast_info(&format!(
+                    "No answer came back for restoring {}, so it may have been made again. Check the scene.",
+                    record.name
+                ));
                 return None;
             }
         };
@@ -1091,14 +1042,14 @@ impl StudioHistory {
                         }
                         // The redo's place holds until a scene read says
                         // what the delete did, so it cannot run twice.
-                        TakeDown::Unknown(held) => {
+                        TakeDown::Unknown(pending) => {
                             self.replay_words.try_set_value(None);
                             let entry = StudioEdit::Unresolved {
                                 token: record.token,
-                                name: record.name.clone(),
+                                name: format!("deleting {}", record.name),
                             };
                             self.settle_zone_entry(index, redo, entry, settle);
-                            self.hold_unresolved(scene_id, record, held);
+                            self.hold(scene_id, record.token, *pending);
                         }
                         TakeDown::Kept => {}
                     }
@@ -1242,6 +1193,12 @@ impl StudioHistory {
                         .map(|state| state.zone_id.to_string());
                     filled_now = changes.into_iter().map(flip).collect();
                 }
+                Sent::Unknown(_) => {
+                    toasts::toast_info(
+                        "History may not have been applied: no answer came back for moving the devices out. Check the scene.",
+                    );
+                    return None;
+                }
                 Sent::Failed | Sent::Superseded => return None,
             }
         }
@@ -1263,15 +1220,20 @@ impl StudioHistory {
                 }
                 Some(_) => {
                     let key = keyed::new_key();
-                    match delete_zone(&zone_id, &Fence::of(&live), &key)
-                        .await
-                        .into_result()
-                    {
-                        Ok(api::zones::ZoneOutcome::Applied(())) => Removal::Removed,
-                        Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                            Removal::Failed("the scene changed elsewhere".to_owned())
-                        }
-                        Err(error) => Removal::Failed(error.to_string()),
+                    match delete_zone(&zone_id, &Fence::of(&live), &key).await {
+                        Answer::Final {
+                            outcome: Ok(api::zones::ZoneOutcome::Applied(())),
+                            ..
+                        } => Removal::Removed,
+                        Answer::Final {
+                            outcome: Ok(api::zones::ZoneOutcome::Stale { .. }),
+                            ..
+                        } => Removal::Failed("the scene changed elsewhere".to_owned()),
+                        Answer::Final {
+                            outcome: Err(error),
+                            ..
+                        } => Removal::Failed(error.to_string()),
+                        Answer::OtherRun | Answer::Lost(_) => Removal::Unknown,
                     }
                 }
             },
@@ -1302,6 +1264,15 @@ impl StudioHistory {
                     self.prepare_words(&StudioEdit::Members(filled_now.clone()), false);
                 }
                 Some(StudioEdit::Members(filled_now))
+            }
+            Removal::Unknown => {
+                toasts::toast_info(&format!(
+                    "No answer came back for removing {name}, so it may be gone. Check the scene."
+                ));
+                moves_out.then(|| {
+                    self.prepare_words(&StudioEdit::Members(filled_now.clone()), false);
+                    StudioEdit::Members(filled_now)
+                })
             }
             Removal::Failed(reason) if !moves_out => {
                 toasts::toast_error(&format!("{name} could not be removed: {reason}"));
@@ -1340,13 +1311,19 @@ impl StudioHistory {
             return None;
         }
         let zone = match created {
-            Ok(api::zones::ZoneOutcome::Applied(zone)) => zone,
-            Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+            Written::Answered(Ok(api::zones::ZoneOutcome::Applied(zone))) => zone,
+            Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                 toasts::toast_error("Scene changed elsewhere; history was not applied");
                 return None;
             }
-            Err(error) => {
+            Written::Answered(Err(error)) => {
                 toasts::toast_error(&format!("History could not be applied: {error}"));
+                return None;
+            }
+            Written::Unknown(..) => {
+                toasts::toast_info(&format!(
+                    "No answer came back for making {name} again, so it may be back. Check the scene."
+                ));
                 return None;
             }
         };
@@ -1382,6 +1359,9 @@ impl StudioHistory {
                     {
                         Sent::Landed { changes, .. } => filled_now = changes,
                         Sent::Failed => {}
+                        Sent::Unknown(_) => toasts::toast_info(
+                            "No answer came back for moving the devices back in, so they may be there. Check the canvas.",
+                        ),
                         Sent::Superseded => return None,
                     }
                 }

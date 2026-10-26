@@ -57,13 +57,14 @@ impl Fence {
 }
 
 mod announce;
+mod held;
 mod zones;
 
 pub use announce::{DeviceLookup, ZoneLookup, replay_announcement};
 
+pub use held::{members_landed, resolve_deletion, settles_by_key};
 pub use zones::{
-    DeletedZone, light_neighbor, rename_is_noop, resolve_deletion, restore_layer_requests,
-    settles_by_key, zone_patch_before,
+    DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
 };
 pub(crate) use zones::{Moved, NewZone};
 
@@ -97,9 +98,10 @@ pub enum StudioEdit {
         after: PatchZoneRequest,
     },
     ZoneDeleted(Box<DeletedZone>),
-    /// A zone delete whose outcome a lost connection hid. It holds its
-    /// place in the journal until a scene read says what it did, then
-    /// becomes that entry; until then neither undo nor redo moves past it.
+    /// A write whose outcome a lost connection hid, `name` saying what it
+    /// was. It holds its place in the journal until the write settles,
+    /// then becomes the entry that undoes what it did, or goes when it did
+    /// nothing; until then neither undo nor redo moves past it.
     Unresolved {
         token: u64,
         name: String,
@@ -295,6 +297,9 @@ enum Sent {
     },
     /// It did not apply; the failure is already reported.
     Failed,
+    /// No answer came back, even under its key: what went out, to hold
+    /// until it settles.
+    Unknown(Box<held::Pending>),
     /// A scene switch overtook it; nothing may consume the reply.
     Superseded,
 }
@@ -350,11 +355,12 @@ pub(crate) struct StudioHistory {
     announcer: StoredValue<Option<Announcer>>,
     /// What to announce once the undo or redo in flight lands.
     replay_words: StoredValue<Option<String>>,
-    /// Deletes whose outcome a lost connection hid, until a scene read
-    /// settles them.
-    unresolved: StoredValue<Vec<zones::Unresolved>>,
+    /// Writes whose outcome a lost connection hid, until they settle.
+    unresolved: StoredValue<Vec<held::Unresolved>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
+    /// The daemon run the socket last named, when there is a socket.
+    run: Option<ReadSignal<Option<String>>>,
     generation: RwSignal<u64>,
     selected: RwSignal<Option<String>>,
     refresh: Callback<()>,
@@ -399,7 +405,7 @@ impl StudioHistory {
                 operation.stand_down();
             }
         });
-        let history = Self {
+        let mut history = Self {
             journal,
             busy,
             committing,
@@ -412,6 +418,7 @@ impl StudioHistory {
             pending_layout,
             scene,
             latest,
+            run: None,
             generation,
             selected,
             refresh,
@@ -423,11 +430,12 @@ impl StudioHistory {
                 !busy.get() && journal.with(|j| j.redo_edit().is_some())
             }),
         };
-        // A delete no answer came back for settles once the connection is
+        // A write no answer came back for settles once the connection is
         // back: sent again under its own key in its own daemon run, or read
         // from the scene once that run has ended.
         let socket = use_context::<crate::app::WsContext>()
             .map(|ws| (ws.connection_generation, ws.run_epoch));
+        history.run = socket.map(|(_, run)| run);
         Effect::new(move |_| {
             scene.track();
             if let Some((opened, run)) = socket {
@@ -441,6 +449,11 @@ impl StudioHistory {
         history
     }
 
+    /// The daemon run the socket last named.
+    fn socket_run(self) -> Option<String> {
+        self.run.and_then(|run| run.try_get_untracked().flatten())
+    }
+
     /// The newest scene document Studio knows. `None` once Studio is gone,
     /// so a write finishing after it unmounts reads nothing instead of
     /// panicking on its disposed signals.
@@ -451,7 +464,7 @@ impl StudioHistory {
                 .try_with_untracked(|latest| {
                     latest
                         .as_ref()
-                        .filter(|latest| newer(latest, &scene))
+                        .filter(|latest| newer(latest, &scene, self.socket_run().as_deref()))
                         .cloned()
                 })
                 .flatten()
@@ -464,9 +477,10 @@ impl StudioHistory {
         Some(
             self.latest
                 .with(|latest| {
+                    let run = self.run.and_then(|run| run.get());
                     latest
                         .as_ref()
-                        .filter(|latest| newer(latest, &scene))
+                        .filter(|latest| newer(latest, &scene, run.as_deref()))
                         .cloned()
                 })
                 .unwrap_or(scene),
@@ -851,18 +865,23 @@ impl StudioHistory {
         };
         leptos::task::spawn_local(async move {
             let key = keyed::new_key();
-            let result = keyed::send(&scene.run_epoch, || {
+            let fence = Fence::of(&scene);
+            let result = written(&fence, key.clone(), || {
                 api::zones::update_unassigned_behavior(&behavior, scene.revision, &key)
             })
-            .await
-            .into_result();
+            .await;
             if self.is_current(generation) {
                 match result {
-                    Ok(api::zones::ZoneOutcome::Applied(_)) => {}
-                    Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                    Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => {}
+                    Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
                         toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
                     }
-                    Err(error) => toasts::toast_error(&format!("Policy update failed: {error}")),
+                    Written::Answered(Err(error)) => {
+                        toasts::toast_error(&format!("Policy update failed: {error}"));
+                    }
+                    Written::Unknown(..) => toasts::toast_info(
+                        "No answer came back for the unassigned-device policy, so it may not have been saved. Check the scene.",
+                    ),
                 }
             }
             self.release(generation).await;
@@ -946,6 +965,7 @@ impl StudioHistory {
             settle(done, None);
             return;
         };
+        let scene_id = request.scene_id;
         leptos::task::spawn_local(async move {
             let applied = match self.send_members(generation, request, fence, point).await {
                 Sent::Superseded => {
@@ -953,6 +973,10 @@ impl StudioHistory {
                     return;
                 }
                 Sent::Failed => None,
+                Sent::Unknown(pending) => {
+                    self.record_held(scene_id, "the assignment".to_owned(), *pending);
+                    None
+                }
                 Sent::Landed { changes, revision } => {
                     if !changes.is_empty() {
                         self.journal
@@ -983,13 +1007,20 @@ impl StudioHistory {
             return Sent::Superseded;
         }
         let response = match result {
-            Ok(api::zones::ZoneOutcome::Applied(response)) => response,
-            outcome => {
+            Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => response,
+            Written::Answered(outcome) => {
                 report_failure(&outcome);
                 if matches!(outcome, Ok(api::zones::ZoneOutcome::Stale { .. })) {
                     self.resync(generation).await;
                 }
                 return Sent::Failed;
+            }
+            Written::Unknown(fence, key) => {
+                return Sent::Unknown(Box::new(held::Pending {
+                    fence,
+                    key,
+                    write: held::HeldWrite::Members(request),
+                }));
             }
         };
         let mut landed = response.document.revision;
@@ -1010,7 +1041,7 @@ impl StudioHistory {
                 return Sent::Superseded;
             }
             match result {
-                Ok(api::zones::ZoneOutcome::Applied(response)) => {
+                Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                     landed = response.document.revision;
                     fold_placements(&mut changes, &response.changes);
                     self.accept(response);
@@ -1179,7 +1210,7 @@ impl StudioHistory {
             }
             StudioEdit::Unresolved { name, .. } => {
                 toasts::toast_info(&format!(
-                    "Still waiting to learn whether {name} was deleted. Undo and redo go on once the scene loads again."
+                    "Still waiting to learn whether {name} went through. Undo and redo go on once the connection is back."
                 ));
             }
             StudioEdit::Members(changes) => {
@@ -1217,7 +1248,7 @@ impl StudioHistory {
                         return;
                     }
                     match result {
-                        Ok(api::zones::ZoneOutcome::Applied(response)) => {
+                        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                             if self.is_current(generation)
                                 && self.scene.with_untracked(|s| {
                                     s.as_ref().is_some_and(|s| s.id == scene.id)
@@ -1252,12 +1283,17 @@ impl StudioHistory {
                                 });
                             }
                         }
-                        Ok(api::zones::ZoneOutcome::Stale { .. }) => toasts::toast_error(
-                            "Scene changed elsewhere; history was not applied. Try again.",
-                        ),
-                        Err(error) => {
-                            toasts::toast_error(&format!("History could not be applied: {error}"))
+                        Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
+                            toasts::toast_error(
+                                "Scene changed elsewhere; history was not applied. Try again.",
+                            );
                         }
+                        Written::Answered(Err(error)) => {
+                            toasts::toast_error(&format!("History could not be applied: {error}"));
+                        }
+                        Written::Unknown(..) => toasts::toast_info(
+                            "No answer came back for the undo or redo, so it may have been applied. Check the scene.",
+                        ),
                     }
                     self.refresh.run(());
                     self.finish(generation);
@@ -1274,25 +1310,52 @@ fn settle(done: Option<EditDone>, applied: Option<u64>) {
 }
 
 /// Whether `latest`, a document history adopted, is newer than the shared
-/// `scene`. Revisions only compare within one daemon run, so a document
-/// of another run never is.
-fn newer(latest: &api::SceneDocument, scene: &api::SceneDocument) -> bool {
-    latest.id == scene.id && latest.run_epoch == scene.run_epoch && latest.revision > scene.revision
+/// `scene`. Revisions only compare within one daemon run, so across runs
+/// the newer is the one of `live_run`, the run the socket names.
+fn newer(latest: &api::SceneDocument, scene: &api::SceneDocument, live_run: Option<&str>) -> bool {
+    if latest.id != scene.id {
+        return false;
+    }
+    if latest.run_epoch == scene.run_epoch {
+        return latest.revision > scene.revision;
+    }
+    live_run == Some(latest.run_epoch.as_str())
+}
+
+/// How a keyed write of history's came out.
+pub(super) enum Written<T> {
+    /// The daemon's final answer.
+    Answered(api::ApiResult<api::zones::ZoneOutcome<T>>),
+    /// No answer, even under its key, or one from another daemon run: it
+    /// may have landed or not. The fence and key it went out under, to
+    /// settle it with once the connection is back.
+    Unknown(Fence, String),
+}
+
+/// Send one write of history's fenced at `fence` under `key`, which
+/// `attempt` sends it under, until the daemon answers.
+pub(super) async fn written<T, F, Fut>(fence: &Fence, key: String, attempt: F) -> Written<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = api::client::KeyedResponse<T>>,
+{
+    match keyed::send(&fence.run, attempt).await {
+        keyed::Answer::Final { outcome, .. } => Written::Answered(outcome),
+        keyed::Answer::OtherRun | keyed::Answer::Lost(_) => Written::Unknown(fence.clone(), key),
+    }
 }
 
 /// Send one membership edit fenced at `fence`, under an idempotency key of
-/// its own that every retry of it reuses. No answer, or one from another
-/// daemon run, reads as an error.
+/// its own that every retry of it reuses.
 pub(super) async fn edit_members(
     request: &EditMembersRequest,
     fence: &Fence,
-) -> api::ApiResult<api::zones::ZoneOutcome<EditMembersResponse>> {
+) -> Written<EditMembersResponse> {
     let key = keyed::new_key();
-    keyed::send(&fence.run, || {
+    written(fence, key.clone(), || {
         api::zones::edit_members(request, fence.revision, &key)
     })
     .await
-    .into_result()
 }
 
 fn report_failure<T>(outcome: &api::ApiResult<api::zones::ZoneOutcome<T>>) {
@@ -1459,6 +1522,7 @@ mod replay_tests {
             can_redo: Signal::stored(false),
             scene: Signal::stored(scene),
             latest: RwSignal::new(None),
+            run: None,
             generation: RwSignal::new(1),
             selected: RwSignal::new(Some(selected.to_owned())),
             refresh: Callback::new(|()| {}),
@@ -1782,17 +1846,20 @@ mod replay_tests {
             history.journal.update(|journal| {
                 journal.record(StudioEdit::Unresolved {
                     token: gone.token,
-                    name: gone.name.clone(),
+                    name: format!("deleting {}", gone.name),
                 });
                 journal.record(StudioEdit::Members(Vec::new()));
             });
-            history.hold_unresolved(
+            history.hold(
                 scene.id,
-                gone,
-                zones::Held {
-                    release: Vec::new(),
+                gone.token,
+                held::Pending {
                     fence: Fence::of(&scene),
                     key: "delete".to_owned(),
+                    write: held::HeldWrite::Delete {
+                        record: gone.clone(),
+                        release: Vec::new(),
+                    },
                 },
             );
             assert!(history.has_unresolved());
@@ -1802,12 +1869,12 @@ mod replay_tests {
                 .expect("held");
             // The daemon restarted, and the new run's scene has no zone.
             after.run_epoch = "next".to_owned();
-            assert!(!settles_by_key(&item.held.fence.run, &after.run_epoch));
+            assert!(!settles_by_key(&item.pending.fence.run, &after.run_epoch));
             let gone_now = !after
                 .zones
                 .iter()
-                .any(|zone| zone.id.to_string() == item.record.zone_id);
-            history.settle_held(&item, gone_now);
+                .any(|zone| zone.id.to_string() == gone.zone_id);
+            history.settle_held(&item, resolve_deletion(gone_now, &gone, &[]));
             history.journal.with_untracked(|journal| {
                 assert_eq!(journal.cursor, 2, "settling neither adds nor moves a step");
                 assert!(matches!(journal.entries[0], StudioEdit::ZoneDeleted(_)));

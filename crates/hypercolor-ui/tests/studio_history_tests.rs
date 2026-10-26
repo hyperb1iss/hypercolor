@@ -6,9 +6,9 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, StudioEdit, StudioJournal, held_scene, light_neighbor, prepare_members_replay,
-    rename_is_noop, replay_announcement, resolve_deletion, restore_layer_requests, settles_by_key,
-    zone_patch_before,
+    DeletedZone, StudioEdit, StudioJournal, held_scene, light_neighbor, members_landed,
+    prepare_members_replay, rename_is_noop, replay_announcement, resolve_deletion,
+    restore_layer_requests, settles_by_key, zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -540,4 +540,37 @@ fn a_failed_read_is_not_a_switch_to_another_scene() {
         "a real switch moves"
     );
     assert_eq!(held_scene(None, None), None);
+}
+
+#[test]
+fn a_held_membership_edit_reads_as_landed_only_when_the_scene_holds_it() {
+    let scene = scene();
+    let zone = &scene.zones[0];
+    let stand = hypercolor_ui::api::zone_outputs(zone).remove(0);
+    let release = vec![MemberEdit {
+        before: Some(MemberState {
+            zone_id: zone.id,
+            output: stand.clone(),
+            index: 0,
+        }),
+        after: None,
+    }];
+    // The stand is still in the zone, so the release did not land.
+    assert!(!members_landed(&scene, &release));
+    let mut released = scene.clone();
+    released.zones[0].members.clear();
+    assert!(members_landed(&released, &release));
+    // Putting it back landed where the scene holds it again.
+    let restore = vec![MemberEdit {
+        before: None,
+        after: Some(MemberState {
+            zone_id: zone.id,
+            output: stand,
+            index: 0,
+        }),
+    }];
+    assert!(members_landed(&scene, &restore));
+    assert!(!members_landed(&released, &restore));
+    // An assignment names no outputs, so a read tells nothing about it.
+    assert!(!members_landed(&scene, &[]));
 }
