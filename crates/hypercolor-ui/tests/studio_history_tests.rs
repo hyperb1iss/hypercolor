@@ -6,7 +6,7 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, StudioEdit, StudioJournal, held_document, held_scene, light_neighbor,
+    DeletedZone, Settled, StudioEdit, StudioJournal, held_document, held_scene, light_neighbor,
     members_landed, prepare_members_replay, rename_is_noop, replay_announcement, resolve_deletion,
     restore_layer_requests, settles_by_key, zone_patch_before,
 };
@@ -254,10 +254,11 @@ fn a_deletion_is_undoable_once_and_follows_its_zone_to_a_new_id() {
         before: PatchZoneRequest::default(),
         after: PatchZoneRequest::default(),
     });
-    journal.record(StudioEdit::ZoneDeleted(Box::new(DeletedZone::of(
+    let deletion = journal.record(StudioEdit::ZoneDeleted(Box::new(DeletedZone::of(
         zone, 0, 3,
     ))));
-    assert_eq!(journal.undoable_deletion(3), Some(1));
+    assert_eq!(journal.undoable_deletion(3), Some(deletion));
+    assert!(journal.is_latest(deletion));
     assert_eq!(journal.undoable_deletion(4), None);
 
     // Undoing the deletion steps past it; it can no longer be undone.
@@ -275,6 +276,138 @@ fn a_deletion_is_undoable_once_and_follows_its_zone_to_a_new_id() {
         Some(StudioEdit::ZoneDeleted(record)) => assert_eq!(record.zone_id, new.to_string()),
         other => panic!("expected the deletion, found {other:?}"),
     }
+}
+
+fn patched(name: &str) -> StudioEdit {
+    StudioEdit::ZonePatched {
+        zone_id: "zone".into(),
+        before: PatchZoneRequest::default(),
+        after: PatchZoneRequest {
+            name: Some(name.to_owned()),
+            ..PatchZoneRequest::default()
+        },
+    }
+}
+
+fn unresolved(name: &str) -> StudioEdit {
+    StudioEdit::Unresolved {
+        name: name.to_owned(),
+    }
+}
+
+#[test]
+fn a_replay_settles_its_own_place_whatever_settles_before_it() {
+    let mut journal = StudioJournal::default();
+    let held = journal.record(unresolved("the change to Desk"));
+    let deletion = patched("Deleted");
+    journal.record(deletion.clone());
+    // Undo of the newest step starts, and the older held write settles as
+    // having done nothing before the undo lands.
+    let (replayed, edit) = journal.replayed(false).expect("a step to undo");
+    assert_eq!(edit, &deletion);
+    journal.settle(held, Settled::Gone);
+    journal.settle(replayed, Settled::Unapplied(deletion.clone()));
+    assert_eq!(
+        journal.undo_edit(),
+        None,
+        "the undo stepped past its own step"
+    );
+    assert_eq!(journal.redo_edit(), Some(&deletion));
+}
+
+#[test]
+fn an_undo_with_no_answer_keeps_its_step_until_it_settles() {
+    let first = patched("First");
+    let second = patched("Second");
+    for landed in [false, true] {
+        let mut journal = StudioJournal::default();
+        journal.record(first.clone());
+        let (id, _) = {
+            journal.record(second.clone());
+            journal.replayed(false).expect("a step to undo")
+        };
+        journal.hold(id, "undoing the change".to_owned());
+        assert_eq!(journal.waiting_on(false), Some("undoing the change"));
+        assert_eq!(journal.waiting_on(true), Some("undoing the change"));
+        assert_eq!(journal.undo_edit(), Some(&unresolved("undoing the change")));
+        assert_eq!(
+            journal.redo_edit(),
+            None,
+            "the step is not on the redo side"
+        );
+        if landed {
+            journal.settle(id, Settled::Unapplied(second.clone()));
+            assert_eq!(journal.undo_edit(), Some(&first));
+            assert_eq!(journal.redo_edit(), Some(&second));
+        } else {
+            journal.settle(id, Settled::Applied(second.clone()));
+            assert_eq!(journal.undo_edit(), Some(&second), "Undo can try again");
+            assert_eq!(journal.redo_edit(), None);
+        }
+        assert_eq!(journal.waiting_on(false), None);
+    }
+}
+
+#[test]
+fn a_held_redo_survives_new_edits_and_gives_way_to_them_if_it_did_nothing() {
+    let first = patched("First");
+    let later = patched("Later");
+    let mut journal = StudioJournal::default();
+    journal.record(first.clone());
+    journal.complete(false);
+    let (id, edit) = journal.replayed(true).expect("a step to redo");
+    assert_eq!(edit, &first);
+    // The redo's place sits among the applied steps while it waits, so a
+    // new edit does not drop it along with the redo branch.
+    journal.hold(id, "redoing the change".to_owned());
+    assert_eq!(journal.waiting_on(true), Some("redoing the change"));
+    journal.record(later.clone());
+    assert_eq!(journal.edit(id), Some(&unresolved("redoing the change")));
+    // It did nothing, and the newer edit took the redo branch it would sit
+    // in, so it goes.
+    journal.settle(id, Settled::Unapplied(first));
+    assert_eq!(journal.edit(id), None);
+    assert_eq!(journal.undo_edit(), Some(&later));
+    assert_eq!(journal.redo_edit(), None);
+}
+
+#[test]
+fn a_held_undo_that_lands_after_newer_edits_were_undone_redoes_in_order() {
+    let (first, held, newer) = (patched("First"), patched("Held"), patched("Newer"));
+    let mut journal = StudioJournal::default();
+    journal.record(first.clone());
+    let id = journal.record(held.clone());
+    journal.hold(id, "undoing the change".to_owned());
+    journal.record(newer.clone());
+    // Newer is undone while the held undo waits.
+    journal.complete(false);
+    journal.settle(id, Settled::Unapplied(held.clone()));
+    assert_eq!(journal.undo_edit(), Some(&first));
+    assert_eq!(journal.redo_edit(), Some(&held));
+    journal.complete(true);
+    assert_eq!(journal.redo_edit(), Some(&newer));
+}
+
+#[test]
+fn a_held_step_settles_in_place_and_a_held_write_that_did_nothing_goes() {
+    let (first, landed) = (patched("First"), patched("Landed"));
+    let mut journal = StudioJournal::default();
+    let gone = journal.record(unresolved("the assignment"));
+    let kept = journal.record(unresolved("the change to Desk"));
+    journal.record(first.clone());
+    // A new edit's held write never moves the cursor as it settles, so a
+    // redo past it need not wait; an undo of it does.
+    journal.complete(false);
+    assert_eq!(journal.waiting_on(true), None);
+    assert_eq!(journal.waiting_on(false), Some("the change to Desk"));
+    journal.complete(true);
+    journal.settle(kept, Settled::Applied(landed.clone()));
+    journal.settle(gone, Settled::Gone);
+    assert_eq!(journal.undo_edit(), Some(&first));
+    journal.complete(false);
+    assert_eq!(journal.undo_edit(), Some(&landed));
+    journal.complete(false);
+    assert_eq!(journal.undo_edit(), None);
 }
 
 fn zones_scene(zones: &[(&str, &str)]) -> SceneDocument {

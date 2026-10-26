@@ -6,7 +6,11 @@
 //! answer, or another daemon run answers, the write may have landed or
 //! not. It then holds its place in the journal
 //! ([`StudioEdit::Unresolved`]) with everything needed to settle it, and
-//! neither undo nor redo moves past it until the connection is back. In
+//! neither undo nor redo moves past it until the connection is back. An
+//! undo or redo is held the same way: its place keeps the step it
+//! replays, so whatever its write did, the journal ends up saying so, and
+//! a multi-step one goes on from where it was once its write is known to
+//! have landed (see [`Then`]). In
 //! its own daemon run it goes out again under its key, and the daemon's
 //! answer says what it did (a replay of the first answer when the first
 //! request landed, receipt and all). Once that run has ended, which
@@ -20,7 +24,7 @@ use leptos::prelude::*;
 
 use super::super::placement::Footprint;
 use super::zones::{DeletedZone, live_scene, zone_patch_before};
-use super::{Fence, StudioEdit, StudioHistory, retire_placed};
+use super::{EntryId, Fence, Settled, StudioEdit, StudioHistory, flip, retire_placed};
 use crate::api;
 use crate::components::layout_builder::keyed::{self, Answer};
 use crate::toasts;
@@ -68,13 +72,128 @@ pub(super) enum Settling {
     Again,
 }
 
+/// The rest of an undo or redo of zone structure whose first write was
+/// held: it runs once that write is known to have landed.
+#[derive(Clone, Debug)]
+pub(super) enum Resume {
+    /// Undoing a delete: the zone was made again, and its devices, layers,
+    /// and settings follow. `remove` drops the place when done, for a
+    /// restore from the Undo bar.
+    Rebuild { record: DeletedZone, remove: bool },
+    /// Undoing a zone's creation: its devices went back, and the zone goes
+    /// if nothing else is in it.
+    Uncreate {
+        zone_id: String,
+        neighbor: Option<String>,
+        name: String,
+        color: Option<String>,
+        filled: Vec<MemberEdit>,
+    },
+    /// Redoing a zone's creation: the zone was made again, under a new id,
+    /// and its devices follow.
+    Recreate {
+        zone_id: String,
+        name: String,
+        color: Option<String>,
+        filled: Vec<MemberEdit>,
+    },
+}
+
+impl Resume {
+    /// What the place holds when the first write did not land: the step
+    /// as it was.
+    fn not_landed(&self) -> Settled {
+        match self {
+            Self::Rebuild { record, .. } => {
+                Settled::Applied(StudioEdit::ZoneDeleted(Box::new(record.clone())))
+            }
+            Self::Uncreate {
+                zone_id,
+                name,
+                color,
+                filled,
+                ..
+            } => Settled::Applied(StudioEdit::ZoneCreated {
+                zone_id: zone_id.clone(),
+                name: name.clone(),
+                color: color.clone(),
+                filled: filled.clone(),
+            }),
+            Self::Recreate {
+                zone_id,
+                name,
+                color,
+                filled,
+            } => Settled::Unapplied(StudioEdit::ZoneCreated {
+                zone_id: zone_id.clone(),
+                name: name.clone(),
+                color: color.clone(),
+                filled: filled.clone(),
+            }),
+        }
+    }
+}
+
+/// What a held write's place in the journal becomes once it settles.
+#[derive(Clone, Debug)]
+pub(super) enum Then {
+    /// A new edit: what it did becomes its entry, and nothing leaves none.
+    Record,
+    /// An undo (`redo` false) or redo of `entry`, all in this one write.
+    /// Landed, the place holds the step, applied for a redo and not for an
+    /// undo; otherwise it holds `entry` as it was.
+    Replay { entry: StudioEdit, redo: bool },
+    /// A step whose landing alone decides its place.
+    Either { landed: Settled, not: Settled },
+    /// The move into a zone a redo made again: the place becomes that
+    /// zone's creation, with what the move moved.
+    Fill {
+        zone_id: String,
+        name: String,
+        color: Option<String>,
+    },
+    /// The first write of a multi-step undo or redo.
+    Resume(Box<Resume>),
+}
+
 /// A held write and its place in the journal.
 #[derive(Clone, Debug)]
 pub(super) struct Unresolved {
     pub scene_id: SceneId,
-    /// The token of its place in the journal.
-    pub token: u64,
+    /// Its place in the journal.
+    pub entry: EntryId,
+    /// What it was, as the user hears of it.
+    pub name: String,
     pub pending: Pending,
+    pub then: Then,
+}
+
+/// The step an undo's landed write leaves on the redo side: a membership
+/// undo keeps its receipt turned back into the move it undid; any other
+/// keeps the entry it undid.
+fn undone(entry: &StudioEdit, did: StudioEdit) -> StudioEdit {
+    match did {
+        StudioEdit::Members(changes) => {
+            StudioEdit::Members(changes.into_iter().map(flip).collect())
+        }
+        _ => entry.clone(),
+    }
+}
+
+/// Tell the user a write, which `what` names, is held.
+fn tell_held(what: &str) {
+    toasts::toast_info(&format!(
+        "No answer came back for {what}, so it may or may not have been saved. It settles once the connection is back, and Undo and Redo wait for it."
+    ));
+}
+
+/// Say that a held write did not go through, `name` saying what it was.
+fn did_not_land(name: &str) {
+    let mut chars = name.chars();
+    let name = chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    });
+    toasts::toast_info(&format!("{name} did not go through."));
 }
 
 /// Whether a write fenced in daemon run `fence_run` settles by going out
@@ -174,14 +293,24 @@ pub fn members_landed(scene: &api::SceneDocument, changes: &[MemberEdit]) -> boo
 }
 
 impl StudioHistory {
-    /// Hold `pending`, whose outcome is unknown, in the journal place
-    /// `token` names, until it settles.
-    pub(super) fn hold(self, scene_id: SceneId, token: u64, pending: Pending) {
+    /// Hold `pending`, whose outcome is unknown, at the journal place
+    /// `entry`, which already shows as unresolved, until it settles into
+    /// what `then` says.
+    pub(super) fn hold(
+        self,
+        scene_id: SceneId,
+        entry: EntryId,
+        name: String,
+        pending: Pending,
+        then: Then,
+    ) {
         self.unresolved.try_update_value(|unresolved| {
             unresolved.push(Unresolved {
                 scene_id,
-                token,
+                entry,
+                name,
                 pending,
+                then,
             });
         });
     }
@@ -189,14 +318,56 @@ impl StudioHistory {
     /// Record a new journal place for `pending`, which `what` names, hold
     /// it there, and tell the user.
     pub(super) fn record_held(self, scene_id: SceneId, what: String, pending: Pending) {
-        let token = self.next_token();
-        toasts::toast_info(&format!(
-            "No answer came back for {what}, so it may or may not have been saved. It settles once the connection is back, and Undo waits for it."
-        ));
-        self.journal.update(|journal| {
-            journal.record(StudioEdit::Unresolved { token, name: what });
-        });
-        self.hold(scene_id, token, pending);
+        tell_held(&what);
+        let name = what.clone();
+        let entry = self
+            .journal
+            .try_update(|journal| journal.record(StudioEdit::Unresolved { name }));
+        if let Some(entry) = entry {
+            self.hold(scene_id, entry, what, pending, Then::Record);
+        }
+    }
+
+    /// Hold the undo or redo replaying the journal place `entry`, which
+    /// `what` names, until `pending` settles into what `then` says, and
+    /// tell the user.
+    pub(super) fn hold_replay(
+        self,
+        scene_id: SceneId,
+        entry: EntryId,
+        what: String,
+        pending: Pending,
+        then: Then,
+    ) {
+        tell_held(&what);
+        self.hold_place(scene_id, entry, what, pending, then);
+    }
+
+    /// [`Self::hold_replay`] for a write the user already heard of.
+    pub(super) fn hold_place(
+        self,
+        scene_id: SceneId,
+        entry: EntryId,
+        what: String,
+        pending: Pending,
+        then: Then,
+    ) {
+        let name = what.clone();
+        self.journal.update(|journal| journal.hold(entry, name));
+        self.hold(scene_id, entry, what, pending, then);
+    }
+
+    /// Hold `item` again, its place still waiting, for the next settling
+    /// to take up.
+    pub(super) fn hold_again(self, item: Unresolved) {
+        let Unresolved {
+            scene_id,
+            entry,
+            name,
+            pending,
+            then,
+        } = item;
+        self.hold(scene_id, entry, name, pending, then);
     }
 
     /// Whether a held write waits to settle.
@@ -251,19 +422,20 @@ impl StudioHistory {
         }
     }
 
-    /// Settle `item` with `entry`, while it is still held: a scene switch
+    /// Settle `item` with `did`, the entry that undoes what its write did
+    /// (`None` for nothing), while it is still held: a scene switch
     /// meanwhile dropped every held write of the old scene, along with the
     /// journal that held their places. Reports whether it settled.
-    pub(super) fn settle_if_held(self, item: &Unresolved, entry: Option<StudioEdit>) -> bool {
+    pub(super) fn settle_if_held(self, item: &Unresolved, did: Option<StudioEdit>) -> bool {
         let held = self
             .unresolved
             .try_update_value(|unresolved| {
-                let index = unresolved.iter().position(|held| held.token == item.token);
+                let index = unresolved.iter().position(|held| held.entry == item.entry);
                 index.map(|index| unresolved.remove(index)).is_some()
             })
             .unwrap_or(false);
         if held {
-            self.settle_held(item, entry);
+            self.settle_held(item, did);
         }
         held
     }
@@ -289,6 +461,9 @@ impl StudioHistory {
                         .iter()
                         .any(|zone| zone.id.to_string() == record.zone_id),
                 };
+                if !deleted {
+                    did_not_land(&item.name);
+                }
                 Some(resolve_deletion(deleted, record, release))
             }
             HeldWrite::Members { request, through } => {
@@ -306,7 +481,10 @@ impl StudioHistory {
                         self.adopt(response.document);
                         Some((!changes.is_empty()).then_some(StudioEdit::Members(changes)))
                     }
-                    Told::Answer(_) => Some(None),
+                    Told::Answer(_) => {
+                        did_not_land(&item.name);
+                        Some(None)
+                    }
                     // With no receipt to give, the request's own changes stand
                     // in for one. An undo of them reads each output where it
                     // sits now (see `prepare_members_replay`) rather than
@@ -321,6 +499,8 @@ impl StudioHistory {
                             toasts::toast_info(
                                 "An assignment may have been saved. Check the scene; Undo cannot take it back.",
                             );
+                        } else {
+                            did_not_land(&item.name);
                         }
                         Some(None)
                     }
@@ -340,7 +520,10 @@ impl StudioHistory {
                             filled: Vec::new(),
                         }))
                     }
-                    Told::Answer(_) => Some(None),
+                    Told::Answer(_) => {
+                        did_not_land(&item.name);
+                        Some(None)
+                    }
                     // Zones may share a name, so no read can tell which one
                     // this request made, if any.
                     Told::Read(_) => {
@@ -373,6 +556,9 @@ impl StudioHistory {
                             zone_patch_before(zone, index, after) == *after
                         }),
                 };
+                if !landed {
+                    did_not_land(&item.name);
+                }
                 Some(landed.then(|| StudioEdit::ZonePatched {
                     zone_id: zone_id.clone(),
                     before: before.clone(),
@@ -382,10 +568,48 @@ impl StudioHistory {
         }
     }
 
-    /// Put the entry that undoes what a held write did in its place, or
-    /// drop the place when it did nothing.
-    pub(super) fn settle_held(self, item: &Unresolved, entry: Option<StudioEdit>) {
+    /// Settle a held write's place with `did`, the entry that undoes what
+    /// it did (`None` for nothing), as its [`Then`] says. A multi-step undo
+    /// or redo whose first write landed goes on in its turn with the rest,
+    /// and its place waits until that is done.
+    pub(super) fn settle_held(self, item: &Unresolved, did: Option<StudioEdit>) {
+        let settled = match (&item.then, did) {
+            (Then::Record, Some(did)) => Settled::Applied(did),
+            (Then::Record, None) => Settled::Gone,
+            (Then::Replay { redo: true, .. }, Some(did)) => Settled::Applied(did),
+            (Then::Replay { entry, redo: true }, None) => Settled::Unapplied(entry.clone()),
+            (Then::Replay { entry, redo: false }, Some(did)) => {
+                Settled::Unapplied(undone(entry, did))
+            }
+            (Then::Replay { entry, redo: false }, None) => Settled::Applied(entry.clone()),
+            (Then::Either { landed, .. }, Some(_)) => landed.clone(),
+            (Then::Either { not, .. }, None) => not.clone(),
+            (
+                Then::Fill {
+                    zone_id,
+                    name,
+                    color,
+                },
+                did,
+            ) => Settled::Applied(StudioEdit::ZoneCreated {
+                zone_id: zone_id.clone(),
+                name: name.clone(),
+                color: color.clone(),
+                filled: match did {
+                    Some(StudioEdit::Members(changes)) => changes,
+                    _ => Vec::new(),
+                },
+            }),
+            (Then::Resume(_), Some(did)) => {
+                self.when_free(super::Waiting::Resume {
+                    item: Box::new(item.clone()),
+                    did,
+                });
+                return;
+            }
+            (Then::Resume(resume), None) => resume.not_landed(),
+        };
         self.journal
-            .update(|journal| journal.settle_unresolved(item.token, entry));
+            .update(|journal| journal.settle(item.entry, settled));
     }
 }

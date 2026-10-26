@@ -14,10 +14,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use super::super::tab_model::describe_zone_failure;
-use super::held::{HeldWrite, Pending};
+use super::held::{HeldWrite, Pending, Resume, Then, Unresolved};
 use super::{
-    Fence, MovePlan, Sent, StudioEdit, StudioHistory, Written, edit_members,
-    prepare_members_replay, written,
+    EntryId, Fence, MovePlan, Sent, Settled, StudioEdit, StudioHistory, Written, edit_members,
+    flip, prepare_members_replay, written,
 };
 use crate::components::layout_builder::keyed::{self, Answer};
 use crate::components::layout_builder::writer;
@@ -188,13 +188,25 @@ async fn delete_zone(zone_id: &str, fence: &Fence, key: &str) -> Answer<()> {
     keyed::send(&fence.run, || api::zones::delete_zone(zone_id, fence, key)).await
 }
 
+/// How one write of a multi-step zone operation came out.
+enum Wrote {
+    Landed,
+    /// The scene could not be read, so nothing went out.
+    Unread(&'static str),
+    /// The daemon refused it.
+    Refused,
+    /// No answer said whether it landed: the fence and key it went out
+    /// under, to settle it with.
+    Unknown(Fence, String),
+}
+
 /// Put complete output snapshots back into a zone in one transaction.
 async fn restore_outputs(
     scene_id: SceneId,
     zone_id: ZoneId,
     outputs: &[Output],
     fence: &Fence,
-) -> Result<(), ()> {
+) -> Wrote {
     let request = EditMembersRequest {
         scene_id,
         changes: outputs
@@ -212,21 +224,37 @@ async fn restore_outputs(
         assignment: None,
     };
     match edit_members(&request, fence).await {
-        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => Ok(()),
-        _ => Err(()),
+        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => Wrote::Landed,
+        Written::Answered(_) => Wrote::Refused,
+        Written::Unknown(fence, key) => Wrote::Unknown(fence, key),
     }
 }
 
 /// Patch one zone of the scene `scene_id` against its live revision.
-/// Reports whether it applied.
-async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRequest) -> bool {
-    let Ok(live) = live_scene(scene_id).await else {
-        return false;
+async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRequest) -> Wrote {
+    let live = match live_scene(scene_id).await {
+        Ok(live) => live,
+        Err(reason) => return Wrote::Unread(reason),
     };
-    matches!(
-        update_zone(zone_id, request, &Fence::of(&live)).await,
-        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_)))
-    )
+    match update_zone(zone_id, request, &Fence::of(&live)).await {
+        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => Wrote::Landed,
+        Written::Answered(_) => Wrote::Refused,
+        Written::Unknown(fence, key) => Wrote::Unknown(fence, key),
+    }
+}
+
+/// The zone `zone_id` names in the live scene `scene_id`: `Err` when the
+/// scene cannot be read, `Ok(None)` when the zone is not in it.
+async fn live_zone(
+    scene_id: SceneId,
+    zone_id: Option<&str>,
+) -> Result<Option<api::ZoneResource>, &'static str> {
+    let live = live_scene(scene_id).await?;
+    Ok(zone_id.and_then(|zone_id| {
+        live.zones
+            .into_iter()
+            .find(|zone| zone.id.to_string() == zone_id)
+    }))
 }
 
 /// How taking a zone down came out.
@@ -251,15 +279,9 @@ enum Removal {
     Kept(&'static str),
     /// The delete did not go through; trying again may.
     Failed(String),
-    /// No answer came back for the delete.
-    Unknown,
-}
-
-fn flip(change: MemberEdit) -> MemberEdit {
-    MemberEdit {
-        before: change.after,
-        after: change.before,
-    }
+    /// No answer came back for the delete, which went out under this fence
+    /// and key.
+    Unknown(Fence, String),
 }
 
 impl StudioHistory {
@@ -295,27 +317,29 @@ impl StudioHistory {
         }
     }
 
-    /// Write a replayed zone step's new state into its journal entry and
-    /// settle the cursor.
-    fn settle_zone_entry(self, index: usize, redo: bool, entry: StudioEdit, settle: Settle) {
-        self.journal.update(|journal| {
-            if index >= journal.entries.len() {
-                return;
-            }
-            match settle {
-                Settle::Step => {
-                    journal.entries[index] = entry;
-                    journal.complete(redo);
-                }
-                Settle::Remove => {
-                    journal.entries.remove(index);
-                    if index < journal.cursor {
-                        journal.cursor -= 1;
-                    }
-                }
-            }
-        });
+    /// Settle the journal place `id` once a replayed zone step is done:
+    /// `entry` is the step it holds now, applied after a redo and not after
+    /// an undo, unless `settle` drops the place.
+    fn settle_zone_entry(self, id: EntryId, redo: bool, entry: StudioEdit, settle: Settle) {
+        let settled = match settle {
+            Settle::Step if redo => Settled::Applied(entry),
+            Settle::Step => Settled::Unapplied(entry),
+            Settle::Remove => Settled::Gone,
+        };
+        self.journal.update(|journal| journal.settle(id, settled));
         self.announce_replay();
+    }
+
+    /// Settle a zone's creation the undo or redo at the journal place `id`
+    /// left as `entry`. A kept zone with nothing moved back leaves no step
+    /// to redo, so its place goes rather than eat a keypress.
+    fn settle_created(self, id: EntryId, redo: bool, entry: StudioEdit) {
+        let settle = if matches!(&entry, StudioEdit::Members(changes) if changes.is_empty()) {
+            Settle::Remove
+        } else {
+            Settle::Step
+        };
+        self.settle_zone_entry(id, redo, entry, settle);
     }
 
     /// Create a zone. `created` hears the zone, or `None` when it was not
@@ -627,12 +651,14 @@ impl StudioHistory {
                         journal.record(StudioEdit::Members(released));
                     }),
                     TakeDown::Unknown(pending) => {
-                        let token = record.token;
                         let name = format!("deleting {}", record.name);
-                        self.journal.update(|journal| {
-                            journal.record(StudioEdit::Unresolved { token, name });
+                        let held = name.clone();
+                        let entry = self.journal.try_update(|journal| {
+                            journal.record(StudioEdit::Unresolved { name: held })
                         });
-                        self.hold(scene.id, token, *pending);
+                        if let Some(entry) = entry {
+                            self.hold(scene.id, entry, name, *pending, Then::Record);
+                        }
                     }
                     TakeDown::Kept => {}
                 }
@@ -775,9 +801,10 @@ impl StudioHistory {
         }
         let put_back = record.outputs.is_empty()
             || match live {
-                Ok(live) => restore_outputs(live.id, zone_key, &record.outputs, &Fence::of(&live))
-                    .await
-                    .is_ok(),
+                Ok(live) => matches!(
+                    restore_outputs(live.id, zone_key, &record.outputs, &Fence::of(&live)).await,
+                    Wrote::Landed
+                ),
                 Err(_) => false,
             };
         if !put_back {
@@ -795,15 +822,20 @@ impl StudioHistory {
         TakeDown::Kept
     }
 
-    /// Rebuild a deleted zone in the scene `scene_id`: its name, color,
-    /// outputs (those still unclaimed), layers, paused state, brightness,
-    /// and, best effort, its position. Returns the zone it made, or `None`
-    /// when it made none or a scene switch overtook it partway.
+    /// Undo a zone's deletion: make the zone again from `record`, then put
+    /// the rest back ([`Self::finish_rebuild`]). Returns the zone it made,
+    /// or `None` when it made none, when a scene switch overtook it
+    /// partway, or when no answer said whether the zone was made: the
+    /// create then holds the journal place `id` until it settles, and the
+    /// rest follows once it is known to have landed (`remove` says the
+    /// place goes then, for a restore from the Undo bar).
     async fn rebuild_zone(
         self,
         generation: u64,
         scene_id: SceneId,
         record: &DeletedZone,
+        id: EntryId,
+        remove: bool,
     ) -> Option<api::ZoneResource> {
         let live = match live_scene(scene_id).await {
             Ok(live) => live,
@@ -829,14 +861,45 @@ impl StudioHistory {
                 toasts::toast_error(&format!("Zone restore failed: {error}"));
                 return None;
             }
-            Written::Unknown(..) => {
-                toasts::toast_info(&format!(
-                    "No answer came back for restoring {}, so it may have been made again. Check the scene.",
-                    record.name
-                ));
+            // Its place keeps the deletion until the create settles, so a
+            // second Undo cannot make the zone twice.
+            Written::Unknown(fence, key) => {
+                self.replay_words.try_set_value(None);
+                self.hold_replay(
+                    scene_id,
+                    id,
+                    format!("restoring {}", record.name),
+                    Pending {
+                        fence,
+                        key,
+                        write: HeldWrite::Create {
+                            name: record.name.clone(),
+                            color: record.color.clone(),
+                        },
+                    },
+                    Then::Resume(Box::new(Resume::Rebuild {
+                        record: record.clone(),
+                        remove,
+                    })),
+                );
                 return None;
             }
         };
+        self.finish_rebuild(generation, scene_id, record, zone)
+            .await
+    }
+
+    /// Put the rest of a deleted zone back into `zone`, the zone made again
+    /// for it: its outputs (those still unclaimed), layers, paused state,
+    /// brightness, and, best effort, its position. Returns the zone, or
+    /// `None` when a scene switch overtook it partway.
+    async fn finish_rebuild(
+        self,
+        generation: u64,
+        scene_id: SceneId,
+        record: &DeletedZone,
+        zone: api::ZoneResource,
+    ) -> Option<api::ZoneResource> {
         let zone_id = zone.id;
         let zone_key = zone_id.to_string();
         let mut problems = Vec::new();
@@ -860,17 +923,23 @@ impl StudioHistory {
                     .cloned()
                     .collect();
                 let moved_on = record.outputs.len() - free.len();
-                let put_back = free.is_empty()
-                    || restore_outputs(live.id, zone_id, &free, &Fence::of(&live))
-                        .await
-                        .is_ok();
+                let put_back = if free.is_empty() {
+                    Wrote::Landed
+                } else {
+                    restore_outputs(live.id, zone_id, &free, &Fence::of(&live)).await
+                };
                 if !self.is_current(generation) {
                     return None;
                 }
-                if !put_back {
-                    problems.push("its devices could not be put back");
-                } else if moved_on > 0 {
-                    problems.push("devices you moved since stayed where they are");
+                match put_back {
+                    Wrote::Landed if moved_on > 0 => {
+                        problems.push("devices you moved since stayed where they are");
+                    }
+                    Wrote::Landed => {}
+                    Wrote::Unknown(..) => problems.push("its devices may not be back"),
+                    Wrote::Unread(_) | Wrote::Refused => {
+                        problems.push("its devices could not be put back");
+                    }
                 }
             } else {
                 problems.push("its devices could not be put back");
@@ -883,28 +952,38 @@ impl StudioHistory {
                 return None;
             }
             let mut fence = live.ok().map(|live| Fence::of(&live));
-            let mut layers_back = fence.is_some();
+            // Whether the layers all came back; `None` when no answer said.
+            let mut layers_back = Some(fence.is_some());
             if let Some(at) = fence.as_mut() {
                 for request in restore_layer_requests(record) {
                     let key = keyed::new_key();
-                    let result = keyed::send(&at.run, || {
+                    let answer = keyed::send(&at.run, || {
                         api::create_layer_keyed(&zone_key, &request, at, &key)
                     })
-                    .await
-                    .into_result();
+                    .await;
                     if !self.is_current(generation) {
                         return None;
                     }
-                    if let Ok(api::LayerStackOutcome::Applied(stack)) = result {
-                        at.revision = stack.revision;
-                    } else {
-                        layers_back = false;
-                        break;
+                    match answer {
+                        Answer::Final {
+                            outcome: Ok(api::LayerStackOutcome::Applied(stack)),
+                            ..
+                        } => at.revision = stack.revision,
+                        Answer::Final { .. } => {
+                            layers_back = Some(false);
+                            break;
+                        }
+                        Answer::OtherRun | Answer::Forgotten | Answer::Lost(_) => {
+                            layers_back = None;
+                            break;
+                        }
                     }
                 }
             }
-            if !layers_back {
-                problems.push("its layers could not all be put back");
+            match layers_back {
+                Some(true) => {}
+                Some(false) => problems.push("its layers could not all be put back"),
+                None => problems.push("its layers may not all be back"),
             }
         }
 
@@ -919,11 +998,15 @@ impl StudioHistory {
             if !self.is_current(generation) {
                 return None;
             }
-            if !patched {
-                problems.push(match (restyle.enabled, restyle.brightness) {
-                    (Some(_), Some(_)) => "it could not be paused or dimmed again",
-                    (Some(_), None) => "it could not be paused again",
-                    _ => "its brightness could not be put back",
+            let unknown = matches!(patched, Wrote::Unknown(..));
+            if !matches!(patched, Wrote::Landed) {
+                problems.push(match (restyle.enabled, restyle.brightness, unknown) {
+                    (Some(_), Some(_), false) => "it could not be paused or dimmed again",
+                    (Some(_), Some(_), true) => "it may not be paused or dimmed again",
+                    (Some(_), None, false) => "it could not be paused again",
+                    (Some(_), None, true) => "it may not be paused again",
+                    (None, _, false) => "its brightness could not be put back",
+                    (None, _, true) => "its brightness may not be back",
                 });
             }
         }
@@ -945,8 +1028,14 @@ impl StudioHistory {
             if !self.is_current(generation) {
                 return None;
             }
-            if !placed {
-                problems.push("it kept its new place at the end of the tabs");
+            match placed {
+                Wrote::Landed => {}
+                Wrote::Unknown(..) => {
+                    problems.push("it may have kept its new place at the end of the tabs")
+                }
+                Wrote::Unread(_) | Wrote::Refused => {
+                    problems.push("it kept its new place at the end of the tabs");
+                }
             }
         }
         if problems.is_empty() {
@@ -961,6 +1050,19 @@ impl StudioHistory {
         Some(zone)
     }
 
+    /// Settle the journal place `id` once the deletion `record` describes
+    /// was undone into the zone `zone`: the place holds the deletion of
+    /// that zone, ready to redo (or goes, with `remove`), every entry that
+    /// named the old zone names the new one, and the selection follows.
+    fn settle_rebuilt(self, id: EntryId, mut record: DeletedZone, zone: ZoneId, remove: bool) {
+        let old = std::mem::replace(&mut record.zone_id, zone.to_string());
+        self.selected.set(Some(record.zone_id.clone()));
+        let settle = if remove { Settle::Remove } else { Settle::Step };
+        self.settle_zone_entry(id, false, StudioEdit::ZoneDeleted(Box::new(record)), settle);
+        self.journal
+            .update(|journal| journal.remap_zone(&old, zone));
+    }
+
     /// Take back the deletion `token` names, from its Undo bar: an
     /// ordinary undo when it is the latest edit, otherwise a restore that
     /// drops its journal entry. A deletion already restored stays put.
@@ -972,41 +1074,36 @@ impl StudioHistory {
         let found = self.journal.with_untracked(|journal| {
             journal
                 .undoable_deletion(token)
-                .map(|index| (index, index + 1 == journal.cursor))
+                .map(|id| (id, journal.is_latest(id)))
         });
         match found {
             Some((_, true)) => {
                 let recorded = self.journal.with_untracked(super::StudioJournal::recorded);
                 self.replay_now(false, recorded);
             }
-            Some((index, false)) => {
-                let record =
-                    self.journal
-                        .with_untracked(|journal| match journal.entries.get(index) {
-                            Some(StudioEdit::ZoneDeleted(record)) => Some(record.as_ref().clone()),
-                            _ => None,
-                        });
+            Some((id, false)) => {
+                let record = self
+                    .journal
+                    .with_untracked(|journal| match journal.edit(id) {
+                        Some(StudioEdit::ZoneDeleted(record)) => Some(record.as_ref().clone()),
+                        _ => None,
+                    });
                 if let Some(record) = record {
                     self.prepare_words(&StudioEdit::ZoneDeleted(Box::new(record.clone())), false);
-                    self.replay_zone_deleted(index, false, record, Settle::Remove);
+                    self.replay_zone_deleted(id, false, record, Settle::Remove);
                 }
             }
             None => {}
         }
     }
 
-    /// Undo puts a deleted zone back; redo deletes it again.
-    pub(super) fn replay_zone_deleted_step(self, index: usize, redo: bool, record: DeletedZone) {
-        self.replay_zone_deleted(index, redo, record, Settle::Step);
+    /// Undo puts the deleted zone at the journal place `id` back; redo
+    /// deletes it again.
+    pub(super) fn replay_zone_deleted_step(self, id: EntryId, redo: bool, record: DeletedZone) {
+        self.replay_zone_deleted(id, redo, record, Settle::Step);
     }
 
-    fn replay_zone_deleted(
-        self,
-        index: usize,
-        redo: bool,
-        mut record: DeletedZone,
-        settle: Settle,
-    ) {
+    fn replay_zone_deleted(self, id: EntryId, redo: bool, mut record: DeletedZone, settle: Settle) {
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -1015,15 +1112,17 @@ impl StudioHistory {
         let Some(generation) = self.begin() else {
             return;
         };
+        let remove = settle == Settle::Remove;
         spawn_local(async move {
             if redo {
+                let entry = StudioEdit::ZoneDeleted(Box::new(record.clone()));
                 let outcome = self.take_down_zone(scene_id, &mut record).await;
                 if self.is_current(generation) {
                     match outcome {
                         TakeDown::Deleted => {
                             self.select_away(&record.zone_id, neighbor);
                             self.settle_zone_entry(
-                                index,
+                                id,
                                 redo,
                                 StudioEdit::ZoneDeleted(Box::new(record)),
                                 settle,
@@ -1033,73 +1132,110 @@ impl StudioHistory {
                         // the step becomes that release, so undo returns them.
                         TakeDown::Stranded(released) => {
                             self.replay_words.try_set_value(None);
-                            self.settle_zone_entry(
-                                index,
-                                redo,
-                                StudioEdit::Members(released),
-                                settle,
-                            );
+                            self.settle_zone_entry(id, redo, StudioEdit::Members(released), settle);
                         }
-                        // The redo's place holds until a scene read says
-                        // what the delete did, so it cannot run twice.
+                        // The redo's place holds until what it did is known,
+                        // so it cannot run twice.
                         TakeDown::Unknown(pending) => {
                             self.replay_words.try_set_value(None);
-                            let entry = StudioEdit::Unresolved {
-                                token: record.token,
-                                name: format!("deleting {}", record.name),
-                            };
-                            self.settle_zone_entry(index, redo, entry, settle);
-                            self.hold(scene_id, record.token, *pending);
+                            self.hold_place(
+                                scene_id,
+                                id,
+                                format!("deleting {}", record.name),
+                                *pending,
+                                Then::Replay { entry, redo },
+                            );
                         }
                         TakeDown::Kept => {}
                     }
                 }
-            } else if let Some(zone) = self.rebuild_zone(generation, scene_id, &record).await
+            } else if let Some(zone) = self
+                .rebuild_zone(generation, scene_id, &record, id, remove)
+                .await
                 && self.is_current(generation)
             {
-                let old = std::mem::replace(&mut record.zone_id, zone.id.to_string());
-                self.selected.set(Some(record.zone_id.clone()));
-                self.settle_zone_entry(
-                    index,
-                    redo,
-                    StudioEdit::ZoneDeleted(Box::new(record)),
-                    settle,
-                );
-                self.journal
-                    .update(|journal| journal.remap_zone(&old, zone.id));
+                self.settle_rebuilt(id, record, zone.id, remove);
             }
             self.release(generation).await;
         });
     }
 
-    /// Undo or redo a rename, recolor, pause, or reorder.
-    pub(super) fn replay_zone_patched(self, redo: bool, zone_id: String, patch: PatchZoneRequest) {
+    /// Undo or redo the rename, recolor, pause, or reorder at the journal
+    /// place `id`, which set `after` over `before`.
+    pub(super) fn replay_zone_patched(
+        self,
+        id: EntryId,
+        redo: bool,
+        zone_id: String,
+        before: PatchZoneRequest,
+        after: PatchZoneRequest,
+    ) {
         let Some(scene_id) = self.current_scene().map(|scene| scene.id) else {
             return;
         };
         let Some(generation) = self.begin() else {
             return;
         };
+        let entry = StudioEdit::ZonePatched {
+            zone_id: zone_id.clone(),
+            before: before.clone(),
+            after: after.clone(),
+        };
+        let (from, to) = if redo {
+            (before, after)
+        } else {
+            (after, before)
+        };
         spawn_local(async move {
-            if patch_live_zone(scene_id, &zone_id, &patch).await {
-                if self.is_current(generation) {
-                    self.journal.update(|journal| journal.complete(redo));
-                    self.announce_replay();
+            let patched = patch_live_zone(scene_id, &zone_id, &to).await;
+            if self.is_current(generation) {
+                match patched {
+                    Wrote::Landed => self.settle_zone_entry(id, redo, entry, Settle::Step),
+                    Wrote::Unread(reason) => {
+                        toasts::toast_error(&format!("History could not be applied: {reason}"));
+                    }
+                    Wrote::Refused => {
+                        toasts::toast_error("The zone changed elsewhere; history was not applied");
+                    }
+                    // Its place keeps the change until the patch settles.
+                    Wrote::Unknown(fence, key) => {
+                        self.replay_words.try_set_value(None);
+                        let what = if redo {
+                            "redoing the zone change"
+                        } else {
+                            "undoing the zone change"
+                        };
+                        self.hold_replay(
+                            scene_id,
+                            id,
+                            what.to_owned(),
+                            Pending {
+                                fence,
+                                key,
+                                write: HeldWrite::Patch {
+                                    zone_id,
+                                    before: from,
+                                    after: to,
+                                },
+                            },
+                            Then::Replay { entry, redo },
+                        );
+                    }
                 }
-            } else if self.is_current(generation) {
-                toasts::toast_error("The zone changed elsewhere; history was not applied");
             }
             self.release(generation).await;
         });
     }
 
-    /// Undo of a zone Studio made: its devices go back where they came
-    /// from, then the zone goes if nothing else is in it. A zone that
-    /// gained devices or layers since stays, and the entry becomes its
-    /// move alone. Redo makes the zone again and moves the devices back in.
+    /// Undo of the zone Studio made at the journal place `id`: its devices
+    /// go back where they came from, then the zone goes if nothing else is
+    /// in it. A zone that gained devices or layers since stays, and the
+    /// entry becomes its move alone. Redo makes the zone again and moves
+    /// the devices back in.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn replay_zone_created(
         self,
-        index: usize,
+        id: EntryId,
         redo: bool,
         zone_id: String,
         name: String,
@@ -1115,112 +1251,166 @@ impl StudioHistory {
             return;
         };
         spawn_local(async move {
-            let old = zone_id.clone();
             let settled = if redo {
-                self.recreate_zone(generation, scene_id, name, color, filled)
+                self.recreate_zone(generation, scene_id, id, zone_id, name, color, filled)
                     .await
-                    .map(|(entry, remade)| (entry, Some(remade)))
             } else {
-                self.uncreate_zone(generation, scene_id, zone_id, neighbor, name, color, filled)
-                    .await
-                    .map(|entry| (entry, None))
+                self.uncreate_zone(
+                    generation, scene_id, id, zone_id, neighbor, name, color, filled,
+                )
+                .await
             };
-            if let Some((entry, remade)) = settled
+            if let Some(entry) = settled
                 && self.is_current(generation)
             {
-                // A kept zone with nothing moved back leaves no step to
-                // redo, so its entry goes rather than eating a keypress.
-                let settle = if matches!(&entry, StudioEdit::Members(changes) if changes.is_empty())
-                {
-                    Settle::Remove
-                } else {
-                    Settle::Step
-                };
-                self.settle_zone_entry(index, redo, entry, settle);
-                if let Some(new) = remade {
-                    self.journal.update(|journal| journal.remap_zone(&old, new));
-                }
+                self.settle_created(id, redo, entry);
             }
             self.release(generation).await;
         });
     }
 
-    /// The undo of a zone's creation. `None` leaves the entry where it is,
-    /// for a step that changed nothing; otherwise the entry the journal
-    /// keeps in its place. The selection follows the devices back to the
-    /// zone they came from, or moves to `neighbor` when the zone goes and
+    /// The undo of a zone's creation. `None` leaves the place `id` as it
+    /// is: for a step that changed nothing, or one held there until a write
+    /// whose answer was lost settles. Otherwise the entry the journal keeps
+    /// in its place. The selection follows the devices back to the zone
+    /// they came from, or moves to `neighbor` when the zone goes and
     /// nothing went back into a zone.
     #[allow(clippy::too_many_arguments)]
     async fn uncreate_zone(
         self,
         generation: u64,
         scene_id: SceneId,
+        id: EntryId,
         zone_id: String,
         neighbor: Option<String>,
         name: String,
         color: Option<String>,
         filled: Vec<MemberEdit>,
     ) -> Option<StudioEdit> {
-        let moves_out = !filled.is_empty();
-        let mut filled_now = filled.clone();
-        let mut home = None;
-        if moves_out {
-            let scene = match live_scene(scene_id).await {
-                Ok(scene) => scene,
-                Err(reason) => {
-                    toasts::toast_error(&format!("History could not be applied: {reason}"));
-                    return None;
-                }
-            };
-            let changes: Vec<MemberEdit> = filled.into_iter().map(flip).collect();
-            let Ok(changes) = prepare_members_replay(&scene, changes) else {
-                toasts::toast_error("Assignment changed elsewhere; history was not applied");
-                return None;
-            };
-            let request = EditMembersRequest {
-                scene_id: scene.id,
-                changes,
-                assignment: None,
-            };
-            match self
-                .send_members(generation, request, Fence::of(&scene), None)
-                .await
-            {
-                Sent::Landed { changes, .. } => {
-                    home = changes
-                        .iter()
-                        .find_map(|change| change.after.as_ref())
-                        .map(|state| state.zone_id.to_string());
-                    filled_now = changes.into_iter().map(flip).collect();
-                }
-                Sent::Unknown(_) => {
-                    toasts::toast_info(
-                        "History may not have been applied: no answer came back for moving the devices out. Check the scene.",
-                    );
-                    return None;
-                }
-                Sent::Failed | Sent::Superseded => return None,
-            }
+        if filled.is_empty() {
+            return self
+                .finish_uncreate(
+                    generation,
+                    scene_id,
+                    id,
+                    Uncreating {
+                        zone_id,
+                        neighbor,
+                        name,
+                        color,
+                        filled_now: Vec::new(),
+                        home: None,
+                        moved_out: false,
+                    },
+                )
+                .await;
         }
-        // The devices are back where they came from; only the zone is left.
+        let scene = match live_scene(scene_id).await {
+            Ok(scene) => scene,
+            Err(reason) => {
+                toasts::toast_error(&format!("History could not be applied: {reason}"));
+                return None;
+            }
+        };
+        let changes: Vec<MemberEdit> = filled.iter().cloned().map(flip).collect();
+        let Ok(changes) = prepare_members_replay(&scene, changes) else {
+            toasts::toast_error("Assignment changed elsewhere; history was not applied");
+            return None;
+        };
+        let request = EditMembersRequest {
+            scene_id: scene.id,
+            changes,
+            assignment: None,
+        };
+        match self
+            .send_members(generation, request, Fence::of(&scene), None)
+            .await
+        {
+            Sent::Landed { changes, .. } => {
+                let home = changes
+                    .iter()
+                    .find_map(|change| change.after.as_ref())
+                    .map(|state| state.zone_id.to_string());
+                let filled_now = changes.into_iter().map(flip).collect();
+                self.finish_uncreate(
+                    generation,
+                    scene_id,
+                    id,
+                    Uncreating {
+                        zone_id,
+                        neighbor,
+                        name,
+                        color,
+                        filled_now,
+                        home,
+                        moved_out: true,
+                    },
+                )
+                .await
+            }
+            // Its place keeps the zone's creation until the move settles;
+            // the zone goes after it, once the move is known to have landed.
+            Sent::Unknown(pending) => {
+                self.replay_words.try_set_value(None);
+                self.hold_replay(
+                    scene_id,
+                    id,
+                    format!("undoing {name}"),
+                    *pending,
+                    Then::Resume(Box::new(Resume::Uncreate {
+                        zone_id,
+                        neighbor,
+                        name,
+                        color,
+                        filled,
+                    })),
+                );
+                None
+            }
+            Sent::Failed | Sent::Superseded => None,
+        }
+    }
+
+    /// The rest of a zone creation's undo, once its devices are back where
+    /// they came from: the zone goes, if nothing else is in it.
+    async fn finish_uncreate(
+        self,
+        generation: u64,
+        scene_id: SceneId,
+        id: EntryId,
+        step: Uncreating,
+    ) -> Option<StudioEdit> {
+        let Uncreating {
+            zone_id,
+            neighbor,
+            name,
+            color,
+            filled_now,
+            home,
+            moved_out,
+        } = step;
         let live = live_scene(scene_id).await;
         if !self.is_current(generation) {
             return None;
         }
+        let mut doomed = None;
         let removal = match live {
             Err(reason) => Removal::Failed(reason.to_owned()),
             Ok(live) => match live
                 .zones
                 .iter()
-                .find(|zone| zone.id.to_string() == zone_id)
+                .enumerate()
+                .find(|(_, zone)| zone.id.to_string() == zone_id)
             {
                 None => Removal::Removed,
-                Some(zone) if !zone.members.is_empty() || !zone.layers.is_empty() => {
+                Some((_, zone)) if !zone.members.is_empty() || !zone.layers.is_empty() => {
                     Removal::Kept("it holds devices or layers now")
                 }
-                Some(_) => {
+                Some((index, zone)) => {
+                    doomed = Some(DeletedZone::of(zone, index, self.next_token()));
                     let key = keyed::new_key();
-                    match delete_zone(&zone_id, &Fence::of(&live), &key).await {
+                    let fence = Fence::of(&live);
+                    match delete_zone(&zone_id, &fence, &key).await {
                         Answer::Final {
                             outcome: Ok(api::zones::ZoneOutcome::Applied(())),
                             ..
@@ -1233,7 +1423,9 @@ impl StudioHistory {
                             outcome: Err(error),
                             ..
                         } => Removal::Failed(error.to_string()),
-                        Answer::OtherRun | Answer::Forgotten | Answer::Lost(_) => Removal::Unknown,
+                        Answer::OtherRun | Answer::Forgotten | Answer::Lost(_) => {
+                            Removal::Unknown(fence, key)
+                        }
                     }
                 }
             },
@@ -1248,13 +1440,14 @@ impl StudioHistory {
             (None, Removal::Removed) => self.select_away(&zone_id, neighbor),
             (None, _) => {}
         }
+        let created = |filled| StudioEdit::ZoneCreated {
+            zone_id: zone_id.clone(),
+            name: name.clone(),
+            color: color.clone(),
+            filled,
+        };
         match removal {
-            Removal::Removed => Some(StudioEdit::ZoneCreated {
-                zone_id,
-                name,
-                color,
-                filled: filled_now,
-            }),
+            Removal::Removed => Some(created(filled_now)),
             Removal::Kept(reason) => {
                 let kept = format!("Kept {name}: {reason}");
                 toasts::toast_info(&kept);
@@ -1265,16 +1458,39 @@ impl StudioHistory {
                 }
                 Some(StudioEdit::Members(filled_now))
             }
-            Removal::Unknown => {
-                toasts::toast_info(&format!(
-                    "No answer came back for removing {name}, so it may be gone. Check the scene."
-                ));
-                moves_out.then(|| {
-                    self.prepare_words(&StudioEdit::Members(filled_now.clone()), false);
-                    StudioEdit::Members(filled_now)
-                })
+            // Its place holds until the delete settles: gone, it is the
+            // zone's creation, ready to redo; still there, it is the move
+            // alone when devices went back, and the creation still applied
+            // when none did.
+            Removal::Unknown(fence, key) => {
+                self.replay_words.try_set_value(None);
+                let not = if moved_out {
+                    Settled::Unapplied(StudioEdit::Members(filled_now.clone()))
+                } else {
+                    Settled::Applied(created(filled_now.clone()))
+                };
+                if let Some(record) = doomed {
+                    self.hold_replay(
+                        scene_id,
+                        id,
+                        format!("removing {name}"),
+                        Pending {
+                            fence,
+                            key,
+                            write: HeldWrite::Delete {
+                                record,
+                                release: Vec::new(),
+                            },
+                        },
+                        Then::Either {
+                            landed: Settled::Unapplied(created(filled_now)),
+                            not,
+                        },
+                    );
+                }
+                None
             }
-            Removal::Failed(reason) if !moves_out => {
+            Removal::Failed(reason) if !moved_out => {
                 toasts::toast_error(&format!("{name} could not be removed: {reason}"));
                 None
             }
@@ -1288,14 +1504,22 @@ impl StudioHistory {
         }
     }
 
+    /// The redo of a zone's creation at the journal place `id`: the zone is
+    /// made again, every entry that named the old one names the new one,
+    /// and its devices follow ([`Self::finish_recreate`]). `None` when it
+    /// made nothing, or when a write whose answer was lost holds the place
+    /// until it settles; otherwise the entry the journal keeps there.
+    #[allow(clippy::too_many_arguments)]
     async fn recreate_zone(
         self,
         generation: u64,
         scene_id: SceneId,
+        id: EntryId,
+        old: String,
         name: String,
         color: Option<String>,
         filled: Vec<MemberEdit>,
-    ) -> Option<(StudioEdit, ZoneId)> {
+    ) -> Option<StudioEdit> {
         let live = match live_scene(scene_id).await {
             Ok(live) => live,
             Err(reason) => {
@@ -1320,13 +1544,48 @@ impl StudioHistory {
                 toasts::toast_error(&format!("History could not be applied: {error}"));
                 return None;
             }
-            Written::Unknown(..) => {
-                toasts::toast_info(&format!(
-                    "No answer came back for making {name} again, so it may be back. Check the scene."
-                ));
+            // Its place keeps the creation until the create settles, so a
+            // second Redo cannot make the zone twice.
+            Written::Unknown(fence, key) => {
+                self.replay_words.try_set_value(None);
+                self.hold_replay(
+                    scene_id,
+                    id,
+                    format!("making {name} again"),
+                    Pending {
+                        fence,
+                        key,
+                        write: HeldWrite::Create {
+                            name: name.clone(),
+                            color: color.clone(),
+                        },
+                    },
+                    Then::Resume(Box::new(Resume::Recreate {
+                        zone_id: old,
+                        name,
+                        color,
+                        filled,
+                    })),
+                );
                 return None;
             }
         };
+        self.journal
+            .update(|journal| journal.remap_zone(&old, zone.id));
+        self.finish_recreate(generation, scene_id, id, zone, filled)
+            .await
+    }
+
+    /// The rest of a zone creation's redo, once the zone is made again as
+    /// `zone`: the devices it was filled with move back in.
+    async fn finish_recreate(
+        self,
+        generation: u64,
+        scene_id: SceneId,
+        id: EntryId,
+        zone: api::ZoneResource,
+        filled: Vec<MemberEdit>,
+    ) -> Option<StudioEdit> {
         let mut filled_now = Vec::new();
         let moves_in = !filled.is_empty();
         if moves_in {
@@ -1359,9 +1618,24 @@ impl StudioHistory {
                     {
                         Sent::Landed { changes, .. } => filled_now = changes,
                         Sent::Failed => {}
-                        Sent::Unknown(_) => toasts::toast_info(
-                            "No answer came back for moving the devices back in, so they may be there. Check the canvas.",
-                        ),
+                        // The zone is made; its place holds until the move
+                        // settles, then keeps what the move moved.
+                        Sent::Unknown(pending) => {
+                            self.selected.set(Some(zone.id.to_string()));
+                            self.replay_words.try_set_value(None);
+                            self.hold_replay(
+                                scene_id,
+                                id,
+                                format!("moving the devices back into {}", zone.name),
+                                *pending,
+                                Then::Fill {
+                                    zone_id: zone.id.to_string(),
+                                    name: zone.name,
+                                    color: zone.color,
+                                },
+                            );
+                            return None;
+                        }
                         Sent::Superseded => return None,
                     }
                 }
@@ -1385,6 +1659,138 @@ impl StudioHistory {
             // The devices did not come along, so the redo only made the zone.
             self.prepare_words(&entry, true);
         }
-        Some((entry, zone.id))
+        Some(entry)
     }
+
+    /// Go on with the undo or redo of zone structure that `item` held, now
+    /// its first write is known to have landed: `did` is the entry that
+    /// undoes what that write did. A scene that cannot be read right now
+    /// leaves it held for the next try.
+    pub(super) fn resume_now(self, item: Unresolved, did: StudioEdit) {
+        if self
+            .current_scene()
+            .is_none_or(|scene| scene.id != item.scene_id)
+        {
+            return;
+        }
+        let Then::Resume(resume) = item.then.clone() else {
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        let (scene_id, id) = (item.scene_id, item.entry);
+        spawn_local(async move {
+            let made = match &did {
+                StudioEdit::ZoneCreated { zone_id, .. } => Some(zone_id.clone()),
+                _ => None,
+            };
+            match *resume {
+                Resume::Rebuild { record, remove } => {
+                    match live_zone(scene_id, made.as_deref()).await {
+                        Err(_) => self.hold_again(item),
+                        Ok(None) => {
+                            toasts::toast_info(&format!(
+                                "{} was made again, but it is gone now.",
+                                record.name
+                            ));
+                            self.journal.update(|journal| {
+                                journal.settle(
+                                    id,
+                                    Settled::Applied(StudioEdit::ZoneDeleted(Box::new(record))),
+                                );
+                            });
+                        }
+                        Ok(Some(zone)) => {
+                            if let Some(zone) = self
+                                .finish_rebuild(generation, scene_id, &record, zone)
+                                .await
+                                && self.is_current(generation)
+                            {
+                                self.settle_rebuilt(id, record, zone.id, remove);
+                            }
+                        }
+                    }
+                }
+                Resume::Uncreate {
+                    zone_id,
+                    neighbor,
+                    name,
+                    color,
+                    ..
+                } => {
+                    let receipt = match did {
+                        StudioEdit::Members(changes) => changes,
+                        _ => Vec::new(),
+                    };
+                    let home = receipt
+                        .iter()
+                        .find_map(|change| change.after.as_ref())
+                        .map(|state| state.zone_id.to_string());
+                    let step = Uncreating {
+                        zone_id,
+                        neighbor,
+                        name,
+                        color,
+                        filled_now: receipt.into_iter().map(flip).collect(),
+                        home,
+                        moved_out: true,
+                    };
+                    if let Some(entry) = self.finish_uncreate(generation, scene_id, id, step).await
+                        && self.is_current(generation)
+                    {
+                        self.settle_created(id, false, entry);
+                    }
+                }
+                Resume::Recreate {
+                    zone_id: old,
+                    name,
+                    color,
+                    filled,
+                } => match live_zone(scene_id, made.as_deref()).await {
+                    Err(_) => self.hold_again(item),
+                    Ok(None) => {
+                        toasts::toast_info(&format!("{name} was made again, but it is gone now."));
+                        self.journal.update(|journal| {
+                            journal.settle(
+                                id,
+                                Settled::Unapplied(StudioEdit::ZoneCreated {
+                                    zone_id: old,
+                                    name,
+                                    color,
+                                    filled,
+                                }),
+                            );
+                        });
+                    }
+                    Ok(Some(zone)) => {
+                        self.journal
+                            .update(|journal| journal.remap_zone(&old, zone.id));
+                        if let Some(entry) = self
+                            .finish_recreate(generation, scene_id, id, zone, filled)
+                            .await
+                            && self.is_current(generation)
+                        {
+                            self.settle_created(id, true, entry);
+                        }
+                    }
+                },
+            }
+            self.release(generation).await;
+        });
+    }
+}
+
+/// Where a zone creation's undo stands once its devices are back.
+struct Uncreating {
+    zone_id: String,
+    neighbor: Option<String>,
+    name: String,
+    color: Option<String>,
+    /// The move into the zone, as it stands after the devices went back.
+    filled_now: Vec<MemberEdit>,
+    /// The zone the devices went back to, for the selection.
+    home: Option<String>,
+    /// Whether devices went back at all.
+    moved_out: bool,
 }

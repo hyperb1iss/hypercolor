@@ -82,44 +82,119 @@ pub enum StudioEdit {
         after: PatchZoneRequest,
     },
     ZoneDeleted(Box<DeletedZone>),
-    /// A write whose outcome a lost connection hid, `name` saying what it
-    /// was. It holds its place in the journal until the write settles,
-    /// then becomes the entry that undoes what it did, or goes when it did
-    /// nothing; until then neither undo nor redo moves past it.
+    /// A step whose outcome a lost connection hid, `name` saying what it
+    /// was. It holds its place in the journal until it settles, then
+    /// becomes the entry that undoes or redoes what it did, or goes when
+    /// that leaves nothing to undo or redo; until then neither undo nor
+    /// redo moves past it.
     Unresolved {
-        token: u64,
         name: String,
     },
 }
 
+/// A journal entry's identity. It never changes while the entry lives,
+/// however settling other entries moves it.
+pub type EntryId = u64;
+
+#[derive(Clone, Debug, PartialEq)]
+struct Entry {
+    id: EntryId,
+    edit: StudioEdit,
+    /// An undo or redo of it waits to settle, which may move the cursor.
+    replaying: bool,
+}
+
+/// What a place in the journal holds once the step it stands for is done.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Settled {
+    /// The step left nothing to undo or redo: the place goes.
+    Gone,
+    /// The place holds this entry, applied: Undo takes it back.
+    Applied(StudioEdit),
+    /// The place holds this entry, not applied: Redo puts it back. Edits
+    /// recorded after the place took the redo branch it would sit in, so
+    /// with any of those still applied it goes instead.
+    Unapplied(StudioEdit),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct StudioJournal {
-    entries: Vec<StudioEdit>,
+    entries: Vec<Entry>,
     cursor: usize,
     /// Edits recorded so far; replays do not count.
     recorded: u64,
+    /// The last entry id handed out.
+    last_id: EntryId,
 }
 
 impl StudioJournal {
-    pub fn record(&mut self, edit: StudioEdit) {
+    /// Record `edit` as the newest step, dropping the redo branch. Returns
+    /// the identity of its place.
+    pub fn record(&mut self, edit: StudioEdit) -> EntryId {
         self.recorded = self.recorded.wrapping_add(1);
+        self.last_id += 1;
         self.entries.truncate(self.cursor);
-        self.entries.push(edit);
+        self.entries.push(Entry {
+            id: self.last_id,
+            edit,
+            replaying: false,
+        });
         if self.entries.len() > crate::layout_history::MAX_HISTORY_DEPTH {
             self.entries.remove(0);
         }
         self.cursor = self.entries.len();
+        self.last_id
     }
     pub fn undo_edit(&self) -> Option<&StudioEdit> {
-        self.cursor.checked_sub(1).and_then(|i| self.entries.get(i))
+        self.cursor
+            .checked_sub(1)
+            .and_then(|i| self.entries.get(i))
+            .map(|entry| &entry.edit)
     }
     pub fn redo_edit(&self) -> Option<&StudioEdit> {
-        self.entries.get(self.cursor)
+        self.entries.get(self.cursor).map(|entry| &entry.edit)
+    }
+    /// The place an undo (`false`) or redo (`true`) would replay now, and
+    /// its entry.
+    pub fn replayed(&self, redo: bool) -> Option<(EntryId, &StudioEdit)> {
+        let index = if redo {
+            self.cursor
+        } else {
+            self.cursor.checked_sub(1)?
+        };
+        self.entries.get(index).map(|entry| (entry.id, &entry.edit))
+    }
+    /// The entry at the place `id`, while the journal holds it.
+    pub fn edit(&self, id: EntryId) -> Option<&StudioEdit> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| &entry.edit)
+    }
+    /// Whether the place `id` is the newest step applied, the one an undo
+    /// would replay.
+    pub fn is_latest(&self, id: EntryId) -> bool {
+        self.position(id)
+            .is_some_and(|index| index + 1 == self.cursor)
+    }
+    /// The name of the step an undo (`false`) or redo (`true`) waits on
+    /// now, while one does: the newest applied place, while it waits to
+    /// settle. A redo waits only on a held undo or redo there, whose
+    /// settling can move the cursor, so nothing replays across it.
+    pub fn waiting_on(&self, redo: bool) -> Option<&str> {
+        let entry = self.entries.get(self.cursor.checked_sub(1)?)?;
+        match &entry.edit {
+            StudioEdit::Unresolved { name } if !redo || entry.replaying => Some(name),
+            _ => None,
+        }
     }
     /// Changes whenever a new edit is recorded, so a waiting undo or redo
     /// can tell the history moved on after it was asked for.
     pub fn recorded(&self) -> u64 {
         self.recorded
+    }
+    fn position(&self, id: EntryId) -> Option<usize> {
+        self.entries.iter().position(|entry| entry.id == id)
     }
     /// Point every entry that names the zone `old` at `new`, once a
     /// restore or redo has made that zone again under a new id.
@@ -136,7 +211,7 @@ impl StudioJournal {
         };
         let new_key = new.to_string();
         for entry in &mut self.entries {
-            match entry {
+            match &mut entry.edit {
                 StudioEdit::Layout { zone_id, .. } | StudioEdit::ZonePatched { zone_id, .. } => {
                     if zone_id == old {
                         zone_id.clone_from(&new_key);
@@ -161,31 +236,75 @@ impl StudioJournal {
         }
     }
 
-    /// Settle the unresolved delete `token` names: its place becomes
-    /// `entry`, or goes when the delete changed nothing. A journal that no
-    /// longer holds it (a scene switch cleared it) is left alone.
-    pub fn settle_unresolved(&mut self, token: u64, entry: Option<StudioEdit>) {
-        let Some(index) = self.entries.iter().position(
-            |held| matches!(held, StudioEdit::Unresolved { token: held, .. } if *held == token),
-        ) else {
+    /// Hold the place `id` while the step it stands for, which went out
+    /// with no answer to say what it did, waits to settle. It shows as
+    /// [`StudioEdit::Unresolved`] named `name`, among the applied steps
+    /// (a redo's place moves the cursor past it), so a new edit never drops
+    /// it with the redo branch. A journal that no longer holds the place is
+    /// left alone.
+    pub fn hold(&mut self, id: EntryId, name: String) {
+        let Some(index) = self.position(id) else {
             return;
         };
-        match entry {
-            Some(entry) => self.entries[index] = entry,
-            None => {
-                self.entries.remove(index);
-                if index < self.cursor {
-                    self.cursor -= 1;
+        let entry = &mut self.entries[index];
+        entry.edit = StudioEdit::Unresolved { name };
+        entry.replaying = true;
+        if index == self.cursor {
+            self.cursor += 1;
+        }
+    }
+
+    /// Settle the place `id` as `settled` (see [`Settled`]), wherever
+    /// settling others moved it meanwhile: a step replayed from it just
+    /// finished, or one held there settled. A journal that no longer holds
+    /// it (a scene switch cleared it) is left alone.
+    pub fn settle(&mut self, id: EntryId, settled: Settled) {
+        let Some(index) = self.position(id) else {
+            return;
+        };
+        match settled {
+            Settled::Gone => self.remove(index),
+            Settled::Applied(edit) => {
+                self.entries[index] = Entry {
+                    id,
+                    edit,
+                    replaying: false,
+                };
+                if index == self.cursor {
+                    self.cursor += 1;
+                }
+            }
+            Settled::Unapplied(edit) => {
+                if index + 1 < self.cursor {
+                    self.remove(index);
+                } else {
+                    self.entries[index] = Entry {
+                        id,
+                        edit,
+                        replaying: false,
+                    };
+                    self.cursor = self.cursor.min(index);
                 }
             }
         }
     }
-    /// The index of the deletion `token` names while it can still be
+
+    fn remove(&mut self, index: usize) {
+        self.entries.remove(index);
+        if index < self.cursor {
+            self.cursor -= 1;
+        }
+    }
+
+    /// The place of the deletion `token` names while it can still be
     /// undone.
-    pub fn undoable_deletion(&self, token: u64) -> Option<usize> {
-        self.entries[..self.cursor].iter().position(
-            |entry| matches!(entry, StudioEdit::ZoneDeleted(record) if record.token == token),
-        )
+    pub fn undoable_deletion(&self, token: u64) -> Option<EntryId> {
+        self.entries[..self.cursor]
+            .iter()
+            .find(|entry| {
+                matches!(&entry.edit, StudioEdit::ZoneDeleted(record) if record.token == token)
+            })
+            .map(|entry| entry.id)
     }
     pub fn complete(&mut self, redo: bool) {
         if redo && self.cursor < self.entries.len() {
@@ -243,6 +362,13 @@ enum Waiting {
     UndoDeletion(u64),
     /// The scene's policy for outputs in no zone.
     UnassignedBehavior(UnassignedBehavior),
+    /// The rest of the undo or redo `item` held, now its first write is
+    /// known to have landed: `did` is the entry that undoes what that
+    /// write did.
+    Resume {
+        item: Box<held::Unresolved>,
+        did: StudioEdit,
+    },
 }
 
 impl Waiting {
@@ -267,7 +393,8 @@ impl Waiting {
             | Self::PatchZone { .. }
             | Self::DeleteZone { .. }
             | Self::UndoDeletion(_)
-            | Self::UnassignedBehavior(_) => {}
+            | Self::UnassignedBehavior(_)
+            | Self::Resume { .. } => {}
         }
     }
 }
@@ -681,6 +808,7 @@ impl StudioHistory {
             Waiting::DeleteZone { zone_id, deleted } => self.delete_zone_now(zone_id, deleted),
             Waiting::UndoDeletion(token) => self.undo_deletion_now(token),
             Waiting::UnassignedBehavior(behavior) => self.set_unassigned_behavior_now(behavior),
+            Waiting::Resume { item, did } => self.resume_now(*item, did),
         }
     }
 
@@ -718,7 +846,7 @@ impl StudioHistory {
                     zone_id,
                     before: Box::new(before),
                     after: Box::new(after),
-                })
+                });
             });
         }
     }
@@ -966,8 +1094,9 @@ impl StudioHistory {
                 }
                 Sent::Landed { changes, revision } => {
                     if !changes.is_empty() {
-                        self.journal
-                            .update(|j| j.record(StudioEdit::Members(changes)));
+                        self.journal.update(|j| {
+                            j.record(StudioEdit::Members(changes));
+                        });
                     }
                     toasts::toast_success("Assignment saved");
                     Some(revision)
@@ -1091,17 +1220,6 @@ impl StudioHistory {
         self.latest.try_set(None);
     }
 
-    /// The journal index an undo (`false`) or redo (`true`) replays.
-    fn replay_index(self, redo: bool) -> usize {
-        self.journal.with_untracked(|j| {
-            if redo {
-                j.cursor
-            } else {
-                j.cursor.saturating_sub(1)
-            }
-        })
-    }
-
     pub fn replay(self, redo: bool) {
         // Edits already queued count as asked for before this; an undo
         // pressed after clicking Add means to undo that Add.
@@ -1133,10 +1251,19 @@ impl StudioHistory {
             });
             return;
         }
-        let edit = self
+        if let Some(name) = self
             .journal
-            .with_untracked(|j| if redo { j.redo_edit() } else { j.undo_edit() }.cloned());
-        let Some(edit) = edit else {
+            .with_untracked(|j| j.waiting_on(redo).map(str::to_owned))
+        {
+            toasts::toast_info(&format!(
+                "Still waiting to learn whether {name} went through. Undo and redo go on once the connection is back."
+            ));
+            return;
+        }
+        let replayed = self
+            .journal
+            .with_untracked(|j| j.replayed(redo).map(|(id, edit)| (id, edit.clone())));
+        let Some((id, edit)) = replayed else {
             return;
         };
         self.prepare_words(&edit, redo);
@@ -1177,113 +1304,118 @@ impl StudioHistory {
                 color,
                 filled,
             } => {
-                let index = self.replay_index(redo);
-                self.replay_zone_created(index, redo, zone_id, name, color, filled);
+                self.replay_zone_created(id, redo, zone_id, name, color, filled);
             }
             StudioEdit::ZonePatched {
                 zone_id,
                 before,
                 after,
             } => {
-                self.replay_zone_patched(redo, zone_id, if redo { after } else { before });
+                self.replay_zone_patched(id, redo, zone_id, before, after);
             }
             StudioEdit::ZoneDeleted(record) => {
-                let index = self.replay_index(redo);
-                self.replay_zone_deleted_step(index, redo, *record);
+                self.replay_zone_deleted_step(id, redo, *record);
             }
-            StudioEdit::Unresolved { name, .. } => {
-                toasts::toast_info(&format!(
-                    "Still waiting to learn whether {name} went through. Undo and redo go on once the connection is back."
-                ));
-            }
-            StudioEdit::Members(changes) => {
-                let Some(scene) = self.current_scene() else {
-                    return;
-                };
-                let changes = changes
-                    .into_iter()
-                    .map(|change| {
-                        if redo {
-                            change
-                        } else {
-                            MemberEdit {
-                                before: change.after,
-                                after: change.before,
-                            }
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let Ok(changes) = prepare_members_replay(&scene, changes) else {
-                    toasts::toast_error("Assignment changed elsewhere; history was not applied");
-                    return;
-                };
-                let Some(generation) = self.begin() else {
-                    return;
-                };
-                leptos::task::spawn_local(async move {
-                    let request = EditMembersRequest {
-                        scene_id: scene.id,
-                        changes,
-                        assignment: None,
-                    };
-                    let through = writer::edit_mark();
-                    let result = edit_members(&request, &Fence::of(&scene)).await;
-                    if !self.is_current(generation) {
-                        return;
-                    }
-                    match result {
-                        Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => {
-                            if self.is_current(generation)
-                                && self.scene.with_untracked(|s| {
-                                    s.as_ref().is_some_and(|s| s.id == scene.id)
-                                })
-                            {
-                                self.journal.update(|j| {
-                                    let index = if redo { j.cursor } else { j.cursor - 1 };
-                                    let changes = response
-                                        .changes
-                                        .iter()
-                                        .cloned()
-                                        .map(|change| {
-                                            if redo {
-                                                change
-                                            } else {
-                                                MemberEdit {
-                                                    before: change.after,
-                                                    after: change.before,
-                                                }
-                                            }
-                                        })
-                                        .collect();
-                                    j.entries[index] = StudioEdit::Members(changes);
-                                    j.complete(redo);
-                                });
-                                self.announce_replay();
-                                self.accept(response, through);
-                                toasts::toast_success(if redo {
-                                    "Assignment redone and saved"
-                                } else {
-                                    "Assignment undone and saved"
-                                });
-                            }
-                        }
-                        Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
-                            toasts::toast_error(
-                                "Scene changed elsewhere; history was not applied. Try again.",
-                            );
-                        }
-                        Written::Answered(Err(error)) => {
-                            toasts::toast_error(&format!("History could not be applied: {error}"));
-                        }
-                        Written::Unknown(..) => toasts::toast_info(
-                            "No answer came back for the undo or redo, so it may have been applied. Check the scene.",
-                        ),
-                    }
-                    self.refresh.run(());
-                    self.finish(generation);
-                });
-            }
+            // Only a held step's place shows unresolved, and that one waits
+            // where undo would replay, which stopped this above.
+            StudioEdit::Unresolved { .. } => {}
+            StudioEdit::Members(changes) => self.replay_members(id, redo, changes),
         }
+    }
+
+    /// Undo or redo the membership edit at the journal place `id`.
+    fn replay_members(self, id: EntryId, redo: bool, changes: Vec<MemberEdit>) {
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let entry = StudioEdit::Members(changes.clone());
+        let changes = changes
+            .into_iter()
+            .map(|change| if redo { change } else { flip(change) })
+            .collect::<Vec<_>>();
+        let Ok(changes) = prepare_members_replay(&scene, changes) else {
+            toasts::toast_error("Assignment changed elsewhere; history was not applied");
+            return;
+        };
+        let Some(generation) = self.begin() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            let request = EditMembersRequest {
+                scene_id: scene.id,
+                changes,
+                assignment: None,
+            };
+            let through = writer::edit_mark();
+            let result = edit_members(&request, &Fence::of(&scene)).await;
+            if !self.is_current(generation) {
+                return;
+            }
+            match result {
+                Written::Answered(Ok(api::zones::ZoneOutcome::Applied(response))) => {
+                    if self
+                        .scene
+                        .with_untracked(|s| s.as_ref().is_some_and(|s| s.id == scene.id))
+                    {
+                        let receipt = response.changes.clone();
+                        let settled = if redo {
+                            Settled::Applied(StudioEdit::Members(receipt))
+                        } else {
+                            Settled::Unapplied(StudioEdit::Members(
+                                receipt.into_iter().map(flip).collect(),
+                            ))
+                        };
+                        self.journal.update(|j| j.settle(id, settled));
+                        self.announce_replay();
+                        self.accept(response, through);
+                        toasts::toast_success(if redo {
+                            "Assignment redone and saved"
+                        } else {
+                            "Assignment undone and saved"
+                        });
+                    }
+                }
+                Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
+                    toasts::toast_error(
+                        "Scene changed elsewhere; history was not applied. Try again.",
+                    );
+                }
+                Written::Answered(Err(error)) => {
+                    toasts::toast_error(&format!("History could not be applied: {error}"));
+                }
+                // Its place keeps the move until the write settles, so a
+                // second Undo cannot send it again meanwhile.
+                Written::Unknown(fence, key) => {
+                    self.replay_words.try_set_value(None);
+                    let what = if redo {
+                        "redoing the assignment"
+                    } else {
+                        "undoing the assignment"
+                    };
+                    self.hold_replay(
+                        scene.id,
+                        id,
+                        what.to_owned(),
+                        held::Pending {
+                            fence,
+                            key,
+                            write: held::HeldWrite::Members { request, through },
+                        },
+                        held::Then::Replay { entry, redo },
+                    );
+                }
+            }
+            self.refresh.run(());
+            self.finish(generation);
+        });
+    }
+}
+
+/// The same membership change, the other way round.
+fn flip(change: MemberEdit) -> MemberEdit {
+    MemberEdit {
+        before: change.after,
+        after: change.before,
     }
 }
 
@@ -1536,7 +1668,7 @@ mod replay_tests {
                 zone_id: zone_id.into(),
                 before: Box::new(snapshot()),
                 after: Box::new(snapshot()),
-            })
+            });
         });
     }
 
@@ -1885,16 +2017,19 @@ mod replay_tests {
             let mut after = scene.clone();
             after.zones.remove(1);
             // The delete holds its place; an edit lands after it meanwhile.
-            history.journal.update(|journal| {
-                journal.record(StudioEdit::Unresolved {
-                    token: gone.token,
-                    name: format!("deleting {}", gone.name),
-                });
-                journal.record(StudioEdit::Members(Vec::new()));
-            });
+            let name = format!("deleting {}", gone.name);
+            let entry = history
+                .journal
+                .try_update(|journal| {
+                    let entry = journal.record(StudioEdit::Unresolved { name: name.clone() });
+                    journal.record(StudioEdit::Members(Vec::new()));
+                    entry
+                })
+                .expect("a journal");
             history.hold(
                 scene.id,
-                gone.token,
+                entry,
+                name.clone(),
                 held::Pending {
                     fence: Fence::of(&scene),
                     key: "delete".to_owned(),
@@ -1903,6 +2038,7 @@ mod replay_tests {
                         release: Vec::new(),
                     },
                 },
+                held::Then::Record,
             );
             assert!(history.has_unresolved());
             let item = history
@@ -1923,19 +2059,208 @@ mod replay_tests {
             assert!(!history.has_unresolved());
             history.journal.with_untracked(|journal| {
                 assert_eq!(journal.cursor, 2, "settling neither adds nor moves a step");
-                assert!(matches!(journal.entries[0], StudioEdit::ZoneDeleted(_)));
-                assert!(matches!(journal.entries[1], StudioEdit::Members(_)));
+                assert!(matches!(
+                    journal.entries[0].edit,
+                    StudioEdit::ZoneDeleted(_)
+                ));
+                assert!(matches!(journal.entries[1].edit, StudioEdit::Members(_)));
             });
             // A scene switch while a held write settles drops it with the
             // journal that held its place; its answer settles nothing.
-            history.hold(scene.id, 7, item.pending.clone());
+            history.hold(
+                scene.id,
+                7,
+                name.clone(),
+                item.pending.clone(),
+                held::Then::Record,
+            );
             history.unresolved.set_value(Vec::new());
             let switched = held::Unresolved {
                 scene_id: scene.id,
-                token: 7,
+                entry: 7,
+                name,
                 pending: item.pending.clone(),
+                then: held::Then::Record,
             };
             assert!(!history.settle_if_held(&switched, None));
+        });
+        owner.cleanup();
+    }
+
+    /// A held write of `scene` for the settling tests; what it sent does
+    /// not matter to how its place settles.
+    fn held_item(
+        scene: &api::SceneDocument,
+        entry: EntryId,
+        name: &str,
+        then: held::Then,
+    ) -> held::Unresolved {
+        held::Unresolved {
+            scene_id: scene.id,
+            entry,
+            name: name.to_owned(),
+            pending: held::Pending {
+                fence: Fence::of(scene),
+                key: "key".to_owned(),
+                write: held::HeldWrite::Members {
+                    request: EditMembersRequest {
+                        scene_id: scene.id,
+                        changes: Vec::new(),
+                        assignment: None,
+                    },
+                    through: 0,
+                },
+            },
+            then,
+        }
+    }
+
+    #[test]
+    fn a_held_undo_or_redo_settles_into_the_step_it_replays() {
+        use hypercolor_types::api::scene::MemberState;
+        let owner = Owner::new();
+        owner.with(|| {
+            let history = history(None, false, None, "11111111-1111-4111-8111-111111111111");
+            let scene = two_zone_scene(9, 0.2);
+            let output = api::zone_outputs(&scene.zones[0]).remove(0);
+            let state = |zone: usize| MemberState {
+                zone_id: scene.zones[zone].id,
+                output: output.clone(),
+                index: 0,
+            };
+            let moved = vec![MemberEdit {
+                before: Some(state(0)),
+                after: Some(state(1)),
+            }];
+            let entry = StudioEdit::Members(moved.clone());
+
+            // An undo that landed: its receipt is the move back, and the
+            // place keeps the move, ready to redo.
+            let id = history
+                .journal
+                .try_update(|journal| journal.record(entry.clone()))
+                .expect("a journal");
+            history
+                .journal
+                .update(|journal| journal.hold(id, "undoing the assignment".to_owned()));
+            let undo = held_item(
+                &scene,
+                id,
+                "undoing the assignment",
+                held::Then::Replay {
+                    entry: entry.clone(),
+                    redo: false,
+                },
+            );
+            let receipt = moved.iter().cloned().map(flip).collect();
+            history.settle_held(&undo, Some(StudioEdit::Members(receipt)));
+            history.journal.with_untracked(|journal| {
+                assert_eq!(journal.undo_edit(), None);
+                assert_eq!(journal.redo_edit(), Some(&entry));
+            });
+
+            // A redo that did nothing goes back where it was.
+            let id = history
+                .journal
+                .with_untracked(|journal| journal.replayed(true).map(|(id, _)| id))
+                .expect("a step to redo");
+            history
+                .journal
+                .update(|journal| journal.hold(id, "redoing the assignment".to_owned()));
+            let redo = held_item(
+                &scene,
+                id,
+                "redoing the assignment",
+                held::Then::Replay {
+                    entry: entry.clone(),
+                    redo: true,
+                },
+            );
+            history.settle_held(&redo, None);
+            history.journal.with_untracked(|journal| {
+                assert_eq!(journal.undo_edit(), None);
+                assert_eq!(journal.redo_edit(), Some(&entry));
+            });
+
+            // A move into a zone a redo made again keeps what it moved.
+            let made = scene.zones[1].id.to_string();
+            let id = history
+                .journal
+                .try_update(|journal| journal.record(StudioEdit::Unresolved { name: "m".into() }))
+                .expect("a journal");
+            let fill = held_item(
+                &scene,
+                id,
+                "m",
+                held::Then::Fill {
+                    zone_id: made.clone(),
+                    name: "Keyboard".to_owned(),
+                    color: None,
+                },
+            );
+            history.settle_held(&fill, Some(StudioEdit::Members(moved.clone())));
+            history.journal.with_untracked(|journal| {
+                assert_eq!(
+                    journal.undo_edit(),
+                    Some(&StudioEdit::ZoneCreated {
+                        zone_id: made.clone(),
+                        name: "Keyboard".to_owned(),
+                        color: None,
+                        filled: moved.clone(),
+                    })
+                );
+            });
+
+            // A restore whose create did not land leaves the deletion as it
+            // was; one that landed goes on in its turn, the place waiting.
+            let record = DeletedZone::of(&scene.zones[1], 1, 4);
+            let resume = || {
+                held::Then::Resume(Box::new(held::Resume::Rebuild {
+                    record: record.clone(),
+                    remove: false,
+                }))
+            };
+            for landed in [false, true] {
+                let id = history
+                    .journal
+                    .try_update(|journal| {
+                        journal.record(StudioEdit::ZoneDeleted(Box::new(record.clone())))
+                    })
+                    .expect("a journal");
+                history
+                    .journal
+                    .update(|journal| journal.hold(id, "restoring Keyboard".to_owned()));
+                let item = held_item(&scene, id, "restoring Keyboard", resume());
+                // Another operation holds the scene, so the rest waits.
+                let generation = history.begin().expect("a free scene");
+                let made = StudioEdit::ZoneCreated {
+                    zone_id: hypercolor_types::scene::ZoneId::new().to_string(),
+                    name: "Keyboard".to_owned(),
+                    color: None,
+                    filled: Vec::new(),
+                };
+                history.settle_held(&item, landed.then_some(made));
+                let waiting = history.waiting.with_value(|waiting| {
+                    waiting
+                        .iter()
+                        .filter(|operation| matches!(operation, Waiting::Resume { .. }))
+                        .count()
+                });
+                history.journal.with_untracked(|journal| {
+                    if landed {
+                        assert_eq!(waiting, 1, "the rest of the restore waits its turn");
+                        assert_eq!(journal.waiting_on(false), Some("restoring Keyboard"));
+                    } else {
+                        assert_eq!(waiting, 0);
+                        assert_eq!(
+                            journal.undo_edit(),
+                            Some(&StudioEdit::ZoneDeleted(Box::new(record.clone())))
+                        );
+                    }
+                });
+                history.finish(generation);
+                history.waiting.set_value(VecDeque::new());
+            }
         });
         owner.cleanup();
     }
