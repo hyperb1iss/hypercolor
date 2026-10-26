@@ -44,8 +44,11 @@ pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool)
         enabled: Some(enabled),
         ..Default::default()
     };
-    if let Some(patch) = zones_ctx.studio_zone_patch.try_get_value().flatten() {
-        patch.run((zone_id, request));
+    // A Studio already gone leaves a callback that no longer runs; the
+    // patch then writes directly.
+    if let Some(patch) = zones_ctx.studio_zone_patch.try_get_value().flatten()
+        && patch.try_run((zone_id.clone(), request.clone())).is_some()
+    {
         return;
     }
     let Some(scene) = zones_ctx.active_scene.get_untracked() else {

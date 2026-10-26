@@ -81,8 +81,8 @@ fn save_hidden_outputs(map: &HashMap<String, HashSet<String>>) {
     }
 }
 
-/// An empty layer stack at revision 0 — the resource value while nothing
-/// is selected.
+/// An empty layer stack at revision 0: the resource value while nothing
+/// is selected, or while the selection names a zone the scene lacks.
 fn empty_layer_stack() -> api::LayerStackResponse {
     api::LayerStackResponse {
         items: Vec::new(),
@@ -471,13 +471,22 @@ pub fn StudioPage() -> impl IntoView {
     provide_context(history);
     // A zone paused from the sidebar is an undo step here too, the same
     // one the tab menu's pause records.
+    let studio_zone_patch = Callback::new(move |(zone_id, request)| {
+        history.patch_zone(zone_id, request, "Couldn't update the zone");
+    });
     zones_ctx
         .studio_zone_patch
-        .set_value(Some(Callback::new(move |(zone_id, request)| {
-            history.patch_zone(zone_id, request, "Couldn't update the zone");
-        })));
+        .set_value(Some(studio_zone_patch));
     on_cleanup(move || {
-        zones_ctx.studio_zone_patch.try_set_value(None);
+        // A Studio mounted since keeps its own registration.
+        zones_ctx.studio_zone_patch.try_update_value(|slot| {
+            if slot
+                .as_ref()
+                .is_some_and(|current| current.matches(&studio_zone_patch))
+            {
+                *slot = None;
+            }
+        });
     });
 
     let studio = StudioContext {
