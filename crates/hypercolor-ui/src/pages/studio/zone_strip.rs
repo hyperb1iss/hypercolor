@@ -944,11 +944,20 @@ fn ZoneTabMenu(handles: StripHandles) -> impl IntoView {
     let menu = handles.menu;
     let colors_open = RwSignal::new(false);
     let menu_ref = NodeRef::<html::Div>::new();
+    // The rendered size, measured once open: rem-based widths grow with
+    // the root font size, so a fixed guess can spill off the window edge.
+    let size = RwSignal::new((240.0_f64, 280.0_f64));
 
     Effect::new(move |_| {
         if menu.get().is_some() {
             colors_open.set(false);
-            request_animation_frame(move || focus_first_item(menu_ref));
+            request_animation_frame(move || {
+                if let Some(panel) = menu_ref.get_untracked() {
+                    let rect = panel.get_bounding_client_rect();
+                    size.set((rect.width(), rect.height()));
+                }
+                focus_first_item(menu_ref);
+            });
         }
     });
 
@@ -1012,8 +1021,9 @@ fn ZoneTabMenu(handles: StripHandles) -> impl IntoView {
                     aria-label="Zone options"
                     class="fixed z-[71] w-52 overflow-hidden rounded-lg border border-edge-subtle bg-surface-overlay/98 p-1 backdrop-blur-xl dropdown-glow animate-enter-down"
                     style=move || {
+                        let (width, height) = size.get();
                         menu.get()
-                            .map(|anchor| menu_position(anchor.x, anchor.y, 208.0, 280.0))
+                            .map(|anchor| menu_position(anchor.x, anchor.y, width, height))
                             .unwrap_or_default()
                     }
                     on:keydown=move |ev: web_sys::KeyboardEvent| {
