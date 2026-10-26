@@ -309,9 +309,7 @@ pub fn ZoneStrip() -> impl IntoView {
                 .or_else(|| ids.get(index + 1))
                 .cloned()
         });
-        studio
-            .history
-            .delete_zone(zone_id, neighbor.clone(), on_deleted);
+        studio.history.delete_zone(zone_id, on_deleted);
         neighbor
     };
     let request_delete = Callback::new(move |zone_id: String| {

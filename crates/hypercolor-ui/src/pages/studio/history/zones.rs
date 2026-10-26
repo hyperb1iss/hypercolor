@@ -481,28 +481,16 @@ impl StudioHistory {
     /// Delete a zone. Its outputs leave first, through one membership
     /// transaction whose receipt holds their complete snapshots, so an
     /// undo can put them back exactly; then the empty zone goes.
-    /// `select_after` takes the selection when the deleted zone held it.
-    /// `deleted` runs with the restore record once the zone is gone; the
-    /// same record is the journal entry Ctrl+Z restores.
-    pub fn delete_zone(
-        self,
-        zone_id: String,
-        select_after: Option<String>,
-        deleted: Callback<DeletedZone>,
-    ) {
-        self.when_free(super::Waiting::DeleteZone {
-            zone_id,
-            select_after,
-            deleted,
-        });
+    /// When the deleted zone held the selection, the light tab beside it
+    /// takes it, chosen as the delete runs so a queued delete never hands
+    /// it to a zone an earlier one removed. `deleted` runs with the
+    /// restore record once the zone is gone; the same record is the
+    /// journal entry Ctrl+Z restores.
+    pub fn delete_zone(self, zone_id: String, deleted: Callback<DeletedZone>) {
+        self.when_free(super::Waiting::DeleteZone { zone_id, deleted });
     }
 
-    pub(super) fn delete_zone_now(
-        self,
-        zone_id: String,
-        select_after: Option<String>,
-        deleted: Callback<DeletedZone>,
-    ) {
+    pub(super) fn delete_zone_now(self, zone_id: String, deleted: Callback<DeletedZone>) {
         let Some(scene) = self.current_scene() else {
             return;
         };
@@ -515,14 +503,13 @@ impl StudioHistory {
             return;
         };
         let mut record = DeletedZone::of(zone, index, self.next_token());
+        let neighbor = light_neighbor(&scene, &zone_id);
         let Some(generation) = self.begin() else {
             return;
         };
         spawn_local(async move {
             if self.take_down_zone(scene.id, &mut record).await && self.is_current(generation) {
-                if self.selected.get_untracked().as_deref() == Some(zone_id.as_str()) {
-                    self.selected.set(select_after);
-                }
+                self.select_away(&zone_id, neighbor);
                 self.journal.update(|journal| {
                     journal.record(StudioEdit::ZoneDeleted(Box::new(record.clone())));
                 });
@@ -907,7 +894,15 @@ impl StudioHistory {
             if let Some((entry, remade)) = settled
                 && self.is_current(generation)
             {
-                self.settle_zone_entry(index, redo, entry, Settle::Step);
+                // A kept zone with nothing moved back leaves no step to
+                // redo, so its entry goes rather than eating a keypress.
+                let settle = if matches!(&entry, StudioEdit::Members(changes) if changes.is_empty())
+                {
+                    Settle::Remove
+                } else {
+                    Settle::Step
+                };
+                self.settle_zone_entry(index, redo, entry, settle);
                 if let Some(new) = remade {
                     self.journal.update(|journal| journal.remap_zone(&old, new));
                 }
@@ -1060,7 +1055,8 @@ impl StudioHistory {
             }
         };
         let mut filled_now = Vec::new();
-        if !filled.is_empty() {
+        let moves_in = !filled.is_empty();
+        if moves_in {
             let scene = live_scene(scene_id).await.ok();
             if !self.is_current(generation) {
                 return None;
@@ -1102,14 +1098,17 @@ impl StudioHistory {
         if self.is_current(generation) {
             self.selected.set(Some(zone.id.to_string()));
         }
-        Some((
-            StudioEdit::ZoneCreated {
-                zone_id: zone.id.to_string(),
-                name: zone.name,
-                color: zone.color,
-                filled: filled_now,
-            },
-            zone.id,
-        ))
+        let entry = StudioEdit::ZoneCreated {
+            zone_id: zone.id.to_string(),
+            name: zone.name,
+            color: zone.color,
+            filled: filled_now,
+        };
+        if moves_in && matches!(&entry, StudioEdit::ZoneCreated { filled, .. } if filled.is_empty())
+        {
+            // The devices did not come along, so the redo only made the zone.
+            self.prepare_words(&entry, true);
+        }
+        Some((entry, zone.id))
     }
 }

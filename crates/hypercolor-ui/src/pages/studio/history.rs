@@ -183,7 +183,6 @@ enum Waiting {
     },
     DeleteZone {
         zone_id: String,
-        select_after: Option<String>,
         deleted: Callback<DeletedZone>,
     },
     /// The Undo bar's restore of the deletion this token names.
@@ -572,11 +571,7 @@ impl StudioHistory {
                 after,
                 failure,
             } => self.patch_zone_now(zone_id, after, failure),
-            Waiting::DeleteZone {
-                zone_id,
-                select_after,
-                deleted,
-            } => self.delete_zone_now(zone_id, select_after, deleted),
+            Waiting::DeleteZone { zone_id, deleted } => self.delete_zone_now(zone_id, deleted),
             Waiting::UndoDeletion(token) => self.undo_deletion_now(token),
         }
     }
@@ -1442,7 +1437,7 @@ mod replay_tests {
         owner.with(|| {
             let zone = "11111111-1111-4111-8111-111111111111";
             let history = history(None, true, None, zone);
-            history.delete_zone(zone.to_owned(), None, Callback::new(|_| {}));
+            history.delete_zone(zone.to_owned(), Callback::new(|_| {}));
             history.undo_deletion(1);
             history.replay(false);
             let expected = history.waiting.with_value(|waiting| match waiting.back() {
