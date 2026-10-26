@@ -256,24 +256,29 @@ pub fn StudioPage() -> impl IntoView {
 
     let ws = expect_context::<WsContext>();
     // The shared scene already contains each zone's layers and revision.
-    // Project its stack without fetching the same document again.
+    // Project its stack without fetching the same document again. A
+    // selection the scene does not hold yet, or any longer, is a moment of
+    // catch-up the selection settles on its own, so it shows no layers
+    // rather than an error.
     let layers_resource = LocalResource::new(move || {
         let zone_id = selected_surface_id.get();
-        let stack = active_scene.with(|scene| match (scene.as_ref(), zone_id.as_deref()) {
-            (Some(scene), Some(zone_id)) => scene
-                .zones
-                .iter()
-                .find(|zone| zone.id.to_string() == zone_id)
-                .map(|zone| api::LayerStackResponse {
-                    items: zone.layers.clone(),
-                    revision: scene.revision,
+        let stack = active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .zip(zone_id.as_deref())
+                .and_then(|(scene, zone_id)| {
+                    scene
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == zone_id)
+                        .map(|zone| api::LayerStackResponse {
+                            items: zone.layers.clone(),
+                            revision: scene.revision,
+                        })
                 })
-                .ok_or_else(|| {
-                    api::ApiError::Parse(format!("Zone {zone_id} is not present in the live scene"))
-                }),
-            _ => Ok(empty_layer_stack()),
+                .unwrap_or_else(empty_layer_stack)
         });
-        async move { stack }
+        async move { Ok(stack) }
     });
 
     let on_layers_mutated = Callback::new(move |()| {
