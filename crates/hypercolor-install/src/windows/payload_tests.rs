@@ -332,3 +332,59 @@ fn manifests_that_a_windows_unit_cannot_honour_are_refused() {
         );
     }
 }
+
+fn icacls(path: &Path, arguments: &[&str]) {
+    let status = std::process::Command::new("icacls")
+        .arg(path)
+        .args(arguments)
+        .status()
+        .expect("run icacls");
+    assert!(status.success(), "icacls {} {arguments:?}", path.display());
+}
+
+#[test]
+fn a_unit_users_could_change_or_could_not_run_is_never_bound() {
+    let fixture = Fixture::new();
+    let (source, unit) = fixture.source("extracted", &manifest());
+    let lock = fixture.store.acquire_lock().expect("lock");
+    stage_release_payload(&fixture.store, &lock, &open(&source), &unit).expect("stage");
+    let installed = fixture.store.unit_path(&unit);
+    let units = installed.parent().expect("units").to_path_buf();
+    let units_security = WindowsDirectory::open(&units, WindowsDirectoryAccess::Read)
+        .expect("units")
+        .security()
+        .expect("units security");
+    assert!(
+        units_security.dacl_protected,
+        "units does not inherit the release root"
+    );
+
+    icacls(
+        &installed.join("manifest.json"),
+        &["/grant", "*S-1-5-32-545:(W)"],
+    );
+    assert!(
+        matches!(
+            retain_installed_release_unit(&fixture.store, &lock, &unit),
+            Err(ReleasePayloadError::InvalidUnit(_))
+        ),
+        "the unit's own manifest is held to the same ACL as its members"
+    );
+    icacls(
+        &installed.join("manifest.json"),
+        &["/remove:g", "*S-1-5-32-545"],
+    );
+    retain_installed_release_unit(&fixture.store, &lock, &unit).expect("restored");
+
+    icacls(
+        &installed.join("hypercolor-app.exe"),
+        &["/deny", "*S-1-1-0:(X)"],
+    );
+    assert!(
+        matches!(
+            retain_installed_release_unit(&fixture.store, &lock, &unit),
+            Err(ReleasePayloadError::InvalidUnit(_))
+        ),
+        "a program standard users cannot execute is refused"
+    );
+}

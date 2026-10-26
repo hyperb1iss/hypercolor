@@ -274,7 +274,7 @@ fn roots_must_be_plain_distinct_and_trusted() {
     assert!(
         matches!(
             untrusting.acquire_lock(),
-            Err(InstallStoreError::UnsafeDirectory(..))
+            Err(InstallStoreError::Untrusted(..))
         ),
         "a profile the machine policy does not trust is refused"
     );
@@ -308,5 +308,46 @@ fn a_reparse_point_on_the_path_is_refused() {
     assert!(matches!(
         store.acquire_lock(),
         Err(InstallStoreError::OpenRoot { .. })
+    ));
+}
+
+/// Change an entry's DACL the way an administrator would, with `icacls`.
+fn icacls(path: &std::path::Path, arguments: &[&str]) {
+    let status = std::process::Command::new("icacls")
+        .arg(path)
+        .args(arguments)
+        .status()
+        .expect("run icacls");
+    assert!(status.success(), "icacls {} {arguments:?}", path.display());
+}
+
+#[test]
+fn control_files_and_roots_that_users_can_change_are_refused() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let lock = store.acquire_lock().expect("lock");
+    store
+        .write_journal(&journal(&unit('d')), &lock)
+        .expect("journal");
+    store.set_active(Some(&unit('d')), &lock).expect("pointer");
+    icacls(&store.journal_path(), &["/grant", "*S-1-5-32-545:(W)"]);
+    assert!(matches!(
+        store.load_journal(&lock),
+        Err(InstallStoreError::Untrusted(..))
+    ));
+    icacls(&store.active_path(), &["/grant", "*S-1-5-32-545:(M)"]);
+    assert!(matches!(
+        store.active_unit(&lock),
+        Err(InstallStoreError::Untrusted(..))
+    ));
+    drop(lock);
+
+    // A write right the state root only passes to new files still reaches
+    // the journal and pointer the store creates there.
+    let inheriting = Fixture::new();
+    icacls(&inheriting.state, &["/grant", "*S-1-5-32-545:(OI)(IO)(W)"]);
+    assert!(matches!(
+        inheriting.store().acquire_lock(),
+        Err(InstallStoreError::Untrusted(..))
     ));
 }

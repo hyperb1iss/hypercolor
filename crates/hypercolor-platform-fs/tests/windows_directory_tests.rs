@@ -6,7 +6,8 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use hypercolor_platform_fs::{
-    WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind, WindowsGrant, WindowsSid,
+    WindowsAce, WindowsAceKind, WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind,
+    WindowsSecurity, WindowsSid, windows_file_security,
 };
 
 fn scratch() -> (tempfile::TempDir, PathBuf) {
@@ -265,55 +266,127 @@ fn reparse_points_are_refused_at_the_path_and_inside() {
 }
 
 #[test]
-fn the_owner_and_grants_of_a_directory_are_readable() {
+fn the_owner_and_dacl_of_a_directory_are_readable() {
     let (_guard, root) = scratch();
     let directory = open_write(&root);
     let security = directory.security().expect("security");
     assert!(!security.null_dacl);
-    assert!(
-        security.grants.iter().any(WindowsGrant::writes),
-        "a scratch directory its creator can write grants someone write"
-    );
     let user = WindowsSid::current_user().expect("current user");
     assert!(user.to_string_form().starts_with("S-1-5-"));
     directory.create_file(OsStr::new("file")).expect("create");
+    let file = directory.open_file(OsStr::new("file")).expect("open file");
     assert_eq!(
+        windows_file_security(&file).expect("file security").owner,
         directory
             .entry_security(OsStr::new("file"))
-            .expect("file security")
+            .expect("entry security")
             .owner,
-        security.owner,
-        "a new file takes the creator's owner"
+        "both readers see the same file"
+    );
+    assert!(
+        !directory
+            .file_system_name()
+            .expect("file system")
+            .is_empty()
     );
 }
 
 #[test]
-fn grant_classes_follow_the_access_mask() {
-    let sid = WindowsSid::parse("S-1-5-32-545").expect("users");
-    let grant = |mask| WindowsGrant {
+fn a_protected_directory_carries_exactly_its_descriptor() {
+    let (_guard, root) = scratch();
+    let directory = open_write(&root);
+    let user = WindowsSid::current_user()
+        .expect("current user")
+        .to_string_form();
+    let units = directory
+        .create_child_directory_with_security(
+            OsStr::new("units"),
+            &format!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{user})(A;OICI;0x1200a9;;;BU)"),
+        )
+        .expect("create protected directory");
+    let security = units.security().expect("security");
+    eprintln!("DEBUG {security:#?}");
+    assert!(security.dacl_protected);
+    let users = [WindowsSid::parse("S-1-5-32-545").expect("users")];
+    assert!(security.grants_read_execute(&users));
+    assert!(security.aces.iter().all(|ace| ace.inherits_to_files));
+
+    units.create_file(OsStr::new("member")).expect("member");
+    let member = units
+        .entry_security(OsStr::new("member"))
+        .expect("member security");
+    assert!(!member.dacl_protected);
+    assert!(
+        member.grants_read_execute(&users),
+        "members inherit the unit grant"
+    );
+    assert!(
+        member
+            .grants()
+            .filter(|ace| ace.writes())
+            .all(|ace| ace.sid.to_string_form() != "S-1-5-32-545"),
+        "users never inherit a write right"
+    );
+}
+
+#[test]
+fn effective_access_applies_deny_entries_in_order() {
+    let users = WindowsSid::parse("S-1-5-32-545").expect("users");
+    let everyone = WindowsSid::parse("S-1-1-0").expect("everyone");
+    let ace = |kind, sid: &WindowsSid, mask| WindowsAce {
+        kind,
         sid: sid.clone(),
         mask,
+        applies_to_self: true,
+        inherits_to_files: false,
+        inherits_to_directories: false,
     };
-    // Read and execute.
-    assert!(!grant(0x0012_00A9).writes());
-    assert!(grant(0x0012_00A9).reads_and_executes());
-    assert!(grant(0x0012_00A9).reads());
-    // Read only, without execute.
-    assert!(grant(0x0012_0089).reads());
-    assert!(!grant(0x0012_0089).reads_and_executes());
-    // Create files and folders only, as ProgramData grants users.
-    assert!(grant(0x0000_0006).writes());
-    assert!(!grant(0x0000_0006).replaces());
-    // Delete, delete child, write DAC, write owner, generic all.
+    let security = |aces| WindowsSecurity {
+        owner: WindowsSid::parse("S-1-5-18").expect("system"),
+        null_dacl: false,
+        dacl_protected: true,
+        aces,
+    };
+    let token = [users.clone(), everyone.clone()];
+    let read_execute = 0x0012_00A9;
+
+    let allowed = security(vec![ace(WindowsAceKind::Allow, &users, read_execute)]);
+    assert!(allowed.grants_read_execute(&token));
+
+    let execute_denied = security(vec![
+        ace(WindowsAceKind::Deny, &everyone, 0x20),
+        ace(WindowsAceKind::Allow, &users, read_execute),
+    ]);
+    assert!(!execute_denied.grants_read_execute(&token));
+    assert!(execute_denied.grants_read(&token));
+
+    let deny_after_allow = security(vec![
+        ace(WindowsAceKind::Allow, &users, read_execute),
+        ace(WindowsAceKind::Deny, &everyone, 0x20),
+    ]);
+    assert!(
+        deny_after_allow.grants_read_execute(&token),
+        "an access check decides each right by the first entry that names it"
+    );
+
+    let mut inherit_only = ace(WindowsAceKind::Allow, &users, read_execute);
+    inherit_only.applies_to_self = false;
+    assert!(!security(vec![inherit_only]).grants_read(&token));
+
+    let ace_writes = ace(WindowsAceKind::Allow, &users, 0x0000_0006);
+    assert!(ace_writes.writes());
+    assert!(!ace_writes.replaces(), "adding children replaces nothing");
     for mask in [
         0x0001_0000,
         0x0000_0040,
         0x0004_0000,
         0x0008_0000,
-        0x1000_0000,
+        0x001F_01FF,
     ] {
-        assert!(grant(mask).replaces(), "{mask:#x}");
-        assert!(grant(mask).writes(), "{mask:#x}");
+        assert!(
+            ace(WindowsAceKind::Allow, &users, mask).replaces(),
+            "{mask:#x}"
+        );
     }
 }
 

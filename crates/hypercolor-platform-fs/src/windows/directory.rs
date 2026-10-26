@@ -27,23 +27,28 @@ use windows_sys::Win32::Foundation::{
     UNICODE_STRING,
 };
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
-use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+    SE_FILE_OBJECT,
+};
 use windows_sys::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CopySid, DACL_SECURITY_INFORMATION, GetAce, GetLengthSid,
-    GetTokenInformation, INHERIT_ONLY_ACE, IsValidSid, OWNER_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, CopySid, DACL_SECURITY_INFORMATION,
+    GetAce, GetLengthSid, GetSecurityDescriptorControl, GetTokenInformation, INHERIT_ONLY_ACE,
+    IsValidSid, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_DELETE_CHILD, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_DELETE_CHILD, FILE_DISPOSITION_INFO, FILE_EXECUTE, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-    FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
-    FILE_WRITE_EA, FileAttributeTagInfo, FileDispositionInfo, FileFullDirectoryInfo,
-    FileFullDirectoryRestartInfo, FileIdInfo, FileStandardInfo, FlushFileBuffers,
-    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, LOCKFILE_EXCLUSIVE_LOCK,
-    LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
+    FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_TRAVERSE,
+    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, FileAttributeTagInfo,
+    FileDispositionInfo, FileFullDirectoryInfo, FileFullDirectoryRestartInfo, FileIdInfo,
+    FileStandardInfo, FlushFileBuffers, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+    GetVolumeInformationByHandleW, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    OPEN_EXISTING, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -68,8 +73,11 @@ const WRITE_OWNER: u32 = 0x0008_0000;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const GENERIC_EXECUTE: u32 = 0x2000_0000;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
-/// Allowed-object, allowed-callback and allowed-callback-object entries.
-const ALLOW_ACE_TYPES_WITH_OTHER_LAYOUTS: [u8; 3] = [0x05, 0x09, 0x0B];
+const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+const SE_DACL_PROTECTED: u16 = 0x1000;
+const FILE_ALL_ACCESS: u32 = 0x001F_01FF;
+/// Rights to read a file's data and attributes.
+const READ_RIGHTS: u32 = FILE_READ_DATA | FILE_READ_ATTRIBUTES;
 const READ_CONTROL: u32 = 0x0002_0000;
 const ENUMERATION_BUFFER_BYTES: usize = 64 * 1024;
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
@@ -261,61 +269,104 @@ impl std::fmt::Debug for WindowsSid {
     }
 }
 
-/// One allow entry that applies to the entry itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsGrant {
-    /// The principal the entry names.
-    pub sid: WindowsSid,
-    /// The access mask it grants.
-    pub mask: u32,
+/// Whether an access entry grants or refuses its rights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsAceKind {
+    /// An access-allowed entry.
+    Allow,
+    /// An access-denied entry.
+    Deny,
 }
 
-impl WindowsGrant {
-    /// Whether the grant lets its principal change the entry's contents,
-    /// attributes, children, name or security in any way.
+/// One entry of a DACL, its generic rights mapped to file rights.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsAce {
+    /// Whether it allows or denies.
+    pub kind: WindowsAceKind,
+    /// The principal it names.
+    pub sid: WindowsSid,
+    /// The file rights it covers.
+    pub mask: u32,
+    /// It applies to the entry itself, not only to what inherits it.
+    pub applies_to_self: bool,
+    /// Files created inside the entry inherit it.
+    pub inherits_to_files: bool,
+    /// Directories created inside the entry inherit it.
+    pub inherits_to_directories: bool,
+}
+
+impl WindowsAce {
+    /// Whether its rights change an entry's contents, attributes, children,
+    /// name or security in any way.
     #[must_use]
     pub const fn writes(&self) -> bool {
         self.mask & WRITE_CLASS_RIGHTS != 0
     }
 
-    /// Whether the grant lets its principal delete, rename or replace the
-    /// entry or its existing children, or change its security. Adding new
-    /// children is not among them.
+    /// Whether its rights delete, rename or replace an entry or its existing
+    /// children, or change its security. Adding new children is not among
+    /// them.
     #[must_use]
     pub const fn replaces(&self) -> bool {
         self.mask & REPLACE_CLASS_RIGHTS != 0
     }
-
-    /// Whether the grant lets its principal read the entry's contents.
-    #[must_use]
-    pub const fn reads(&self) -> bool {
-        let read = FILE_GENERIC_READ & !SYNCHRONIZE & !READ_CONTROL;
-        self.mask & (GENERIC_ALL | GENERIC_READ) != 0 || self.mask & read == read
-    }
-
-    /// Whether the grant lets its principal read and execute the entry.
-    #[must_use]
-    pub const fn reads_and_executes(&self) -> bool {
-        let execute = FILE_GENERIC_EXECUTE & !SYNCHRONIZE & !READ_CONTROL;
-        let read = FILE_GENERIC_READ & !SYNCHRONIZE & !READ_CONTROL;
-        self.mask & (GENERIC_ALL | GENERIC_EXECUTE) != 0
-            || (self.mask & execute == execute && self.mask & read == read)
-    }
 }
 
-/// An entry's owner and the allow entries that apply to it.
-///
-/// Deny entries are not credited: an allow entry is reported even when a
-/// deny entry might mask it, so a judgement built on these grants can only
-/// err toward refusing.
+/// An entry's owner and DACL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsSecurity {
     /// The entry's owner, who can always rewrite its DACL.
     pub owner: WindowsSid,
     /// The entry has no DACL, which grants everyone every right.
     pub null_dacl: bool,
-    /// Every allow entry that is not inherit-only.
-    pub grants: Vec<WindowsGrant>,
+    /// The DACL does not inherit from the entry's parent.
+    pub dacl_protected: bool,
+    /// The DACL's entries in order.
+    pub aces: Vec<WindowsAce>,
+}
+
+impl WindowsSecurity {
+    /// The allow entries that apply to the entry itself.
+    pub fn grants(&self) -> impl Iterator<Item = &WindowsAce> {
+        self.aces
+            .iter()
+            .filter(|ace| ace.kind == WindowsAceKind::Allow && ace.applies_to_self)
+    }
+
+    /// The rights a caller whose token holds exactly the `token` SIDs gets,
+    /// evaluated the way an access check does: entries in DACL order, each
+    /// right decided by the first entry that names it.
+    #[must_use]
+    pub fn effective_access(&self, token: &[WindowsSid]) -> u32 {
+        if self.null_dacl {
+            return FILE_ALL_ACCESS;
+        }
+        let mut granted = 0;
+        let mut denied = 0;
+        for ace in self
+            .aces
+            .iter()
+            .filter(|ace| ace.applies_to_self && token.contains(&ace.sid))
+        {
+            match ace.kind {
+                WindowsAceKind::Allow => granted |= ace.mask & !denied,
+                WindowsAceKind::Deny => denied |= ace.mask & !granted,
+            }
+        }
+        granted
+    }
+
+    /// Whether a caller with the `token` SIDs may read the entry.
+    #[must_use]
+    pub fn grants_read(&self, token: &[WindowsSid]) -> bool {
+        self.effective_access(token) & READ_RIGHTS == READ_RIGHTS
+    }
+
+    /// Whether a caller with the `token` SIDs may read and execute the entry.
+    #[must_use]
+    pub fn grants_read_execute(&self, token: &[WindowsSid]) -> bool {
+        self.effective_access(token) & (READ_RIGHTS | FILE_EXECUTE) == READ_RIGHTS | FILE_EXECUTE
+    }
 }
 
 /// An exclusive lock on one file, held until dropped.
@@ -397,15 +448,46 @@ impl WindowsDirectory {
         metadata(&self.handle)
     }
 
-    /// Owner and allow entries of the directory itself.
+    /// Owner and DACL of the directory itself.
     ///
     /// # Errors
     ///
     /// Returns the operating-system error when the security descriptor
-    /// cannot be read, or an error for a DACL holding an allow entry whose
-    /// layout this reader cannot judge.
+    /// cannot be read, or an error for a DACL holding an entry other than a
+    /// plain allow or deny entry, which this reader cannot judge.
     pub fn security(&self) -> io::Result<WindowsSecurity> {
-        security(&self.handle)
+        security(self.handle.as_raw_handle())
+    }
+
+    /// The file system the directory lives on, such as `NTFS`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when the volume cannot be queried.
+    pub fn file_system_name(&self) -> io::Result<String> {
+        let mut name = [0_u16; 64];
+        // SAFETY: The handle is live and only the file system name buffer,
+        // writable for its length, is requested.
+        if unsafe {
+            GetVolumeInformationByHandleW(
+                self.handle.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                name.as_mut_ptr(),
+                name.len() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let length = name
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(name.len());
+        Ok(String::from_utf16_lossy(&name[..length]))
     }
 
     /// Open a child directory without following it.
@@ -453,6 +535,39 @@ impl WindowsDirectory {
             directory_rights(WindowsDirectoryAccess::Write),
             FILE_CREATE,
             FILE_DIRECTORY_FILE,
+        )?;
+        self.sync()?;
+        Ok(Self {
+            handle,
+            path: self.path.join(name),
+            access: WindowsDirectoryAccess::Write,
+        })
+    }
+
+    /// Create a new child directory whose security descriptor is exactly
+    /// `sddl` from the start, durably, and open it for writing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name or descriptor,
+    /// [`io::ErrorKind::AlreadyExists`] when the name is taken, and the
+    /// operating-system error for any other failure.
+    pub fn create_child_directory_with_security(
+        &self,
+        name: &OsStr,
+        sddl: &str,
+    ) -> io::Result<Self> {
+        self.require_write()?;
+        let wide = validate_name(name)?;
+        let descriptor = SddlDescriptor::parse(sddl)?;
+        let handle = nt_create(
+            Some(&self.handle),
+            &wide,
+            directory_rights(WindowsDirectoryAccess::Write),
+            SHARE_ALL,
+            FILE_CREATE,
+            FILE_DIRECTORY_FILE,
+            Some(&descriptor),
         )?;
         self.sync()?;
         Ok(Self {
@@ -562,7 +677,7 @@ impl WindowsDirectory {
         }
     }
 
-    /// Owner and allow entries of one child, read without following it.
+    /// Owner and DACL of one child, read without following it.
     ///
     /// # Errors
     ///
@@ -570,7 +685,7 @@ impl WindowsDirectory {
     /// security descriptor, or a DACL this reader cannot judge.
     pub fn entry_security(&self, name: &OsStr) -> io::Result<WindowsSecurity> {
         let handle = self.nt_open(name, READ_CONTROL | SYNCHRONIZE, FILE_OPEN, 0)?;
-        security(&handle)
+        security(handle.as_raw_handle())
     }
 
     /// Open an existing regular child file for reading.
@@ -814,6 +929,7 @@ impl WindowsDirectory {
             share,
             disposition,
             options,
+            None,
         )
     }
 }
@@ -836,6 +952,7 @@ fn nt_create(
     share: u32,
     disposition: u32,
     options: u32,
+    security: Option<&SddlDescriptor>,
 ) -> io::Result<OwnedHandle> {
     let byte_length = u16::try_from(std::mem::size_of_val(name))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
@@ -849,7 +966,9 @@ fn nt_create(
         RootDirectory: root.map_or(std::ptr::null_mut(), |handle| handle.as_raw_handle()),
         ObjectName: &object_name,
         Attributes: OBJ_CASE_INSENSITIVE,
-        SecurityDescriptor: std::ptr::null(),
+        SecurityDescriptor: security.map_or(std::ptr::null(), |descriptor| {
+            descriptor.0.cast_const().cast()
+        }),
         SecurityQualityOfService: std::ptr::null(),
     };
     let mut handle: HANDLE = std::ptr::null_mut();
@@ -1025,7 +1144,19 @@ fn metadata(handle: &OwnedHandle) -> io::Result<WindowsEntryMetadata> {
     })
 }
 
-fn security(handle: &OwnedHandle) -> io::Result<WindowsSecurity> {
+/// Owner and DACL of an open file, read through the same handle the caller
+/// reads it with, so the judgement and the contents describe one file.
+///
+/// # Errors
+///
+/// Returns the operating-system error when the handle lacks `READ_CONTROL`
+/// or the descriptor cannot be read, or an error for a DACL holding an entry
+/// other than a plain allow or deny entry.
+pub fn windows_file_security(file: &File) -> io::Result<WindowsSecurity> {
+    security(file.as_raw_handle())
+}
+
+fn security(handle: RawHandle) -> io::Result<WindowsSecurity> {
     let mut owner: PSID = std::ptr::null_mut();
     let mut dacl: *mut ACL = std::ptr::null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -1034,7 +1165,7 @@ fn security(handle: &OwnedHandle) -> io::Result<WindowsSecurity> {
     // and `owner` and `dacl` point inside it.
     let status = unsafe {
         GetSecurityInfo(
-            handle.as_raw_handle(),
+            handle,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
@@ -1051,14 +1182,23 @@ fn security(handle: &OwnedHandle) -> io::Result<WindowsSecurity> {
         // SAFETY: GetSecurityInfo returned a descriptor whose owner SID is
         // valid until the descriptor is freed.
         let owner = unsafe { WindowsSid::copy_from(owner) }?;
+        let mut control = 0_u16;
+        let mut revision = 0_u32;
+        // SAFETY: The descriptor is valid until freed below, and both out
+        // parameters are live locals.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let dacl_protected = control & SE_DACL_PROTECTED != 0;
         if dacl.is_null() {
             return Ok(WindowsSecurity {
                 owner,
                 null_dacl: true,
-                grants: Vec::new(),
+                dacl_protected,
+                aces: Vec::new(),
             });
         }
-        let mut grants = Vec::new();
+        let mut aces = Vec::new();
         // SAFETY: `dacl` points to a valid ACL inside the descriptor.
         let count = u32::from(unsafe { (*dacl).AceCount });
         for index in 0..count {
@@ -1069,39 +1209,102 @@ fn security(handle: &OwnedHandle) -> io::Result<WindowsSecurity> {
             }
             // SAFETY: Every ACE begins with an ACE_HEADER.
             let header = unsafe { &*ace.cast::<ACE_HEADER>() };
-            if u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0 {
-                continue;
-            }
-            if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
-                // Object and callback allow entries carry their own layouts;
-                // one might grant write, so refuse to judge the DACL at all.
-                if ALLOW_ACE_TYPES_WITH_OTHER_LAYOUTS.contains(&header.AceType) {
+            let kind = match header.AceType {
+                ACCESS_ALLOWED_ACE_TYPE => WindowsAceKind::Allow,
+                ACCESS_DENIED_ACE_TYPE => WindowsAceKind::Deny,
+                // Object, callback and conditional entries carry their own
+                // layouts and semantics; refuse to judge the DACL at all
+                // rather than guess what one of them grants or refuses.
+                _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "the DACL carries an allow entry this policy cannot judge",
+                        "the DACL carries an access entry this reader cannot judge",
                     ));
                 }
-                continue;
-            }
+            };
+            // Allowed and denied entries share one layout.
             // SAFETY: The ACE type was checked to have this layout.
             let entry = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
             let sid_pointer = std::ptr::addr_of!(entry.SidStart).cast_mut().cast();
             // SAFETY: The SID begins at SidStart inside the ACE.
             let sid = unsafe { WindowsSid::copy_from(sid_pointer) }?;
-            grants.push(WindowsGrant {
+            let flags = u32::from(header.AceFlags);
+            aces.push(WindowsAce {
+                kind,
                 sid,
-                mask: entry.Mask,
+                mask: map_generic(entry.Mask),
+                applies_to_self: flags & INHERIT_ONLY_ACE == 0,
+                inherits_to_files: flags & OBJECT_INHERIT_ACE != 0,
+                inherits_to_directories: flags & CONTAINER_INHERIT_ACE != 0,
             });
         }
         Ok(WindowsSecurity {
             owner,
             null_dacl: false,
-            grants,
+            dacl_protected,
+            aces,
         })
     })();
     // SAFETY: The descriptor came from GetSecurityInfo and is freed once.
     unsafe { LocalFree(descriptor) };
     result
+}
+
+/// A self-relative security descriptor parsed from SDDL, freed on drop.
+struct SddlDescriptor(PSECURITY_DESCRIPTOR);
+
+impl SddlDescriptor {
+    fn parse(sddl: &str) -> io::Result<Self> {
+        let mut wide = sddl.encode_utf16().collect::<Vec<_>>();
+        if wide.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SDDL holds a NUL",
+            ));
+        }
+        wide.push(0);
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: The string is NUL-terminated and live for the call, and
+        // the out parameter is a live local; the size is not requested.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(descriptor))
+    }
+}
+
+impl Drop for SddlDescriptor {
+    fn drop(&mut self) {
+        // SAFETY: The descriptor came from the SDDL conversion and is freed
+        // exactly once.
+        unsafe { LocalFree(self.0) };
+    }
+}
+
+/// Replace generic rights with the file rights they stand for.
+const fn map_generic(mask: u32) -> u32 {
+    let mut mapped = mask & !(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL);
+    if mask & GENERIC_READ != 0 {
+        mapped |= FILE_GENERIC_READ;
+    }
+    if mask & GENERIC_WRITE != 0 {
+        mapped |= FILE_GENERIC_WRITE;
+    }
+    if mask & GENERIC_EXECUTE != 0 {
+        mapped |= FILE_GENERIC_EXECUTE;
+    }
+    if mask & GENERIC_ALL != 0 {
+        mapped |= FILE_ALL_ACCESS;
+    }
+    mapped
 }
 
 fn flush(handle: &OwnedHandle) -> io::Result<()> {

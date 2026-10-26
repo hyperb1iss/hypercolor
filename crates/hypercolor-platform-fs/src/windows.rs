@@ -22,8 +22,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 pub use directory::{
-    WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind, WindowsEntryMetadata,
-    WindowsFileLock, WindowsGrant, WindowsSecurity, WindowsSid, windows_child_name_is_valid,
+    WindowsAce, WindowsAceKind, WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind,
+    WindowsEntryMetadata, WindowsFileLock, WindowsSecurity, WindowsSid,
+    windows_child_name_is_valid, windows_file_security,
 };
 
 const REPLACE_FLAGS: u32 = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;

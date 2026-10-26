@@ -25,9 +25,9 @@ pub use unix::{
 };
 #[cfg(target_os = "windows")]
 pub use windows::{
-    DestinationIdentity, WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind,
-    WindowsEntryMetadata, WindowsFileLock, WindowsGrant, WindowsSecurity, WindowsSid,
-    windows_child_name_is_valid,
+    DestinationIdentity, WindowsAce, WindowsAceKind, WindowsDirectory, WindowsDirectoryAccess,
+    WindowsEntryKind, WindowsEntryMetadata, WindowsFileLock, WindowsSecurity, WindowsSid,
+    windows_child_name_is_valid, windows_file_security,
 };
 
 /// Atomically replace `destination` with `source` and make the replacement

@@ -13,9 +13,7 @@ use std::ffi::OsStr;
 use std::io::{self, Read as _, Write as _};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use hypercolor_platform_fs::{
-    WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind, WindowsSid,
-};
+use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind};
 use sha2::{Digest as _, Sha256};
 
 use super::manifest::{
@@ -67,7 +65,6 @@ pub fn stage_release_payload(
         ReleasePayloadError::InvalidUnit("the units directory vanished".to_owned())
     })?;
     let unit_name = OsStr::new(manifest.unit_id.as_str());
-    let readers = readers(store, &units)?;
     if units
         .entry_metadata(unit_name)
         .map_err(filesystem("inspect an existing digest unit"))?
@@ -76,14 +73,14 @@ pub fn stage_release_payload(
         let existing = units
             .open_child_directory(unit_name, WindowsDirectoryAccess::Read)
             .map_err(filesystem("open an existing digest unit"))?;
-        validate_installed(store, &existing, &manifest, &readers)?;
+        validate_installed(store, &existing, &manifest)?;
         return unit_record(store, &manifest.unit_id, existing);
     }
 
     let (staging_name, staging) = create_staging(&units)?;
     let staged = copy_tree(source, &staging, &manifest, "")
         .and_then(|()| write_manifest(&staging, &manifest))
-        .and_then(|()| validate_installed(store, &staging, &manifest, &readers));
+        .and_then(|()| validate_installed(store, &staging, &manifest));
     drop(staging);
     if let Err(error) = staged {
         return match units.remove_tree(OsStr::new(&staging_name)) {
@@ -100,7 +97,7 @@ pub fn stage_release_payload(
     let published = units
         .open_child_directory(unit_name, WindowsDirectoryAccess::Read)
         .map_err(filesystem("open the published digest unit"))?;
-    validate_installed(store, &published, &manifest, &readers)?;
+    validate_installed(store, &published, &manifest)?;
     unit_record(store, &manifest.unit_id, published)
 }
 
@@ -117,10 +114,7 @@ pub fn retain_installed_release_unit(
 ) -> Result<UnitRecord, ReleasePayloadError> {
     let directory = store.open_unit_directory(lock, expected_unit)?;
     let manifest = read_manifest(&directory, expected_unit)?;
-    let units = store.units_directory(lock, false)?.ok_or_else(|| {
-        ReleasePayloadError::InvalidUnit("the units directory vanished".to_owned())
-    })?;
-    validate_installed(store, &directory, &manifest, &readers(store, &units)?)?;
+    validate_installed(store, &directory, &manifest)?;
     unit_record(store, expected_unit, directory)
 }
 
@@ -143,25 +137,6 @@ fn read_manifest(
         });
     }
     Ok(manifest)
-}
-
-/// Principals that may read the units directory without being trusted
-/// writers: the users a release must stay runnable for.
-fn readers(
-    store: &InstallStore,
-    units: &WindowsDirectory,
-) -> Result<Vec<WindowsSid>, ReleasePayloadError> {
-    let security = units
-        .security()
-        .map_err(filesystem("read the units directory's security"))?;
-    let trusted = store.ownership_policy();
-    let mut readers = Vec::new();
-    for grant in security.grants {
-        if grant.reads() && !trusted.trusts(&grant.sid) && !readers.contains(&grant.sid) {
-            readers.push(grant.sid);
-        }
-    }
-    Ok(readers)
 }
 
 /// Require that a source directory holds exactly its declared members, each
@@ -254,13 +229,12 @@ fn write_manifest(
 }
 
 /// Prove an installed or staged unit exact: the same tree and digests as its
-/// manifest, no reparse point, no member an untrusted principal can change,
-/// and every member usable by the unit's readers as its class says.
+/// manifest, no reparse point, no entry an untrusted principal can change,
+/// and every entry usable by a standard user as its class says.
 fn validate_installed(
     store: &InstallStore,
     unit: &WindowsDirectory,
     manifest: &ValidatedManifest,
-    readers: &[WindowsSid],
 ) -> Result<(), ReleasePayloadError> {
     let installed = read_installed_manifest(unit)?;
     if installed != manifest.bytes {
@@ -269,7 +243,13 @@ fn validate_installed(
         ));
     }
     require_trusted(store, unit, None, "")?;
-    validate_installed_tree(store, unit, manifest, readers, "")
+    require_trusted(
+        store,
+        unit,
+        Some((OsStr::new(MANIFEST_NAME), PermissionClass::Data)),
+        MANIFEST_NAME,
+    )?;
+    validate_installed_tree(store, unit, manifest, "")
 }
 
 fn read_installed_manifest(unit: &WindowsDirectory) -> Result<Vec<u8>, ReleasePayloadError> {
@@ -287,7 +267,6 @@ fn validate_installed_tree(
     store: &InstallStore,
     directory: &WindowsDirectory,
     manifest: &ValidatedManifest,
-    readers: &[WindowsSid],
     path: &str,
 ) -> Result<(), ReleasePayloadError> {
     require_exact_entries(directory, manifest, path, ReleasePayloadError::InvalidUnit)?;
@@ -300,7 +279,7 @@ fn validate_installed_tree(
                     .open_child_directory(os_name, WindowsDirectoryAccess::Read)
                     .map_err(|error| unit_error(&member_path, &error))?;
                 require_trusted(store, &child, None, &member_path)?;
-                validate_installed_tree(store, &child, manifest, readers, &member_path)?;
+                validate_installed_tree(store, &child, manifest, &member_path)?;
             }
             Member::File {
                 class,
@@ -312,12 +291,7 @@ fn validate_installed_tree(
                     .map_err(|error| unit_error(&member_path, &error))?;
                 hash_exact(file, None, *size, sha256)
                     .map_err(|error| unit_error(&member_path, &error))?;
-                require_trusted(
-                    store,
-                    directory,
-                    Some((os_name, *class, readers)),
-                    &member_path,
-                )?;
+                require_trusted(store, directory, Some((os_name, *class)), &member_path)?;
             }
         }
     }
@@ -325,45 +299,31 @@ fn validate_installed_tree(
 }
 
 /// Require that no untrusted principal can change a unit entry, and that a
-/// file member grants each reader what its class promises.
+/// standard user can use it: traverse a directory, run a program, read data.
+/// `file` names a child of `directory` and its class; without it the
+/// directory itself is judged.
 fn require_trusted(
     store: &InstallStore,
     directory: &WindowsDirectory,
-    file: Option<(&OsStr, PermissionClass, &[WindowsSid])>,
+    file: Option<(&OsStr, PermissionClass)>,
     path: &str,
 ) -> Result<(), ReleasePayloadError> {
     let security = match file {
-        Some((name, ..)) => directory.entry_security(name),
+        Some((name, _)) => directory.entry_security(name),
         None => directory.security(),
     }
     .map_err(|error| unit_error(path, &error))?;
-    store
-        .ownership_policy()
+    let execute = file.is_none_or(|(_, class)| class == PermissionClass::Program);
+    let policy = store.ownership_policy();
+    policy
         .require_installer_owned(&security)
+        .and_then(|()| policy.require_usable(&security, execute))
         .map_err(|refusal| {
             ReleasePayloadError::InvalidUnit(format!(
                 "{} cannot be trusted: {refusal}",
                 display(path)
             ))
-        })?;
-    if let Some((_, class, readers)) = file {
-        for reader in readers {
-            let granted = security.grants.iter().any(|grant| {
-                grant.sid == *reader
-                    && match class {
-                        PermissionClass::Program => grant.reads_and_executes(),
-                        PermissionClass::Data => grant.reads(),
-                    }
-            });
-            if !granted {
-                return Err(ReleasePayloadError::InvalidUnit(format!(
-                    "{path} does not let {} use it as {class:?}",
-                    reader.to_string_form()
-                )));
-            }
-        }
-    }
-    Ok(())
+        })
 }
 
 /// Require that a directory holds exactly the manifest's children of `path`

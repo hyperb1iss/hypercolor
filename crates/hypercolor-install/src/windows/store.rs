@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_platform_fs::{
     WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind, WindowsFileLock,
+    windows_file_security,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +26,9 @@ const ACTIVE_POINTER_FILE: &str = "active.json";
 const ACTIVE_POINTER_SCHEMA_VERSION: u32 = 1;
 const MAX_ACTIVE_POINTER_BYTES: usize = 4 * 1024;
 const UNITS_DIRECTORY: &str = "units";
+/// File systems whose rename and flush give the journal and pointer one
+/// durable step.
+const DURABLE_FILE_SYSTEMS: [&str; 2] = ["NTFS", "ReFS"];
 const MAX_STAGE_ATTEMPTS: usize = 128;
 /// Directory name prefixes of interrupted unit staging and removal. They
 /// are only ever created and removed under the installation lock, so any
@@ -147,6 +151,8 @@ impl InstallStore {
             .try_lock_file(OsStr::new(INSTALL_LOCK_FILE))
             .map_err(InstallStoreError::AcquireLock)?
             .ok_or(InstallStoreError::LockContended)?;
+        // Whoever could write the lock file could also lock it first.
+        self.require_trusted_file(lock.file(), &self.lock_path())?;
         Ok(InstallLock {
             root: self.root.clone(),
             state_root: self.state_root.clone(),
@@ -171,11 +177,20 @@ impl InstallStore {
                 .map_err(|source| self.open_root_error(&ancestor, source))?;
             self.ownership
                 .require_ancestor(&security)
-                .map_err(|refusal| InstallStoreError::UnsafeDirectory(ancestor.clone(), refusal))?;
+                .map_err(|refusal| InstallStoreError::Untrusted(ancestor.clone(), refusal))?;
         }
         let directory = WindowsDirectory::open(root, WindowsDirectoryAccess::Write)
             .map_err(|source| self.open_root_error(root, source))?;
         self.require_installer_owned(&directory, root)?;
+        let file_system = directory
+            .file_system_name()
+            .map_err(|source| self.open_root_error(root, source))?;
+        if !DURABLE_FILE_SYSTEMS.contains(&file_system.as_str()) {
+            return Err(InstallStoreError::UnsupportedFileSystem {
+                path: root.to_path_buf(),
+                file_system,
+            });
+        }
         Ok(directory)
     }
 
@@ -189,7 +204,21 @@ impl InstallStore {
             .map_err(|source| self.open_root_error(path, source))?;
         self.ownership
             .require_installer_owned(&security)
-            .map_err(|refusal| InstallStoreError::UnsafeDirectory(path.to_path_buf(), refusal))
+            .map_err(|refusal| InstallStoreError::Untrusted(path.to_path_buf(), refusal))
+    }
+
+    /// Require that only trusted principals can change a control file,
+    /// judged through the handle its contents are read from.
+    fn require_trusted_file(
+        &self,
+        file: &std::fs::File,
+        path: &Path,
+    ) -> Result<(), InstallStoreError> {
+        let security =
+            windows_file_security(file).map_err(|source| self.open_root_error(path, source))?;
+        self.ownership
+            .require_installer_owned(&security)
+            .map_err(|refusal| InstallStoreError::Untrusted(path.to_path_buf(), refusal))
     }
 
     #[allow(clippy::unused_self)]
@@ -212,6 +241,7 @@ impl InstallStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(InstallStoreError::InspectActive(error)),
         };
+        self.require_trusted_file(&file, &self.active_path())?;
         let bytes = read_bounded(file, MAX_ACTIVE_POINTER_BYTES)
             .map_err(InstallStoreError::InspectActive)?
             .ok_or_else(|| {
@@ -273,6 +303,7 @@ impl InstallStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(InstallStoreError::OpenJournal(error)),
         };
+        self.require_trusted_file(&file, &self.journal_path())?;
         let bytes = read_bounded(file, self.max_journal_bytes)
             .map_err(InstallStoreError::ReadJournal)?
             .ok_or(InstallStoreError::JournalTooLarge {
@@ -347,7 +378,7 @@ impl InstallStore {
             .map_err(InstallStoreError::InspectUnits)?
         {
             None if create => release
-                .create_child_directory(name)
+                .create_child_directory_with_security(name, &self.ownership.units_sddl())
                 .map_err(InstallStoreError::CreateUnits)?,
             None => return Ok(None),
             Some(metadata) if metadata.kind() == WindowsEntryKind::Directory => release
@@ -355,7 +386,13 @@ impl InstallStore {
                 .map_err(InstallStoreError::OpenUnits)?,
             Some(_) => return Err(InstallStoreError::InvalidUnitsDirectory),
         };
-        self.require_installer_owned(&units, &self.root.join(UNITS_DIRECTORY))?;
+        let path = self.root.join(UNITS_DIRECTORY);
+        let security = units
+            .security()
+            .map_err(|source| self.open_root_error(&path, source))?;
+        self.ownership
+            .require_units_directory(&security)
+            .map_err(|refusal| InstallStoreError::Untrusted(path, refusal))?;
         Ok(Some(units))
     }
 
@@ -607,8 +644,10 @@ pub enum InstallStoreError {
         #[source]
         source: io::Error,
     },
-    #[error("install directory {path} cannot be trusted: {refusal}", path = .0.display(), refusal = .1)]
-    UnsafeDirectory(PathBuf, WindowsDirectoryRefusal),
+    #[error("install entry {path} cannot be trusted: {refusal}", path = .0.display(), refusal = .1)]
+    Untrusted(PathBuf, WindowsDirectoryRefusal),
+    #[error("install root {} is on {file_system}, not NTFS or ReFS", path.display())]
+    UnsupportedFileSystem { path: PathBuf, file_system: String },
     #[error("failed to acquire install transaction lock: {0}")]
     AcquireLock(io::Error),
     #[error("install transaction lock is already held")]
