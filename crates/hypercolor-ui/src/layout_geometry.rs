@@ -108,40 +108,91 @@ fn pixel_square_size(size: NormalizedPosition, canvas_aspect: f32) -> Normalized
     NormalizedPosition::new(width, height)
 }
 
-/// Half the width and height of the box `output` draws, in its own frame
-/// and in canvas pixel proportions (x spans the canvas aspect, y spans 1),
-/// scale included. A circle draws square in pixels, sized by its width.
-#[must_use]
-pub fn drawn_half_size(output: &Output, aspect: f32) -> (f32, f32) {
-    let scale = output.scale.max(0.0);
-    let half_width = output.size.x * aspect * scale * 0.5;
-    let half_height = if is_circular_zone(output.shape.as_ref(), &output.topology) {
-        half_width
-    } else {
-        output.size.y * scale * 0.5
-    };
-    (half_width, half_height)
+/// A box as the canvas draws it, in canvas pixel proportions (x spans the
+/// canvas aspect, y spans 1). Placement, picking, labels, and the edge
+/// clamps all measure boxes through this, so none of them can disagree
+/// with what the canvas shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnBox {
+    pub center: (f32, f32),
+    /// Half the width and height in the box's own frame, scale included.
+    /// A circle draws square in pixels, sized by its width.
+    pub half: (f32, f32),
+    pub rotation: f32,
+    pub circular: bool,
 }
 
-/// Width and height of the axis-aligned bounds of the box `output` draws
-/// on a canvas of pixel aspect `aspect`, in normalized canvas units. The
-/// box turns in pixels, so on a canvas that is not square a quarter turn
-/// trades its pixel width for its pixel height, not its normalized
-/// width for its normalized height. A circle's bounds ignore rotation.
-#[must_use]
-pub fn drawn_extent(output: &Output, aspect: f32) -> NormalizedPosition {
-    let aspect = aspect.max(GRID_EPSILON);
-    let (half_width, half_height) = drawn_half_size(output, aspect);
-    let (extent_x, extent_y) = if is_circular_zone(output.shape.as_ref(), &output.topology) {
-        (half_width, half_width)
-    } else {
-        let (sin, cos) = output.rotation.sin_cos();
+impl DrawnBox {
+    #[must_use]
+    pub fn new(
+        position: NormalizedPosition,
+        size: NormalizedPosition,
+        rotation: f32,
+        scale: f32,
+        circular: bool,
+        aspect: f32,
+    ) -> Self {
+        let scale = scale.max(0.0);
+        let half_width = size.x * aspect * scale * 0.5;
+        let half_height = if circular {
+            half_width
+        } else {
+            size.y * scale * 0.5
+        };
+        Self {
+            center: (position.x * aspect, position.y),
+            half: (half_width, half_height),
+            rotation,
+            circular,
+        }
+    }
+
+    /// The box `output` draws on a canvas of pixel aspect `aspect`.
+    #[must_use]
+    pub fn of(output: &Output, aspect: f32) -> Self {
+        Self::new(
+            output.position,
+            output.size,
+            output.rotation,
+            output.scale,
+            is_circular_zone(output.shape.as_ref(), &output.topology),
+            aspect,
+        )
+    }
+
+    /// Half the width and height of the box's axis-aligned bounds. The box
+    /// turns in pixels, so on a canvas that is not square a quarter turn
+    /// trades its pixel width for its pixel height. A circle's bounds
+    /// ignore its turn.
+    #[must_use]
+    pub fn reach(self) -> (f32, f32) {
+        let (half_width, half_height) = self.half;
+        if self.circular {
+            return (half_width, half_width);
+        }
+        let (sin, cos) = self.rotation.sin_cos();
         (
             (half_width * cos).abs() + (half_height * sin).abs(),
             (half_width * sin).abs() + (half_height * cos).abs(),
         )
-    };
-    NormalizedPosition::new(2.0 * extent_x / aspect, 2.0 * extent_y)
+    }
+}
+
+/// Half the width and height of the box `output` draws, in its own frame;
+/// see [`DrawnBox::half`].
+#[must_use]
+pub fn drawn_half_size(output: &Output, aspect: f32) -> (f32, f32) {
+    DrawnBox::of(output, aspect).half
+}
+
+/// Width and height of the axis-aligned bounds of the box `output` draws
+/// on a canvas of pixel aspect `aspect`, in normalized canvas units; see
+/// [`DrawnBox::reach`].
+#[must_use]
+pub fn drawn_extent(output: &Output, aspect: f32) -> NormalizedPosition {
+    let aspect = aspect.max(GRID_EPSILON);
+    let (reach_x, reach_y) = DrawnBox::of(output, aspect).reach();
+    NormalizedPosition::new(2.0 * reach_x / aspect, 2.0 * reach_y)
 }
 
 /// [`drawn_extent`] on `layout`'s canvas.

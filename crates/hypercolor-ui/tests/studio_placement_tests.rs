@@ -4,7 +4,7 @@
 use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, OutputComponent, SamplingMode,
-    SpatialLayout, StripDirection,
+    SpatialLayout, StripDirection, Winding, ZoneShape,
 };
 use hypercolor_ui::api::DeviceSummary;
 use hypercolor_ui::pages::studio::placement::{
@@ -356,6 +356,46 @@ fn fit_measures_rotated_boxes_by_their_drawn_extent() {
     assert_close(outputs[0].rotation, std::f32::consts::FRAC_PI_2);
 }
 
+/// A fan ring, square in pixels on the 640 by 480 canvas, turned 45
+/// degrees.
+fn turned_ring(x: f32, y: f32) -> Output {
+    let mut ring = output("ring", "fan", "Fan", x, y, 0.2, 0.2 * ASPECT);
+    ring.shape = Some(ZoneShape::Ring);
+    ring.topology = LedTopology::Ring {
+        count: 24,
+        start_angle: 0.0,
+        direction: Winding::Clockwise,
+    };
+    ring.rotation = std::f32::consts::FRAC_PI_4;
+    ring
+}
+
+#[test]
+fn fit_measures_a_turned_ring_as_the_circle_it_draws() {
+    let mut outputs = vec![turned_ring(0.3, 0.4)];
+    assert!(fit_outputs(&mut outputs, CANVAS, |_| true));
+    // A circle's turn does not widen it, so its diameter (its pixel width)
+    // fills the canvas height inside the margin, rather than the turned
+    // square around it doing so.
+    assert_close(outputs[0].size.x * ASPECT, 1.0 - 2.0 * FIT_MARGIN);
+    let bounds = Footprint::of(&outputs[0]).bounds(ASPECT);
+    assert_close(bounds.width(), bounds.height());
+}
+
+#[test]
+fn a_turned_ring_centers_by_the_circle_it_draws() {
+    let ring = turned_ring(0.5, 0.5);
+    let (dx, _) = offset_to_center(
+        [Footprint::of(&ring)],
+        NormalizedPosition::new(1.0, 0.5),
+        CANVAS,
+    )
+    .expect("a ring has bounds");
+    // Pushed to the right edge, the circle's own edge meets it.
+    let diameter = 0.2 * ASPECT;
+    assert_close(0.5 + dx, 1.0 - diameter / ASPECT * 0.5);
+}
+
 #[test]
 fn fit_frames_the_shown_boxes_and_carries_the_rest_along() {
     let mut outputs = vec![
@@ -386,6 +426,7 @@ fn boxed(cx: f32, cy: f32, w: f32, h: f32, rotation: f32) -> Footprint {
         rotation,
         scale: 1.0,
         orientation: None,
+        circular: false,
     }
 }
 
@@ -593,13 +634,7 @@ fn assignment_hints_fit_a_zone_s_first_device() {
     assert_eq!(hints.len(), 1);
     assert_close(hints[0].position.x, 0.5);
     assert_close(hints[0].position.y, 0.5);
-    let footprint = Footprint {
-        position: hints[0].position,
-        size: hints[0].size,
-        rotation: hints[0].rotation,
-        scale: hints[0].scale,
-        orientation: hints[0].orientation,
-    };
+    let footprint = Footprint::of_hint(&hints[0]);
     let bounds = footprint.bounds(ASPECT);
     let usable = 1.0 - 2.0 * FIT_MARGIN;
     assert!(

@@ -37,6 +37,9 @@ pub struct Footprint {
     pub rotation: f32,
     pub scale: f32,
     pub orientation: Option<Orientation>,
+    /// Whether the box draws as a circle, which its turn does not widen.
+    /// Read from the output's shape; never written back.
+    pub circular: bool,
 }
 
 impl Footprint {
@@ -48,6 +51,7 @@ impl Footprint {
             rotation: output.rotation,
             scale: output.scale,
             orientation: output.orientation,
+            circular: layout_geometry::is_circular_zone(output.shape.as_ref(), &output.topology),
         }
     }
 
@@ -60,7 +64,9 @@ impl Footprint {
         output.orientation = self.orientation;
     }
 
-    /// The placement a seed carries.
+    /// The placement a seed carries. A seed names no shape, so it measures
+    /// as a box; a circle's seed is already square in pixels, so that only
+    /// overstates a seed that also turns.
     #[must_use]
     pub fn of_hint(hint: &MemberPlacementHint) -> Self {
         Self {
@@ -69,6 +75,7 @@ impl Footprint {
             rotation: hint.rotation,
             scale: hint.scale,
             orientation: hint.orientation,
+            circular: false,
         }
     }
 
@@ -85,17 +92,20 @@ impl Footprint {
         }
     }
 
-    /// Axis-aligned bounds of the drawn box, rotation and scale included.
+    /// Axis-aligned bounds of the drawn box, measured as the canvas draws
+    /// it (see [`layout_geometry::DrawnBox`]).
     #[must_use]
     pub fn bounds(self, aspect: f32) -> Bounds {
-        let scale = self.scale.max(0.0);
-        let half_width = self.size.x * aspect * scale * 0.5;
-        let half_height = self.size.y * scale * 0.5;
-        let (sin, cos) = self.rotation.sin_cos();
-        let extent_x = (half_width * cos).abs() + (half_height * sin).abs();
-        let extent_y = (half_width * sin).abs() + (half_height * cos).abs();
-        let center_x = self.position.x * aspect;
-        let center_y = self.position.y;
+        let drawn = layout_geometry::DrawnBox::new(
+            self.position,
+            self.size,
+            self.rotation,
+            self.scale,
+            self.circular,
+            aspect,
+        );
+        let (extent_x, extent_y) = drawn.reach();
+        let (center_x, center_y) = drawn.center;
         Bounds {
             min_x: center_x - extent_x,
             max_x: center_x + extent_x,
@@ -285,6 +295,7 @@ fn spanning(footprints: impl IntoIterator<Item = Footprint>, aspect: f32) -> Opt
         rotation: 0.0,
         scale: 1.0,
         orientation,
+        circular: false,
     })
 }
 
@@ -565,6 +576,10 @@ fn default_arrangement(
                 rotation: 0.0,
                 scale: 1.0,
                 orientation: visual.orientation,
+                circular: layout_geometry::is_circular_zone(
+                    visual.shape.as_ref(),
+                    &visual.topology,
+                ),
             }
         })
         .collect()
