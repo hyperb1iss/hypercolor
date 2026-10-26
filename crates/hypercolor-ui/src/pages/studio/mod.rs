@@ -508,6 +508,14 @@ pub fn StudioPage() -> impl IntoView {
     let root_ref = NodeRef::<leptos::html::Div>::new();
     let drag = DragController::new(studio, devices_ctx, root_ref);
     provide_context(drag);
+    history.attach_announcer(Some(history::Announcer {
+        say: Callback::new(move |words| drag.announce(words)),
+        device: Callback::new(move |device_id: String| {
+            moves::registry_device(drag, &device_id)
+                .map(|device| (device.name.clone(), moves::light_segment_count(&device)))
+        }),
+    }));
+    on_cleanup(move || history.attach_announcer(None));
     let dragging = Memo::new(move |_| drag.payload.with(Option::is_some));
 
     let on_screens = Memo::new(move |_| {

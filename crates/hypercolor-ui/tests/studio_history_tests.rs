@@ -7,7 +7,7 @@ use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
     DeletedZone, StudioEdit, StudioJournal, light_neighbor, prepare_members_replay,
-    restore_layer_requests, zone_patch_before,
+    replay_announcement, restore_layer_requests, zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -315,4 +315,135 @@ fn the_only_light_zone_or_an_unknown_one_has_no_neighbor() {
     let scene = zones_scene(&[(ZONE_A, "primary"), (SCREEN, "display")]);
     assert_eq!(light_neighbor(&scene, ZONE_A), None);
     assert_eq!(light_neighbor(&scene, ZONE_C), None);
+}
+
+// ── Undo and redo announcements ──────────────────────────────────────────
+
+fn stand_move(from: Option<&str>, to: Option<&str>) -> MemberEdit {
+    let scene = scene();
+    let output = hypercolor_ui::api::zone_outputs(&scene.zones[0]).remove(0);
+    let state = |zone: &str| MemberState {
+        zone_id: zone.parse::<uuid::Uuid>().map(ZoneId).expect("zone id"),
+        output: output.clone(),
+        index: 0,
+    };
+    MemberEdit {
+        before: from.map(state),
+        after: to.map(state),
+    }
+}
+
+fn zone_names(id: &str) -> Option<String> {
+    match id {
+        ZONE_A => Some("Case".to_owned()),
+        ZONE_B => Some("Keyboard".to_owned()),
+        _ => None,
+    }
+}
+
+fn whole_stand(_: &str) -> Option<(String, usize)> {
+    Some(("Laptop stand".to_owned(), 1))
+}
+
+fn hub_channel(_: &str) -> Option<(String, usize)> {
+    Some(("Nollie 32".to_owned(), 4))
+}
+
+#[test]
+fn undoing_a_move_says_where_the_device_went_back_to() {
+    let edit = StudioEdit::Members(vec![stand_move(Some(ZONE_A), Some(ZONE_B))]);
+    assert_eq!(
+        replay_announcement(&edit, false, &zone_names, &whole_stand).as_deref(),
+        Some("Undid: moved Laptop stand back to Case")
+    );
+    assert_eq!(
+        replay_announcement(&edit, true, &zone_names, &whole_stand).as_deref(),
+        Some("Redid: moved Laptop stand to Keyboard")
+    );
+}
+
+#[test]
+fn a_channel_is_announced_by_its_own_name_and_unassigned_by_name() {
+    let edit = StudioEdit::Members(vec![stand_move(None, Some(ZONE_A))]);
+    assert_eq!(
+        replay_announcement(&edit, false, &zone_names, &hub_channel).as_deref(),
+        Some("Undid: moved Stand (Nollie 32) back to Unassigned")
+    );
+    let placed = StudioEdit::Members(vec![stand_move(Some(ZONE_A), Some(ZONE_A))]);
+    assert_eq!(
+        replay_announcement(&placed, true, &zone_names, &whole_stand).as_deref(),
+        Some("Redid: placed Laptop stand on Case")
+    );
+}
+
+#[test]
+fn zone_steps_are_announced_by_what_they_did() {
+    let made = StudioEdit::ZoneCreated {
+        zone_id: ZONE_B.to_owned(),
+        name: "Keyboard".to_owned(),
+        color: None,
+        filled: vec![stand_move(Some(ZONE_A), Some(ZONE_B))],
+    };
+    assert_eq!(
+        replay_announcement(&made, false, &zone_names, &whole_stand).as_deref(),
+        Some("Undid: moved Laptop stand back to Case")
+    );
+    assert_eq!(
+        replay_announcement(&made, true, &zone_names, &whole_stand).as_deref(),
+        Some("Redid: moved Laptop stand to a new zone")
+    );
+    let empty = StudioEdit::ZoneCreated {
+        zone_id: ZONE_B.to_owned(),
+        name: "New zone".to_owned(),
+        color: None,
+        filled: Vec::new(),
+    };
+    assert_eq!(
+        replay_announcement(&empty, false, &zone_names, &whole_stand).as_deref(),
+        Some("Undid: created New zone")
+    );
+    let rename = StudioEdit::ZonePatched {
+        zone_id: ZONE_A.to_owned(),
+        before: PatchZoneRequest {
+            name: Some("Case".to_owned()),
+            ..Default::default()
+        },
+        after: PatchZoneRequest {
+            name: Some("Tower".to_owned()),
+            ..Default::default()
+        },
+    };
+    assert_eq!(
+        replay_announcement(&rename, false, &zone_names, &whole_stand).as_deref(),
+        Some("Undid: renamed Case to Tower")
+    );
+    let pause = StudioEdit::ZonePatched {
+        zone_id: ZONE_A.to_owned(),
+        before: PatchZoneRequest {
+            enabled: Some(true),
+            ..Default::default()
+        },
+        after: PatchZoneRequest {
+            enabled: Some(false),
+            ..Default::default()
+        },
+    };
+    assert_eq!(
+        replay_announcement(&pause, true, &zone_names, &whole_stand).as_deref(),
+        Some("Redid: paused Case")
+    );
+    let deleted = StudioEdit::ZoneDeleted(Box::new(DeletedZone::of(&scene().zones[0], 0, 1)));
+    assert_eq!(
+        replay_announcement(&deleted, false, &zone_names, &whole_stand).as_deref(),
+        Some("Undid: deleted Case")
+    );
+}
+
+#[test]
+fn an_empty_membership_step_has_nothing_to_say() {
+    let edit = StudioEdit::Members(Vec::new());
+    assert_eq!(
+        replay_announcement(&edit, true, &zone_names, &whole_stand),
+        None
+    );
 }

@@ -26,7 +26,10 @@ use leptos::reactive::owner::LocalStorage;
 /// unsettled, since nothing is left to hear it.
 pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 
+mod announce;
 mod zones;
+
+pub use announce::{DeviceLookup, replay_announcement};
 
 pub use zones::{DeletedZone, light_neighbor, restore_layer_requests, zone_patch_before};
 pub(crate) use zones::{Moved, NewZone};
@@ -250,6 +253,16 @@ pub(crate) struct EditorHooks {
     pub gesture_active: Callback<(), bool>,
 }
 
+/// How the history speaks through Studio's live region once an undo or
+/// redo lands, and how it names the devices a step moved.
+#[derive(Clone, Copy)]
+pub(crate) struct Announcer {
+    pub say: Callback<String>,
+    /// A device's shown name and light segment count by its layout
+    /// device id.
+    pub device: Callback<String, Option<(String, usize)>>,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct StudioHistory {
     pub journal: RwSignal<StudioJournal>,
@@ -264,6 +277,9 @@ pub(crate) struct StudioHistory {
     /// Hands out deletion tokens.
     tokens: StoredValue<u64>,
     editor: StoredValue<Option<EditorHooks>>,
+    announcer: StoredValue<Option<Announcer>>,
+    /// What to announce once the undo or redo in flight lands.
+    replay_words: StoredValue<Option<String>>,
     scene: Signal<Option<api::SceneDocument>>,
     latest: RwSignal<Option<api::SceneDocument>>,
     generation: RwSignal<u64>,
@@ -308,6 +324,8 @@ impl StudioHistory {
             waiting,
             tokens: StoredValue::new(0),
             editor: StoredValue::new(None),
+            announcer: StoredValue::new(None),
+            replay_words: StoredValue::new(None),
             pending_layout,
             scene,
             latest,
@@ -424,6 +442,40 @@ impl StudioHistory {
         self.editor.try_set_value(hooks);
     }
 
+    /// Connect the live region; `None` disconnects it.
+    pub fn attach_announcer(self, announcer: Option<Announcer>) {
+        self.announcer.try_set_value(announcer);
+    }
+
+    /// Word the announcement for replaying `edit`, against the names the
+    /// scene and the device registry have now.
+    fn prepare_words(self, edit: &StudioEdit, redo: bool) {
+        let scene = self.current_scene();
+        let announcer = self.announcer.try_get_value().flatten();
+        let zone_name = |id: &str| {
+            scene.as_ref().and_then(|scene| {
+                scene
+                    .zones
+                    .iter()
+                    .find(|zone| zone.id.to_string() == id)
+                    .map(|zone| zone.name.clone())
+            })
+        };
+        let device = |id: &str| {
+            announcer.and_then(|announcer| announcer.device.try_run(id.to_owned()).flatten())
+        };
+        let words = replay_announcement(edit, redo, &zone_name, &device);
+        self.replay_words.try_set_value(words);
+    }
+
+    /// Say what the undo or redo that just landed did.
+    fn announce_replay(self) {
+        let words = self.replay_words.try_update_value(Option::take).flatten();
+        if let (Some(words), Some(announcer)) = (words, self.announcer.try_get_value().flatten()) {
+            let _ = announcer.say.try_run(words);
+        }
+    }
+
     fn editor_hooks(self) -> Option<EditorHooks> {
         self.editor.try_get_value().flatten()
     }
@@ -531,6 +583,7 @@ impl StudioHistory {
 
     pub fn complete_layout(self, redo: bool) {
         self.journal.update(|j| j.complete(redo));
+        self.announce_replay();
         self.pending_layout.set(None);
         self.busy.set(false);
         self.next_waiting();
@@ -920,6 +973,7 @@ impl StudioHistory {
         let Some(edit) = edit else {
             return;
         };
+        self.prepare_words(&edit, redo);
         match edit {
             StudioEdit::Layout {
                 zone_id,
@@ -1032,6 +1086,7 @@ impl StudioHistory {
                                     j.entries[index] = StudioEdit::Members(changes);
                                     j.complete(redo);
                                 });
+                                self.announce_replay();
                                 self.accept(response);
                                 toasts::toast_success(if redo {
                                     "Assignment redone and saved"
@@ -1217,6 +1272,8 @@ mod replay_tests {
             waiting: StoredValue::new_local(VecDeque::new()),
             tokens: StoredValue::new(0),
             editor: StoredValue::new(None),
+            announcer: StoredValue::new(None),
+            replay_words: StoredValue::new(None),
             pending_layout: RwSignal::new(pending_layout),
             can_undo: Signal::stored(true),
             can_redo: Signal::stored(false),

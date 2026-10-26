@@ -253,6 +253,7 @@ impl StudioHistory {
                 }
             }
         });
+        self.announce_replay();
     }
 
     /// Create a zone. `created` hears the zone, or `None` when it was not
@@ -793,6 +794,7 @@ impl StudioHistory {
                             _ => None,
                         });
                 if let Some(record) = record {
+                    self.prepare_words(&StudioEdit::ZoneDeleted(Box::new(record.clone())), false);
                     self.replay_zone_deleted(index, false, record, Settle::Remove);
                 }
             }
@@ -861,6 +863,7 @@ impl StudioHistory {
             if patch_live_zone(scene_id, &zone_id, &patch).await {
                 if self.is_current(generation) {
                     self.journal.update(|journal| journal.complete(redo));
+                    self.announce_replay();
                 }
             } else if self.is_current(generation) {
                 toasts::toast_error("The zone changed elsewhere; history was not applied");
@@ -1000,7 +1003,13 @@ impl StudioHistory {
                 filled: filled_now,
             }),
             Removal::Kept(reason) => {
-                toasts::toast_info(&format!("Kept {name}: {reason}"));
+                let kept = format!("Kept {name}: {reason}");
+                toasts::toast_info(&kept);
+                if filled_now.is_empty() {
+                    self.replay_words.try_set_value(Some(kept));
+                } else {
+                    self.prepare_words(&StudioEdit::Members(filled_now.clone()), false);
+                }
                 Some(StudioEdit::Members(filled_now))
             }
             Removal::Failed(reason) if !moves_out => {
@@ -1011,6 +1020,7 @@ impl StudioHistory {
                 toasts::toast_info(&format!(
                     "Moved its devices back, but {name} could not be removed: {reason}"
                 ));
+                self.prepare_words(&StudioEdit::Members(filled_now.clone()), false);
                 Some(StudioEdit::Members(filled_now))
             }
         }

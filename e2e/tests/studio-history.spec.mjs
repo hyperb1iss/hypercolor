@@ -339,6 +339,8 @@ test("Studio drags a device card onto another zone tab and can undo it", async (
   await expect(page.getByRole("status").filter({ hasText: "Moved Laptop stand to Accent lights from Desk lights" })).toHaveCount(1);
   await fixture.undo.click();
   await expect.poll(() => fixture.assigned()).toEqual([{ zone: FIRST, id: "stand-output" }]);
+  // The live region stops describing the move once it is undone.
+  await expect(page.getByRole("status").filter({ hasText: /^Undid: moved .+ back to Desk lights$/ })).toHaveCount(1);
   expect(fixture.rejected).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
