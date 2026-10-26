@@ -52,7 +52,9 @@ pub async fn get_scene(
     State(state): State<Arc<AppState>>,
     ApiPath(id): ApiPath<String>,
 ) -> Response {
-    let manager = state.scene_manager.snapshot().await;
+    // One read lock for both, so the document never pairs one commit's
+    // contents with a later commit's revision.
+    let (manager, revision) = state.scene_manager.snapshot_with_revision().await;
     let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
@@ -61,7 +63,6 @@ pub async fn get_scene(
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    let revision = state.scene_manager.revision();
     crate::api::scene::with_revision(
         envelope::ok(crate::domain::scene_tree::scene_document(scene, revision)),
         revision,

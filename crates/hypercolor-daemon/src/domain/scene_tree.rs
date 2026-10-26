@@ -73,22 +73,27 @@ impl SceneTreeContext {
 ///
 /// An active scene always exists (Spec 78 §1.1), so the only failure
 /// this can report is an engine that lost its default scene, which the
-/// invariant forbids.
+/// invariant forbids. The document and its `revision` are projected
+/// under one scene read lock, so the revision always names the commit
+/// that produced exactly these contents.
 ///
 /// # Errors
 ///
 /// [`DomainError::NotFound`] when no scene is active, which the
 /// always-a-default invariant makes unreachable in practice.
 pub async fn read_document(ctx: &SceneTreeContext) -> Result<SceneDocument, DomainError> {
-    let manager = ctx.scene.snapshot().await;
-    let revision = ctx.scene.revision();
-    let scene = manager
-        .active_scene()
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
-    Ok(scene_document(scene, revision))
+    ctx.scene
+        .read_with_revision(|manager, revision| {
+            manager
+                .active_scene()
+                .map(|scene| scene_document(scene, revision))
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))
+        })
+        .await
 }
 
-/// Read one zone of the live tree.
+/// Read one zone of the live tree with the revision it stands at, both
+/// taken under one scene read lock.
 ///
 /// # Errors
 ///
@@ -98,17 +103,19 @@ pub async fn read_zone(
     ctx: &SceneTreeContext,
     zone_id: ZoneId,
 ) -> Result<(ZoneResource, u64), DomainError> {
-    let manager = ctx.scene.snapshot().await;
-    let revision = ctx.scene.revision();
-    let scene = manager
-        .active_scene()
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
-    scene
-        .zones
-        .iter()
-        .find(|zone| zone.id == zone_id)
-        .map(|zone| (zone_resource(zone), revision))
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
+    ctx.scene
+        .read_with_revision(|manager, revision| {
+            let scene = manager
+                .active_scene()
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
+            scene
+                .zones
+                .iter()
+                .find(|zone| zone.id == zone_id)
+                .map(|zone| (zone_resource(zone), revision))
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
+        })
+        .await
 }
 
 /// Project a scene plus the current commit generation onto the wire
@@ -726,20 +733,46 @@ async fn set_zone_layout_workflow(
             return Err(error);
         }
     };
-    if published {
-        // The publication admits a scene commit of its own. When it is the
-        // only one since the zone write, its revision is the one the
-        // caller's next guarded write must carry.
-        let revision = ctx.scene.revision();
-        if revision == written.revision.saturating_add(1) {
-            written.revision = revision;
-        }
+    if published && let Some((zone, revision)) = synced_zone(ctx, scene_id, zone_id, &written).await
+    {
+        written.zone = zone;
+        written.revision = revision;
     }
     drop(layout_guard);
     if published {
         ctx.layout.converge_persisted_update(runtime).await;
     }
     Ok(written)
+}
+
+/// The followed primary zone as the active-layout publication left it,
+/// with that publication's revision.
+///
+/// The publication admits a scene commit of its own, which syncs the
+/// active layout back into the zone. When it is the only commit since the
+/// zone write, the reply carries the zone as that commit left it beside
+/// its revision, read under one lock so the pair cannot split. Anything
+/// later stays out of the reply, because the caller learns only what its
+/// own write produced: answering `None` keeps the zone write's own pair.
+async fn synced_zone(
+    ctx: &SceneTreeContext,
+    scene_id: SceneId,
+    zone_id: ZoneId,
+    written: &ZoneWritten,
+) -> Option<(ZoneResource, u64)> {
+    let publication_revision = written.revision.saturating_add(1);
+    ctx.scene
+        .read_with_revision(|manager, revision| {
+            if revision != publication_revision {
+                return None;
+            }
+            manager
+                .active_scene()
+                .filter(|scene| scene.id == scene_id)
+                .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+                .map(|zone| (zone_resource(zone), revision))
+        })
+        .await
 }
 
 /// Put back a zone's pre-save layout after the active layout refused the

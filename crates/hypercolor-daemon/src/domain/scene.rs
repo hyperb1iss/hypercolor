@@ -339,6 +339,28 @@ impl SceneService {
         read(&*self.0.manager.read().await)
     }
 
+    /// Capture an owned scene-manager snapshot together with the revision
+    /// it was committed at.
+    ///
+    /// Every commit installs its candidate and advances the revision while
+    /// holding the scene write lock, so both reads here happen under one
+    /// read lock and can never pair one commit's contents with another
+    /// commit's revision.
+    pub async fn snapshot_with_revision(&self) -> (SceneManager, SceneRevision) {
+        let manager = self.0.manager.read().await;
+        (manager.clone(), self.0.commits.revision())
+    }
+
+    /// [`read_with`](Self::read_with), also handing the projection the
+    /// revision the state it reads was committed at.
+    pub(crate) async fn read_with_revision<R>(
+        &self,
+        read: impl FnOnce(&SceneManager, SceneRevision) -> R,
+    ) -> R {
+        let manager = self.0.manager.read().await;
+        read(&manager, self.0.commits.revision())
+    }
+
     /// Return the current admitted scene revision.
     #[must_use]
     pub fn revision(&self) -> SceneRevision {
@@ -3296,5 +3318,41 @@ fn push_zone_diff_events(
         if !after.iter().any(|current| current.id == zone.id) {
             events.push(zone_changed_event(scene_id, zone, ZoneChangeKind::Removed));
         }
+    }
+}
+
+#[cfg(test)]
+mod revision_pairing_tests {
+    use super::*;
+
+    /// The paired reads are atomic by construction: a commit installs its
+    /// candidate and advances the revision under the write lock, and the
+    /// projection runs under the read lock, so no commit can land between
+    /// reading the contents and reading the revision.
+    #[tokio::test]
+    async fn paired_reads_hold_off_every_commit_while_they_project() {
+        let service =
+            SceneService::in_memory(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+        let (_, before) = service.snapshot_with_revision().await;
+
+        service
+            .read_with_revision(|_, revision| {
+                assert_eq!(revision, before);
+                assert!(
+                    service.scene_write_is_blocked_for_test(),
+                    "a commit must not be able to land mid-projection"
+                );
+            })
+            .await;
+
+        let mutation = service.begin_mutation().await;
+        let commit = service
+            .commit_mutation(mutation)
+            .await
+            .expect("an unchallenged commit admits");
+        let (_, after) = service.snapshot_with_revision().await;
+        assert_eq!(after, commit.revision());
+        assert_eq!(after, before + 1);
+        assert!(!service.scene_write_is_blocked_for_test());
     }
 }

@@ -870,7 +870,25 @@ impl SceneContext {
         self.scenes.snapshot().await
     }
 
+    /// Capture an owned scene-manager snapshot and the revision it was
+    /// committed at, read as one matched pair.
+    pub async fn snapshot_with_revision(&self) -> (SceneManager, u64) {
+        self.scenes.snapshot_with_revision().await
+    }
+
+    /// Project the live scene state and its revision under one read lock.
+    pub(crate) async fn read_with_revision<R>(
+        &self,
+        read: impl FnOnce(&SceneManager, u64) -> R,
+    ) -> R {
+        self.scenes.read_with_revision(read).await
+    }
+
     /// Current scene commit generation for optimistic concurrency.
+    ///
+    /// Read alone, this can already be ahead of a snapshot taken a moment
+    /// earlier. A caller that serves contents beside a revision reads both
+    /// through [`snapshot_with_revision`](Self::snapshot_with_revision).
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.scenes.revision()

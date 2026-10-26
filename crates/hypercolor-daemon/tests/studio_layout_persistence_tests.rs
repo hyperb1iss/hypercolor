@@ -466,6 +466,33 @@ async fn saved_primary_zone_placement_survives_an_effect_switch() {
 }
 
 #[tokio::test]
+async fn a_followed_primary_zone_save_answers_with_the_zone_its_revision_holds() {
+    let rig = rig_with_running_effect().await;
+    let (saved, published) = studio_moves_strip_a(&rig).await;
+    assert_eq!(published, 1, "the Save republishes the active layout");
+    let revision = etag_revision(&saved);
+    let reply = body_json(saved).await;
+    let zone_id = reply["data"]["id"].as_str().expect("zone id").to_owned();
+
+    let (current, _) = send(
+        &rig.state,
+        &rig.app,
+        empty_request("GET", format!("/api/v1/scene/zones/{zone_id}")),
+    )
+    .await;
+    assert_eq!(
+        etag_revision(&current),
+        revision,
+        "nothing committed after the Save and its layout sync"
+    );
+    assert_eq!(
+        reply["data"],
+        body_json(current).await["data"],
+        "the Save's zone is the zone as the layout sync left it at the revision it carries"
+    );
+}
+
+#[tokio::test]
 async fn saved_primary_zone_placement_lands_in_the_active_layout_and_its_store() {
     let rig = rig_with_running_effect().await;
     let (saved, published) = studio_moves_strip_a(&rig).await;
