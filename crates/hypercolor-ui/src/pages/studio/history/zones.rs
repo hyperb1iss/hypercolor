@@ -185,6 +185,18 @@ async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRe
     )
 }
 
+/// How taking a zone down came out.
+enum TakeDown {
+    /// The zone and its outputs are gone.
+    Deleted,
+    /// The zone stays as it was: nothing changed, or what changed was put
+    /// back.
+    Kept,
+    /// The outputs left, but the delete failed and they could not be put
+    /// back: the release that stranded them, for the journal to undo.
+    Stranded(Vec<MemberEdit>),
+}
+
 /// Why undoing a zone's creation left the zone in place.
 enum Removal {
     Removed,
@@ -508,12 +520,22 @@ impl StudioHistory {
             return;
         };
         spawn_local(async move {
-            if self.take_down_zone(scene.id, &mut record).await && self.is_current(generation) {
-                self.select_away(&zone_id, neighbor);
-                self.journal.update(|journal| {
-                    journal.record(StudioEdit::ZoneDeleted(Box::new(record.clone())));
-                });
-                let _ = deleted.try_run(record);
+            let outcome = self.take_down_zone(scene.id, &mut record).await;
+            if self.is_current(generation) {
+                match outcome {
+                    TakeDown::Deleted => {
+                        self.select_away(&zone_id, neighbor);
+                        self.journal.update(|journal| {
+                            journal.record(StudioEdit::ZoneDeleted(Box::new(record.clone())));
+                        });
+                        let _ = deleted.try_run(record);
+                    }
+                    // Undo is how those devices get back.
+                    TakeDown::Stranded(released) => self.journal.update(|journal| {
+                        journal.record(StudioEdit::Members(released));
+                    }),
+                    TakeDown::Kept => {}
+                }
             }
             self.release(generation).await;
         });
@@ -521,14 +543,15 @@ impl StudioHistory {
 
     /// Release a zone's outputs and delete it, refreshing `record` from the
     /// live zone and filling `record.outputs` with complete snapshots. A
-    /// failed delete puts the outputs back, so the zone's devices are never
-    /// stranded.
-    async fn take_down_zone(self, scene_id: SceneId, record: &mut DeletedZone) -> bool {
+    /// failed delete puts the outputs back; when even that fails, the
+    /// release comes back as [`TakeDown::Stranded`], so the devices always
+    /// have a way home.
+    async fn take_down_zone(self, scene_id: SceneId, record: &mut DeletedZone) -> TakeDown {
         let scene = match live_scene(scene_id).await {
             Ok(scene) => scene,
             Err(reason) => {
                 toasts::toast_error(&format!("Zone delete failed: {reason}"));
-                return false;
+                return TakeDown::Kept;
             }
         };
         let Some((index, zone)) = scene
@@ -538,7 +561,7 @@ impl StudioHistory {
             .find(|(_, zone)| zone.id.to_string() == record.zone_id)
         else {
             toasts::toast_error("Zone delete failed: the zone no longer exists");
-            return false;
+            return TakeDown::Kept;
         };
         *record = DeletedZone::of(zone, index, record.token);
         let zone_key = zone.id;
@@ -555,6 +578,7 @@ impl StudioHistory {
             })
             .collect();
         let mut revision = scene.revision;
+        let mut release = Vec::new();
         if !changes.is_empty() {
             let request = EditMembersRequest {
                 scene_id: scene.id,
@@ -564,6 +588,7 @@ impl StudioHistory {
             match api::zones::edit_members(&request, revision).await {
                 Ok(api::zones::ZoneOutcome::Applied(response)) => {
                     revision = response.document.revision;
+                    release.clone_from(&response.changes);
                     let mut released: Vec<_> = response
                         .changes
                         .into_iter()
@@ -574,30 +599,37 @@ impl StudioHistory {
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => {
                     toasts::toast_error("Scene changed elsewhere. Reloaded, try again.");
-                    return false;
+                    return TakeDown::Kept;
                 }
                 Err(error) => {
                     toasts::toast_error(&format!("Zone delete failed: {error}"));
-                    return false;
+                    return TakeDown::Kept;
                 }
             }
         }
-        match api::zones::delete_zone(&record.zone_id, revision).await {
-            Ok(api::zones::ZoneOutcome::Applied(())) => true,
-            outcome => {
-                if !record.outputs.is_empty()
-                    && let Ok(live) = live_scene(scene_id).await
-                {
-                    let _ =
-                        restore_outputs(live.id, zone_key, &record.outputs, live.revision).await;
-                }
-                match outcome {
-                    Err(error) => toasts::toast_error(&format!("Zone delete failed: {error}")),
-                    _ => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
-                }
-                false
-            }
+        let outcome = api::zones::delete_zone(&record.zone_id, revision).await;
+        if matches!(outcome, Ok(api::zones::ZoneOutcome::Applied(()))) {
+            return TakeDown::Deleted;
         }
+        let put_back = record.outputs.is_empty()
+            || match live_scene(scene_id).await {
+                Ok(live) => restore_outputs(live.id, zone_key, &record.outputs, live.revision)
+                    .await
+                    .is_ok(),
+                Err(_) => false,
+            };
+        if !put_back {
+            toasts::toast_error(&format!(
+                "{} was not deleted, and its devices could not be put back. Undo returns them.",
+                record.name
+            ));
+            return TakeDown::Stranded(release);
+        }
+        match outcome {
+            Err(error) => toasts::toast_error(&format!("Zone delete failed: {error}")),
+            _ => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
+        }
+        TakeDown::Kept
     }
 
     /// Rebuild a deleted zone in the scene `scene_id`: its name, color,
@@ -811,14 +843,31 @@ impl StudioHistory {
         };
         spawn_local(async move {
             if redo {
-                if self.take_down_zone(scene_id, &mut record).await && self.is_current(generation) {
-                    self.select_away(&record.zone_id, neighbor);
-                    self.settle_zone_entry(
-                        index,
-                        redo,
-                        StudioEdit::ZoneDeleted(Box::new(record)),
-                        settle,
-                    );
+                let outcome = self.take_down_zone(scene_id, &mut record).await;
+                if self.is_current(generation) {
+                    match outcome {
+                        TakeDown::Deleted => {
+                            self.select_away(&record.zone_id, neighbor);
+                            self.settle_zone_entry(
+                                index,
+                                redo,
+                                StudioEdit::ZoneDeleted(Box::new(record)),
+                                settle,
+                            );
+                        }
+                        // The redo only got as far as releasing the devices;
+                        // the step becomes that release, so undo returns them.
+                        TakeDown::Stranded(released) => {
+                            self.replay_words.try_set_value(None);
+                            self.settle_zone_entry(
+                                index,
+                                redo,
+                                StudioEdit::Members(released),
+                                settle,
+                            );
+                        }
+                        TakeDown::Kept => {}
+                    }
                 }
             } else if let Some(zone) = self.rebuild_zone(generation, scene_id, &record).await
                 && self.is_current(generation)
