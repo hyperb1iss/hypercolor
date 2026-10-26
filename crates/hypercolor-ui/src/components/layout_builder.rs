@@ -474,10 +474,24 @@ struct CommitLane {
     /// The scene the queued commits belong to.
     scene_id: Option<hypercolor_types::scene::SceneId>,
     queue: commit::CommitQueue,
-    /// The drain writing the queue now, by its history generation. Only
-    /// that drain clears it, so one a scene switch replaced cannot mark a
-    /// newer drain as finished.
-    draining: Option<u64>,
+    /// The drain writing the queue now, by its history generation and the
+    /// scene it writes for. Only that drain clears it, so one a scene
+    /// switch replaced cannot mark a newer drain as finished.
+    draining: Option<(u64, hypercolor_types::scene::SceneId)>,
+}
+
+impl CommitLane {
+    /// The next commit, while the queue still holds `scene_id`'s edits.
+    fn pop_for(
+        &mut self,
+        scene_id: hypercolor_types::scene::SceneId,
+    ) -> Option<commit::PendingCommit> {
+        if self.scene_id == Some(scene_id) {
+            self.queue.pop()
+        } else {
+            None
+        }
+    }
 }
 
 type SharedLane = std::sync::Arc<std::sync::Mutex<CommitLane>>;
@@ -942,16 +956,18 @@ pub(crate) fn ZoneLayoutProvider(
         let Some(generation) = studio_history.begin_commit() else {
             return;
         };
-        with_lane(&shared, |lane| lane.draining = Some(generation));
+        with_lane(&shared, |lane| lane.draining = Some((generation, scene_id)));
         leptos::task::spawn_local(async move {
+            // It takes only its own scene's edits; a scene switch it outlives
+            // leaves the next scene's for their own drain.
             while !studio_history.is_superseded(generation) {
-                let Some(pending) = with_lane(&shared, |lane| lane.queue.pop()) else {
+                let Some(pending) = with_lane(&shared, |lane| lane.pop_for(scene_id)) else {
                     break;
                 };
                 commit_zone(pending, Some(generation), scene_id, shared.clone()).await;
             }
             with_lane(&shared, |lane| {
-                if lane.draining == Some(generation) {
+                if lane.draining.is_some_and(|(owner, _)| owner == generation) {
                     lane.draining = None;
                 }
             });
@@ -966,16 +982,16 @@ pub(crate) fn ZoneLayoutProvider(
             return;
         };
         let (idle, scene_id) = with_lane(&shared, |lane| {
-            (
-                lane.draining.is_none() && !lane.queue.is_empty(),
-                lane.scene_id,
-            )
+            let drained = lane
+                .draining
+                .is_some_and(|(_, scene)| lane.scene_id == Some(scene));
+            (!drained && !lane.queue.is_empty(), lane.scene_id)
         });
         let (true, Some(scene_id)) = (idle, scene_id) else {
             return;
         };
         leptos::task::spawn_local(async move {
-            while let Some(pending) = with_lane(&shared, |lane| lane.queue.pop()) {
+            while let Some(pending) = with_lane(&shared, |lane| lane.pop_for(scene_id)) {
                 commit_zone(pending, None, scene_id, shared.clone()).await;
             }
         });
