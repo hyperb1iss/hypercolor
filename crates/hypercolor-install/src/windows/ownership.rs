@@ -21,9 +21,10 @@ const LOCAL_SYSTEM: &str = "S-1-5-18";
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 /// `NT SERVICE\TrustedInstaller`, the owner of the system's own directories.
 const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-/// `CREATOR OWNER` and `CREATOR GROUP`: inheritable entries naming them
-/// resolve to whoever creates the child, which only a trusted principal can.
-const CREATOR_PLACEHOLDERS: [&str; 2] = ["S-1-3-0", "S-1-3-1"];
+/// `CREATOR OWNER` resolves to the trusted principal creating a child.
+/// `CREATOR GROUP` instead resolves to its primary group, whose members
+/// need not be trusted, so that placeholder receives no exemption.
+const CREATOR_OWNER: &str = "S-1-3-0";
 /// The groups every signed-in standard user's token holds: Users,
 /// Everyone, Authenticated Users and Interactive.
 const STANDARD_USER_TOKEN: [&str; 4] = ["S-1-5-32-545", "S-1-1-0", "S-1-5-11", "S-1-5-4"];
@@ -108,9 +109,7 @@ impl WindowsOwnershipPolicy {
                 ));
             }
             let inherits = ace.inherits_to_files || ace.inherits_to_directories;
-            let creator = CREATOR_PLACEHOLDERS
-                .iter()
-                .any(|placeholder| ace.sid.to_string_form() == *placeholder);
+            let creator = ace.sid.to_string_form() == CREATOR_OWNER;
             if inherits && !creator {
                 return Err(WindowsDirectoryRefusal::UntrustedInheritedWriter(
                     ace.sid.to_string_form(),
@@ -287,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_write_right_passed_to_children_is_refused_unless_it_names_the_creator() {
+    fn a_write_right_passed_to_children_is_refused_unless_it_names_the_creator_owner() {
         let policy = WindowsOwnershipPolicy::machine();
         let mut inherited = allow(USERS, FULL_CONTROL);
         inherited.applies_to_self = false;
@@ -316,6 +315,20 @@ mod tests {
             vec![allow(super::LOCAL_SYSTEM, FULL_CONTROL), creator],
         );
         assert_eq!(policy.require_installer_owned(&program_data), Ok(()));
+
+        let mut creator_group = allow("S-1-3-1", FULL_CONTROL);
+        creator_group.applies_to_self = false;
+        creator_group.inherits_to_files = true;
+        let group_writable = security(
+            super::LOCAL_SYSTEM,
+            vec![allow(super::LOCAL_SYSTEM, FULL_CONTROL), creator_group],
+        );
+        assert_eq!(
+            policy.require_installer_owned(&group_writable),
+            Err(WindowsDirectoryRefusal::UntrustedInheritedWriter(
+                "S-1-3-1".to_owned()
+            ))
+        );
     }
 
     #[test]

@@ -351,3 +351,22 @@ fn control_files_and_roots_that_users_can_change_are_refused() {
         Err(InstallStoreError::Untrusted(..))
     ));
 }
+
+#[test]
+fn creator_group_inheritance_is_refused_even_with_a_safe_existing_lock() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    drop(store.acquire_lock().expect("create safe lock"));
+    icacls(&store.lock_path(), &["/inheritance:d"]);
+    icacls(&fixture.state, &["/grant", "*S-1-3-1:(OI)(IO)(F)"]);
+
+    assert!(matches!(
+        store.acquire_lock(),
+        Err(InstallStoreError::Untrusted(
+            _,
+            super::WindowsDirectoryRefusal::UntrustedInheritedWriter(sid)
+        )) if sid == "S-1-3-1"
+    ));
+    assert!(!store.journal_path().exists());
+    assert!(!store.active_path().exists());
+}
