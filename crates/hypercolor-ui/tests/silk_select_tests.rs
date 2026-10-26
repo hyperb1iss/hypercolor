@@ -45,10 +45,10 @@ fn single_option_stays_pinned() {
 #[test]
 fn a_fitted_panel_grows_past_its_trigger_to_the_viewport_edge() {
     let style = "top: 40px; left: 300px; width: 128px; max-height: 320px";
-    assert_eq!(
-        fit_panel_width(style, 128.0, 600.0),
-        "top: 40px; left: 300px; min-width: 128px; width: max-content; max-width: 600px; max-height: 320px"
-    );
+    let fitted = fit_panel_width(style, 128.0, 600.0);
+    // The sizing follows the base style, so it wins over its width.
+    assert!(fitted.starts_with(style));
+    assert!(fitted.ends_with("min-width: 128px; width: max-content; max-width: 600px"));
     // A trigger with no room past it never shrinks below its own width.
     assert!(fit_panel_width(style, 128.0, 40.0).contains("max-width: 128px"));
 }

@@ -26,16 +26,13 @@ fn next_silk_select_id() -> u64 {
 
 /// A panel style that fits its options: at least `trigger_width` wide, as
 /// wide as its widest option, and never wider than `room`, the space left
-/// of the viewport's edge. `style` is the trigger-width panel style.
+/// before the viewport's edge. `style` is the trigger-width panel style;
+/// the sizing goes after it, so it wins however that style spells width.
 #[must_use]
 pub fn fit_panel_width(style: &str, trigger_width: f64, room: f64) -> String {
-    style.replacen(
-        &format!("width: {trigger_width}px"),
-        &format!(
-            "min-width: {trigger_width}px; width: max-content; max-width: {}px",
-            room.max(trigger_width)
-        ),
-        1,
+    format!(
+        "{style}; min-width: {trigger_width}px; width: max-content; max-width: {}px",
+        room.max(trigger_width)
     )
 }
 
@@ -270,8 +267,11 @@ pub fn SilkSelect(
                                 match trigger.filter(|_| fit_options) {
                                     Some(trigger) => {
                                         let rect = trigger.get_bounding_client_rect();
+                                        // The panel's left edge keeps the
+                                        // same 12px margin the panel style
+                                        // clamps it to.
                                         let room = browser_viewport_width(rect.right())
-                                            - rect.left()
+                                            - rect.left().max(12.0)
                                             - 12.0;
                                         fit_panel_width(&style, rect.width(), room)
                                     }
