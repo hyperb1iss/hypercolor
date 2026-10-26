@@ -237,7 +237,11 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_scene_canvas_publication();
+            publication_cadence.record_scene_canvas_publication(
+                scene_canvas_receivers,
+                tracked_scene_canvas_receivers,
+                state.preview_runtime.scene_canvas_demand().max_fps,
+            );
             state
                 .event_bus
                 .scene_canvas_lane()
@@ -295,7 +299,11 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_canvas_publication();
+            publication_cadence.record_canvas_publication(
+                canvas_receivers,
+                tracked_canvas_receivers,
+                state.preview_runtime.tracked_canvas_demand().max_fps,
+            );
             state.event_bus.canvas_lane().send_replace(canvas_frame);
         }
     }
@@ -326,7 +334,11 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_screen_canvas_publication();
+            publication_cadence.record_screen_canvas_publication(
+                screen_canvas_receivers,
+                tracked_screen_canvas_receivers,
+                state.preview_runtime.screen_canvas_demand().max_fps,
+            );
             state
                 .event_bus
                 .screen_canvas_lane()
@@ -359,7 +371,11 @@ pub(crate) fn publish_frame_updates(
             } else {
                 CanvasFrame::empty()
             };
-            publication_cadence.record_web_viewport_publication();
+            publication_cadence.record_web_viewport_publication(
+                web_viewport_canvas_receivers,
+                tracked_receivers,
+                state.preview_runtime.web_viewport_canvas_demand().max_fps,
+            );
             let _ = state
                 .event_bus
                 .web_viewport_canvas_lane()
@@ -434,7 +450,11 @@ fn publish_zone_previews(
         return;
     }
 
-    publication_cadence.record_zone_preview_publication();
+    publication_cadence.record_zone_preview_publication(
+        zone_preview_receivers,
+        state.preview_runtime.zone_preview_receiver_count(),
+        state.preview_runtime.zone_preview_demand().max_fps,
+    );
     let published = u64::try_from(zone_previews.len()).unwrap_or(u64::MAX);
     state
         .event_bus
@@ -449,7 +469,7 @@ fn clear_zone_previews(
     if state.event_bus.zone_preview_lane().borrow().is_empty() {
         return;
     }
-    publication_cadence.record_zone_preview_publication();
+    publication_cadence.record_zone_preview_publication(0, 0, 1);
     state
         .event_bus
         .zone_preview_lane()
