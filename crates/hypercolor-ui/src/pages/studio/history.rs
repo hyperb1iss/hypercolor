@@ -1567,7 +1567,8 @@ fn fold_placements(changes: &mut [MemberEdit], placed: &[MemberEdit]) {
 
 /// Read each change's preconditions from the live scene: where the output
 /// sits now and at what index. Ownership and binding must still match.
-/// The changes' outcomes are left as asked.
+/// Untouched placement fields follow the live output; fields the edit
+/// changed keep their requested values.
 fn rebase_preconditions(
     scene: &api::SceneDocument,
     changes: Vec<MemberEdit>,
@@ -1577,6 +1578,13 @@ fn rebase_preconditions(
         .map(|mut change| {
             if let Some(before) = change.before.as_mut() {
                 let (index, output) = live_member(scene, before)?;
+                if let Some(after) = change.after.as_mut() {
+                    for field in crate::components::layout_builder::ledger::Field::ALL {
+                        if field.read(&after.output) == field.read(&before.output) {
+                            field.write(&mut after.output, field.read(&output));
+                        }
+                    }
+                }
                 before.output = output;
                 before.index = index;
             }
@@ -1904,6 +1912,67 @@ mod replay_tests {
             ],
         }))
         .expect("valid scene fixture")
+    }
+
+    #[test]
+    fn a_queued_position_edit_keeps_remote_placement_fields() {
+        use hypercolor_types::api::scene::MemberState;
+
+        let owner = Owner::new();
+        owner.with(|| {
+            let scene = two_zone_scene(4, 0.2);
+            let zone = &scene.zones[0];
+            let before = MemberState {
+                zone_id: zone.id,
+                output: api::zone_outputs(zone).remove(0),
+                index: 0,
+            };
+            let mut after = before.clone();
+            after.output.position.x = 0.6;
+            let history = history(Some(scene.clone()), false, None, &zone.id.to_string());
+            history.committing.set(true);
+            history.edit_members(
+                vec![MemberEdit {
+                    before: Some(before),
+                    after: Some(after),
+                }],
+                None,
+            );
+            let Waiting::Edit { changes, .. } = history
+                .waiting
+                .try_update_value(VecDeque::pop_front)
+                .flatten()
+                .expect("the position edit waits for the commit")
+            else {
+                panic!("expected the queued position edit");
+            };
+
+            let mut live = scene;
+            live.revision = 6;
+            let placement = &mut live.zones[0]
+                .layout
+                .as_mut()
+                .expect("zone layout")
+                .placements[0];
+            placement.position.y = 0.7;
+            placement.size.x = 0.3;
+            placement.size.y = 0.4;
+            placement.rotation = 45.0;
+            placement.scale = 1.5;
+            placement.orientation = Some(hypercolor_types::spatial::Orientation::Vertical);
+            let live_output = api::zone_outputs(&live.zones[0]).remove(0);
+            let changes = rebase_preconditions(&live, changes).expect("the binding still holds");
+            let before = &changes[0].before.as_ref().expect("precondition").output;
+            let after = &changes[0].after.as_ref().expect("placement").output;
+            assert_eq!(before, &live_output);
+            assert_eq!(after.position.x, 0.6, "the requested position wins");
+            assert_eq!(after.position.y, live_output.position.y);
+            assert_eq!(after.size, live_output.size);
+            assert_eq!(after.rotation, live_output.rotation);
+            assert_eq!(after.scale, live_output.scale);
+            assert_eq!(after.orientation, live_output.orientation);
+        });
+        owner.cleanup();
     }
 
     #[test]
