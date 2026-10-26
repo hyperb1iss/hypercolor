@@ -18,8 +18,8 @@ use super::device_card::{UNASSIGNED_KEY, device_card_dom_id};
 use super::device_pane::pane_zone_toggle_dom_id;
 use super::drag::{DragController, FocusReturn};
 use super::drag_model::{
-    DropAction, MovePayload, Origin, moved_announcement, origin_name, placed_announcement,
-    zone_name_for_device,
+    DropAction, MovePayload, Origin, moved_announcement, new_zone_announcement, origin_name,
+    placed_announcement, zone_name_for_device,
 };
 use super::history::{EditDone, MovePlan, Moved, NewZone};
 use super::placement;
@@ -396,7 +396,7 @@ fn move_to_new_zone(drag: DragController, payload: MovePayload, focus: Option<Fo
             }
             NewZone::Created { zone, moved } => {
                 match moved {
-                    Moved::Landed => drag.announce(moved_announcement(&label, &zone.name, &from)),
+                    Moved::Landed => drag.announce(new_zone_announcement(&label, &from)),
                     Moved::Failed => drag.announce("The move did not apply".to_owned()),
                     Moved::Unchanged => {}
                 }

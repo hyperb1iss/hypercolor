@@ -359,6 +359,14 @@ pub fn moved_announcement(label: &str, to: &str, from: &str) -> String {
     format!("Moved {label} to {to} from {from}")
 }
 
+/// The announcement for a move that makes its own zone: "Moved Razer
+/// Huntsman V2 to a new zone from Main". The new zone's name is still the
+/// rename draft, so the announcement does not call it by that name.
+#[must_use]
+pub fn new_zone_announcement(label: &str, from: &str) -> String {
+    moved_announcement(label, "a new zone", from)
+}
+
 /// The announcement for a drop that only repositions outputs within their
 /// zone: "Placed Razer Huntsman V2 on Main".
 #[must_use]

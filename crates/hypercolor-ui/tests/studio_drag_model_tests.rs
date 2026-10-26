@@ -5,8 +5,9 @@ use hypercolor_types::spatial::NormalizedPosition;
 
 use hypercolor_ui::pages::studio::drag_model::{
     CANCELLED_ANNOUNCEMENT, DragSource, DropAction, DropTarget, MovePayload, Origin, SpringLoad,
-    SpringPhase, action_hint, channel_label, moved_announcement, opened_announcement, origin_name,
-    placed_announcement, resolve_drop, springs, zone_name_for_device,
+    SpringPhase, action_hint, channel_label, moved_announcement, new_zone_announcement,
+    opened_announcement, origin_name, placed_announcement, resolve_drop, springs,
+    zone_name_for_device,
 };
 
 const MAIN: &str = "main";
@@ -357,6 +358,10 @@ fn moves_announce_name_and_both_places() {
     assert_eq!(
         moved_announcement("Channel 4 (Nollie 32)", "Unassigned", "Main"),
         "Moved Channel 4 (Nollie 32) to Unassigned from Main"
+    );
+    assert_eq!(
+        new_zone_announcement("Razer Huntsman V2", "Main"),
+        "Moved Razer Huntsman V2 to a new zone from Main"
     );
     assert_eq!(
         placed_announcement("Razer Huntsman V2", "Main"),
