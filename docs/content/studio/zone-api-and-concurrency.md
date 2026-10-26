@@ -404,7 +404,12 @@ Keys live in memory for one daemon run. The daemon keeps up to the newest 1024
 answers and 32 MiB in total, each for at most one hour, and always keeps the
 newest answer even when it alone is larger. Past that, a reused key starts a
 new write, and an `If-Match` fence still refuses a resend of a write that
-landed. A new `run_epoch` means every key from the old run is gone.
+landed. A key whose write is still running is never dropped; instead at most
+64 keyed writes, holding at most 16 MiB of request bodies, may be in flight at
+once. A new key past that answers `503 service_unavailable` without being
+recorded, so retrying the same key is safe, and a repeat of a key already in
+flight still waits for it. A new `run_epoch` means every key from the old run
+is gone.
 
 ### Control values never use `If-Match`
 

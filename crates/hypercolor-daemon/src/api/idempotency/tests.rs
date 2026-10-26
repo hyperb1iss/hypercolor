@@ -23,7 +23,7 @@ fn answered(body: &'static str) -> Outcome {
 }
 
 fn run(store: &IdempotencyStore, key: &str, body: &'static str) {
-    match store.claim(key, fingerprint(body)) {
+    match store.claim(key, fingerprint(body), 0) {
         Claim::Execute(in_flight) => {
             in_flight.settle(answered(body));
         }
@@ -35,7 +35,7 @@ fn retention(entries: usize, bytes: usize) -> Retention {
     Retention {
         entries,
         bytes,
-        age: IDEMPOTENCY_RETENTION_AGE,
+        ..Retention::default()
     }
 }
 
@@ -47,11 +47,11 @@ fn the_oldest_answers_go_first_past_the_entry_bound() {
     run(&store, "c", "three");
     assert_eq!(store.completed_len(), 2);
     assert!(matches!(
-        store.claim("a", fingerprint("one")),
+        store.claim("a", fingerprint("one"), 0),
         Claim::Execute(_)
     ));
     assert!(matches!(
-        store.claim("c", fingerprint("three")),
+        store.claim("c", fingerprint("three"), 0),
         Claim::Replay(_)
     ));
 }
@@ -64,7 +64,7 @@ fn the_oldest_answers_go_first_past_the_byte_bound() {
     assert_eq!(store.completed_len(), 1);
     assert_eq!(store.stored_bytes(), 6);
     assert!(matches!(
-        store.claim("b", fingerprint("abcdef")),
+        store.claim("b", fingerprint("abcdef"), 0),
         Claim::Replay(_)
     ));
 }
@@ -75,15 +75,16 @@ async fn answers_expire_after_the_retention_age() {
         entries: usize::MAX,
         bytes: usize::MAX,
         age: Duration::from_secs(10),
+        ..Retention::default()
     });
     run(&store, "a", "one");
     tokio::time::advance(Duration::from_secs(9)).await;
     assert!(matches!(
-        store.claim("a", fingerprint("one")),
+        store.claim("a", fingerprint("one"), 0),
         Claim::Replay(_)
     ));
     tokio::time::advance(Duration::from_secs(2)).await;
-    let restarted = store.claim("a", fingerprint("one"));
+    let restarted = store.claim("a", fingerprint("one"), 0);
     assert!(
         matches!(restarted, Claim::Execute(_)),
         "an expired key starts over"
@@ -96,39 +97,93 @@ async fn answers_expire_after_the_retention_age() {
 #[test]
 fn an_in_flight_request_is_never_evicted() {
     let store = IdempotencyStore::with_retention(retention(1, usize::MAX));
-    let Claim::Execute(held) = store.claim("held", fingerprint("x")) else {
+    let Claim::Execute(held) = store.claim("held", fingerprint("x"), 0) else {
         panic!("first sighting");
     };
     run(&store, "b", "two");
     run(&store, "c", "three");
     assert!(matches!(
-        store.claim("held", fingerprint("x")),
+        store.claim("held", fingerprint("x"), 0),
         Claim::Wait(_)
     ));
     held.settle(answered("x"));
     assert!(matches!(
-        store.claim("held", fingerprint("x")),
+        store.claim("held", fingerprint("x"), 0),
         Claim::Replay(_)
+    ));
+}
+
+fn pending(entries: usize, bytes: usize) -> Retention {
+    Retention {
+        pending_entries: entries,
+        pending_bytes: bytes,
+        ..Retention::default()
+    }
+}
+
+#[test]
+fn new_keys_past_the_pending_bound_are_refused_and_pending_keys_kept() {
+    let store = IdempotencyStore::with_retention(pending(1, usize::MAX));
+    let Claim::Execute(held) = store.claim("first", fingerprint("x"), 0) else {
+        panic!("first sighting");
+    };
+    assert!(matches!(
+        store.claim("second", fingerprint("y"), 0),
+        Claim::Busy
+    ));
+    assert!(
+        matches!(store.claim("first", fingerprint("x"), 0), Claim::Wait(_)),
+        "a repeat of a pending key still waits for its original"
+    );
+    assert_eq!(store.pending_len(), 1);
+
+    held.settle(answered("x"));
+    assert_eq!(store.pending_len(), 0);
+    let Claim::Execute(next) = store.claim("second", fingerprint("y"), 0) else {
+        panic!("a refused key claims nothing, so its retry runs once the bound frees");
+    };
+    next.settle(answered("y"));
+}
+
+#[test]
+fn pending_request_bytes_are_bounded_too() {
+    let store = IdempotencyStore::with_retention(pending(usize::MAX, 10));
+    let Claim::Execute(big) = store.claim("big", fingerprint("a"), 6) else {
+        panic!("first sighting");
+    };
+    assert!(matches!(
+        store.claim("over", fingerprint("b"), 6),
+        Claim::Busy
+    ));
+    let Claim::Execute(fits) = store.claim("fits", fingerprint("c"), 4) else {
+        panic!("a body that fits the remaining budget runs");
+    };
+    big.settle(answered("a"));
+    drop(fits);
+    assert_eq!(store.pending_len(), 0);
+    assert!(matches!(
+        store.claim("over", fingerprint("b"), 6),
+        Claim::Execute(_)
     ));
 }
 
 #[test]
 fn a_key_names_exactly_one_request() {
     let store = IdempotencyStore::default();
-    let Claim::Execute(held) = store.claim("k", fingerprint("one")) else {
+    let Claim::Execute(held) = store.claim("k", fingerprint("one"), 0) else {
         panic!("first sighting");
     };
     assert!(matches!(
-        store.claim("k", fingerprint("two")),
+        store.claim("k", fingerprint("two"), 0),
         Claim::Mismatch
     ));
     held.settle(answered("one"));
     assert!(matches!(
-        store.claim("k", fingerprint("two")),
+        store.claim("k", fingerprint("two"), 0),
         Claim::Mismatch
     ));
     assert!(matches!(
-        store.claim("k", fingerprint("one")),
+        store.claim("k", fingerprint("one"), 0),
         Claim::Replay(_)
     ));
 }
@@ -182,11 +237,11 @@ fn the_fingerprint_covers_every_part_a_scene_write_reads() {
 #[test]
 fn a_dropped_claim_is_recorded_as_abandoned() {
     let store = IdempotencyStore::default();
-    let Claim::Execute(held) = store.claim("k", fingerprint("one")) else {
+    let Claim::Execute(held) = store.claim("k", fingerprint("one"), 0) else {
         panic!("first sighting");
     };
     drop(held);
-    let Claim::Replay(outcome) = store.claim("k", fingerprint("one")) else {
+    let Claim::Replay(outcome) = store.claim("k", fingerprint("one"), 0) else {
         panic!("an abandoned key still answers");
     };
     assert!(matches!(outcome.as_ref(), Outcome::Abandoned));
@@ -224,7 +279,7 @@ fn an_answer_larger_than_the_byte_bound_still_replays() {
     let store = IdempotencyStore::with_retention(retention(usize::MAX, 4));
     run(&store, "big", "123456");
     assert!(matches!(
-        store.claim("big", fingerprint("123456")),
+        store.claim("big", fingerprint("123456"), 0),
         Claim::Replay(_)
     ));
     run(&store, "next", "abcdef");
@@ -267,6 +322,10 @@ struct Probe {
 }
 
 fn probe_app(probe: &Arc<Probe>) -> Router {
+    probe_app_with(probe, IdempotencyStore::default())
+}
+
+fn probe_app_with(probe: &Arc<Probe>, store: IdempotencyStore) -> Router {
     let handler = {
         let probe = Arc::clone(probe);
         move || {
@@ -282,7 +341,7 @@ fn probe_app(probe: &Arc<Probe>) -> Router {
         }
     };
     let layer = IdempotencyLayer {
-        store: IdempotencyStore::default(),
+        store,
         routes: Arc::new(IdempotentRoutes::of(&[(Method::POST, "/things")])),
     };
     Router::new()
@@ -447,4 +506,37 @@ async fn a_handler_that_dies_leaves_its_key_answering_and_unapplied() {
         "the abandoned key answers instead of applying again"
     );
     assert_eq!(applied.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_new_key_past_the_pending_bound_answers_a_retryable_503() {
+    let probe = probe(true);
+    let app = probe_app_with(
+        &probe,
+        IdempotencyStore::with_retention(pending(1, usize::MAX)),
+    );
+    let first = tokio::spawn(app.clone().oneshot(request("/things", Some("first"))));
+    probe.entered.notified().await;
+
+    let refused = app
+        .clone()
+        .oneshot(request("/things", Some("second")))
+        .await
+        .expect("response");
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: serde_json::Value =
+        serde_json::from_str(&text(refused).await).expect("error envelope");
+    assert_eq!(body["error"]["code"], "service_unavailable");
+
+    probe.release.notify_one();
+    let first = first.await.expect("first task").expect("first response");
+    assert_eq!(first.status(), StatusCode::CREATED);
+
+    let retried = tokio::spawn(app.clone().oneshot(request("/things", Some("second"))));
+    probe.entered.notified().await;
+    probe.release.notify_one();
+    let retried = retried.await.expect("retry task").expect("retry response");
+    assert_eq!(retried.status(), StatusCode::CREATED);
+    assert!(!replayed(&retried), "the refused key was never recorded");
+    assert_eq!(probe.applied.load(Ordering::SeqCst), 2);
 }

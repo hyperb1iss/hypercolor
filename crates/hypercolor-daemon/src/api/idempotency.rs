@@ -34,10 +34,13 @@
 //! behavior, so the published contract and the enforced one cannot drift.
 //! A keyed body is buffered under the API-wide body ceiling, so an opted-in
 //! route must not rely on a larger route-level limit. Keys live in memory
-//! for one daemon run, bounded by [`IDEMPOTENCY_RETENTION_ENTRIES`],
-//! [`IDEMPOTENCY_RETENTION_BYTES`], and [`IDEMPOTENCY_RETENTION_AGE`]; the
-//! run epoch on every response tells a client when its keys stopped
-//! meaning anything.
+//! for one daemon run. Completed answers are bounded by
+//! [`IDEMPOTENCY_RETENTION_ENTRIES`], [`IDEMPOTENCY_RETENTION_BYTES`], and
+//! [`IDEMPOTENCY_RETENTION_AGE`]; writes still in flight are never evicted,
+//! and are bounded instead by [`IDEMPOTENCY_PENDING_ENTRIES`] and
+//! [`IDEMPOTENCY_PENDING_BYTES`], past which a new key gets a retryable
+//! `503`. The run epoch on every response tells a client when its keys
+//! stopped meaning anything.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -80,12 +83,23 @@ pub(crate) const IDEMPOTENCY_RETENTION_BYTES: usize = 32 * 1024 * 1024;
 /// How long a completed answer stays replayable.
 pub(crate) const IDEMPOTENCY_RETENTION_AGE: Duration = Duration::from_hours(1);
 
-/// The bounds a store keeps completed answers within.
+/// Most keyed writes in flight at once. A pending key is never evicted
+/// (that would let its retry apply a second time), so a new key past this
+/// is refused with a retryable `503` instead, while repeats of keys
+/// already in flight still wait for their original.
+pub(crate) const IDEMPOTENCY_PENDING_ENTRIES: usize = 64;
+
+/// Most request-body bytes the keyed writes in flight may hold at once.
+pub(crate) const IDEMPOTENCY_PENDING_BYTES: usize = 16 * 1024 * 1024;
+
+/// The bounds a store keeps completed answers and in-flight writes within.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Retention {
     pub(crate) entries: usize,
     pub(crate) bytes: usize,
     pub(crate) age: Duration,
+    pub(crate) pending_entries: usize,
+    pub(crate) pending_bytes: usize,
 }
 
 impl Default for Retention {
@@ -94,6 +108,8 @@ impl Default for Retention {
             entries: IDEMPOTENCY_RETENTION_ENTRIES,
             bytes: IDEMPOTENCY_RETENTION_BYTES,
             age: IDEMPOTENCY_RETENTION_AGE,
+            pending_entries: IDEMPOTENCY_PENDING_ENTRIES,
+            pending_bytes: IDEMPOTENCY_PENDING_BYTES,
         }
     }
 }
@@ -123,6 +139,9 @@ struct StoreInner {
     completed: VecDeque<CompletedRecord>,
     completed_count: usize,
     stored_bytes: usize,
+    /// Keyed writes in flight, and the request bytes they hold.
+    pending_count: usize,
+    pending_bytes: usize,
     next_sequence: u64,
 }
 
@@ -223,6 +242,9 @@ pub(crate) enum Claim {
     Replay(Arc<Outcome>),
     /// The key already names a different request.
     Mismatch,
+    /// Too many keyed writes are in flight to take another; nothing was
+    /// recorded, so the same key can be retried.
+    Busy,
 }
 
 impl IdempotencyStore {
@@ -239,8 +261,10 @@ impl IdempotencyStore {
     }
 
     /// Decide what a request carrying `key` does, registering it as in
-    /// flight when it is the first to carry the key.
-    pub(crate) fn claim(&self, key: &str, fingerprint: Fingerprint) -> Claim {
+    /// flight when it is the first to carry the key. `request_bytes` is
+    /// what the request holds while it runs, counted against the pending
+    /// bound.
+    pub(crate) fn claim(&self, key: &str, fingerprint: Fingerprint, request_bytes: usize) -> Claim {
         let mut inner = self.locked();
         // Read under the lock, so completion times stay in deque order.
         let now = Instant::now();
@@ -276,6 +300,13 @@ impl IdempotencyStore {
         if expired {
             inner.forget(key);
         }
+        if inner.pending_count >= self.retention.pending_entries
+            || inner.pending_bytes.saturating_add(request_bytes) > self.retention.pending_bytes
+        {
+            return Claim::Busy;
+        }
+        inner.pending_count += 1;
+        inner.pending_bytes = inner.pending_bytes.saturating_add(request_bytes);
 
         let key: Arc<str> = Arc::from(key);
         let (sender, done) = watch::channel(None);
@@ -286,9 +317,15 @@ impl IdempotencyStore {
             store: self.clone(),
             key,
             fingerprint,
+            request_bytes,
             sender,
             settled: false,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_len(&self) -> usize {
+        self.locked().pending_count
     }
 
     #[cfg(test)]
@@ -301,12 +338,20 @@ impl IdempotencyStore {
         self.locked().stored_bytes
     }
 
-    fn settle(&self, key: &Arc<str>, fingerprint: Fingerprint, outcome: Arc<Outcome>) {
+    fn settle(
+        &self,
+        key: &Arc<str>,
+        fingerprint: Fingerprint,
+        request_bytes: usize,
+        outcome: Arc<Outcome>,
+    ) {
         let weight = match outcome.as_ref() {
             Outcome::Answered(response) => response.weight(),
             Outcome::Abandoned => 0,
         };
         let mut inner = self.locked();
+        inner.pending_count = inner.pending_count.saturating_sub(1);
+        inner.pending_bytes = inner.pending_bytes.saturating_sub(request_bytes);
         let now = Instant::now();
         let sequence = inner.next_sequence;
         inner.next_sequence = inner.next_sequence.wrapping_add(1);
@@ -393,6 +438,7 @@ pub(crate) struct InFlight {
     store: IdempotencyStore,
     key: Arc<str>,
     fingerprint: Fingerprint,
+    request_bytes: usize,
     sender: watch::Sender<Option<Arc<Outcome>>>,
     settled: bool,
 }
@@ -401,8 +447,12 @@ impl InFlight {
     pub(crate) fn settle(mut self, outcome: Outcome) -> Arc<Outcome> {
         self.settled = true;
         let outcome = Arc::new(outcome);
-        self.store
-            .settle(&self.key, self.fingerprint, Arc::clone(&outcome));
+        self.store.settle(
+            &self.key,
+            self.fingerprint,
+            self.request_bytes,
+            Arc::clone(&outcome),
+        );
         self.sender.send_replace(Some(Arc::clone(&outcome)));
         outcome
     }
@@ -414,8 +464,12 @@ impl Drop for InFlight {
             return;
         }
         let outcome = Arc::new(Outcome::Abandoned);
-        self.store
-            .settle(&self.key, self.fingerprint, Arc::clone(&outcome));
+        self.store.settle(
+            &self.key,
+            self.fingerprint,
+            self.request_bytes,
+            Arc::clone(&outcome),
+        );
         self.sender.send_replace(Some(outcome));
     }
 }
@@ -527,8 +581,12 @@ pub(crate) async fn guard(
         &body,
     );
 
-    match layer.store.claim(&key, fingerprint) {
+    match layer.store.claim(&key, fingerprint, body.len()) {
         Claim::Mismatch => DomainError::IdempotencyKeyMismatch.into_response(),
+        Claim::Busy => DomainError::service_unavailable(
+            "too many keyed scene writes are in flight; retry with the same Idempotency-Key",
+        )
+        .into_response(),
         Claim::Replay(outcome) => respond(&outcome, true),
         Claim::Wait(done) => match wait(done).await {
             Some(outcome) => respond(&outcome, true),
