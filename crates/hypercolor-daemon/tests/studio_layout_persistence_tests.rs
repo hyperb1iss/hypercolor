@@ -667,12 +667,16 @@ async fn saved_primary_zone_placement_is_restored_after_a_restart() {
         .find(|zone| zone.role == ZoneRole::Primary)
         .expect("persisted primary zone");
     assert_eq!(strip_a_in_layout(&persisted_primary.layout), SAVED_POSITION);
-    let stored = layout_store::load(&rig.layouts_path())
+    let mut stored = layout_store::load(&rig.layouts_path())
         .expect("layout store should load")
         .remove(ACTIVE_LAYOUT_ID)
         .expect("the runtime session's active layout is stored");
 
     let restarted = rig_with_running_effect().await;
+    // Startup binds normalized stored geometry to the configured canvas.
+    let canvas = restarted.state.domains.layout.current();
+    stored.canvas_width = canvas.canvas_width;
+    stored.canvas_height = canvas.canvas_height;
     install_active_layout(&restarted.state, &restarted.layouts_path(), stored).await;
     apply_preset(&restarted).await;
 

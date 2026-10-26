@@ -2796,3 +2796,19 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
 
     state.shutdown().await.expect("shutdown should succeed");
 }
+
+#[test]
+fn browser_e2e_config_disables_every_compiled_driver() {
+    let fixture: HypercolorConfig =
+        toml::from_str(include_str!("../../../e2e/harness/browser-config.toml"))
+            .expect("fixture config should deserialize");
+    for id in default_config().drivers.keys() {
+        assert!(
+            fixture
+                .drivers
+                .get(id)
+                .is_some_and(|driver| !driver.enabled),
+            "browser fixture must explicitly disable compiled driver {id}"
+        );
+    }
+}

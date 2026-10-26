@@ -2700,6 +2700,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
 
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
+    let inactive = create_stored_layout(&state, "Inactive layout").await;
     let mut applied_layouts = Vec::new();
 
     for (key, value) in [
@@ -2751,6 +2752,30 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
         applied_layouts
             .iter()
             .any(|layout| layout.canvas_width == 1024)
+    );
+    let saved = state
+        .domains
+        .layout
+        .resolve(&inactive.id)
+        .await
+        .expect("layout fixture should be valid");
+    assert_eq!((saved.canvas_width, saved.canvas_height), (1024, 768));
+    let (response, applied) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", inactive.id))
+            .body(Body::empty())
+            .expect("layout fixture should be valid"),
+        &state,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!applied.is_empty());
+    assert!(
+        applied
+            .iter()
+            .all(|layout| (layout.canvas_width, layout.canvas_height) == (1024, 768))
     );
 }
 
@@ -8222,7 +8247,7 @@ async fn layout_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Main Setup");
-    assert_eq!(json["data"]["canvas_width"], 320);
+    assert!(json["data"].get("canvas_width").is_none());
     let layout_id = json["data"]["id"]
         .as_str()
         .expect("id should be a string")
@@ -8302,7 +8327,7 @@ async fn layout_crud_lifecycle() {
 }
 
 #[tokio::test]
-async fn layout_create_defaults_canvas_to_active_layout_dimensions() {
+async fn layout_create_uses_configured_canvas_dimensions() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -8325,12 +8350,22 @@ async fn layout_create_defaults_canvas_to_active_layout_dimensions() {
 
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["canvas_width"], active_layout.canvas_width);
-    assert_eq!(json["data"]["canvas_height"], active_layout.canvas_height);
+    let created = state
+        .domains
+        .layout
+        .resolve(
+            json["data"]["id"]
+                .as_str()
+                .expect("layout fixture should be valid"),
+        )
+        .await
+        .expect("layout fixture should be valid");
+    assert_eq!(created.canvas_width, active_layout.canvas_width);
+    assert_eq!(created.canvas_height, active_layout.canvas_height);
 }
 
 #[tokio::test]
-async fn layout_create_accepts_large_finite_canvas_dimensions() {
+async fn layout_create_ignores_legacy_canvas_dimensions() {
     let app = test_app();
     let response = app
         .oneshot(
@@ -8348,12 +8383,12 @@ async fn layout_create_accepts_large_finite_canvas_dimensions() {
 
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["canvas_width"], 7_680);
-    assert_eq!(json["data"]["canvas_height"], 4_320);
+    assert!(json["data"].get("canvas_width").is_none());
+    assert!(json["data"].get("canvas_height").is_none());
 }
 
 #[tokio::test]
-async fn layout_create_rejects_canvas_dimensions_that_overflow_resources() {
+async fn layout_create_ignores_even_invalid_legacy_dimensions() {
     let app = test_app();
     let response = app
         .oneshot(
@@ -8369,13 +8404,10 @@ async fn layout_create_rejects_canvas_dimensions_that_overflow_resources() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("overflows addressable memory"))
-    );
+    assert!(json["data"].get("canvas_width").is_none());
+    assert!(json["data"].get("canvas_height").is_none());
 }
 
 #[tokio::test]
@@ -8440,7 +8472,7 @@ async fn layout_apply_updates_active_layout() {
         Some(layout)
             if layout.id == layout_id
                 && layout.canvas_width == 640
-                && layout.canvas_height == 360
+                && layout.canvas_height == 480
     ));
 
     let list_response = app
@@ -9208,6 +9240,13 @@ async fn layout_store_write_failure_rolls_back_create() {
         hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load"),
         initial_layouts
+            .into_iter()
+            .map(|(id, mut layout)| {
+                layout.canvas_width = 0;
+                layout.canvas_height = 0;
+                (id, layout)
+            })
+            .collect()
     );
     cleanup.reset_and_flush();
 }
@@ -9312,7 +9351,10 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
     let persisted =
         hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
-    assert_eq!(persisted.get(&stored.id), Some(&stored));
+    let mut stored_content = stored.clone();
+    stored_content.canvas_width = 0;
+    stored_content.canvas_height = 0;
+    assert_eq!(persisted.get(&stored.id), Some(&stored_content));
     cleanup.reset_and_flush();
 }
 
@@ -9367,7 +9409,10 @@ async fn layout_store_write_failure_rolls_back_active_delete() {
     let persisted =
         hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
-    assert_eq!(persisted.get(&active.id), Some(&active));
+    let mut stored_content = active.clone();
+    stored_content.canvas_width = 0;
+    stored_content.canvas_height = 0;
+    assert_eq!(persisted.get(&active.id), Some(&stored_content));
     let runtime = runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
         .expect("runtime state should exist");
@@ -9795,7 +9840,10 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
         hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     let persisted_active = persisted.get(&active.id).map(|layout| {
-        hypercolor_core::spatial::SpatialEngine::try_new(layout.clone())
+        let mut layout = layout.clone();
+        layout.canvas_width = active.canvas_width;
+        layout.canvas_height = active.canvas_height;
+        hypercolor_core::spatial::SpatialEngine::try_new(layout)
             .expect("persisted layout should rebuild")
             .layout()
             .as_ref()
@@ -10004,7 +10052,7 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
         hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load")[&active.id]
             .canvas_width,
-        1024
+        0
     );
     after_workflow.release();
 }
@@ -10184,7 +10232,7 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
         hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     assert_eq!(persisted[&active.id].name, active.name);
-    assert_eq!(persisted[&active.id].canvas_width, 1024);
+    assert_eq!(persisted[&active.id].canvas_width, 0);
     cleanup.reset_and_flush();
 }
 
@@ -10360,22 +10408,6 @@ async fn layout_create_validates_input() {
         empty_name_response.status(),
         StatusCode::UNPROCESSABLE_ENTITY
     );
-
-    let invalid_canvas_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/layouts")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Bad","canvas_width":0}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(
-        invalid_canvas_response.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
 }
 
 #[tokio::test]
@@ -10466,7 +10498,7 @@ async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
 }
 
 #[tokio::test]
-async fn layout_update_rejects_invalid_geometry_without_mutating() {
+async fn layout_update_ignores_legacy_canvas_dimensions() {
     let state = Arc::new(isolated_state());
     let stored = create_stored_layout(&state, "Invalid Geometry Target").await;
 
@@ -10479,7 +10511,7 @@ async fn layout_update_rejects_invalid_geometry_without_mutating() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "name": "Poisoned",
+                        "name": "Invalid Geometry Target",
                         "canvas_width": u32::MAX,
                         "canvas_height": u32::MAX,
                     })
@@ -10490,7 +10522,7 @@ async fn layout_update_rejects_invalid_geometry_without_mutating() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         state
             .domains
@@ -10570,24 +10602,34 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
 }
 
 #[tokio::test]
-async fn layout_preview_rejects_invalid_geometry_without_mutating() {
+async fn layout_preview_ignores_legacy_canvas_dimensions() {
     let state = Arc::new(isolated_state());
     let original = state.spatial_engine.snapshot().layout().as_ref().clone();
-
     for (width, height) in [(0, original.canvas_height), (u32::MAX, u32::MAX)] {
-        let mut invalid = original.clone();
-        invalid.id = format!("invalid-{width}-{height}");
-        invalid.canvas_width = width;
-        invalid.canvas_height = height;
-
-        let response = api::layouts::preview_layout(
-            axum::extract::State(Arc::clone(&state)),
-            api::extract::ApiJson(invalid),
+        let mut preview = original.clone();
+        preview.id = format!("preview-{width}-{height}");
+        preview.canvas_width = width;
+        preview.canvas_height = height;
+        let (response, applied) = request_with_layout_ack(
+            test_app_with_state(Arc::clone(&state)),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/layouts/active/preview")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&preview).expect("layout fixture should be valid"),
+                ))
+                .expect("layout fixture should be valid"),
+            &state,
         )
         .await;
-
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &original);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!applied.is_empty());
+        for layout in applied {
+            assert_eq!(layout.canvas_width, original.canvas_width);
+            assert_eq!(layout.canvas_height, original.canvas_height);
+            assert_eq!(layout.zones, original.zones);
+        }
     }
 }
 

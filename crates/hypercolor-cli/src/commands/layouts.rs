@@ -121,15 +121,13 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
             }
         }
         OutputFormat::Table => {
-            let headers = ["ID", "Layout", "Canvas", "Zones"];
+            let headers = ["ID", "Layout", "Zones"];
             let rows: Vec<Vec<String>> = layouts
                 .iter()
                 .map(|l| {
                     vec![
                         ctx.painter.id(&l.id),
                         ctx.painter.name(&l.name),
-                        ctx.painter
-                            .number(&format!("{}x{}", l.canvas_width, l.canvas_height)),
                         ctx.painter.number(&l.zone_count.to_string()),
                     ]
                 })

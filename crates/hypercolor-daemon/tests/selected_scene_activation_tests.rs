@@ -26,17 +26,16 @@ async fn fixture() -> (
         .layout
         .create(CreateLayoutRequest {
             name: "Selected layout".into(),
-            canvas_width: Some(800),
-            canvas_height: Some(450),
             ..Default::default()
         })
         .await
         .expect("layout fixture");
-    let layout = hypercolor_daemon::layout_store::load(&dir.path().join("data/layouts.json"))
-        .expect("persisted catalog")
-        .get(&created.id)
-        .expect("created layout")
-        .clone();
+    let layout = state
+        .domains
+        .layout
+        .resolve(&created.id)
+        .await
+        .expect("created layout");
     let mut scene = state
         .scene_manager
         .snapshot()

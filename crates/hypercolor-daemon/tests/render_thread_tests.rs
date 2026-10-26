@@ -1753,10 +1753,10 @@ fn make_render_state(
     }
 }
 
-async fn publish_layout(state: &RenderThreadState, layout: SpatialLayout) {
+fn render_layout_context(state: &RenderThreadState) -> LayoutContext {
     let state_dir =
         std::env::temp_dir().join(format!("hypercolor-render-layout-{}", uuid::Uuid::now_v7()));
-    let context = LayoutContext::new_test_context(
+    LayoutContext::new_test_context(
         HashMap::new(),
         state_dir.join("layouts.json"),
         HashMap::new(),
@@ -1765,8 +1765,11 @@ async fn publish_layout(state: &RenderThreadState, layout: SpatialLayout) {
         state.scene_manager.clone(),
         state.scene_transactions.clone(),
         state_dir.join("runtime-state.json"),
-    );
-    context
+    )
+}
+
+async fn publish_layout(state: &RenderThreadState, layout: SpatialLayout) {
+    render_layout_context(state)
         .test_workflows()
         .publish(layout)
         .await
@@ -4741,10 +4744,8 @@ fn sized_zone_preview_receiver(
 /// on the GPU, which only GPU-resident zones publish (Spec 86 §8 criterion
 /// 16).
 ///
-/// Publishing the active layout at new canvas dimensions queues the same
-/// render-thread layout transaction that a `daemon.canvas_width` or
-/// `daemon.canvas_height` config change queues through
-/// `resize_active_canvas`.
+/// Resize through the canvas authority workflow used by live render config
+/// changes. Publishing geometry alone must not change the configured size.
 #[cfg(feature = "wgpu")]
 #[tokio::test]
 async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resizes() {
@@ -4804,7 +4805,7 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
             .all(|(zone_id, color)| zone_led(frame, zone_id) == Some(*color))
     };
     let settled = wait_for_frame_where(&mut frame_rx, shows_every_zone).await;
-    // Before any layout publication each zone keeps the canvas it was built
+    // Before the configured resize each zone keeps the canvas it was built
     // with, and a 32 x 20 demand scales each uniformly: the 16:10 zones land
     // at 32 x 20, the 16:9 green zone at 36 x 20.
     let initial_extents = led_zones
@@ -4821,7 +4822,8 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
         Arc::clone(&stop),
     );
     let mut last_frame = settled.frame_number;
-    // A layout publication puts every LED zone on the new canvas, so after
+    let layout_context = render_layout_context(&state);
+    // A configured resize puts every LED zone on the new canvas, so after
     // each resize all three zones share its shape: 640 x 400 previews at
     // 32 x 20, and 200 x 120 at 33 x 20.
     for ((width, height), extent) in [((640, 400), PREVIEW_SIZE), ((200, 120), (33, 20))] {
@@ -4830,14 +4832,17 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
             state.event_bus.zone_preview_lane().borrow().is_empty()
         })
         .await;
-        let mut resized = test_layout(Vec::new());
-        resized.canvas_width = width;
-        resized.canvas_height = height;
-        publish_layout(&state, resized).await;
+        assert!(
+            layout_context
+                .test_workflows()
+                .resize_active_canvas(width, height)
+                .await
+                .expect("configured canvas resize should commit")
+        );
         assert_eq!(
             (state.canvas_dims.width(), state.canvas_dims.height()),
             (width, height),
-            "the render thread commits the resize before the layout publication returns"
+            "the render thread commits the configured resize before its workflow returns"
         );
         let resized_frame = wait_for_frame_where(&mut frame_rx, |frame| {
             frame.frame_number > last_frame && shows_every_zone(frame)

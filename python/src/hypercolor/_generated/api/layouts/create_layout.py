@@ -110,6 +110,10 @@ def sync_detailed(
     Args:
         body (CreateLayoutRequest): Request body for `POST /api/v1/layouts`.
 
+            A layout has no size of its own: every LED layout renders at the
+            configured render resolution (`daemon.canvas_width` and
+            `daemon.canvas_height`).
+
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
@@ -139,6 +143,10 @@ def sync(
     Args:
         body (CreateLayoutRequest): Request body for `POST /api/v1/layouts`.
 
+            A layout has no size of its own: every LED layout renders at the
+            configured render resolution (`daemon.canvas_width` and
+            `daemon.canvas_height`).
+
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
@@ -162,6 +170,10 @@ async def asyncio_detailed(
 
     Args:
         body (CreateLayoutRequest): Request body for `POST /api/v1/layouts`.
+
+            A layout has no size of its own: every LED layout renders at the
+            configured render resolution (`daemon.canvas_width` and
+            `daemon.canvas_height`).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -189,6 +201,10 @@ async def asyncio(
 
     Args:
         body (CreateLayoutRequest): Request body for `POST /api/v1/layouts`.
+
+            A layout has no size of its own: every LED layout renders at the
+            configured render resolution (`daemon.canvas_width` and
+            `daemon.canvas_height`).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

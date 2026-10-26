@@ -65,6 +65,21 @@ pub struct DaemonConfig {
     pub state_history_min_interval_secs: u64,
 }
 
+impl DaemonConfig {
+    /// The render resolution must describe a non-empty RGBA surface that
+    /// fits in addressable memory. It is the only size every LED layout
+    /// renders at, so an unusable one is refused before it is saved.
+    ///
+    /// # Errors
+    ///
+    /// Returns the surface error for a zero or oversized canvas.
+    pub fn validate_canvas(&self) -> Result<(), crate::canvas::SurfaceResourceError> {
+        crate::canvas::SurfaceDescriptor::rgba8888(self.canvas_width, self.canvas_height)
+            .try_non_empty_byte_len()
+            .map(|_| ())
+    }
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {

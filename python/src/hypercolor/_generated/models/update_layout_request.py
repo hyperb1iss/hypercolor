@@ -24,33 +24,17 @@ class UpdateLayoutRequest:
     list replaces the layout's outputs wholesale.
 
         Attributes:
-            canvas_height (int | None | Unset):
-            canvas_width (int | None | Unset):
             description (None | str | Unset):
             name (None | str | Unset):
             zones (list[Output] | None | Unset):
     """
 
-    canvas_height: int | None | Unset = UNSET
-    canvas_width: int | None | Unset = UNSET
     description: None | str | Unset = UNSET
     name: None | str | Unset = UNSET
     zones: list[Output] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        canvas_height: int | None | Unset
-        if isinstance(self.canvas_height, Unset):
-            canvas_height = UNSET
-        else:
-            canvas_height = self.canvas_height
-
-        canvas_width: int | None | Unset
-        if isinstance(self.canvas_width, Unset):
-            canvas_width = UNSET
-        else:
-            canvas_width = self.canvas_width
-
         description: None | str | Unset
         if isinstance(self.description, Unset):
             description = UNSET
@@ -78,10 +62,6 @@ class UpdateLayoutRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if canvas_height is not UNSET:
-            field_dict["canvas_height"] = canvas_height
-        if canvas_width is not UNSET:
-            field_dict["canvas_width"] = canvas_width
         if description is not UNSET:
             field_dict["description"] = description
         if name is not UNSET:
@@ -96,24 +76,6 @@ class UpdateLayoutRequest:
         from ..models.output import Output
 
         d = dict(src_dict)
-
-        def _parse_canvas_height(data: object) -> int | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(int | None | Unset, data)
-
-        canvas_height = _parse_canvas_height(d.pop("canvas_height", UNSET))
-
-        def _parse_canvas_width(data: object) -> int | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(int | None | Unset, data)
-
-        canvas_width = _parse_canvas_width(d.pop("canvas_width", UNSET))
 
         def _parse_description(data: object) -> None | str | Unset:
             if data is None:
@@ -156,8 +118,6 @@ class UpdateLayoutRequest:
         zones = _parse_zones(d.pop("zones", UNSET))
 
         update_layout_request = cls(
-            canvas_height=canvas_height,
-            canvas_width=canvas_width,
             description=description,
             name=name,
             zones=zones,

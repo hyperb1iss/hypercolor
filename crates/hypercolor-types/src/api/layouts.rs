@@ -11,8 +11,6 @@ use crate::spatial::{Output, SpatialLayout};
 pub struct LayoutSummary {
     pub id: String,
     pub name: String,
-    pub canvas_width: u32,
-    pub canvas_height: u32,
     pub zone_count: usize,
     #[serde(default)]
     pub is_active: bool,
@@ -35,16 +33,16 @@ pub struct LayoutListQuery {
 }
 
 /// Request body for `POST /api/v1/layouts`.
+///
+/// A layout has no size of its own: every LED layout renders at the
+/// configured render resolution (`daemon.canvas_width` and
+/// `daemon.canvas_height`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct CreateLayoutRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canvas_width: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canvas_height: Option<u32>,
 }
 
 /// Request body for `PUT /api/v1/layouts/{id}`.
@@ -58,10 +56,6 @@ pub struct UpdateLayoutRequest {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canvas_width: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub canvas_height: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zones: Option<Vec<Output>>,
 }

@@ -1,0 +1,62 @@
+schema_version = 5
+
+[discovery]
+mdns_enabled = false
+background_enabled = false
+blocks_scan = false
+
+[drivers.asus]
+enabled = false
+
+[drivers.blocks]
+enabled = false
+
+[drivers.corsair]
+enabled = false
+
+[drivers.dygma]
+enabled = false
+
+[drivers.govee]
+enabled = false
+
+[drivers.hue]
+enabled = false
+
+[drivers.lianli]
+enabled = false
+
+[drivers.nanoleaf]
+enabled = false
+
+[drivers.nollie]
+enabled = false
+
+[drivers.openrgb]
+enabled = false
+
+[drivers.prismrgb]
+enabled = false
+
+[drivers.push2]
+enabled = false
+
+[drivers.qmk]
+enabled = false
+
+[drivers.razer]
+enabled = false
+
+[drivers.smbus]
+enabled = false
+
+[drivers.usb]
+enabled = false
+
+[drivers.wled]
+enabled = false
+
+[mcp]
+enabled = true
+stateful_mode = false
+json_response = true

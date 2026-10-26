@@ -108,10 +108,7 @@ impl LayoutContext {
         )
         .await;
         let guard = self.acquire_update_guard().await;
-        let current = self.current();
-        let canvas_width = body.canvas_width.unwrap_or(current.canvas_width);
-        let canvas_height = body.canvas_height.unwrap_or(current.canvas_height);
-        validate_canvas_dimensions(canvas_width, canvas_height)?;
+        let (canvas_width, canvas_height) = self.render_canvas.get();
 
         let mut layouts = self.catalog.entries().write().await;
         if layouts
@@ -214,8 +211,6 @@ impl LayoutContext {
         let UpdateLayoutRequest {
             name,
             description,
-            canvas_width,
-            canvas_height,
             zones,
         } = body;
         let previous_zones = zones.as_ref().map(|_| existing.zones.clone());
@@ -227,13 +222,6 @@ impl LayoutContext {
             updated.name = normalize_layout_name(&name)?;
         }
         updated.description = description;
-        if let Some(width) = canvas_width {
-            updated.canvas_width = width;
-        }
-        if let Some(height) = canvas_height {
-            updated.canvas_height = height;
-        }
-        validate_canvas_dimensions(updated.canvas_width, updated.canvas_height)?;
         if let Some(zones) = zones {
             updated.zones = zones;
         }
@@ -308,7 +296,8 @@ impl LayoutContext {
         .await;
         let guard = self.acquire_update_guard().await;
         let previous_active_id = self.current().id;
-        let layout = self.resolve(selector).await?;
+        let mut layout = self.resolve(selector).await?;
+        self.render_canvas.stamp(&mut layout);
         self.admit_persisted_update_under_guard(&guard, layout.clone(), runtime)
             .await
             .map_err(layout_update_domain_error)?;
@@ -476,7 +465,6 @@ impl LayoutContext {
         layout: SpatialLayout,
         runtime: &LayoutRuntime,
     ) -> Result<PreviewLayoutResponse, DomainError> {
-        validate_canvas_dimensions(layout.canvas_width, layout.canvas_height)?;
         validate_layout_sampling_radii(&layout).map_err(DomainError::validation)?;
         self.wait_test_hook(
             LayoutMutationTestPoint::BeforeGuard,
@@ -647,28 +635,34 @@ impl LayoutContext {
             &reference,
         )
         .await;
+        validate_canvas_dimensions(width, height)?;
         let guard = self.acquire_update_guard().await;
         let current = self.current();
-        if current.canvas_width == width && current.canvas_height == height {
+        let previous = self.render_canvas.get();
+        if previous == (width, height)
+            && current.canvas_width == width
+            && current.canvas_height == height
+        {
             return Ok(false);
         }
+        // The render resolution moves first, so the active layout and every
+        // stored one land on it together and none keeps a size of its own.
+        self.render_canvas.set(width, height);
         let mut updated = current;
         updated.canvas_width = width;
         updated.canvas_height = height;
-        self.publication
+        if let Err(error) = self
+            .publication
             .apply_prepared_under_guard(&guard, updated.clone())
             .await
-            .map_err(layout_update_domain_error)?;
+        {
+            self.render_canvas.set(previous.0, previous.1);
+            return Err(layout_update_domain_error(error));
+        }
 
         let persisted_layout_updated = {
             let mut layouts = self.catalog.entries().write().await;
-            if let Some(saved_layout) = layouts.get_mut(&updated.id) {
-                saved_layout.canvas_width = width;
-                saved_layout.canvas_height = height;
-                true
-            } else {
-                false
-            }
+            super::stamp_catalog(&mut layouts, &self.render_canvas) > 0
         };
         self.wait_test_hook(
             LayoutMutationTestPoint::AfterMemoryMutation,

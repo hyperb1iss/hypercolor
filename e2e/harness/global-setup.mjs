@@ -173,16 +173,8 @@ async function waitForHtml(url, label) {
   throw new Error(`Timed out waiting for ${label} at ${url}`);
 }
 
-function buildConfigToml() {
-  return [
-    "schema_version = 4",
-    "",
-    "[mcp]",
-    "enabled = true",
-    "stateful_mode = false",
-    "json_response = true",
-    "",
-  ].join("\n");
+export function buildConfigToml() {
+  return fs.readFileSync(new URL("./browser-config.toml", import.meta.url), "utf8");
 }
 
 async function readEnvelope(url, init) {

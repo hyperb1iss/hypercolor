@@ -93,8 +93,6 @@ pub fn DeviceDetail(
                         &api::UpdateLayoutRequest {
                             name: None,
                             description: None,
-                            canvas_width: None,
-                            canvas_height: None,
                             zones: Some(layout.zones),
                         },
                     )

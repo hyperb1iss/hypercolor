@@ -14,11 +14,6 @@ const RESOLUTIONS = [
   [960, 160],
 ];
 
-// The effects page subscribes at full resolution, so above this size its
-// leg measures how fast a CI runner ships raw frames, not the page's shape.
-// The full-width rule it checks is the same at every size.
-const EFFECTS_PAGE_MAX_PIXELS = 1280 * 720;
-
 const VIEWPORTS = {
   desktop: { width: 1440, height: 900 },
   phone: { width: 390, height: 844 },
@@ -135,18 +130,14 @@ test.describe("live preview keeps the source's aspect", () => {
       await page.setViewportSize(VIEWPORTS.phone);
       await expectTrueAspect(page, width, height);
 
-      if (width * height > EFFECTS_PAGE_MAX_PIXELS) {
-        test.info().annotations.push({
-          type: "skip",
-          description: "effects page leg above 1280x720",
-        });
-        return;
-      }
-
       await page.setViewportSize(VIEWPORTS.desktop);
       await page.goto(`${stack.appOrigin}/effects`, { waitUntil: "networkidle" });
       const effects = await expectTrueAspect(page, width, height);
       expect(effects.fit).toBe("fill-width");
+      // The 1080p canvas must arrive as a preview sized to this inline box.
+      if (width === 1920) {
+        expect(effects.presented[0]).toBeLessThanOrEqual(704);
+      }
     });
   }
 
