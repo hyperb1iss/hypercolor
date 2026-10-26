@@ -2,7 +2,10 @@ use std::f32::consts::PI;
 
 use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout};
 
-use super::{GRID_EPSILON, clamp_zone_center, normalize_rotation, zone_center_range};
+use super::{
+    GRID_EPSILON, canvas_pixel_aspect, clamp_zone_center, drawn_extent, layout_extent,
+    normalize_rotation, zone_center_range,
+};
 
 // ── Compound geometry ────────────────────────────────────────────────────
 
@@ -13,7 +16,8 @@ pub struct CompoundBounds {
     pub size: NormalizedPosition,
 }
 
-/// Compute the axis-aligned bounding box of all zones in `zone_ids`.
+/// Compute the axis-aligned bounding box of the boxes the zones in
+/// `zone_ids` draw, rotation and scale included.
 pub fn compound_bounding_box(
     layout: &SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
@@ -29,8 +33,9 @@ pub fn compound_bounding_box(
             continue;
         }
         found = true;
-        let half_w = zone.size.x * 0.5;
-        let half_h = zone.size.y * 0.5;
+        let extent = layout_extent(layout, zone);
+        let half_w = extent.x * 0.5;
+        let half_h = extent.y * 0.5;
         min_x = min_x.min(zone.position.x - half_w);
         min_y = min_y.min(zone.position.y - half_h);
         max_x = max_x.max(zone.position.x + half_w);
@@ -57,11 +62,12 @@ pub fn translate_zones(
     delta: NormalizedPosition,
 ) -> bool {
     let delta = rigid_delta(layout, initial_positions, delta);
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for (id, initial_pos) in initial_positions {
         if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == *id) {
             let desired = NormalizedPosition::new(initial_pos.x + delta.x, initial_pos.y + delta.y);
-            let clamped = clamp_zone_center(desired, zone.size);
+            let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
             if zone.position != clamped {
                 zone.position = clamped;
                 changed = true;
@@ -84,8 +90,9 @@ fn rigid_delta(
         let Some(zone) = layout.zones.iter().find(|z| z.id == *id) else {
             continue;
         };
-        let (lo_x, hi_x) = zone_center_range(zone.size.x);
-        let (lo_y, hi_y) = zone_center_range(zone.size.y);
+        let extent = layout_extent(layout, zone);
+        let (lo_x, hi_x) = zone_center_range(extent.x);
+        let (lo_y, hi_y) = zone_center_range(extent.y);
         min_dx = min_dx.max(lo_x - initial.x);
         max_dx = max_dx.min(hi_x - initial.x);
         min_dy = min_dy.max(lo_y - initial.y);
@@ -134,6 +141,7 @@ pub fn translate_compound(
     if delta.x.abs() < GRID_EPSILON && delta.y.abs() < GRID_EPSILON {
         return false;
     }
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for zone in &mut layout.zones {
         if !zone_ids.contains(&zone.id) {
@@ -143,7 +151,7 @@ pub fn translate_compound(
             (zone.position.x + delta.x).clamp(0.0, 1.0),
             (zone.position.y + delta.y).clamp(0.0, 1.0),
         );
-        let clamped = clamp_zone_center(desired, zone.size);
+        let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
         if zone.position != clamped {
             zone.position = clamped;
             changed = true;
@@ -168,10 +176,18 @@ pub fn rotate_compound(
         return false;
     };
     let (sin_d, cos_d) = delta_radians.sin_cos();
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for zone in &mut layout.zones {
         if !zone_ids.contains(&zone.id) {
             continue;
+        }
+        // Rotate the zone itself first, so the edge clamp below measures
+        // the box as it will draw.
+        let new_rotation = normalize_rotation(zone.rotation + delta_radians);
+        if (new_rotation - zone.rotation).abs() > GRID_EPSILON {
+            zone.rotation = new_rotation;
+            changed = true;
         }
         // Orbit position around centroid
         let dx = zone.position.x - centroid.x;
@@ -182,15 +198,9 @@ pub fn rotate_compound(
             (centroid.x + rx).clamp(0.0, 1.0),
             (centroid.y + ry).clamp(0.0, 1.0),
         );
-        let clamped = clamp_zone_center(desired, zone.size);
+        let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
         if zone.position != clamped {
             zone.position = clamped;
-            changed = true;
-        }
-        // Rotate the zone itself
-        let new_rotation = normalize_rotation(zone.rotation + delta_radians);
-        if (new_rotation - zone.rotation).abs() > GRID_EPSILON {
-            zone.rotation = new_rotation;
             changed = true;
         }
     }
@@ -212,10 +222,18 @@ pub fn scale_compound(
     let Some(centroid) = compound_centroid(layout, zone_ids) else {
         return false;
     };
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for zone in &mut layout.zones {
         if !zone_ids.contains(&zone.id) {
             continue;
+        }
+        // Scale the zone itself first, so the edge clamp below measures
+        // the box as it will draw.
+        let new_scale = (zone.scale * scale_ratio).clamp(0.1, 5.0);
+        if (new_scale - zone.scale).abs() > GRID_EPSILON {
+            zone.scale = new_scale;
+            changed = true;
         }
         // Scale distance from centroid
         let dx = zone.position.x - centroid.x;
@@ -224,15 +242,9 @@ pub fn scale_compound(
             (centroid.x + dx * scale_ratio).clamp(0.0, 1.0),
             (centroid.y + dy * scale_ratio).clamp(0.0, 1.0),
         );
-        let clamped = clamp_zone_center(desired, zone.size);
+        let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
         if zone.position != clamped {
             zone.position = clamped;
-            changed = true;
-        }
-        // Scale the zone itself
-        let new_scale = (zone.scale * scale_ratio).clamp(0.1, 5.0);
-        if (new_scale - zone.scale).abs() > GRID_EPSILON {
-            zone.scale = new_scale;
             changed = true;
         }
     }
@@ -283,14 +295,16 @@ pub fn align_compound(
     };
     let bbox_center = (bbox_min + bbox_max) * 0.5;
 
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for zone in &mut layout.zones {
         if !zone_ids.contains(&zone.id) {
             continue;
         }
+        let extent = drawn_extent(zone, aspect);
         let half = match axis {
-            AlignAxis::X => zone.size.x * 0.5,
-            AlignAxis::Y => zone.size.y * 0.5,
+            AlignAxis::X => extent.x * 0.5,
+            AlignAxis::Y => extent.y * 0.5,
         };
         let target = match anchor {
             AlignAnchor::Min => bbox_min + half,
@@ -301,7 +315,7 @@ pub fn align_compound(
             AlignAxis::X => NormalizedPosition::new(target.clamp(0.0, 1.0), zone.position.y),
             AlignAxis::Y => NormalizedPosition::new(zone.position.x, target.clamp(0.0, 1.0)),
         };
-        let clamped = clamp_zone_center(desired, zone.size);
+        let clamped = clamp_zone_center(desired, extent);
         if zone.position != clamped {
             zone.position = clamped;
             changed = true;
@@ -325,9 +339,10 @@ pub fn distribute_compound(
         .iter()
         .filter(|z| zone_ids.contains(&z.id))
         .map(|z| {
+            let extent = layout_extent(layout, z);
             let (pos, size) = match axis {
-                AlignAxis::X => (z.position.x, z.size.x),
-                AlignAxis::Y => (z.position.y, z.size.y),
+                AlignAxis::X => (z.position.x, extent.x),
+                AlignAxis::Y => (z.position.y, extent.y),
             };
             (z.id.clone(), pos, size)
         })
@@ -352,6 +367,7 @@ pub fn distribute_compound(
         cursor_left += size + gap;
     }
 
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for zone in &mut layout.zones {
         let Some(&target) = targets.get(&zone.id) else {
@@ -361,7 +377,7 @@ pub fn distribute_compound(
             AlignAxis::X => NormalizedPosition::new(target.clamp(0.0, 1.0), zone.position.y),
             AlignAxis::Y => NormalizedPosition::new(zone.position.x, target.clamp(0.0, 1.0)),
         };
-        let clamped = clamp_zone_center(desired, zone.size);
+        let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
         if zone.position != clamped {
             zone.position = clamped;
             changed = true;
@@ -383,9 +399,10 @@ pub fn pack_compound(
         .iter()
         .filter(|z| zone_ids.contains(&z.id))
         .map(|z| {
+            let extent = layout_extent(layout, z);
             let (pos, size) = match axis {
-                AlignAxis::X => (z.position.x, z.size.x),
-                AlignAxis::Y => (z.position.y, z.size.y),
+                AlignAxis::X => (z.position.x, extent.x),
+                AlignAxis::Y => (z.position.y, extent.y),
             };
             (z.id.clone(), pos, size)
         })
@@ -402,6 +419,7 @@ pub fn pack_compound(
         cursor_left += size;
     }
 
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for zone in &mut layout.zones {
         let Some(&target) = targets.get(&zone.id) else {
@@ -411,7 +429,7 @@ pub fn pack_compound(
             AlignAxis::X => NormalizedPosition::new(target.clamp(0.0, 1.0), zone.position.y),
             AlignAxis::Y => NormalizedPosition::new(zone.position.x, target.clamp(0.0, 1.0)),
         };
-        let clamped = clamp_zone_center(desired, zone.size);
+        let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
         if zone.position != clamped {
             zone.position = clamped;
             changed = true;
@@ -441,6 +459,7 @@ pub fn mirror_compound(
     let Some(centroid) = compound_centroid(layout, zone_ids) else {
         return false;
     };
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     let mut changed = false;
     for zone in &mut layout.zones {
         if !zone_ids.contains(&zone.id) {
@@ -456,7 +475,7 @@ pub fn mirror_compound(
                 (2.0 * centroid.y - zone.position.y).clamp(0.0, 1.0),
             ),
         };
-        let clamped = clamp_zone_center(desired, zone.size);
+        let clamped = clamp_zone_center(desired, drawn_extent(zone, aspect));
         if zone.position != clamped {
             zone.position = clamped;
             changed = true;

@@ -7,7 +7,7 @@
 use std::f32::consts::{PI, TAU};
 
 use hypercolor_types::spatial::{
-    LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneShape,
+    LedTopology, NormalizedPosition, Output, SpatialLayout, StripDirection, ZoneShape,
 };
 
 #[path = "layout_geometry/compounds.rs"]
@@ -80,8 +80,12 @@ pub(crate) fn canvas_pixel_aspect(canvas_width: u32, canvas_height: u32) -> f32 
     ratio.max(GRID_EPSILON)
 }
 
+/// The size a box keeps in the editor: circles square in pixels, strips
+/// thick enough to see. A box's size never depends on where it sits; a
+/// box near an edge stays on the canvas through its position, which
+/// [`drawn_extent`] measures as drawn, rotation included.
 pub fn normalize_zone_size_for_editor(
-    position: NormalizedPosition,
+    _position: NormalizedPosition,
     size: NormalizedPosition,
     topology: &LedTopology,
     shape: Option<&ZoneShape>,
@@ -91,7 +95,7 @@ pub fn normalize_zone_size_for_editor(
         return pixel_square_size(size, canvas_aspect);
     }
     match topology {
-        LedTopology::Strip { direction, .. } => clamp_strip_size(position, size, *direction),
+        LedTopology::Strip { direction, .. } => clamp_strip_size(size, *direction),
         _ => size,
     }
 }
@@ -110,7 +114,53 @@ fn pixel_square_size(size: NormalizedPosition, canvas_aspect: f32) -> Normalized
     NormalizedPosition::new(width, height)
 }
 
-pub(crate) fn drag_zone_to_position(
+/// Half the width and height of the box `output` draws, in its own frame
+/// and in canvas pixel proportions (x spans the canvas aspect, y spans 1),
+/// scale included. A circle draws square in pixels, sized by its width.
+#[must_use]
+pub fn drawn_half_size(output: &Output, aspect: f32) -> (f32, f32) {
+    let scale = output.scale.max(0.0);
+    let half_width = output.size.x * aspect * scale * 0.5;
+    let half_height = if is_circular_zone(output.shape.as_ref(), &output.topology) {
+        half_width
+    } else {
+        output.size.y * scale * 0.5
+    };
+    (half_width, half_height)
+}
+
+/// Width and height of the axis-aligned bounds of the box `output` draws
+/// on a canvas of pixel aspect `aspect`, in normalized canvas units. The
+/// box turns in pixels, so on a canvas that is not square a quarter turn
+/// trades its pixel width for its pixel height, not its normalized
+/// width for its normalized height. A circle's bounds ignore rotation.
+#[must_use]
+pub fn drawn_extent(output: &Output, aspect: f32) -> NormalizedPosition {
+    let aspect = aspect.max(GRID_EPSILON);
+    let (half_width, half_height) = drawn_half_size(output, aspect);
+    let (extent_x, extent_y) = if is_circular_zone(output.shape.as_ref(), &output.topology) {
+        (half_width, half_width)
+    } else {
+        let (sin, cos) = output.rotation.sin_cos();
+        (
+            (half_width * cos).abs() + (half_height * sin).abs(),
+            (half_width * sin).abs() + (half_height * cos).abs(),
+        )
+    };
+    NormalizedPosition::new(2.0 * extent_x / aspect, 2.0 * extent_y)
+}
+
+/// [`drawn_extent`] on `layout`'s canvas.
+pub(crate) fn layout_extent(layout: &SpatialLayout, output: &Output) -> NormalizedPosition {
+    drawn_extent(
+        output,
+        canvas_pixel_aspect(layout.canvas_width, layout.canvas_height),
+    )
+}
+
+/// Move one box's center toward `desired_position`, stopping where its
+/// drawn bounds meet the canvas edge. Reports whether it moved.
+pub fn drag_zone_to_position(
     layout: &mut SpatialLayout,
     zone_id: &str,
     desired_position: NormalizedPosition,
@@ -123,7 +173,8 @@ pub(crate) fn drag_zone_to_position(
         return false;
     };
 
-    let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
+    let extent = layout_extent(layout, &layout.zones[zone_index]);
+    let clamped = clamp_zone_center(desired_position, extent);
     if layout.zones[zone_index].position == clamped {
         return false;
     }
@@ -136,20 +187,7 @@ pub(crate) fn set_zone_position(
     zone_id: &str,
     desired_position: NormalizedPosition,
 ) -> bool {
-    let desired_position = NormalizedPosition::new(
-        desired_position.x.clamp(0.0, 1.0),
-        desired_position.y.clamp(0.0, 1.0),
-    );
-    let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
-        return false;
-    };
-
-    let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
-    if layout.zones[zone_index].position == clamped {
-        return false;
-    }
-    layout.zones[zone_index].position = clamped;
-    true
+    drag_zone_to_position(layout, zone_id, desired_position)
 }
 
 pub(crate) fn zone_transform_anchor(
@@ -493,35 +531,23 @@ fn locked_minimum_size(aspect: f32, base_min: f32) -> NormalizedPosition {
     }
 }
 
-fn clamp_strip_size(
-    position: NormalizedPosition,
-    size: NormalizedPosition,
-    direction: StripDirection,
-) -> NormalizedPosition {
-    let max_width = available_axis_span(position.x);
-    let max_height = available_axis_span(position.y);
-    let mut width = size.x.clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
-    let mut height = size.y.clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+fn clamp_strip_size(size: NormalizedPosition, direction: StripDirection) -> NormalizedPosition {
+    let mut width = size.x.clamp(GRID_EPSILON, 1.0);
+    let mut height = size.y.clamp(GRID_EPSILON, 1.0);
 
     match direction {
         StripDirection::LeftToRight | StripDirection::RightToLeft => {
-            let target_height = (width / EDITOR_STRIP_MAX_ASPECT).min(max_height);
-            height = height
-                .max(target_height)
-                .clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+            let target_height = (width / EDITOR_STRIP_MAX_ASPECT).min(1.0);
+            height = height.max(target_height).clamp(GRID_EPSILON, 1.0);
             if width / height.max(GRID_EPSILON) > EDITOR_STRIP_MAX_ASPECT {
-                width = (height * EDITOR_STRIP_MAX_ASPECT)
-                    .clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
+                width = (height * EDITOR_STRIP_MAX_ASPECT).clamp(GRID_EPSILON, 1.0);
             }
         }
         StripDirection::TopToBottom | StripDirection::BottomToTop => {
-            let target_width = (height / EDITOR_STRIP_MAX_ASPECT).min(max_width);
-            width = width
-                .max(target_width)
-                .clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
+            let target_width = (height / EDITOR_STRIP_MAX_ASPECT).min(1.0);
+            width = width.max(target_width).clamp(GRID_EPSILON, 1.0);
             if height / width.max(GRID_EPSILON) > EDITOR_STRIP_MAX_ASPECT {
-                height = (width * EDITOR_STRIP_MAX_ASPECT)
-                    .clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+                height = (width * EDITOR_STRIP_MAX_ASPECT).clamp(GRID_EPSILON, 1.0);
             }
         }
     }
@@ -529,9 +555,14 @@ fn clamp_strip_size(
     NormalizedPosition::new(width, height)
 }
 
-fn clamp_zone_center(position: NormalizedPosition, size: NormalizedPosition) -> NormalizedPosition {
-    let (min_x, max_x) = zone_center_range(size.x);
-    let (min_y, max_y) = zone_center_range(size.y);
+/// The nearest center to `position` that keeps a box whose drawn bounds
+/// span `extent` (see [`drawn_extent`]) on the canvas.
+fn clamp_zone_center(
+    position: NormalizedPosition,
+    extent: NormalizedPosition,
+) -> NormalizedPosition {
+    let (min_x, max_x) = zone_center_range(extent.x);
+    let (min_y, max_y) = zone_center_range(extent.y);
     NormalizedPosition::new(
         position.x.clamp(min_x, max_x),
         position.y.clamp(min_y, max_y),
@@ -548,10 +579,6 @@ pub(crate) fn zone_center_range(extent: f32) -> (f32, f32) {
     } else {
         (half, 1.0 - half)
     }
-}
-
-fn available_axis_span(center: f32) -> f32 {
-    (center.min(1.0 - center) * 2.0).clamp(GRID_EPSILON, 1.0)
 }
 
 fn distance_sq(left: NormalizedPosition, right: NormalizedPosition) -> f32 {

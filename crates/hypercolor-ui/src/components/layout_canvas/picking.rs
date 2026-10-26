@@ -30,21 +30,12 @@ impl HitBox {
     /// The box an output draws on a canvas of pixel aspect `aspect`.
     #[must_use]
     pub fn from_output(output: &Output, aspect: f32, order: usize) -> Self {
-        let scale = output.scale.max(0.0);
-        let circular = layout_geometry::is_circular_zone(output.shape.as_ref(), &output.topology);
-        let half_width = output.size.x * aspect * scale * 0.5;
-        // A circle draws square in pixels, sized by its width.
-        let half_height = if circular {
-            half_width
-        } else {
-            output.size.y * scale * 0.5
-        };
         Self {
             id: output.id.clone(),
             center: (output.position.x * aspect, output.position.y),
-            half: (half_width, half_height),
+            half: layout_geometry::drawn_half_size(output, aspect),
             rotation: output.rotation,
-            circular,
+            circular: layout_geometry::is_circular_zone(output.shape.as_ref(), &output.topology),
             order,
         }
     }
