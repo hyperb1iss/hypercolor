@@ -875,13 +875,17 @@ fn TabRenameField(zone_id: String, dom_id: String) -> impl IntoView {
         .with_untracked(|draft| draft.as_ref().map(|(_, text)| text.clone()))
         .unwrap_or_default();
     // Select the whole name a frame after mount: selecting during the
-    // mount's own tick loses the selection to the value write.
+    // mount's own tick loses the selection to the value write. The
+    // selection runs backward so a name longer than the tab shows its start.
     Effect::new(move |_| {
         if input_ref.get().is_some() {
             request_animation_frame(move || {
                 if let Some(input) = input_ref.get_untracked() {
                     let _ = input.focus();
-                    input.select();
+                    let end =
+                        u32::try_from(input.value().encode_utf16().count()).unwrap_or(u32::MAX);
+                    let _ = input.set_selection_range_with_direction(0, end, "backward");
+                    input.set_scroll_left(0);
                 }
             });
         }
