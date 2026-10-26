@@ -3,8 +3,8 @@
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, Winding};
 use hypercolor_ui::components::layout_canvas::labels::{
-    LabelBox, LabelMode, LabelRoom, Visibility, detail_line, label_extent, label_mode, label_rooms,
-    visibility_class,
+    LabelBox, LabelMode, LabelRoom, Visibility, callout_below, detail_line, label_extent,
+    label_mode, label_rooms, visibility_class,
 };
 use hypercolor_ui::components::layout_canvas::picking::{HitBox, hit_stack, pick_hit};
 
@@ -240,4 +240,43 @@ fn a_display_box_names_its_resolution_and_a_light_its_led_count() {
     assert_eq!(detail_line(153_600, Some((960, 160))), "960 \u{d7} 160");
     assert_eq!(detail_line(26, None), "26 LEDs");
     assert_eq!(detail_line(1, None), "1 LED");
+}
+
+fn fan_at(position: (f32, f32), rotation: f32) -> Output {
+    let mut fan = ring_output("fan");
+    fan.shape = Some(hypercolor_types::spatial::ZoneShape::Rectangle);
+    fan.position = NormalizedPosition::new(position.0, position.1);
+    fan.size = NormalizedPosition::new(0.25105, 0.08493);
+    fan.rotation = rotation;
+    fan
+}
+
+#[test]
+fn an_upright_box_hangs_its_callout_above_unless_it_hugs_the_top() {
+    let aspect = 640.0 / 630.0;
+    assert!(!callout_below(&fan_at((0.5, 0.5), 0.0), aspect));
+    assert!(callout_below(&fan_at((0.5, 0.07), 0.0), aspect));
+}
+
+#[test]
+fn a_box_turned_over_hangs_its_callout_from_the_edge_that_faces_up() {
+    let aspect = 640.0 / 630.0;
+    let half_turn = std::f32::consts::PI;
+    // Turned over, the box's own bottom faces up on screen: a bottom fan
+    // captions itself from there, above the box, not off the canvas.
+    assert!(callout_below(&fan_at((0.5, 0.915), half_turn), aspect));
+    // A top fan has no room above, so it hangs from its own top, which
+    // now faces down.
+    assert!(!callout_below(&fan_at((0.5, 0.074), half_turn), aspect));
+}
+
+#[test]
+fn a_quarter_turned_box_at_the_right_edge_hangs_its_callout_inward() {
+    let aspect = 640.0 / 630.0;
+    // At 270 degrees the box's own bottom faces right, past the edge it
+    // sits by, so the callout hangs from its own top, facing left.
+    assert!(!callout_below(
+        &fan_at((0.92887, 0.66454), 4.712_389),
+        aspect
+    ));
 }

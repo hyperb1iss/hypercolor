@@ -8,6 +8,10 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::spatial::Output;
+
+use crate::layout_geometry;
+
 /// Estimated advance of one character of a box name, in pixels.
 const NAME_CHAR_WIDTH: f32 = 6.4;
 /// One line of a box name, in pixels.
@@ -18,6 +22,9 @@ const DETAIL_HEIGHT: f32 = 15.0;
 const LABEL_INSET: f32 = 4.0;
 /// A name wraps onto at most this many lines.
 const MAX_NAME_LINES: f32 = 2.0;
+/// Room a name callout needs past the box edge it hangs from, as a share
+/// of the canvas height.
+const CALLOUT_ROOM: f32 = 0.06;
 
 /// One drawn box, in viewport pixels.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +65,35 @@ pub enum Visibility {
 pub struct LabelMode {
     pub inside: Visibility,
     pub callout: Visibility,
+}
+
+/// Whether a box's name callout hangs from the box's own bottom edge
+/// rather than its top, on a canvas of pixel aspect `aspect`.
+///
+/// The callout turns with the box, so it hangs from whichever of those
+/// two edges faces up on screen, where it reads as a caption above the
+/// box. When the canvas clips that side, it takes the other edge.
+#[must_use]
+pub fn callout_below(output: &Output, aspect: f32) -> bool {
+    let (_, half_height) = layout_geometry::drawn_half_size(output, aspect);
+    let (sin, cos) = output.rotation.sin_cos();
+    let center = (output.position.x * aspect, output.position.y);
+    let reach = half_height + CALLOUT_ROOM;
+    let fits = |direction: (f32, f32)| {
+        let x = center.0 + direction.0 * reach;
+        let y = center.1 + direction.1 * reach;
+        (0.0..=aspect).contains(&x) && (0.0..=1.0).contains(&y)
+    };
+    // Where the box's own top and bottom edges face on screen.
+    let top = (sin, -cos);
+    let bottom = (-sin, cos);
+    let prefer_bottom = cos < 0.0;
+    let preferred = if prefer_bottom { bottom } else { top };
+    if fits(preferred) {
+        prefer_bottom
+    } else {
+        !prefer_bottom
+    }
 }
 
 /// The line under a box's name: a display's resolution, since its pixels

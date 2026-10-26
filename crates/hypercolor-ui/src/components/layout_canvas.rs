@@ -92,6 +92,7 @@ pub(crate) fn draws_output(zone: &Output, devices: &[api::DeviceSummary]) -> boo
 /// an output the canvas does not draw.
 fn zone_render_data(
     zone: &Output,
+    canvas_aspect: f32,
     devices: &[api::DeviceSummary],
     attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
 ) -> Option<ZoneRenderData> {
@@ -104,9 +105,7 @@ fn zone_render_data(
     Some(ZoneRenderData {
         position_style: zone_position_style(zone),
         label_style: upright_label_style(rotation),
-        // The viewport clips, so a box hugging the top edge shows its
-        // callout below itself instead.
-        label_below: zone.position.y - zone.size.y * 0.5 < 0.06,
+        label_below: labels::callout_below(zone, canvas_aspect),
         primary_rgb: primary,
         secondary_rgb: secondary,
         name: display.label,
@@ -323,11 +322,15 @@ pub fn LayoutCanvas() -> impl IntoView {
                         current
                             .as_ref()
                             .map(|l| {
+                                let aspect = layout_geometry::canvas_pixel_aspect(
+                                    l.canvas_width,
+                                    l.canvas_height,
+                                );
                                 l.zones
                                     .iter()
                                     .filter(|zone| !suppressed.contains(&zone.id))
                                     .filter_map(|zone| {
-                                        zone_render_data(zone, devices, attachment_profiles)
+                                        zone_render_data(zone, aspect, devices, attachment_profiles)
                                             .map(|data| (zone.id.clone(), data))
                                     })
                                     .collect()
@@ -1113,9 +1116,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             if zone_style.get().is_some_and(|zd| zd.label_below) { "-bottom-6" } else { "-top-6" },
                                             visibility_class(label_mode.get().callout),
                                         )
+                                        // Turned past a quarter, the box would hang its callout
+                                        // upside down; the callout flips upright in place.
                                         style=move || {
                                             zone_style.get()
-                                                .map(|zd| format!("color: rgba({}, 0.9)", zd.primary_rgb))
+                                                .map(|zd| format!("color: rgba({}, 0.9); {}", zd.primary_rgb, zd.label_style))
                                                 .unwrap_or_default()
                                         }
                                     >

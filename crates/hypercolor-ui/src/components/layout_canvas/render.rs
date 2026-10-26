@@ -26,9 +26,10 @@ pub(super) fn zone_position_style(zone: &Output) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ZoneRenderData {
     pub(super) position_style: String,
-    /// Counter-rotation for the identity readout so it stays upright.
+    /// Counter-rotation for the identity readout and the name callout so
+    /// both stay upright.
     pub(super) label_style: String,
-    /// The name callout sits under the box when the box hugs the top edge.
+    /// The name callout hangs from the box's own bottom edge, not its top.
     pub(super) label_below: bool,
     pub(super) primary_rgb: String,
     pub(super) secondary_rgb: String,
