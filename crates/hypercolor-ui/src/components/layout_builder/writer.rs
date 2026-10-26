@@ -38,6 +38,13 @@ const STALE_STREAK: u32 = 3;
 /// it pauses.
 const LOST_STREAK: u32 = 3;
 
+/// How many reads in a row may fall behind what the ledgers hold before
+/// the writer pauses.
+const BEHIND_STREAK: u32 = 3;
+
+/// What the writer says when it pauses on reads that keep falling behind.
+const BEHIND: &str = "Layout change not confirmed: the scene keeps reading older than the layout already confirmed. It is checked again when the connection is back or with your next edit.";
+
 /// What a mounted Studio lends the writer.
 #[derive(Clone, Copy)]
 pub(crate) struct WriterHooks {
@@ -438,6 +445,7 @@ fn ticket_now() -> Option<Ticket> {
 struct Streaks {
     stale: u32,
     lost: u32,
+    behind: u32,
 }
 
 /// Write until no zone has anything to send or settle. With a Studio
@@ -478,13 +486,27 @@ fn canvas() -> (u32, u32) {
     with_writer(|writer| writer.canvas).unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
 }
 
-/// Read the scene afresh for the ledgers `ticket` names. `None` when the
-/// read failed; `Some(None)` when the ledgers are no longer the ones it was
-/// started for: they changed while it was out, or the read showed another
-/// active scene and they switched to it.
-async fn read_for(ticket: Ticket) -> Option<Option<(api::SceneDocument, SceneRead)>> {
+/// What a fresh read for the writer came to.
+enum Fresh {
+    /// The read failed.
+    Failed,
+    /// Reads keep coming back older than what the ledgers hold.
+    Behind,
+    /// Taken in: the document and its read.
+    Taken(Box<(api::SceneDocument, SceneRead)>),
+    /// The ledgers are no longer the ones it was started for: they changed
+    /// while it was out, or it showed another active scene and they
+    /// switched to it.
+    Moved,
+}
+
+/// Read the scene afresh for the ledgers `ticket` names. A read that
+/// falls behind what the ledgers hold is read again, up to a streak.
+async fn read_for(ticket: Ticket, streaks: &mut Streaks) -> Fresh {
     let connection = with_writer(|writer| writer.ledgers.connection());
-    let scene = api::fetch_active_scene().await.ok()?;
+    let Ok(scene) = api::fetch_active_scene().await else {
+        return Fresh::Failed;
+    };
     let read = scene_read(&scene, connection, canvas());
     let admission = with_writer(|writer| {
         let admission = writer.ledgers.admit(ticket, &read);
@@ -495,15 +517,23 @@ async fn read_for(ticket: Ticket) -> Option<Option<(api::SceneDocument, SceneRea
     });
     match admission {
         Admission::Taken(cancelled) => {
+            streaks.behind = 0;
             report(&cancelled);
-            Some(Some((scene, read)))
+            Fresh::Taken(Box::new((scene, read)))
         }
         Admission::Switched(cancelled) => {
             report(&cancelled);
             changed();
-            Some(None)
+            Fresh::Moved
         }
-        Admission::Refused => Some(None),
+        Admission::Behind => {
+            streaks.behind += 1;
+            if streaks.behind >= BEHIND_STREAK {
+                return Fresh::Behind;
+            }
+            Fresh::Moved
+        }
+        Admission::Refused => Fresh::Moved,
     }
 }
 
@@ -529,17 +559,22 @@ async fn read_and_settle(
     answered: Option<(&str, &str)>,
     streaks: &mut Streaks,
 ) -> Next {
-    let Some(read) = read_for(ticket).await else {
-        pause(
-            ticket,
-            "Layout change not confirmed: the scene could not be read. It is checked again when the connection is back or with your next edit.",
-        );
-        return Next::Stop(Ended::Paused);
-    };
-    // The ledgers are not the ones the read was for any more; the next
-    // turn starts from where they are now.
-    let Some((scene, read)) = read else {
-        return Next::Go;
+    let (scene, read) = match read_for(ticket, streaks).await {
+        Fresh::Taken(taken) => *taken,
+        Fresh::Failed => {
+            pause(
+                ticket,
+                "Layout change not confirmed: the scene could not be read. It is checked again when the connection is back or with your next edit.",
+            );
+            return Next::Stop(Ended::Paused);
+        }
+        Fresh::Behind => {
+            pause(ticket, BEHIND);
+            return Next::Stop(Ended::Paused);
+        }
+        // The ledgers are not the ones the read was for any more; the next
+        // turn starts from where they are now.
+        Fresh::Moved => return Next::Go,
     };
     let settled: Vec<(String, Settled)> = with_writer(|writer| {
         let open: Vec<String> = writer
@@ -570,9 +605,11 @@ async fn read_and_settle(
         match settled {
             Settled::Resend => {
                 if let Some((_, error)) = answered.filter(|(zone, _)| *zone == zone_id) {
-                    stop = Some(format!(
-                        "Layout change not saved: {error}. It goes out again with your next edit."
-                    ));
+                    stop.get_or_insert_with(|| {
+                        format!(
+                            "Layout change not saved: {error}. It goes out again with your next edit."
+                        )
+                    });
                     continue;
                 }
                 streaks.lost += 1;
@@ -617,14 +654,23 @@ async fn after_stale(zone_id: &str, id: u64, streaks: &mut Streaks) -> Next {
         return Next::Go;
     };
     streaks.stale += 1;
-    let Some(read) = read_for(ticket).await else {
-        pause(
-            ticket,
-            "Layout change not saved yet: the scene could not be read. It goes out again when the connection is back or with your next edit.",
-        );
-        return Next::Stop(Ended::Paused);
-    };
-    if let Some((scene, read)) = read {
+    let fresh = read_for(ticket, streaks).await;
+    match fresh {
+        Fresh::Failed => {
+            pause(
+                ticket,
+                "Layout change not saved yet: the scene could not be read. It goes out again when the connection is back or with your next edit.",
+            );
+            return Next::Stop(Ended::Paused);
+        }
+        Fresh::Behind => {
+            pause(ticket, BEHIND);
+            return Next::Stop(Ended::Paused);
+        }
+        Fresh::Taken(..) | Fresh::Moved => {}
+    }
+    if let Fresh::Taken(taken) = fresh {
+        let (scene, read) = *taken;
         let cancelled = with_writer(|writer| {
             let zone = zone_in(&read, zone_id)?;
             Some(writer.ledgers.ledger_mut(zone_id)?.refetched(

@@ -62,9 +62,9 @@
 //!
 //! [`SceneLedgers`] keeps the ledgers of the active scene. A read the
 //! writer started before the ledgers last changed scene or connection is
-//! never admitted; one that shows another scene switches them to it. A
-//! read drops a zone's ledger only when it is at least as new as that
-//! ledger. Write ids and keys are
+//! never admitted; one that shows another scene, at least as new as what
+//! the ledgers hold, switches them to it. A read drops a zone's ledger
+//! only when it is at least as new as that ledger. Write ids and keys are
 //! unique to the page, so a reply can only ever settle the write it
 //! answers.
 
@@ -599,6 +599,10 @@ pub enum Admission {
     /// nothing else changed the ledgers: the active scene changed, so the
     /// ledgers switched to it. Holds the edits the switch cancelled.
     Switched(Vec<Cancelled>),
+    /// It showed another scene, but at a revision older than one the
+    /// ledgers hold, so it says nothing about which scene is active now
+    /// (the daemon went there and back while it was out). Read again.
+    Behind,
     /// The ledgers changed scene or connection while it was out.
     Refused,
 }
@@ -761,17 +765,34 @@ impl SceneLedgers {
 
     /// A read started under `ticket`, such as the writer's own after a
     /// stale or lost reply. Taken in only while the ledgers are still the
-    /// ones it was started for. A read of another scene under a ticket that
-    /// still holds is newer news than the ledgers' own scene, so they
-    /// switch to it, as [`Self::observe`] would.
+    /// ones it was started for. One daemon run orders every scene's commits
+    /// in one sequence of revisions, so a read of another scene under a
+    /// ticket that still holds, at least as new as anything the ledgers
+    /// hold, means the active scene changed: they switch to it, as
+    /// [`Self::observe`] would.
     pub fn admit(&mut self, ticket: Ticket, read: &SceneRead) -> Admission {
         if !self.admits(ticket) || read.connection != self.connection {
             return Admission::Refused;
         }
         if read.scene_id != ticket.scene_id {
+            if self
+                .newest_revision()
+                .is_some_and(|newest| read.revision < newest)
+            {
+                return Admission::Behind;
+            }
             return Admission::Switched(self.observe(read, None).unwrap_or_default());
         }
         Admission::Taken(self.take_in(read))
+    }
+
+    /// The newest revision a ledger holds on the current connection.
+    fn newest_revision(&self) -> Option<u64> {
+        self.zones
+            .iter()
+            .filter(|(_, ledger)| !ledger.reanchoring())
+            .filter_map(|(_, ledger)| ledger.revision())
+            .max()
     }
 
     /// Whether some ledger needs a fresh read before it can go on.

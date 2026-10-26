@@ -1540,6 +1540,24 @@ fn a_writer_read_that_shows_another_scene_switches_the_ledgers_to_it() {
 }
 
 #[test]
+fn an_older_read_of_another_scene_does_not_switch_the_ledgers() {
+    let (desk, stage) = (SceneId::new(), SceneId::new());
+    let mut ledgers = ledgers();
+    ledgers.observe(&scene_read(desk, 9, &[("main", 0.2)]), Some("main"));
+    moved(&mut ledgers, "main", 0.4);
+    let ticket = ledgers.ticket().expect("a scene");
+    // The daemon went to another scene and back while the read was out;
+    // the read was served in between, below what the ledgers hold.
+    assert_eq!(
+        ledgers.admit(ticket, &scene_read(stage, 7, &[("keys", 0.2)])),
+        Admission::Behind
+    );
+    assert_eq!(ledgers.scene_id(), Some(desk));
+    assert!(ledgers.zone("main").is_some_and(ZoneLedger::has_pending));
+    assert!(ledgers.admits(ticket), "the next read is still taken");
+}
+
+#[test]
 fn write_ids_and_keys_never_repeat_on_one_page() {
     let (desk, stage) = (SceneId::new(), SceneId::new());
     let mut ledgers = ledgers();
