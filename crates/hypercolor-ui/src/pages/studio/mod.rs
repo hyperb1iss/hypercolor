@@ -197,9 +197,11 @@ pub(crate) fn keyed_disclosure(slot: RwSignal<Option<String>>, key: String) -> R
 pub fn StudioPage() -> impl IntoView {
     // The active scene is the app-wide shared resource — WS scene events
     // keep it fresh, so zone changes made from other pages, other
-    // clients, or the CLI land here without a Studio-local refetch.
+    // clients, or the CLI land here without a Studio-local refetch. A
+    // failed read of it leaves Studio on the scene it last read.
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
-    let active_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
+    let active_scene: Signal<Option<api::SceneDocument>> =
+        history::held_document(zones_ctx.active_scene).into();
 
     let selected_surface_id = RwSignal::new(None::<String>);
 

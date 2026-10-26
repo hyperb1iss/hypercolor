@@ -16,6 +16,7 @@ use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, PatchZoneRequ
 use hypercolor_types::scene::SceneId;
 use leptos::prelude::*;
 
+use super::super::placement::Footprint;
 use super::zones::{DeletedZone, live_scene, zone_patch_before};
 use super::{Fence, StudioEdit, StudioHistory};
 use crate::api;
@@ -96,23 +97,36 @@ pub fn resolve_deletion(
     (!release.is_empty()).then(|| StudioEdit::Members(release.to_vec()))
 }
 
-/// Whether `scene` holds what a membership edit's `changes` make: every
-/// output in the zone the change takes it to, or out of the zone it left.
-/// An empty list (an assignment, whose outputs only the daemon names)
-/// tells nothing.
+/// Whether `scene` holds what a membership edit's `changes` make. A change
+/// within one zone is a placement, which landed only if the output sits
+/// where the change put it; a move to another zone landed if the output is
+/// there, wherever the daemon placed it on arrival; a removal, if it is
+/// gone from the zone it left. An empty list (an assignment, whose outputs
+/// only the daemon names) tells nothing.
 #[must_use]
 pub fn members_landed(scene: &api::SceneDocument, changes: &[MemberEdit]) -> bool {
-    let holds = |zone_id, output_id: &str| {
-        scene.zones.iter().any(|zone| {
-            zone.id == zone_id && zone.members.iter().any(|member| member.id.0 == output_id)
-        })
+    let live = |zone_id, output_id: &str| {
+        scene
+            .zones
+            .iter()
+            .find(|zone| zone.id == zone_id)
+            .and_then(|zone| {
+                api::zone_outputs(zone)
+                    .into_iter()
+                    .find(|output| output.id == output_id)
+            })
     };
     !changes.is_empty()
         && changes
             .iter()
-            .all(|change| match (&change.after, &change.before) {
-                (Some(after), _) => holds(after.zone_id, &after.output.id),
-                (None, Some(before)) => !holds(before.zone_id, &before.output.id),
+            .all(|change| match (&change.before, &change.after) {
+                (Some(before), Some(after)) if before.zone_id == after.zone_id => {
+                    live(after.zone_id, &after.output.id).is_some_and(|output| {
+                        Footprint::of(&output) == Footprint::of(&after.output)
+                    })
+                }
+                (_, Some(after)) => live(after.zone_id, &after.output.id).is_some(),
+                (Some(before), None) => live(before.zone_id, &before.output.id).is_none(),
                 (None, None) => true,
             })
 }
@@ -246,6 +260,12 @@ impl StudioHistory {
                 Some(resolve_deletion(deleted, record, release))
             }
             HeldWrite::Members(request) => {
+                // A new run never saw the key, so it has no receipt to give:
+                // the request's own changes stand in for one. An undo of them
+                // reads each output where it sits now (see
+                // `prepare_members_replay`) rather than trusting these
+                // snapshots, so only an output that left the zone since can
+                // stop it, as with any undo.
                 if !own_run {
                     if members_landed(&live, &request.changes) {
                         return Some(Some(StudioEdit::Members(request.changes.clone())));

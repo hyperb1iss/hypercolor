@@ -48,6 +48,17 @@ pub fn held_scene(read: Option<SceneId>, held: Option<SceneId>) -> Option<SceneI
     read.or(held)
 }
 
+/// The active scene as Studio holds it: the shared document, or, while a
+/// read of it has failed, the last one read. A failed read is no news
+/// about the scene, so a drag under way, the selection, and the history
+/// all go on as they were.
+#[must_use]
+pub fn held_document(scene: Memo<Option<api::SceneDocument>>) -> Memo<Option<api::SceneDocument>> {
+    Memo::new(move |previous: Option<&Option<api::SceneDocument>>| {
+        scene.get().or_else(|| previous.cloned().flatten())
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum StudioEdit {
     Layout {

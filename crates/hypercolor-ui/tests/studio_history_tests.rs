@@ -6,8 +6,8 @@ use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, StudioEdit, StudioJournal, held_scene, light_neighbor, members_landed,
-    prepare_members_replay, rename_is_noop, replay_announcement, resolve_deletion,
+    DeletedZone, StudioEdit, StudioJournal, held_document, held_scene, light_neighbor,
+    members_landed, prepare_members_replay, rename_is_noop, replay_announcement, resolve_deletion,
     restore_layer_requests, settles_by_key, zone_patch_before,
 };
 use std::collections::HashSet;
@@ -573,4 +573,59 @@ fn a_held_membership_edit_reads_as_landed_only_when_the_scene_holds_it() {
     assert!(!members_landed(&released, &restore));
     // An assignment names no outputs, so a read tells nothing about it.
     assert!(!members_landed(&scene, &[]));
+}
+
+#[test]
+fn a_held_placement_change_reads_as_landed_only_where_it_put_the_output() {
+    let scene = scene();
+    let zone = &scene.zones[0];
+    let stand = hypercolor_ui::api::zone_outputs(zone).remove(0);
+    let mut moved = stand.clone();
+    moved.position.x = 0.3;
+    let placement = vec![MemberEdit {
+        before: Some(MemberState {
+            zone_id: zone.id,
+            output: stand.clone(),
+            index: 0,
+        }),
+        after: Some(MemberState {
+            zone_id: zone.id,
+            output: moved,
+            index: 0,
+        }),
+    }];
+    // The stand still sits where it was: the placement did not land, though
+    // the zone holds it either way.
+    assert!(!members_landed(&scene, &placement));
+    let mut placed = scene.clone();
+    placed.zones[0]
+        .layout
+        .as_mut()
+        .expect("a laid out zone")
+        .placements[0]
+        .position
+        .x = 0.3;
+    assert!(members_landed(&placed, &placement));
+}
+
+#[test]
+fn a_failed_scene_read_leaves_studio_on_the_scene_it_last_read() {
+    use leptos::prelude::*;
+    let owner = Owner::new();
+    owner.with(|| {
+        let shared = RwSignal::new(Some(scene()));
+        let read = Memo::new(move |_| shared.get());
+        let held = held_document(read);
+        assert_eq!(held.get().map(|scene| scene.revision), Some(8));
+        // The read failed: no news, so Studio stays where it was (a drag
+        // under way and the selection with it).
+        shared.set(None);
+        assert_eq!(held.get().map(|scene| scene.revision), Some(8));
+        // A real read moves it on.
+        let mut next = scene();
+        next.revision = 9;
+        shared.set(Some(next));
+        assert_eq!(held.get().map(|scene| scene.revision), Some(9));
+    });
+    owner.cleanup();
 }
