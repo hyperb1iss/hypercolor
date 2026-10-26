@@ -284,6 +284,9 @@ pub struct DaemonState {
 
     /// Effect-error fallback worker driven by the event bus.
     pub(super) effect_error_fallback_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Captures covers for effects that ship none, driven by the event bus.
+    pub(super) effect_cover_keeper_task: Option<tokio::task::JoinHandle<()>>,
     pub(super) display_preference_sync_task: Option<tokio::task::JoinHandle<()>>,
     pub(super) output_static_hold_task: Option<tokio::task::JoinHandle<()>>,
 

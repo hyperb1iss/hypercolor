@@ -254,6 +254,7 @@ impl DaemonState {
         }
 
         self.spawn_effect_error_fallback_worker();
+        self.spawn_effect_cover_keeper();
         self.spawn_output_static_hold_worker();
         self.spawn_display_preference_sync_worker();
         self.spawn_driver_registration_reconciler();
@@ -358,6 +359,9 @@ impl DaemonState {
             handle.abort();
         }
         if let Some(handle) = self.effect_error_fallback_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.effect_cover_keeper_task.take() {
             handle.abort();
         }
         if let Some(handle) = self.discovery_task.take() {
@@ -884,6 +888,15 @@ impl DaemonState {
                 }
             }
         }));
+    }
+
+    fn spawn_effect_cover_keeper(&mut self) {
+        self.effect_cover_keeper_task = Some(tokio::spawn(crate::effect_cover_keeper::run(
+            self.domains.effects.clone(),
+            self.scene_manager.clone(),
+            Arc::clone(&self.preview_runtime),
+            self.event_bus.subscribe_all(),
+        )));
     }
 
     fn spawn_effect_error_fallback_worker(&mut self) {

@@ -104,14 +104,17 @@ pub fn is_valid_resource_uri(uri: &str) -> bool {
 // ── Resource Readers ──────────────────────────────────────────────────────
 
 async fn read_effects_with_state(state: &AppState) -> Value {
-    let effects = state
-        .domains
-        .effects
-        .all_metadata()
-        .await
-        .iter()
-        .map(|metadata| effect_summary(metadata, EffectListIncludes::default()))
-        .collect::<Vec<_>>();
+    let catalog = state.domains.effects.all_metadata().await;
+    // Naming covers may read cover files after a change; keep it off the
+    // async workers.
+    let effects = tokio::task::spawn_blocking(move || {
+        catalog
+            .iter()
+            .map(|metadata| effect_summary(metadata, EffectListIncludes::default()))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
 
     json!({
         "effects": effects,

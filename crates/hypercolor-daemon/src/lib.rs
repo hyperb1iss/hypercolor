@@ -24,6 +24,8 @@ pub mod display_preferences;
 pub mod domain;
 pub mod driver_inventory;
 pub mod durable_stores;
+pub(crate) mod effect_cover_keeper;
+pub(crate) mod effect_covers;
 pub mod extensions;
 pub mod first_run;
 pub mod interaction_routing;

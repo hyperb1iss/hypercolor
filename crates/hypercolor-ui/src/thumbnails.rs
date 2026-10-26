@@ -36,18 +36,9 @@ const MAX_THUMBNAIL_ENTRIES: usize = 48;
 pub const CAPTURE_STABLE_MS: f64 = 2500.0;
 /// Cadence for the capture-eligibility scan. The effect itself wakes on
 /// every canvas frame (it must, to keep its subscription alive), but the
-/// lookup/probe work only needs to run about once a second — at frame rate
-/// it allocates megabytes per second for nothing.
+/// lookup work only needs to run about once a second — at frame rate it
+/// allocates megabytes per second for nothing.
 const CAPTURE_SCAN_INTERVAL_MS: f64 = 1000.0;
-/// Probe result cache for effect covers, keyed by effect id. Skips
-/// opportunistic capture when the daemon already serves authored artwork, so we
-/// don't burn localStorage quota on thumbnails that will be painted over anyway.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CuratedProbe {
-    Pending,
-    Present,
-    Absent,
-}
 
 /// Serialized palette — RGB strings ready for direct use in CSS `rgb(...)`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -228,19 +219,6 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
 /// Kick off a HEAD probe for an effect's cover and update `probe_cache` with
 /// the result. Idempotent — callers should check for an existing entry before
 /// spawning.
-fn spawn_curated_probe(effect_id: String, probe_cache: StoredValue<HashMap<String, CuratedProbe>>) {
-    let route = format!("/api/v1/effects/{effect_id}/cover");
-    wasm_bindgen_futures::spawn_local(async move {
-        let state = match crate::api::client::head_status(&route).await {
-            Ok(200) => CuratedProbe::Present,
-            _ => CuratedProbe::Absent,
-        };
-        probe_cache.update_value(|cache| {
-            cache.insert(effect_id, state);
-        });
-    });
-}
-
 /// Background auto-capture loop.
 ///
 /// Watches the effect that owns the preview frames, plus the frames
@@ -248,25 +226,24 @@ fn spawn_curated_probe(effect_id: String, probe_cache: StoredValue<HashMap<Strin
 /// `CAPTURE_STABLE_MS` and no valid thumbnail exists for the current
 /// version, captures one frame and stores it.
 ///
-/// The `effect_lookup` closure maps an effect ID to `(name, version)`. The
-/// daemon's cover endpoint is probed by id; when the effect already has cover
-/// artwork we skip opportunistic capture entirely, since the effect card will
-/// paint the authored artwork on top anyway.
+/// The `effect_lookup` closure maps an effect ID to `(name, version,
+/// has_cover)` from the same catalog the cards render. An effect the catalog
+/// lists with a cover is never captured here, since its card paints that
+/// cover anyway; one it lists without a cover is, so the card is never left
+/// blank while the daemon has not covered it yet.
 pub fn install_auto_capture<F>(
     store: ThumbnailStore,
     active_effect_id: Signal<Option<String>>,
     canvas_frame: ReadSignal<Option<CanvasFrame>>,
     effect_lookup: F,
 ) where
-    F: Fn(&str) -> Option<(String, String)> + 'static,
+    F: Fn(&str) -> Option<(String, String, bool)> + 'static,
 {
     // Track when the current effect became active, so we can wait for the
     // stability window before capturing. Stored as (id, since_ms).
     let active_since: StoredValue<Option<(String, f64)>> = StoredValue::new(None);
     let last_scan: StoredValue<f64> = StoredValue::new(0.0);
     let pending_captures: StoredValue<HashSet<(String, String)>> = StoredValue::new(HashSet::new());
-    let curated_probes: StoredValue<HashMap<String, CuratedProbe>> =
-        StoredValue::new(HashMap::new());
 
     Effect::new(move |_| {
         // React to active effect changes — reset the stability timer.
@@ -298,9 +275,12 @@ pub fn install_auto_capture<F>(
         }
 
         // Check if we already have a fresh thumbnail for this version.
-        let Some((_, version)) = effect_lookup(&effect_id) else {
+        let Some((_, version, has_cover)) = effect_lookup(&effect_id) else {
             return;
         };
+        if has_cover {
+            return;
+        }
         if store.has_fresh(&effect_id, &version) {
             return;
         }
@@ -308,20 +288,6 @@ pub fn install_auto_capture<F>(
             .with_value(|pending| pending.contains(&(effect_id.clone(), version.clone())))
         {
             return;
-        }
-
-        let probe_state = curated_probes.with_value(|cache| cache.get(&effect_id).copied());
-        match probe_state {
-            Some(CuratedProbe::Present) => return,
-            Some(CuratedProbe::Pending) => return,
-            Some(CuratedProbe::Absent) => {}
-            None => {
-                curated_probes.update_value(|cache| {
-                    cache.insert(effect_id.clone(), CuratedProbe::Pending);
-                });
-                spawn_curated_probe(effect_id, curated_probes);
-                return;
-            }
         }
 
         // Defer the actual capture to an idle callback so we don't block

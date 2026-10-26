@@ -964,6 +964,7 @@ impl DaemonState {
             display_output_thread: None,
             effect_watcher_task: None,
             effect_error_fallback_task: None,
+            effect_cover_keeper_task: None,
             display_preference_sync_task: None,
             output_static_hold_task: None,
             discovery_task: None,
