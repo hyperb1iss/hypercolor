@@ -4668,25 +4668,27 @@ fn spawn_zone_color_watch(
 /// Wait for a zone preview of every zone in `zones` published after
 /// `after_frame` at `size`.
 #[cfg(feature = "wgpu")]
+/// Wait until every zone in `expected` publishes a preview newer than
+/// `after_frame` at its expected extent. A sized demand scales each zone
+/// uniformly, so zones of different shapes land at different extents.
 async fn wait_for_zone_previews_after(
     previews_rx: &mut ZonePreviewFrameReceiver,
     after_frame: u32,
-    zones: &[ZoneId],
-    size: (u32, u32),
+    expected: &[(ZoneId, (u32, u32))],
 ) -> Arc<[ZonePreviewFrame]> {
     let mut last_seen = String::from("no zone previews observed");
     let landed = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
             {
                 let previews = previews_rx.borrow_and_update();
-                let fresh = |zone_id: &ZoneId| {
+                let fresh = |(zone_id, size): &(ZoneId, (u32, u32))| {
                     previews.iter().any(|preview| {
                         preview.zone_id == *zone_id
                             && preview.frame.frame_number > after_frame
-                            && (preview.frame.width, preview.frame.height) == size
+                            && (preview.frame.width, preview.frame.height) == *size
                     })
                 };
-                if zones.iter().all(fresh) {
+                if expected.iter().all(fresh) {
                     break Arc::clone(&previews);
                 }
                 last_seen = previews
@@ -4711,7 +4713,7 @@ async fn wait_for_zone_previews_after(
     })
     .await;
     landed.unwrap_or_else(|_| {
-        panic!("zone previews after frame {after_frame} never landed at {size:?}: {last_seen}")
+        panic!("zone previews after frame {after_frame} never landed at {expected:?}: {last_seen}")
     })
 }
 
@@ -4802,7 +4804,15 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
             .all(|(zone_id, color)| zone_led(frame, zone_id) == Some(*color))
     };
     let settled = wait_for_frame_where(&mut frame_rx, shows_every_zone).await;
-    wait_for_zone_previews_after(&mut previews_rx, 0, &led_zones, PREVIEW_SIZE).await;
+    // Before any layout publication each zone keeps the canvas it was built
+    // with, and a 32 x 20 demand scales each uniformly: the 16:10 zones land
+    // at 32 x 20, the 16:9 green zone at 36 x 20.
+    let initial_extents = led_zones
+        .iter()
+        .copied()
+        .zip([PREVIEW_SIZE, PREVIEW_SIZE, (36, 20)])
+        .collect::<Vec<_>>();
+    wait_for_zone_previews_after(&mut previews_rx, 0, &initial_extents).await;
 
     let stop = Arc::new(Notify::new());
     let color_watch = spawn_zone_color_watch(
@@ -4811,7 +4821,10 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
         Arc::clone(&stop),
     );
     let mut last_frame = settled.frame_number;
-    for (width, height) in [(640, 400), (200, 120)] {
+    // A layout publication puts every LED zone on the new canvas, so after
+    // each resize all three zones share its shape: 640 x 400 previews at
+    // 32 x 20, and 200 x 120 at 33 x 20.
+    for ((width, height), extent) in [((640, 400), PREVIEW_SIZE), ((200, 120), (33, 20))] {
         drop(previews_rx);
         wait_until("zone previews to clear without a subscriber", || {
             state.event_bus.zone_preview_lane().borrow().is_empty()
@@ -4842,9 +4855,12 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
         .await;
 
         previews_rx = sized_zone_preview_receiver(&state, PREVIEW_SIZE);
+        let resized_extents = led_zones
+            .iter()
+            .map(|zone_id| (*zone_id, extent))
+            .collect::<Vec<_>>();
         let previews =
-            wait_for_zone_previews_after(&mut previews_rx, last_frame, &led_zones, PREVIEW_SIZE)
-                .await;
+            wait_for_zone_previews_after(&mut previews_rx, last_frame, &resized_extents).await;
         for (zone_id, color) in led_zones.iter().zip(zone_colors) {
             let preview = previews
                 .iter()
@@ -5157,7 +5173,11 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
     })
     .await
     .expect("the blue face should finalize over the transitioning backdrop");
-    wait_for_zone_previews_after(&mut zone_previews_rx, 0, &blue_zones, ZONE_PREVIEW_SIZE).await;
+    let blue_extents = blue_zones
+        .iter()
+        .map(|zone_id| (*zone_id, ZONE_PREVIEW_SIZE))
+        .collect::<Vec<_>>();
+    wait_for_zone_previews_after(&mut zone_previews_rx, 0, &blue_extents).await;
 
     let start_frame = frame_rx.borrow_and_update().frame_number;
     let started = std::time::Instant::now();

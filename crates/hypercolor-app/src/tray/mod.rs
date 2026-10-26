@@ -253,10 +253,10 @@ pub fn tooltip_text(state: &AppState, failure: Option<&SupervisorFailure>) -> St
             startup_phase: Some(phase),
             ..
         }) => format!(
-            "Hypercolor - Daemon failed to start (last phase: {}). Choose Retry Daemon to try again.",
+            "Hypercolor couldn't start (stopped at: {}). Choose Restart Hypercolor to try again.",
             phase.as_str().replace('_', " ")
         ),
-        Some(_) => "Hypercolor - Supervisor stopped restarting the daemon. Choose Retry Daemon to try again.".to_owned(),
+        Some(_) => "Hypercolor stopped. Choose Restart Hypercolor to try again.".to_owned(),
         None => tooltip_for(state),
     }
 }

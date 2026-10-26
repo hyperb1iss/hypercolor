@@ -1,5 +1,5 @@
 use super::super::sparkleflinger::PreviewSurfaceRequest;
-use crate::preview_runtime::PreviewDemandSummary;
+use crate::preview_runtime::{PreviewDemandSummary, uniform_preview_extent};
 
 pub(super) fn requires_cpu_sampling_canvas(can_gpu_sample: bool) -> bool {
     !can_gpu_sample
@@ -100,10 +100,13 @@ pub(super) fn preview_surface_request(
         });
     }
 
-    Some(PreviewSurfaceRequest {
-        width: max_width.clamp(1, context.canvas_width),
-        height: max_height.clamp(1, context.canvas_height),
-    })
+    let (width, height) = uniform_preview_extent(
+        context.canvas_width,
+        context.canvas_height,
+        max_width,
+        max_height,
+    );
+    Some(PreviewSurfaceRequest { width, height })
 }
 
 pub(super) fn scene_canvas_forces_full_surface(
@@ -121,9 +124,15 @@ pub(super) fn scene_canvas_forces_full_surface(
         return true;
     }
 
+    // Forced when the sized surface would be the whole canvas, under the same
+    // uniform scale `preview_surface_request` publishes.
     scene_canvas_demand.any_full_resolution
         || scene_canvas_demand.max_width == 0
         || scene_canvas_demand.max_height == 0
-        || (scene_canvas_demand.max_width >= canvas_width
-            && scene_canvas_demand.max_height >= canvas_height)
+        || uniform_preview_extent(
+            canvas_width,
+            canvas_height,
+            scene_canvas_demand.max_width,
+            scene_canvas_demand.max_height,
+        ) == (canvas_width, canvas_height)
 }

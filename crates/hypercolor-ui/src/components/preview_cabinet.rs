@@ -12,10 +12,11 @@
 //!
 //! - `fill_height = true` — cabinet is `h-full flex flex-col` and the
 //!   canvas region grows to fill whatever space remains after the
-//!   preset strip. Used on the dashboard where the cabinet sits in a
-//!   bounded-height hero row.
+//!   preset strip. The preview sits in it as a contained box, so the
+//!   picture keeps the source's aspect at any region shape. Used on the
+//!   dashboard, whose hero row hugs that aspect.
 //! - `fill_height = false` (default) — cabinet is a plain `flex flex-col`
-//!   and the canvas self-sizes via its own aspect ratio. Used on the
+//!   and the canvas fills the width at the source's aspect. Used on the
 //!   effects page where the preview sits in an unbounded sidebar.
 
 use std::cell::RefCell;
@@ -31,11 +32,13 @@ use hypercolor_types::control::ControlValue;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_use::{UseElementSizeOptions, use_element_size_with_options};
 
 use crate::app::{EffectsContext, WsContext};
 use crate::color;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::preset_panel::PresetToolbar;
+use crate::components::preview_box::PreviewFit;
 use crate::components::zone_now_playing::ZoneEffectChips;
 use crate::icons::*;
 use crate::style_utils::category_accent_rgb;
@@ -65,11 +68,28 @@ pub fn PreviewCabinet(
     /// tooltip. Ignored when `on_toggle_fullscreen` is `None`.
     #[prop(into, optional)]
     is_fullscreen: MaybeProp<bool>,
+    /// Receives the preset strip's height (border included), so a host
+    /// that hugs the picture knows how much of the cabinet is chrome.
+    #[prop(optional)]
+    strip_height: Option<RwSignal<f64>>,
 ) -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
     let thumb_store = use_context::<ThumbnailStore>();
+    let strip_ref = NodeRef::<leptos::html::Div>::new();
+    if let Some(strip_height) = strip_height {
+        let measured = use_element_size_with_options(
+            strip_ref,
+            UseElementSizeOptions::default().box_(web_sys::ResizeObserverBoxOptions::BorderBox),
+        );
+        Effect::new(move |_| {
+            let height = measured.height.get();
+            if height > 0.0 && (strip_height.get_untracked() - height).abs() > 0.5 {
+                strip_height.set(height);
+            }
+        });
+    }
 
     // A multi-zone preview shows one zone at a time, picked by the zone
     // chips, so the accent and the preset strip follow that zone's effect.
@@ -230,11 +250,11 @@ pub fn PreviewCabinet(
         "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow \
          preview-glow flex flex-col"
     };
-    // `flex items-center justify-center` letterboxes/pillarboxes the
-    // aspect-correct CanvasPreview inside the cabinet's canvas region so
-    // the underlying 320×200 frame is never stretched. The absolute
-    // overlays (scrim, info, fullscreen button) still cover the full
-    // wrapper because they use `inset-0` not `flex` positioning.
+    // The canvas region never shapes the picture. A bounded region hosts a
+    // contained box (the largest rectangle of the source's aspect that
+    // fits); an unbounded one lets the box fill its width and derive its
+    // height. The absolute overlays (scrim, info, fullscreen button) cover
+    // the region because they use `inset-0`, not flex positioning.
     let canvas_wrapper_class = if fill_height {
         "relative flex-1 min-h-0 overflow-hidden rounded-t-xl flex items-center justify-center"
     } else {
@@ -258,6 +278,7 @@ pub fn PreviewCabinet(
                     report_presenter_telemetry=report_telemetry
                     allow_interactive=true
                     main_canvas=true
+                    fit=if fill_height { PreviewFit::Contain } else { PreviewFit::FillWidth }
                 />
 
                 // Maximize / exit-fullscreen button — floats above the scrim
@@ -456,6 +477,7 @@ pub fn PreviewCabinet(
             // gradient background to match the cabinet's bottom silhouette
             // without clipping descendant elements.
             <div
+                node_ref=strip_ref
                 class="shrink-0 relative z-50 rounded-b-xl"
                 style=move || {
                     let rgb = accent_rgb.get();

@@ -1039,9 +1039,11 @@ impl PreviewLane {
         // nothing; the lane picks it back up if the zone returns.
         if scene.targets_missing_zone() {
             self.last_tick = now;
-            self.withdraw_frame();
+            // Record why before withdrawing: the withdrawal wakes frame
+            // receivers, and one that reads the snapshot next must see it.
             self.telemetry
                 .publish_error("preview zone is not in the active scene");
+            self.withdraw_frame();
             return;
         }
         let screen_extent = PixelExtent::new(scene.canvas_width, scene.canvas_height)

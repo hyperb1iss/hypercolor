@@ -117,7 +117,7 @@ pub fn DisplayPreviewSurface(
                                 fps_target=Signal::derive(|| 0_u32)
                                 max_width="100%".to_string()
                                 image_rendering="auto".to_string()
-                                aspect_ratio=canvas_aspect_ratio.clone()
+                                coordinate_aspect=canvas_aspect_ratio.clone()
                                 aria_label=canvas_aria_label.clone()
                                 register_main_preview_consumer=false
                             />

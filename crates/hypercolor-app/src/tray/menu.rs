@@ -122,7 +122,7 @@ pub fn menu_model(state: &AppState) -> Vec<MenuEntry> {
 ///
 /// `supervisor_failed` is sourced from
 /// `SupervisorState::permanent_failure()`; when true the menu offers a
-/// Retry Daemon action that restarts supervision.
+/// Restart Hypercolor action that restarts supervision.
 #[must_use]
 pub fn menu_model_with_supervisor(state: &AppState, supervisor_failed: bool) -> Vec<MenuEntry> {
     let mut entries = Vec::new();
@@ -136,7 +136,7 @@ pub fn menu_model_with_supervisor(state: &AppState, supervisor_failed: bool) -> 
     entries.push(MenuEntry::Separator);
 
     if supervisor_failed {
-        entries.push(item(ids::RETRY_DAEMON, "Retry Daemon", true));
+        entries.push(item(ids::RETRY_DAEMON, "Restart Hypercolor", true));
         entries.push(MenuEntry::Separator);
     }
 
@@ -288,7 +288,11 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
 }
 
 fn build_disconnected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
-    entries.push(item("status_disconnected", "Daemon not reachable", false));
+    entries.push(item(
+        "status_disconnected",
+        "Hypercolor isn't responding",
+        false,
+    ));
     entries.push(MenuEntry::Separator);
 
     if should_show_servers_menu(state) {

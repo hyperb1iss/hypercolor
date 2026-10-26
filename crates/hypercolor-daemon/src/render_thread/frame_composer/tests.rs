@@ -1,6 +1,6 @@
 use super::preview_policy::{
     PreviewSurfaceDemandLane, PreviewSurfaceRequestContext, preview_surface_request,
-    requires_cpu_sampling_canvas, requires_published_surface,
+    requires_cpu_sampling_canvas, requires_published_surface, scene_canvas_forces_full_surface,
 };
 use super::{
     PreviewSurfaceRequest, effective_render_zone_layer_count,
@@ -219,6 +219,102 @@ fn preview_surface_request_uses_scaled_tracked_demand() {
         Some(PreviewSurfaceRequest {
             width: 640,
             height: 360,
+        })
+    );
+}
+
+fn sized(max_width: u32, max_height: u32) -> PreviewDemandSummary {
+    PreviewDemandSummary {
+        subscribers: 1,
+        max_fps: 30,
+        max_width,
+        max_height,
+        ..PreviewDemandSummary::default()
+    }
+}
+
+fn canvas_request(
+    canvas: (u32, u32),
+    demand: PreviewDemandSummary,
+) -> Option<PreviewSurfaceRequest> {
+    preview_surface_request(PreviewSurfaceRequestContext {
+        canvas_width: canvas.0,
+        canvas_height: canvas.1,
+        publish_canvas_preview: true,
+        effect_running: true,
+        canvas: demand_lane(1, 1, demand),
+        ..PreviewSurfaceRequestContext::default()
+    })
+}
+
+#[test]
+fn preview_surface_request_keeps_the_canvas_aspect_for_mixed_demands() {
+    // The dashboard asks for width only (704 x 0); a Remote pump asks for
+    // width and height (480 x 360). Merged per axis they name 704 x 360,
+    // which used to publish a 4:3 canvas as 640 x 360.
+    assert_eq!(
+        canvas_request((640, 480), sized(704, 360)),
+        Some(PreviewSurfaceRequest {
+            width: 640,
+            height: 480,
+        })
+    );
+    assert_eq!(
+        canvas_request((1920, 1080), sized(704, 270)),
+        Some(PreviewSurfaceRequest {
+            width: 704,
+            height: 396,
+        })
+    );
+}
+
+#[test]
+fn preview_surface_request_never_squashes_a_single_demand() {
+    // A 4:3 request against a 16:9 canvas gets the 16:9 surface that covers it.
+    assert_eq!(
+        canvas_request((1280, 720), sized(480, 360)),
+        Some(PreviewSurfaceRequest {
+            width: 640,
+            height: 360,
+        })
+    );
+    // A matching request is served exactly.
+    assert_eq!(
+        canvas_request((640, 480), sized(480, 360)),
+        Some(PreviewSurfaceRequest {
+            width: 480,
+            height: 360,
+        })
+    );
+}
+
+#[test]
+fn scene_canvas_forces_the_full_surface_exactly_when_the_uniform_scale_does() {
+    // 704 x 360 against 640 x 480 scales to the whole canvas.
+    assert!(scene_canvas_forces_full_surface(
+        640,
+        480,
+        1,
+        1,
+        sized(704, 360)
+    ));
+    // 480 x 360 against 640 x 480 publishes a smaller surface.
+    assert!(!scene_canvas_forces_full_surface(
+        640,
+        480,
+        1,
+        1,
+        sized(480, 360)
+    ));
+}
+
+#[test]
+fn preview_surface_request_keeps_full_size_for_width_only_demands() {
+    assert_eq!(
+        canvas_request((1920, 1080), sized(704, 0)),
+        Some(PreviewSurfaceRequest {
+            width: 1920,
+            height: 1080,
         })
     );
 }

@@ -747,7 +747,7 @@ fn update_zone_layout_rejects_output_set_changes() {
 }
 
 #[test]
-fn update_zone_layout_retunes_canvas_and_sampling_defaults() {
+fn update_zone_layout_retunes_sampling_but_led_canvas_follows_the_layout() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
@@ -772,9 +772,11 @@ fn update_zone_layout_retunes_canvas_and_sampling_defaults() {
 
     let updated = manager
         .update_zone_layout(&scene_id, zone_id, request)
-        .expect("canvas retune should apply");
-    assert_eq!(updated.layout.canvas_width, 800);
-    assert_eq!(updated.layout.canvas_height, 600);
+        .expect("sampling retune should apply");
+    // An LED zone's canvas is the active layout's; a Studio save cannot give
+    // it a shape of its own.
+    assert_eq!(updated.layout.canvas_width, 320);
+    assert_eq!(updated.layout.canvas_height, 200);
     assert_eq!(updated.layout.default_sampling_mode, SamplingMode::Nearest);
     assert_eq!(updated.layout.default_edge_behavior, EdgeBehavior::Wrap);
 }
@@ -808,4 +810,94 @@ fn update_zone_layout_adopts_request_output_order() {
         .map(|zone| zone.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(order, ["out-b", "out-a"]);
+}
+
+fn led_canvases(manager: &SceneManager) -> Vec<(u32, u32)> {
+    manager
+        .active_scene()
+        .expect("default scene should be active")
+        .zones
+        .iter()
+        .filter(|zone| zone.display_target.is_none())
+        .map(|zone| (zone.layout.canvas_width, zone.layout.canvas_height))
+        .collect()
+}
+
+#[test]
+fn every_led_zone_follows_a_resized_layout_canvas() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_zone(
+            &sample_effect("Primary"),
+            HashMap::new(),
+            None,
+            sample_layout("primary-zone"),
+        )
+        .expect("primary should be created");
+    manager
+        .create_zone(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .expect("custom zone should be created");
+    let primary_outputs = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_zone())
+        .map(|zone| zone.layout.zones.clone())
+        .expect("primary zone should exist");
+
+    let mut resized = sample_layout("new-full-layout");
+    resized.canvas_width = 640;
+    resized.canvas_height = 630;
+
+    // The prepared render zones a layout transaction builds must match what
+    // the commit then installs, or the transaction is rejected as stale.
+    let (prepared, prepared_revision) = manager.resolved_zones_for_primary_layout(&resized);
+    assert!(manager.sync_primary_zone_layout(&resized));
+    assert_eq!(manager.resolved_zones().as_ref(), prepared.as_ref());
+    assert_eq!(manager.resolved_zones_revision(), prepared_revision);
+
+    assert_eq!(led_canvases(&manager), vec![(640, 630), (640, 630)]);
+    let primary = manager
+        .active_scene()
+        .and_then(|scene| scene.primary_zone())
+        .expect("primary zone should exist");
+    assert_eq!(
+        primary.layout.zones, primary_outputs,
+        "a custom-zone scene keeps the primary zone's own placements"
+    );
+}
+
+#[test]
+fn a_new_custom_zone_shares_its_aligned_siblings_canvas() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_zone(
+            &sample_effect("Primary"),
+            HashMap::new(),
+            None,
+            sample_layout("primary-zone"),
+        )
+        .expect("primary should be created");
+    manager
+        .create_zone(&scene_id, "First".to_owned(), None, (320, 200))
+        .expect("first custom zone should be created");
+    let mut resized = sample_layout("new-full-layout");
+    resized.canvas_width = 640;
+    resized.canvas_height = 630;
+    assert!(manager.sync_primary_zone_layout(&resized));
+
+    // The caller sampled the canvas before the resize landed; the new zone
+    // still joins its siblings on the current canvas.
+    let custom = manager
+        .create_zone(&scene_id, "Second".to_owned(), None, (320, 200))
+        .expect("second custom zone should be created");
+    let zone = manager
+        .active_scene()
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == custom))
+        .expect("custom zone should exist");
+    assert_eq!(
+        (zone.layout.canvas_width, zone.layout.canvas_height),
+        (640, 630)
+    );
+    assert_eq!(led_canvases(&manager), vec![(640, 630); 3]);
 }

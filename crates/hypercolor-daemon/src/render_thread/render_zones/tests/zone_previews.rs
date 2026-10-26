@@ -34,6 +34,11 @@ const YELLOW: Rgba = Rgba::new(255, 255, 0, 255);
 /// transposed preview moves at least one of them.
 const QUADRANTS: [Rgba; 4] = [RED, GREEN, BLUE, WHITE];
 const SMALL_PREVIEW: (u32, u32) = (64, 48);
+// A 64 x 48 demand scales each zone uniformly by the larger of its two
+// per-axis ratios, so every zone preview keeps its own zone's shape.
+const CASE_SMALL: (u32, u32) = (64, 63);
+const ACCENT_SMALL: (u32, u32) = (77, 48);
+const SCENE_SMALL: (u32, u32) = (77, 48);
 const PREVIEW_DEADLINE: Duration = Duration::from_secs(10);
 /// The UI scene preview's transport size: smaller than the scene, so the
 /// compositor scales it on the GPU before reading it back.
@@ -345,15 +350,15 @@ fn gpu_zone_previews_carry_each_zones_pixels_at_the_demanded_size() {
         previews.iter().all(|(zone_id, _)| *zone_id != face.id),
         "display faces publish their finalized frames, not a GPU zone preview"
     );
-    assert_quadrant_preview(&previews, case, SMALL_PREVIEW);
-    assert_solid_preview(&previews, accents, SMALL_PREVIEW, BLUE);
+    assert_quadrant_preview(&previews, case, CASE_SMALL);
+    assert_solid_preview(&previews, accents, ACCENT_SMALL, BLUE);
 
     let sources = zone_preview_sources(&demand, &result.zone_canvases, &previews);
-    for zone in [case, accents] {
+    for (zone, extent) in [(case, CASE_SMALL), (accents, ACCENT_SMALL)] {
         let Some(ProducerFrame::Surface(surface)) = find_frame(&sources, zone.id) else {
             panic!("{} should publish its transport-sized preview", zone.name);
         };
-        assert_eq!((surface.width(), surface.height()), SMALL_PREVIEW);
+        assert_eq!((surface.width(), surface.height()), extent);
     }
     let case_only = zone_preview_sources(&demand, &result.zone_canvases, &previews[..1]);
     let landed = previews[0].0;
@@ -395,7 +400,7 @@ fn single_zone_gpu_scene_publishes_its_zone_preview() {
         result.led_sampling_strategy,
         LedSamplingStrategy::SparkleFlinger(_)
     ));
-    assert_quadrant_preview(&previews, scene.zone(0), SMALL_PREVIEW);
+    assert_quadrant_preview(&previews, scene.zone(0), SCENE_SMALL);
 }
 
 /// A zone with no members places nothing in the scene canvas, but its zone
@@ -415,8 +420,8 @@ fn memberless_zone_previews_its_own_layers() {
     let leds = sample_zone_set(&mut scene.sparkleflinger, set);
     assert_eq!(leds.len(), 1, "only the placed zone has LEDs to sample");
     assert_eq!(leds[0].zone_id, "case_leds");
-    assert_quadrant_preview(&previews, scene.zone(0), SMALL_PREVIEW);
-    assert_solid_preview(&previews, scene.zone(1), SMALL_PREVIEW, YELLOW);
+    assert_quadrant_preview(&previews, scene.zone(0), CASE_SMALL);
+    assert_solid_preview(&previews, scene.zone(1), CASE_SMALL, YELLOW);
 }
 
 #[test]
@@ -434,7 +439,7 @@ fn changed_zone_content_restages_its_preview() {
         preview_for(previews, accents_id).is_some_and(|surface| surface.get_pixel(0, 0) == YELLOW)
     });
 
-    assert_solid_preview(&previews, scene.zone(1), SMALL_PREVIEW, YELLOW);
+    assert_solid_preview(&previews, scene.zone(1), ACCENT_SMALL, YELLOW);
     assert!(scene.stage_count() > staged_before);
 }
 
@@ -550,7 +555,7 @@ fn gpu_zone_previews_stage_only_selected_zones() {
         preview_for(previews, case_id).is_some_and(|surface| surface.get_pixel(0, 0) == YELLOW)
     });
     assert!(preview_for(&previews, accents_id).is_none());
-    assert_solid_preview(&previews, scene.zone(0), SMALL_PREVIEW, YELLOW);
+    assert_solid_preview(&previews, scene.zone(0), CASE_SMALL, YELLOW);
     assert!(
         scene.stage_count() > staged_before,
         "the selected zone keeps staging"
@@ -632,7 +637,12 @@ fn late_scene_preview_readbacks_still_land_while_zones_resize_the_compositor() {
         }
         for (zone_id, surface) in &lagged.zone_previews {
             *zone_preview_frames.entry(*zone_id).or_default() += 1;
-            if (surface.width(), surface.height()) != SMALL_PREVIEW {
+            let extent = if *zone_id == case_id {
+                CASE_SMALL
+            } else {
+                ACCENT_SMALL
+            };
+            if (surface.width(), surface.height()) != extent {
                 failures.push(format!(
                     "frame {frame}: zone preview arrived at {}x{}",
                     surface.width(),
