@@ -1,6 +1,6 @@
 from http import HTTPStatus
 from io import BytesIO
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
@@ -36,11 +36,15 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorBody | File | None:
+) -> Any | ApiErrorBody | File | None:
     if response.status_code == 200:
         response_200 = File(payload=BytesIO(response.content))
 
         return response_200
+
+    if response.status_code == 304:
+        response_304 = cast(Any, None)
+        return response_304
 
     if response.status_code == 400:
         response_400 = ApiErrorBody.from_dict(response.json())
@@ -95,7 +99,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorBody | File]:
+) -> Response[Any | ApiErrorBody | File]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -109,7 +113,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     v: str | Unset = UNSET,
-) -> Response[ApiErrorBody | File]:
+) -> Response[Any | ApiErrorBody | File]:
     """Get effect cover image
 
     Args:
@@ -121,7 +125,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | File]
+        Response[Any | ApiErrorBody | File]
     """
 
     kwargs = _get_kwargs(
@@ -141,7 +145,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     v: str | Unset = UNSET,
-) -> ApiErrorBody | File | None:
+) -> Any | ApiErrorBody | File | None:
     """Get effect cover image
 
     Args:
@@ -153,7 +157,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | File
+        Any | ApiErrorBody | File
     """
 
     return sync_detailed(
@@ -168,7 +172,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     v: str | Unset = UNSET,
-) -> Response[ApiErrorBody | File]:
+) -> Response[Any | ApiErrorBody | File]:
     """Get effect cover image
 
     Args:
@@ -180,7 +184,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | File]
+        Response[Any | ApiErrorBody | File]
     """
 
     kwargs = _get_kwargs(
@@ -198,7 +202,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     v: str | Unset = UNSET,
-) -> ApiErrorBody | File | None:
+) -> Any | ApiErrorBody | File | None:
     """Get effect cover image
 
     Args:
@@ -210,7 +214,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | File
+        Any | ApiErrorBody | File
     """
 
     return (

@@ -68,6 +68,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                 "Get effect cover image",
             )
             .binary(&["image/webp", "image/png", "image/jpeg"])
+            .not_modified()
             .query::<effects::EffectCoverQuery>()],
         ))
         .routes(openapi::documented_route(

@@ -111,12 +111,25 @@ pub async fn list_effects(
             Err(error) => return error.into_response(),
         };
 
-    let items: Vec<EffectSummary> =
-        domain::effect::list_catalog(&state.domains.effects, &catalog_query)
-            .await
-            .into_iter()
-            .map(|meta| effect_summary(&meta, includes))
-            .collect();
+    let catalog = domain::effect::list_catalog(&state.domains.effects, &catalog_query).await;
+    // Naming covers may read cover files after a change; keep it off the
+    // async workers.
+    let items: Vec<EffectSummary> = match tokio::task::spawn_blocking(move || {
+        catalog
+            .iter()
+            .map(|meta| effect_summary(meta, includes))
+            .collect()
+    })
+    .await
+    {
+        Ok(items) => items,
+        Err(_) => {
+            return DomainError::service_unavailable(
+                "The effect catalog is unavailable; try again",
+            )
+            .into_response();
+        }
+    };
 
     let total = items.len();
     envelope::ok(EffectListResponse {
@@ -135,7 +148,10 @@ pub async fn get_effect(
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
 
-    let cover_image_url = effect_cover_image_url(&meta);
+    let probe = meta.clone();
+    let cover_image_url = tokio::task::spawn_blocking(move || effect_cover_image_url(&probe))
+        .await
+        .unwrap_or(None);
 
     envelope::ok(EffectDetailResponse {
         id: meta.id.to_string(),
@@ -651,15 +667,23 @@ fn effect_cover_response(
     (headers, cover.bytes.clone()).into_response()
 }
 
-/// Whether `If-None-Match` lists this strong `ETag` (or `*`).
+/// Whether `If-None-Match` lists this `ETag` (or `*`). A `GET` compares
+/// weakly (RFC 9110, 13.1.2), so `W/` on either side still matches.
 fn if_none_match_names(headers: &HeaderMap, etag: &str) -> bool {
+    let opaque = |tag: &str| {
+        tag.trim()
+            .strip_prefix("W/")
+            .unwrap_or(tag.trim())
+            .to_owned()
+    };
+    let wanted = opaque(etag);
     headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .map(str::trim)
-        .any(|candidate| candidate == etag || candidate == "*")
+        .any(|candidate| candidate == "*" || opaque(candidate) == wanted)
 }
 
 struct ValidatedUploadedHtml {

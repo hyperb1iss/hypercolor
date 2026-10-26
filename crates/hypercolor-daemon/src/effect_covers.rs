@@ -69,25 +69,35 @@ impl FileStamp {
     }
 }
 
-/// Every file whose change can change an effect's cover.
+/// Everything whose change can change an effect's cover: the files it is
+/// read from, and the version a built-in effect's capture belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CoverSources {
     curated: Option<FileStamp>,
     html: Option<FileStamp>,
-    captured: Option<FileStamp>,
+    captured_image: Option<FileStamp>,
+    captured_record: Option<FileStamp>,
+    version: String,
 }
 
 impl CoverSources {
     fn of(metadata: &EffectMetadata) -> Self {
+        let captured = captured_paths(metadata);
         Self {
             curated: effect_cover_image_path(metadata).and_then(|path| FileStamp::of(&path)),
             html: html_effect_source_path(metadata).and_then(|path| FileStamp::of(path)),
-            captured: captured_paths(metadata).and_then(|(image, _)| FileStamp::of(&image)),
+            captured_image: captured
+                .as_ref()
+                .and_then(|(image, _)| FileStamp::of(image)),
+            captured_record: captured
+                .as_ref()
+                .and_then(|(_, record)| FileStamp::of(record)),
+            version: metadata.version.clone(),
         }
     }
 
     const fn is_empty(&self) -> bool {
-        self.curated.is_none() && self.html.is_none() && self.captured.is_none()
+        self.curated.is_none() && self.html.is_none() && self.captured_image.is_none()
     }
 }
 
@@ -161,10 +171,20 @@ pub(crate) fn wants_capture(metadata: &EffectMetadata) -> bool {
 /// Blocking: writes two files, each through a temporary file and a rename,
 /// so a crash never leaves a cover without its record or a torn image.
 pub(crate) fn store_captured(metadata: &EffectMetadata, jpeg: &[u8]) -> std::io::Result<()> {
-    match captured_root() {
+    let stored = match captured_root() {
         Some(root) => store_captured_in(&root, metadata, jpeg),
         None => Ok(()),
-    }
+    };
+    // The next lookup reads the new cover rather than a memo taken mid-write.
+    forget(metadata);
+    stored
+}
+
+fn forget(metadata: &EffectMetadata) {
+    IDENTITIES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&metadata.id.to_string());
 }
 
 fn store_captured_in(root: &Path, metadata: &EffectMetadata, jpeg: &[u8]) -> std::io::Result<()> {

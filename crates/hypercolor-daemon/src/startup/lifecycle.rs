@@ -893,6 +893,7 @@ impl DaemonState {
     fn spawn_effect_cover_keeper(&mut self) {
         self.effect_cover_keeper_task = Some(tokio::spawn(crate::effect_cover_keeper::run(
             self.domains.effects.clone(),
+            self.scene_manager.clone(),
             Arc::clone(&self.preview_runtime),
             self.event_bus.subscribe_all(),
         )));

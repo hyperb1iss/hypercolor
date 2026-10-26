@@ -838,7 +838,13 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 effects
                     .iter()
                     .find(|entry| entry.effect.id == effect_id)
-                    .map(|entry| (entry.effect.name.clone(), entry.effect.version.clone()))
+                    .map(|entry| {
+                        (
+                            entry.effect.name.clone(),
+                            entry.effect.version.clone(),
+                            entry.effect.cover_image_url.is_some(),
+                        )
+                    })
             })
         },
     );

@@ -6404,6 +6404,18 @@ async fn a_cover_requested_by_its_digest_is_immutable_and_revalidates_to_304() {
         .expect("failed to read response body");
     assert!(body.is_empty(), "a 304 carries no image");
 
+    let weak = get_cover(
+        app.clone(),
+        &versioned,
+        Some(&format!("\"other\", W/{etag}")),
+    )
+    .await;
+    assert_eq!(
+        weak.status(),
+        StatusCode::NOT_MODIFIED,
+        "a GET compares validators weakly"
+    );
+
     let stale = get_cover(
         app,
         &format!("/api/v1/effects/rainbow/cover?v={}", "0".repeat(64)),
