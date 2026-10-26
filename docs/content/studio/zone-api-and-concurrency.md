@@ -350,7 +350,8 @@ epoch-qualified form. Omitting the header, or sending `*`, applies without a
 precondition on most structural routes. The exception is
 `POST /scene/members/edit`, which requires a fence and rejects both a missing
 header and `*`. Anything else in `If-Match` is `400 malformed_request`: a weak
-tag, a list of tags (comma-joined or split over several `If-Match` lines), or a
+tag, a list of tags (comma-joined or split over several `If-Match` lines), a
+run epoch that is not the lowercase hyphenated UUID the daemon serves, or a
 revision written with a sign or a leading zero. A stale fence returns the
 canonical `412 Precondition Failed` envelope, whose `ETag` is the current fence
 to rebase onto:

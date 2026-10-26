@@ -36,9 +36,10 @@ use serde::{Deserialize, Serialize};
 /// A scene revision fence as it travels in `ETag` and `If-Match`.
 ///
 /// The daemon serves `"<run_epoch>:<revision>"`, for example
-/// `"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"`: the opaque run
-/// epoch and the revision within that run, joined by a colon, as one strong
-/// entity tag. Sent back as `If-Match`, it passes only when both the run
+/// `"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"`: the run epoch
+/// (a lowercase hyphenated UUID, compared by equality only) and the
+/// revision within that run, joined by a colon, as one strong entity tag.
+/// Sent back as `If-Match`, it passes only when both the run
 /// and the revision are current, so a fence from an earlier daemon run is
 /// always stale. A bare numeric fence (`"42"` or `42`) is still accepted
 /// for older clients and checks the revision alone; only the
@@ -85,10 +86,12 @@ impl SceneFence {
     }
 
     /// Parse an `ETag` or `If-Match` value: the epoch-qualified form or a
-    /// bare revision, quoted or not. The revision is plain decimal as
-    /// [`to_etag`](Self::to_etag) writes it, so a sign or a leading zero
-    /// is refused rather than read as some other revision. Weak tags, `*`
-    /// and lists are not fences.
+    /// bare revision, quoted or not. Both parts are read exactly as the
+    /// daemon serves them: the epoch is a lowercase hyphenated UUID and the
+    /// revision is plain decimal, so a sign or a leading zero is refused
+    /// rather than read as some other revision, and a list such as
+    /// `run:1,run:2` can never pass as one epoch. Weak tags, `*` and lists
+    /// are not fences.
     ///
     /// # Errors
     ///
@@ -104,12 +107,7 @@ impl SceneFence {
             Some((run_epoch, revision)) => (Some(run_epoch), revision),
             None => (None, tag),
         };
-        if run_epoch.is_some_and(|run_epoch| {
-            run_epoch.is_empty()
-                || !run_epoch
-                    .bytes()
-                    .all(|byte| byte.is_ascii_graphic() && byte != b'"')
-        }) {
+        if run_epoch.is_some_and(|run_epoch| !is_run_epoch(run_epoch)) {
             return Err(invalid());
         }
         let revision = decimal_revision(revision).ok_or_else(invalid)?;
@@ -124,6 +122,16 @@ impl From<u64> for SceneFence {
     fn from(revision: u64) -> Self {
         Self::revision_only(revision)
     }
+}
+
+/// A run epoch written the one way the daemon mints it: a lowercase
+/// hyphenated UUID, `8-4-4-4-12` hex digits.
+fn is_run_epoch(epoch: &str) -> bool {
+    epoch.len() == 36
+        && epoch.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 /// A revision written the one way [`SceneFence::to_etag`] writes it: ASCII

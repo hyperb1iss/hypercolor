@@ -709,6 +709,9 @@ async fn the_same_bytes_under_another_content_type_are_another_request() {
 
 // ── Epoch-qualified fences ───────────────────────────────────────────────
 
+/// A run epoch no daemon run in these tests holds: well formed, never current.
+const EARLIER_RUN: &str = "0198c5b6-0000-4000-8000-0000000000e1";
+
 fn served_fence(response: &axum::response::Response) -> SceneFence {
     let etag = response
         .headers()
@@ -769,7 +772,7 @@ async fn the_etag_is_the_fence_and_round_trips_as_if_match() {
 async fn a_fence_from_another_run_is_stale_even_when_the_revision_matches() {
     let (state, app) = isolated();
     let (revision, epoch, zone_id) = live_scene(&app).await;
-    let foreign = SceneFence::new("an-earlier-run", revision).to_etag();
+    let foreign = SceneFence::new(EARLIER_RUN, revision).to_etag();
 
     let refused = send(&app, patch_zone_fenced(&zone_id, "Overwritten", &foreign)).await;
     assert_eq!(refused.status(), StatusCode::PRECONDITION_FAILED);
@@ -781,7 +784,7 @@ async fn a_fence_from_another_run_is_stale_even_when_the_revision_matches() {
     let body = body_json(refused).await;
     assert_eq!(body["error"]["details"]["expected"], revision);
     assert_eq!(body["error"]["details"]["current"], revision);
-    assert_eq!(body["error"]["details"]["expected_epoch"], "an-earlier-run");
+    assert_eq!(body["error"]["details"]["expected_epoch"], EARLIER_RUN);
     assert_eq!(body["error"]["details"]["current_epoch"], epoch.as_str());
     assert_eq!(
         state.scene_manager.revision(),
@@ -837,7 +840,7 @@ async fn a_stored_scene_read_in_another_run_is_refused_on_write_back() {
         json_request("PUT", &format!("/api/v1/scenes/{scene_id}"), document)
     };
     let mut foreign = document.clone();
-    foreign["run_epoch"] = json!("an-earlier-run");
+    foreign["run_epoch"] = json!(EARLIER_RUN);
     foreign["name"] = json!("Overwritten");
     let refused = send(&app, put(&foreign)).await;
     assert_eq!(
@@ -972,7 +975,7 @@ async fn no_fenced_route_takes_a_fence_from_another_run() {
                 }),
                 _ => json!({}),
             };
-            let foreign = SceneFence::new("an-earlier-run", revision).to_etag();
+            let foreign = SceneFence::new(EARLIER_RUN, revision).to_etag();
             let answered = send(
                 &app,
                 with_if_match(
@@ -1018,7 +1021,7 @@ async fn a_refusal_without_the_fence_outranks_a_fence_from_another_run() {
         body_json(send(&app, get(format!("/api/v1/scenes/{scene_id}"))).await).await["data"]
             .clone();
     let (revision, _, _) = live_scene(&app).await;
-    let foreign = SceneFence::new("an-earlier-run", revision).to_etag();
+    let foreign = SceneFence::new(EARLIER_RUN, revision).to_etag();
 
     let unknown_effect = send(
         &app,
@@ -1070,12 +1073,14 @@ async fn if_match_is_one_fence_never_a_list() {
         StatusCode::BAD_REQUEST,
         "a wildcard line never waves through the lines after it"
     );
-    let joined = send(
-        &app,
-        patch_zone_fenced(&zone_id, "Never", &format!("{current}, {current}")),
-    )
-    .await;
-    assert_eq!(joined.status(), StatusCode::BAD_REQUEST);
+    for joined in [
+        format!("{current}, {current}"),
+        format!("{epoch}:{revision},{epoch}:{revision}"),
+        format!("\"{epoch}:{revision},{epoch}:{revision}\""),
+    ] {
+        let refused = send(&app, patch_zone_fenced(&zone_id, "Never", &joined)).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{joined}");
+    }
     for padded in [
         format!("\"{epoch}:0{revision}\""),
         format!("\"{epoch}:+{revision}\""),

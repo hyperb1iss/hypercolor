@@ -395,10 +395,24 @@ fn a_bare_revision_is_still_a_fence_without_a_run() {
 }
 
 #[test]
-fn a_run_epoch_may_hold_colons_and_still_round_trips() {
-    let fence = SceneFence::new("host:run", 7);
-    assert_eq!(fence.to_etag(), "\"host:run:7\"");
-    assert_eq!(SceneFence::parse(&fence.to_etag()), Ok(fence));
+fn a_run_epoch_is_the_uuid_the_daemon_serves() {
+    let run = "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10";
+    assert_eq!(
+        SceneFence::parse(&format!("\"{run}:7\"")),
+        Ok(SceneFence::new(run, 7))
+    );
+    for invalid in [
+        format!("\"{run}:1,{run}:2\""),
+        format!("{run}:1,{run}:2"),
+        format!("\"{}:7\"", run.to_ascii_uppercase()),
+        format!("\"{{{run}}}:7\""),
+        format!("\"{}:7\"", run.replace('-', "")),
+        format!("\"x{run}:7\""),
+        "\"run:7\"".to_owned(),
+        "\"host:run:7\"".to_owned(),
+    ] {
+        assert!(SceneFence::parse(&invalid).is_err(), "{invalid:?} parsed");
+    }
 }
 
 #[test]
