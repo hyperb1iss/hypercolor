@@ -235,6 +235,29 @@ fn the_fingerprint_covers_every_part_a_scene_write_reads() {
 }
 
 #[test]
+fn the_fingerprint_reads_every_if_match_line() {
+    let any = HeaderValue::from_static("*");
+    let first = HeaderValue::from_static("\"run:7\"");
+    let second = HeaderValue::from_static("\"run:8\"");
+    let of = |lines: &[&HeaderValue]| {
+        Fingerprint::of(&Method::PUT, "/a", lines.iter().copied(), None, b"x")
+    };
+    assert_eq!(of(&[&any, &first]), of(&[&any, &first]));
+    assert_ne!(
+        of(&[&any, &first]),
+        of(&[&any, &second]),
+        "a later line counts"
+    );
+    assert_ne!(of(&[&any]), of(&[&any, &first]), "an extra line counts");
+    assert_ne!(
+        of(&[&any, &first]),
+        of(&[&first, &any]),
+        "line order counts"
+    );
+    assert_ne!(of(&[]), of(&[&any]));
+}
+
+#[test]
 fn a_dropped_claim_is_recorded_as_abandoned() {
     let store = IdempotencyStore::default();
     let Claim::Execute(held) = store.claim("k", fingerprint("one"), 0) else {

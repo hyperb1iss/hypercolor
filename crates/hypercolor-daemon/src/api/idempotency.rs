@@ -201,17 +201,24 @@ impl StoredResponse {
 pub(crate) struct Fingerprint([u8; 32]);
 
 impl Fingerprint {
-    fn of(
+    /// Every `If-Match` line counts, in order, so two requests that differ
+    /// only in a later line never share an answer.
+    fn of<'a>(
         method: &Method,
         target: &str,
-        if_match: Option<&HeaderValue>,
+        if_match: impl IntoIterator<Item = &'a HeaderValue>,
         content_type: Option<&HeaderValue>,
         body: &[u8],
     ) -> Self {
         let mut hasher = Sha256::new();
         absorb(&mut hasher, Some(method.as_str().as_bytes()));
         absorb(&mut hasher, Some(target.as_bytes()));
-        absorb(&mut hasher, if_match.map(HeaderValue::as_bytes));
+        // Present parts carry a 1 tag and the terminator is a lone 0, so the
+        // list of lines ends unambiguously.
+        for line in if_match {
+            absorb(&mut hasher, Some(line.as_bytes()));
+        }
+        absorb(&mut hasher, None);
         absorb(&mut hasher, content_type.map(HeaderValue::as_bytes));
         absorb(&mut hasher, Some(body));
         Self(hasher.finalize().into())
@@ -576,7 +583,7 @@ pub(crate) async fn guard(
     let fingerprint = Fingerprint::of(
         &parts.method,
         target,
-        parts.headers.get(header::IF_MATCH),
+        parts.headers.get_all(header::IF_MATCH),
         parts.headers.get(header::CONTENT_TYPE),
         &body,
     );
