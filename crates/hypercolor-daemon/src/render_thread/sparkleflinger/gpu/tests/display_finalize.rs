@@ -298,3 +298,71 @@ fn gpu_display_finalize_keeps_route_surface_sets_independent() {
             .contains_key(&large_params.cache_key)
     );
 }
+
+/// A surface set the device could not allocate must not be cached for the
+/// route, or every later finalization would keep using its invalid
+/// resources after memory came back.
+#[test]
+fn display_finalize_surfaces_that_fail_to_allocate_are_rebuilt_on_retry() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+    let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
+
+    super::super::fail_next_scoped_gpu_allocation_for_test();
+    let Err(error) = compositor.begin_finalize_display_face(&scene, &face, params) else {
+        panic!("a failed surface allocation must fail the finalization");
+    };
+    assert!(
+        format!("{error:#}").contains("display finalize surfaces"),
+        "{error:#}"
+    );
+    assert!(
+        !compositor
+            .display_finalize_surfaces
+            .contains_key(&params.cache_key),
+        "the failed surface set must not be cached for the route"
+    );
+
+    let surface = finalize_display_face_blocking(&mut compositor, &scene, &face, params);
+    assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
+}
+
+/// The same holds for the per-route source texture a CPU face is uploaded
+/// into: one that failed to allocate is dropped, and the next finalization
+/// allocates it again.
+#[test]
+fn display_source_textures_that_fail_to_allocate_are_rebuilt_on_retry() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+    let small_face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 255, 255)));
+    let large_face = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(255, 0, 0, 255)));
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
+    finalize_display_face_blocking(&mut compositor, &scene, &small_face, params);
+
+    // A larger face needs a new source texture, and that allocation fails.
+    super::super::fail_next_scoped_gpu_allocation_for_test();
+    let Err(error) = compositor.begin_finalize_display_face(&scene, &large_face, params) else {
+        panic!("a failed source texture allocation must fail the finalization");
+    };
+    assert!(
+        format!("{error:#}").contains("display source texture"),
+        "{error:#}"
+    );
+    let surfaces = compositor
+        .display_finalize_surfaces
+        .get(&params.cache_key)
+        .expect("the route's surfaces were allocated by the first finalization");
+    assert!(
+        surfaces.face_source.is_none(),
+        "the failed source texture must not be kept"
+    );
+    assert_eq!(compositor.display_finalize_readback_slots_in_use(), 0);
+
+    let surface = finalize_display_face_blocking(&mut compositor, &scene, &large_face, params);
+    assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
+}

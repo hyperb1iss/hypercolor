@@ -75,7 +75,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
     #[cfg(test)] upload_count: &mut usize,
 ) -> Result<()> {
     let Some(gpu_frame) = gpu_frame else {
-        ensure_display_source_texture(device, source, frame.width(), frame.height(), label);
+        ensure_display_source_texture(device, source, frame.width(), frame.height(), label)?;
         let source = source
             .as_mut()
             .expect("display source texture should exist before upload");
@@ -95,7 +95,7 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
         return Ok(());
     }
 
-    ensure_display_source_texture(device, source, frame.width(), frame.height(), label);
+    ensure_display_source_texture(device, source, frame.width(), frame.height(), label)?;
     let source = source
         .as_mut()
         .expect("display source texture should exist before GPU copy");
@@ -120,20 +120,29 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
     Ok(())
 }
 
+/// Make `source` a texture of the frame's size, allocated inside scoped GPU
+/// error handling so a texture the device could not create is never kept
+/// for later frames to upload into.
 fn ensure_display_source_texture(
     device: &wgpu::Device,
     source: &mut Option<GpuDisplaySourceTexture>,
     width: u32,
     height: u32,
     label: &'static str,
-) {
+) -> Result<()> {
     if source
         .as_ref()
         .is_some_and(|texture| texture.width == width && texture.height == height)
     {
-        return;
+        return Ok(());
     }
-    *source = Some(GpuDisplaySourceTexture::new(device, width, height, label));
+    *source = None;
+    *source = Some(super::super::try_create_gpu_resources(
+        device,
+        "GPU display source texture could not be allocated",
+        || GpuDisplaySourceTexture::new(device, width, height, label),
+    )?);
+    Ok(())
 }
 
 pub(in crate::render_thread::sparkleflinger::gpu) fn upload_frame_into_source_texture(

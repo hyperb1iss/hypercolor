@@ -174,6 +174,8 @@ fn try_create_gpu_resources<T>(
     let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    #[cfg(test)]
+    inject_scoped_allocation_failure(device);
     let resources = create();
     let validation_error = pollster::block_on(validation_scope.pop());
     let internal_error = pollster::block_on(internal_scope.pop());
@@ -182,6 +184,33 @@ fn try_create_gpu_resources<T>(
         anyhow::bail!("{context}: {error}");
     }
     Ok(resources)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_SCOPED_ALLOCATION: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Make the next scoped GPU allocation on this thread report an error, the
+/// way an allocation that ran out of memory does.
+#[cfg(test)]
+pub(super) fn fail_next_scoped_gpu_allocation_for_test() {
+    FAIL_NEXT_SCOPED_ALLOCATION.set(true);
+}
+
+#[cfg(test)]
+fn inject_scoped_allocation_failure(device: &wgpu::Device) {
+    if FAIL_NEXT_SCOPED_ALLOCATION.replace(false) {
+        // A buffer with no usage raises a validation error inside the open
+        // scopes and leaves the device alive.
+        let _ = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger injected allocation failure"),
+            size: 4,
+            usage: wgpu::BufferUsages::empty(),
+            mapped_at_creation: false,
+        });
+    }
 }
 
 fn reject_injected_gpu_preparation(fail_after_prepare: bool, resource: &'static str) -> Result<()> {

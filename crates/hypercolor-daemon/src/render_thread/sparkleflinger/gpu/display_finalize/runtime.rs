@@ -110,7 +110,7 @@ impl GpuSparkleFlinger {
         record_gpu_display_finalize_attempt(format == GpuDisplayFinalizeFormat::Yuv420);
         self.flush_pending_output_submission()?;
         self.retain_current_display_finalize_route(params.cache_key);
-        self.ensure_display_finalize_surfaces(params.cache_key);
+        self.ensure_display_finalize_surfaces(params.cache_key)?;
         let device = &self.device;
         let queue = &self.queue;
         let pipeline = &mut self.pipeline;
@@ -468,20 +468,20 @@ impl GpuSparkleFlinger {
         }
     }
 
-    fn ensure_display_finalize_surfaces(&mut self, key: DisplayFinalizeCacheKey) {
-        if !self.display_finalize_surfaces.contains_key(&key) {
-            record_gpu_display_finalize_surface_realloc();
-            self.display_finalize_generation = self.display_finalize_generation.saturating_add(1);
-            self.display_finalize_surfaces.insert(
-                key,
-                GpuDisplayFinalizeSurfaceSet::new(
-                    &self.device,
-                    self.display_finalize_generation,
-                    key.width,
-                    key.height,
-                ),
-            );
+    /// Allocate the route's surfaces unless they already exist. A set that
+    /// fails to allocate is not cached, so the next finalization on the same
+    /// route tries again instead of reusing invalid resources.
+    fn ensure_display_finalize_surfaces(&mut self, key: DisplayFinalizeCacheKey) -> Result<()> {
+        if self.display_finalize_surfaces.contains_key(&key) {
+            return Ok(());
         }
+        let generation = self.display_finalize_generation.saturating_add(1);
+        let surfaces =
+            GpuDisplayFinalizeSurfaceSet::try_new(&self.device, generation, key.width, key.height)?;
+        record_gpu_display_finalize_surface_realloc();
+        self.display_finalize_generation = generation;
+        self.display_finalize_surfaces.insert(key, surfaces);
+        Ok(())
     }
 
     fn retain_current_display_finalize_route(&mut self, key: DisplayFinalizeCacheKey) {

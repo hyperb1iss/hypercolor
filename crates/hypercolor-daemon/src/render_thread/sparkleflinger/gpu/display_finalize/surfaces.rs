@@ -1,3 +1,4 @@
+use anyhow::Result;
 use hypercolor_types::canvas::{RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts};
 
 use super::super::super::DisplayFinalizeCacheKey;
@@ -92,12 +93,24 @@ impl GpuDisplayFinalizeSurfaceSet {
         self.readback_surfaces.slot_counts()
     }
 
-    pub(in crate::render_thread::sparkleflinger::gpu) fn new(
+    /// Allocate a surface set inside scoped GPU error handling. A buffer or
+    /// texture the device could not create comes back invalid without an
+    /// error of its own, so the scope is what keeps an invalid set from
+    /// being cached and reused by every later finalization on the route.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn try_new(
         device: &wgpu::Device,
         generation: u64,
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> Result<Self> {
+        super::super::try_create_gpu_resources(
+            device,
+            "GPU display finalize surfaces could not be allocated",
+            || Self::new(device, generation, width, height),
+        )
+    }
+
+    fn new(device: &wgpu::Device, generation: u64, width: u32, height: u32) -> Self {
         let padded_bytes_per_row = padded_bytes_per_row(width);
         let yuv_layout = DisplayYuv420Layout::new(width, height);
         let yuv_output = device.create_buffer(&wgpu::BufferDescriptor {
