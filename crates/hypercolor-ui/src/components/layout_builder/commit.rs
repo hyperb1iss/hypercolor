@@ -151,6 +151,58 @@ pub fn rebase_unedited(outputs: &mut [Output], before: &[Output], after: &[Outpu
     rebase(outputs, before, after, true);
 }
 
+/// Take one field to `after` when `seen` already shows that write landed.
+fn recognize<T: PartialEq + Copy>(target: &mut T, before: T, after: T, seen: T) {
+    if after != before && seen == after {
+        *target = after;
+    }
+}
+
+/// Recognize a write still waiting for its reply in a refresh that already
+/// carries it. On each field `written` changed and `canonical` now holds at
+/// the written value, `baseline` takes that value, so the editor's edits
+/// since read as edits from what landed rather than snapping back to it. A
+/// refresh that does not carry the write leaves `baseline` alone.
+pub fn recognize_write(baseline: &mut [Output], canonical: &[Output], written: &PendingCommit) {
+    for output in baseline {
+        let find = |outputs: &[Output]| outputs.iter().find(|other| other.id == output.id).cloned();
+        let (Some(before), Some(after), Some(seen)) = (
+            find(&written.baseline),
+            find(&written.edited),
+            find(canonical),
+        ) else {
+            continue;
+        };
+        recognize(
+            &mut output.position.x,
+            before.position.x,
+            after.position.x,
+            seen.position.x,
+        );
+        recognize(
+            &mut output.position.y,
+            before.position.y,
+            after.position.y,
+            seen.position.y,
+        );
+        recognize(&mut output.size.x, before.size.x, after.size.x, seen.size.x);
+        recognize(&mut output.size.y, before.size.y, after.size.y, seen.size.y);
+        recognize(
+            &mut output.rotation,
+            before.rotation,
+            after.rotation,
+            seen.rotation,
+        );
+        recognize(&mut output.scale, before.scale, after.scale, seen.scale);
+        recognize(
+            &mut output.orientation,
+            before.orientation,
+            after.orientation,
+            seen.orientation,
+        );
+    }
+}
+
 /// The editor's outputs once a canvas gesture ends: `current` as the
 /// editor holds them now, each carrying only the placement fields the
 /// gesture changed from `base`, the outputs at its press. A change that

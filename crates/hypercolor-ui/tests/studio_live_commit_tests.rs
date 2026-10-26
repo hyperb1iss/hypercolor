@@ -4,6 +4,7 @@
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use hypercolor_ui::components::layout_builder::commit::{
     CommitQueue, PendingCommit, commit_placements, merge_gesture, rebase_onto, rebase_unedited,
+    recognize_write,
 };
 
 fn output(id: &str, device: &str, x: f32) -> Output {
@@ -237,4 +238,33 @@ fn a_press_snapshot_keeps_its_own_edits_when_an_earlier_write_lands() {
     rebase_unedited(&mut pressed, &saved, &landed);
     assert_eq!(pressed[0].position.x, 0.6, "the snapshot's own edit stays");
     assert_eq!(pressed[1].position.x, 0.9, "the remote move joins it");
+}
+
+#[test]
+fn a_refresh_carrying_our_write_becomes_the_baseline_before_its_reply() {
+    let saved = vec![output("a", "one", 0.2), output("b", "two", 0.5)];
+    let written = PendingCommit {
+        zone_id: "main".to_owned(),
+        baseline: saved.clone(),
+        edited: vec![output("a", "one", 0.4), output("b", "two", 0.5)],
+    };
+    // The refresh shows "a" at 0.4: our write, back before its reply.
+    let mut baseline = saved.clone();
+    let carried = [output("a", "one", 0.4), output("b", "two", 0.9)];
+    recognize_write(&mut baseline, &carried, &written);
+    assert_eq!(
+        baseline[0].position.x, 0.4,
+        "the move back to 0.2 is an edit from here"
+    );
+    assert_eq!(
+        baseline[1].position.x, 0.5,
+        "a field the write left alone is not ours"
+    );
+
+    // A refresh from before the write landed leaves the baseline, so the
+    // move still in flight is kept.
+    let mut baseline = saved.clone();
+    let earlier = [output("a", "one", 0.2), output("b", "two", 0.5)];
+    recognize_write(&mut baseline, &earlier, &written);
+    assert_eq!(baseline, saved);
 }

@@ -478,19 +478,41 @@ struct CommitLane {
     /// scene it writes for. Only that drain clears it, so one a scene
     /// switch replaced cannot mark a newer drain as finished.
     draining: Option<(u64, hypercolor_types::scene::SceneId)>,
+    /// The commit written now and still waiting for its reply, with its
+    /// scene, so a refresh that brings it back first is known as ours.
+    in_flight: Option<(hypercolor_types::scene::SceneId, commit::PendingCommit)>,
 }
 
 impl CommitLane {
-    /// The next commit, while the queue still holds `scene_id`'s edits.
+    /// The next commit, while the queue still holds `scene_id`'s edits. It
+    /// is in flight until [`Self::settled`].
     fn pop_for(
         &mut self,
         scene_id: hypercolor_types::scene::SceneId,
     ) -> Option<commit::PendingCommit> {
-        if self.scene_id == Some(scene_id) {
-            self.queue.pop()
-        } else {
-            None
+        if self.scene_id != Some(scene_id) {
+            return None;
         }
+        let pending = self.queue.pop()?;
+        self.in_flight = Some((scene_id, pending.clone()));
+        Some(pending)
+    }
+
+    /// The commit in flight finished, landed or not.
+    fn settled(&mut self) {
+        self.in_flight = None;
+    }
+
+    /// The commit in flight for `zone_id` of `scene_id`, if one is.
+    fn in_flight_for(
+        &self,
+        scene_id: hypercolor_types::scene::SceneId,
+        zone_id: &str,
+    ) -> Option<commit::PendingCommit> {
+        self.in_flight
+            .as_ref()
+            .filter(|(scene, pending)| *scene == scene_id && pending.zone_id == zone_id)
+            .map(|(_, pending)| pending.clone())
     }
 }
 
@@ -633,6 +655,7 @@ pub(crate) fn ZoneLayoutProvider(
             layout_geometry::normalize_layout_for_editor(canonical),
         ))
     });
+    let lane = StoredValue::new(SharedLane::default());
     let loaded_key = StoredValue::new(None::<(hypercolor_types::scene::SceneId, String)>);
     let drafts = StoredValue::new(std::collections::HashMap::<
         (hypercolor_types::scene::SceneId, String),
@@ -646,7 +669,7 @@ pub(crate) fn ZoneLayoutProvider(
         // keeps its press-time snapshot so its release still records and
         // commits.
         let gesture = set_layout.interaction_start.get_untracked();
-        let previous_saved = saved_layout.get_untracked();
+        let mut previous_saved = saved_layout.get_untracked();
         // Capture the outgoing editor before changing the selected surface.
         if let (Some(key), Some(baseline), Some(snapshot)) = (
             loaded_key.get_value(),
@@ -691,7 +714,21 @@ pub(crate) fn ZoneLayoutProvider(
         let key = (scene_id, zone_id.clone());
         // Drafts from an old scene cannot be revived by a later scene switch.
         drafts.update_value(|drafts| drafts.retain(|(id, _), _| *id == scene_id));
-        let draft = drafts.with_value(|drafts| drafts.get(&key).cloned());
+        let mut draft = drafts.with_value(|drafts| drafts.get(&key).cloned());
+        // A refresh can bring our own write back before its reply does. On
+        // the fields it already carries, the write is the baseline, so an
+        // edit made while it flew (a move back, say) stays an edit.
+        let written = lane
+            .try_get_value()
+            .and_then(|shared| with_lane(&shared, |lane| lane.in_flight_for(scene_id, &zone_id)));
+        if let Some(written) = written.as_ref() {
+            if let Some(draft) = draft.as_mut() {
+                commit::recognize_write(&mut draft.baseline.zones, &canonical.zones, written);
+            }
+            if let Some(previous) = previous_saved.as_mut() {
+                commit::recognize_write(&mut previous.zones, &canonical.zones, written);
+            }
+        }
         let snapshot = draft.as_ref().map(|draft| merge_draft(&canonical, draft));
         set_saved_layout.set(Some(canonical.clone()));
         set_layout.set(Some(canonical.clone()));
@@ -799,7 +836,6 @@ pub(crate) fn ZoneLayoutProvider(
         snapshot
     });
 
-    let lane = StoredValue::new(SharedLane::default());
     // Edits queued against one scene cannot land in the next.
     let committed_scene = studio_history.scene_id();
     Effect::new(
@@ -829,7 +865,9 @@ pub(crate) fn ZoneLayoutProvider(
                             revision: u64| {
         let zone_id = pending.zone_id.as_str();
         let advance = |layout: &mut SpatialLayout| {
-            commit::rebase_onto(&mut layout.zones, &pending.baseline, &pending.edited);
+            // Guarded: a refresh that came first already set these fields,
+            // perhaps to a newer value from elsewhere, which stays.
+            commit::rebase_unedited(&mut layout.zones, &pending.baseline, &pending.edited);
         };
         drafts.update_value(|drafts| {
             if let Some(draft) = drafts.get_mut(&(base.id, zone_id.to_owned())) {
@@ -965,6 +1003,7 @@ pub(crate) fn ZoneLayoutProvider(
                     break;
                 };
                 commit_zone(pending, Some(generation), scene_id, shared.clone()).await;
+                with_lane(&shared, CommitLane::settled);
             }
             with_lane(&shared, |lane| {
                 if lane.draining.is_some_and(|(owner, _)| owner == generation) {
@@ -993,6 +1032,7 @@ pub(crate) fn ZoneLayoutProvider(
         leptos::task::spawn_local(async move {
             while let Some(pending) = with_lane(&shared, |lane| lane.pop_for(scene_id)) {
                 commit_zone(pending, None, scene_id, shared.clone()).await;
+                with_lane(&shared, CommitLane::settled);
             }
         });
     });
