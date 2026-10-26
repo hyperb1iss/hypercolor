@@ -296,7 +296,11 @@ document revision.
 
 A read serves the revision its contents were committed at. The daemon reads
 the document and its `ETag` together, so a client never pairs one commit's
-fields with a later commit's revision.
+fields with a later commit's revision. A write's reply carries the state its
+own commit produced at that commit's revision, never a later writer's. A
+layout Save on a primary zone that follows the active layout answers with the
+zone as the layout publication's own commit left it, at that commit's
+revision.
 
 ### Revisions across daemon restarts
 

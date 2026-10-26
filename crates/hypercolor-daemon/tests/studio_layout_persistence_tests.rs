@@ -492,6 +492,61 @@ async fn a_followed_primary_zone_save_answers_with_the_zone_its_revision_holds()
     );
 }
 
+/// Another writer commits after the Save's zone write and before its
+/// layout publication. The reply still carries the publication's own
+/// commit (zone after the sync, revision past the bystander's), never a
+/// guess from the live revision.
+#[tokio::test]
+async fn a_save_answers_with_its_own_publication_when_another_commit_lands_first() {
+    let rig = rig_with_running_effect().await;
+    let request = studio_save_request(&rig, "ch1", SAVED_POSITION).await;
+    let save = tokio::spawn(rig.app.clone().oneshot(request));
+    let executor = rig.state.layout_publication_test_executor();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while executor.pending_layout_publications() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the Save queues its layout publication");
+    let zone_write = rig.state.scene_manager.revision();
+
+    let scenes = rig.state.domains.scene.clone();
+    executor
+        .execute_next_layout_publication_with_hook(move || async move {
+            let mutation = scenes.begin_mutation().await;
+            scenes
+                .commit(mutation)
+                .await
+                .expect("a bystander commit lands between the two");
+        })
+        .await
+        .expect("the publication lands");
+
+    let saved = save
+        .await
+        .expect("save task finishes")
+        .expect("save answers");
+    assert_eq!(saved.status(), StatusCode::OK);
+    let revision = etag_revision(&saved);
+    assert_eq!(
+        revision,
+        zone_write + 2,
+        "the reply carries the publication's revision, past the bystander's"
+    );
+    let reply = body_json(saved).await;
+    let zone_id = reply["data"]["id"].as_str().expect("zone id").to_owned();
+    let (current, _) = send(
+        &rig.state,
+        &rig.app,
+        empty_request("GET", format!("/api/v1/scene/zones/{zone_id}")),
+    )
+    .await;
+    assert_eq!(etag_revision(&current), revision);
+    assert_eq!(reply["data"], body_json(current).await["data"]);
+    assert_eq!(strip_a_in_zone(&reply["data"]), SAVED_POSITION);
+}
+
 #[tokio::test]
 async fn saved_primary_zone_placement_lands_in_the_active_layout_and_its_store() {
     let rig = rig_with_running_effect().await;

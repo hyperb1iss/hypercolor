@@ -77,6 +77,19 @@ use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 /// lock, before it reports the reservation as unavailable.
 const COMMIT_RESERVATION_ATTEMPTS: u8 = 4;
 
+/// What an authority layout publication committed to the scene, read under
+/// the write lock that admitted it: the revision that commit took and the
+/// primary zones that follow the layout, as the commit left them.
+///
+/// A caller that answers with the state its own publication produced
+/// reads it here, never from the live scene a later writer may have moved.
+#[derive(Debug, Clone)]
+pub(crate) struct LayoutSceneReceipt {
+    pub(crate) revision: SceneRevision,
+    pub(crate) scene_id: Option<SceneId>,
+    pub(crate) followed_zones: Vec<Zone>,
+}
+
 /// Cloneable authority for scene state, commit order, and scene events.
 #[derive(Clone)]
 pub struct SceneService(Arc<SceneServiceInner>);
@@ -1052,6 +1065,7 @@ impl SceneService {
             publish_renderer_state,
         )
         .await
+        .map(|_| ())
     }
 
     pub(crate) async fn publish_guarded_layout_activation<F>(
@@ -1063,7 +1077,7 @@ impl SceneService {
         expected_resolved_zones_revision: u64,
         fence: Option<&super::scene_activation::LayoutSceneFence>,
         publish_renderer_state: F,
-    ) -> Result<(), LayoutTransactionRejection>
+    ) -> Result<LayoutSceneReceipt, LayoutTransactionRejection>
     where
         F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
     {
@@ -1107,8 +1121,26 @@ impl SceneService {
         if let Some(fence) = fence {
             fence.publish(&manager, ticket.generation());
         }
+        let receipt = LayoutSceneReceipt {
+            revision: ticket.generation(),
+            scene_id: manager.active_scene_id().copied(),
+            followed_zones: manager
+                .active_scene()
+                .map(|scene| {
+                    scene
+                        .zones
+                        .iter()
+                        .filter(|zone| {
+                            zone.role == hypercolor_types::scene::ZoneRole::Primary
+                                && zone.display_target.is_none()
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
         ticket.release(Vec::new());
-        Ok(())
+        Ok(receipt)
     }
 
     pub(crate) async fn publish_renderer_only_layout_activation<F>(
@@ -2727,7 +2759,7 @@ async fn apply_activation_layout(
         .await;
     drop(guard);
     match result {
-        Ok(()) => SceneLayoutActivationOutcome {
+        Ok(_) => SceneLayoutActivationOutcome {
             layout_id: Some(layout_id),
             applied: true,
             message: None,

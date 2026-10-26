@@ -109,20 +109,19 @@ pub(crate) async fn service_scene_transactions(
                     Ok(())
                 };
                 let publication = match publication_mode {
-                    LayoutPublicationMode::AuthorityAndRenderer => {
-                        state
-                            .scene_manager
-                            .publish_guarded_layout_activation(
-                                &state.spatial_engine,
-                                spatial_engine,
-                                &expected_layout,
-                                active_scene_id,
-                                source_resolved_zones_revision,
-                                scene_fence.as_deref(),
-                                publish_renderer_state,
-                            )
-                            .await
-                    }
+                    LayoutPublicationMode::AuthorityAndRenderer => state
+                        .scene_manager
+                        .publish_guarded_layout_activation(
+                            &state.spatial_engine,
+                            spatial_engine,
+                            &expected_layout,
+                            active_scene_id,
+                            source_resolved_zones_revision,
+                            scene_fence.as_deref(),
+                            publish_renderer_state,
+                        )
+                        .await
+                        .map(|receipt| completion.record_scene_commit(receipt)),
                     LayoutPublicationMode::RendererOnly => {
                         state
                             .scene_manager

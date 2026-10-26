@@ -7,7 +7,7 @@
 //! it validates and commits.
 
 use hypercolor_core::scene::{ZoneMetaPatch, ZoneMutationError};
-use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
+use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId, ZoneRole};
 
 use crate::domain::commit::{SceneCommit, SceneRevision};
 use crate::domain::context::SceneContext;
@@ -78,6 +78,8 @@ pub struct ZoneUpdated {
 pub struct ZoneRemoved {
     /// The zone that was removed.
     pub zone: Zone,
+    /// The scene as this removal committed it.
+    pub scene: Scene,
     /// The commit receipt.
     pub commit: SceneCommit,
 }
@@ -186,6 +188,11 @@ pub async fn delete_zone(
         .delete_zone(scene_id, command.zone_id)
         .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
     mutation.retire_zone_preview(scene_id, command.zone_id);
+    let scene = mutation
+        .scenes()
+        .get(&scene_id)
+        .cloned()
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
 
     let commit = ctx.commit(mutation).await?;
     settle_zone_mutation(ctx).await;
@@ -193,7 +200,11 @@ pub async fn delete_zone(
         .remove_zone_auto_exclusions(scene_id, command.zone_id)
         .await;
 
-    Ok(ZoneRemoved { zone, commit })
+    Ok(ZoneRemoved {
+        zone,
+        scene,
+        commit,
+    })
 }
 
 // ── Shared steps ─────────────────────────────────────────────────────────

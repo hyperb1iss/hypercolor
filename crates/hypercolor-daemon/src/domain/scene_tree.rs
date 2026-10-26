@@ -36,7 +36,7 @@ use crate::domain::context::SceneContext;
 use crate::domain::effect::EffectContext;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
-use crate::domain::scene::SceneMutation;
+use crate::domain::scene::{LayoutSceneReceipt, SceneMutation};
 use crate::domain::{DomainError, DomainErrorDetails, MutationContext, ResourceKind};
 
 mod member_edits;
@@ -355,10 +355,14 @@ pub async fn patch_scene(
             .map_err(|_| DomainError::not_found(ResourceKind::Scene, scene_id))?;
     }
 
+    // The commit installs exactly this candidate, so the reply is the
+    // state this write produced at the revision it produced, whatever
+    // commits after it.
+    let committed = active_scene(&mutation)?;
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
     Ok(TreeWritten {
-        document: read_document(ctx).await?,
+        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
         commit,
     })
 }
@@ -435,6 +439,7 @@ pub async fn clear_scene(
         );
     }
 
+    let committed = active_scene(&mutation)?;
     let commit = ctx.scene.commit(mutation).await?;
     if command.zone.is_none() {
         ctx.output.quiesce_after_effect_stop().await;
@@ -442,7 +447,7 @@ pub async fn clear_scene(
     ctx.scene.save_runtime_session().await;
 
     Ok(TreeWritten {
-        document: read_document(ctx).await?,
+        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
         commit,
     })
 }
@@ -711,7 +716,7 @@ async fn set_zone_layout_workflow(
     };
 
     let runtime = ctx.scene.layout_runtime();
-    let published = match ctx
+    let mirrored = match ctx
         .layout
         .mirror_primary_zone_save_under_guard(
             &layout_guard,
@@ -721,7 +726,7 @@ async fn set_zone_layout_workflow(
         )
         .await
     {
-        Ok(published) => published,
+        Ok(mirrored) => mirrored,
         Err(refusal) => {
             let error = undo_zone_layout_save(
                 ctx,
@@ -735,48 +740,42 @@ async fn set_zone_layout_workflow(
             return Err(error);
         }
     };
-    if published && let Some((zone, revision)) = synced_zone(ctx, scene_id, zone_id, &written).await
+    if let Some((zone, revision)) = mirrored
+        .scene_commit
+        .as_ref()
+        .and_then(|receipt| synced_zone(receipt, scene_id, zone_id))
     {
         written.zone = zone;
         written.revision = revision;
     }
     drop(layout_guard);
-    if published {
+    if mirrored.published {
         ctx.layout.converge_persisted_update(runtime).await;
     }
     Ok(written)
 }
 
-/// The followed primary zone as the commit after the zone write left it,
-/// with that commit's revision.
+/// The followed primary zone as the layout publication's own scene commit
+/// left it, with that commit's revision, both read from the receipt the
+/// publication took under the write lock that admitted it.
 ///
-/// A publication of the active layout normally admits a scene commit of
-/// its own, which syncs the layout back into the zone. When exactly one
-/// commit landed since the zone write, the reply carries the zone as that
-/// commit left it beside its revision, read under one lock so the pair
-/// cannot split. The revision alone cannot prove that commit was the
-/// publication's rather than another writer's, so the pair is consistent
-/// but may include a foreign edit to this zone. Anything later stays out
-/// of the reply: answering `None` keeps the zone write's own pair.
-async fn synced_zone(
-    ctx: &SceneTreeContext,
+/// The publication syncs the active layout back into the zone, so the
+/// Save's reply is the zone after that sync. Other commits may land
+/// between the zone write and the publication; the receipt is still the
+/// publication's own, never inferred from the live revision.
+fn synced_zone(
+    receipt: &LayoutSceneReceipt,
     scene_id: SceneId,
     zone_id: ZoneId,
-    written: &ZoneWritten,
 ) -> Option<(ZoneResource, u64)> {
-    let publication_revision = written.revision.saturating_add(1);
-    ctx.scene
-        .read_with_revision(|manager, revision| {
-            if revision != publication_revision {
-                return None;
-            }
-            manager
-                .active_scene()
-                .filter(|scene| scene.id == scene_id)
-                .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
-                .map(|zone| (zone_resource(zone), revision))
-        })
-        .await
+    if receipt.scene_id != Some(scene_id) {
+        return None;
+    }
+    receipt
+        .followed_zones
+        .iter()
+        .find(|zone| zone.id == zone_id)
+        .map(|zone| (zone_resource(zone), receipt.revision))
 }
 
 /// Put back a zone's pre-save layout after the active layout refused the

@@ -228,7 +228,7 @@ pub async fn delete_zone(
         Err(error) => return error.into_response(),
     };
 
-    if let Err(error) = crate::domain::zone::delete_zone(
+    match crate::domain::zone::delete_zone(
         &state.domains.scene,
         crate::domain::zone::DeleteZone {
             zone_id,
@@ -237,9 +237,21 @@ pub async fn delete_zone(
     )
     .await
     {
-        return error.into_response();
+        // The scene this removal committed, at the revision it committed,
+        // never a later writer's state.
+        Ok(removed) => {
+            let revision = removed.commit.revision();
+            with_revision(
+                envelope::ok(scene_tree::scene_document(
+                    &removed.scene,
+                    revision,
+                    state.scene_manager.run_epoch(),
+                )),
+                revision,
+            )
+        }
+        Err(error) => error.into_response(),
     }
-    get_scene(State(state)).await
 }
 
 /// `PUT /api/v1/scene/zones/{zone}/layout` — reposition the members.
