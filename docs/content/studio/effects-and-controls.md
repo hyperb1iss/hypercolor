@@ -9,32 +9,35 @@ To light a zone, add an effect layer to it and tune that effect from the layer's
 
 This page covers picking an effect for a zone, the live control panel, media playback settings, and the extra controls that appear when an effect reacts to your screen.
 
-{{< img path="img/ui/studio.webp" alt="Studio with an effect layer selected and its control panel open" />}}
+{{< img path="img/ui/studio.webp" alt="The Studio composition panel with an effect layer's live controls open" />}}
 
-## Pick an effect for a zone
+## Put an effect on a zone
 
-Effects live inside layers, and layers live inside zones. To add one, open the zone's composition panel (click the now-playing chip on the Stage) and use **Add layer**. The picker opens with two tabs:
+There are two ways to light a zone with an effect, and they differ in what happens to the zone's existing layers.
 
-- **Effect**: the runnable effect catalog, filtered to what fits the surface you selected.
+**From Studio, add a layer.** Open the zone's tab, click the now-playing chip on the Stage to open the composition panel, and use **Add layer**. The picker opens with two tabs:
+
+- **Effect**: the runnable effect catalog. On an LED zone it leaves out the display faces meant for screens.
 - **Media**: uploaded images and video from your Media library.
 
-Search filters as you type. Click an effect to add it as a layer in the selected zone.
+Search filters as you type. Click an effect to add it on top of the zone's stack; the layers already there stay.
 
-{% <callout type="info" title="Light vs screen surfaces"> %}
-On a screen surface the **Effect** tab relabels to **Face** and shows display-category effects (clocks, faces, ambient screen art) instead of LED effects. The picker only ever offers what makes sense for the surface you are composing.
+{% <callout type="info" title="LED zones and screens"> %}
+On the Screens tab the **Effect** tab relabels to **Face** and floats the display-category effects (clocks, faces, ambient screen art) to the top of the list. The picker always leads with what makes sense for the tab you are composing.
 {% </callout> %}
+
+**From the Effects page, apply.** Click an effect card and it applies to the target zone, replacing that zone's layer stack with one layer running the effect. A favorite or a command palette pick applies the same way.
 
 The catalog spans the native built-in effects compiled into the daemon plus the SDK HTML effects. The exact count grows with every release, so browse the full library with parameters and previews in the [Effects](@/effects/_index.md) section.
 
 ### Where an applied effect lands
 
-The zone you have selected in Studio is also the app-wide *apply target*. That means a quick-apply from the dashboard, the sidebar player, or the command palette lands in the zone you are composing, not on some global default. The target is one of:
+An apply lands in the app's **target zone**, which is always one LED zone of the active scene:
 
-- **Main zone**: used when nothing else is selected (`ApplyTarget::Primary` in the Rust enum).
-- A named **zone**: the LED zone currently focused in Studio.
-- **All zones**: applies the effect to every LED zone in the active scene at once.
+- The zone whose tab you last had open in Studio.
+- Or the zone you pick with the compact zone tabs on the Effects page or Dashboard preview. They appear only in a multi-zone scene, and they move the preview, the controls, the presets, and the target together.
 
-Selecting a screen or the Unassigned entry is not a valid apply target, so the target falls back to the Main zone. For the whole picture of how zones and scenes compose, read [Zones](@/studio/zones.md) and [Scenes](@/studio/scenes.md).
+In a multi-zone scene the command palette names the target zone next to its search field, so an apply never lands blind. With one zone, every apply lands in Main. A screen is never a target, and a target zone that has left the scene falls back to Main. For how zones and scenes compose, read [Zones](@/studio/zones.md) and [Scenes](@/studio/scenes.md).
 
 ## The live control panel
 
@@ -88,7 +91,7 @@ The section only appears for effects that actually consume screen input, so a no
 ## Where to go next
 
 - [Layers](@/studio/layers.md): stack effects and media, blend modes, opacity, reorder, per-layer health.
-- [Zones](@/studio/zones.md): partition your hardware into the canvas regions effects target.
-- [Now playing & transport](@/studio/now-playing-transport.md): the per-zone now-playing rows and pause/resume.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a second zone and apply different effects to each.
+- [Zones](@/studio/zones.md): partition your hardware into zones, each with its own canvas and its own looks.
+- [Now playing & transport](@/studio/now-playing-transport.md): the per-zone now-playing rows, the preview's zone tabs, and pause and resume.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a multi-zone scene and give each zone its own look.
 - [Effect controls reference](@/effects/controls.md): how effect authors define the control schema this panel renders.

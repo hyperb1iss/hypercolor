@@ -1,14 +1,14 @@
 +++
 title = "Scenes"
-description = "Scenes are whole-rig configurations. Switch, create, rename, and delete them, and learn how the ephemeral default scene and the apply-target fit together."
+description = "Scenes are whole-rig configurations. Switch, create, duplicate, rename, and delete them with the scene picker, and learn how the Default scene and the target zone fit together."
 weight = 30
 +++
 
-A scene is your whole rig captured as one configuration: every zone, every layer, every layout, every effect and control. Exactly one scene is active at a time, and switching scenes rewrites the entire rig in one move. The Studio scene selector lives at the trailing edge of the page header and is the headline control of the workspace.
+A scene is your whole rig captured as one configuration: every zone, every layer, every layout, every effect and control. Exactly one scene is active at a time, and switching scenes rewrites the entire rig in one move. The scene picker sits at the trailing edge of the page header in Studio, on the Dashboard, and on the Effects page: the same control, in the same place, behaving the same way.
 
-{{< img path="img/ui/studio.webp" alt="The Studio workspace with the scene selector in the header" />}}
+{{< img path="img/ui/studio.webp" alt="The Studio header with the scene picker at its trailing edge" />}}
 
-If you want the full mental model first, read the [Studio overview](@/studio/overview.md). This page covers the scene itself: the full create / rename / delete / switch cycle, the ephemeral default scene you start out in, and how the active scene connects to where effects land.
+If you want the full mental model first, read the [Studio overview](@/studio/overview.md). This page covers the scene itself: the switch, create, rename, and delete cycle, the Default scene you start out in, and how the active scene connects to where effects land.
 
 ## What a scene owns
 
@@ -16,61 +16,72 @@ A scene is the top-level object. It owns everything below it:
 
 - The **zones** that partition your hardware (see [Zones](@/studio/zones.md)).
 - Each zone's **layer** stack of effects, faces, media, screen capture, and color (see [Layers](@/studio/layers.md)).
-- Each zone's spatial **layout**, where device outputs are placed on a canvas (see [Layouts](@/studio/layouts.md)).
+- Each zone's **layout**, where its device outputs sit on its canvas (see [Layouts](@/studio/layouts.md)).
+- The **Unassigned** policy for hardware no zone claims.
 
 Switching scenes is therefore a whole-rig change, not a per-light tweak. Because the active scene is shared across the entire app, a switch made in Studio, from the dashboard, from another browser tab, or from the CLI lands everywhere at once.
 
+Edits land in the active scene as you make them. There is no separate save step: a device move, a canvas edit, or a new layer is part of the scene the moment Studio confirms it.
+
 {% <callout type="info"> %}
-Scenes are whole-rig configurations and zones are flexible partitions of the render canvas. They are not rooms, and Hypercolor uses no smart-home vocabulary. See [Vocabulary and naming](@/studio/vocabulary-and-naming.md) for the locked terms.
+Scenes are whole-rig configurations and zones are partitions of a scene. Hypercolor uses no smart-home vocabulary for either. See [Vocabulary and naming](@/studio/vocabulary-and-naming.md) for the locked terms.
 {% </callout> %}
 
-## The scene selector
+## The scene picker
 
-The selector sits at the right of the Studio header and has three parts:
+The picker's trigger shows a **Scene** label, the active scene's name, and a chevron. Two glyphs can join them:
 
-1. A **scene picker** dropdown naming the scene currently on screen.
-2. A **New** button for creating a scene.
-3. An **actions menu** (the three-dot overflow) to rename or delete the active scene.
+- A **lock** marks a snapshot-locked scene. It still activates, but it refuses structural edits until you replace its stored document.
+- A **spinner** turns while a switch is in flight.
 
-{{< img path="img/ui/ui-scenes.webp" alt="The scene switcher in the Hypercolor web UI" />}}
+Click the trigger to open the panel:
 
-The picker always names what is actually rendering, even on a brand-new install where no scene has been saved yet. That fresh state is the ephemeral default scene, described next.
+1. **Default**, always first.
+2. Every saved scene, with a check on the active one and a lock on snapshot-locked ones.
+3. After a divider, the actions: **New scene**, **Rename**, and **Delete**.
 
-## The ephemeral default scene
+{{< img path="img/ui/ui-scenes.webp" alt="The scene picker open: Default, the saved scenes, and the New scene, Rename, and Delete actions" />}}
 
-When you first run Hypercolor, you are in the **ephemeral default scene**. It is the live working state of your rig before you have saved anything, and the daemon never lists it as a saved scene. The scene picker still names it so you always know what is on screen, but the rename and delete actions are hidden for it, because there is nothing persisted to rename or delete.
+The panel works from the keyboard: the arrow keys, **Home**, and **End** move the highlight, **Enter** chooses, and **Escape** closes. Name entry and the delete confirmation happen inside the panel, so you never leave it mid-task.
 
-On a brand-new install the default scene starts with Hyperbloom in its primary zone, so something is on screen before you pick an effect. From then on it holds whatever you leave in it, including nothing at all.
+## The Default scene
 
-You leave the default scene the moment you create your first scene. Creating a scene captures the current rig as a saved, named configuration and switches to it.
+When you first run Hypercolor, you are in the **Default** scene. It is the live working state of your rig before you have saved anything, and the daemon never lists it as a saved scene. The picker still names it, as **Default**, so you always know what is on screen. **Rename** and **Delete** do not appear while it runs, because there is nothing persisted to rename or delete.
 
-To return to the default scene later, deactivate the active scene from the scene pill in the dashboard header. Deactivation rebuilds the ephemeral working state, and the picker only flips once the daemon confirms the switch.
+On a brand-new install the Default scene starts with Hyperbloom in its Main zone, so something is on screen before you pick an effect. From then on it holds whatever you leave in it, including nothing at all.
 
-{% <callout type="tip"> %}
-Switching back to the default scene is itself a real switch. The scene switcher on the dashboard's scene pill appears whenever there is somewhere to switch to: two or more saved scenes, or one saved scene while the ephemeral default is the one running, so you can always move between your saved scene and the live default.
-{% </callout> %}
+The **Default** row is always in the panel. Choose it to return to the Default scene from any saved scene; the daemon rebuilds the ephemeral working state, and the picker flips once it confirms the switch.
 
 ## Create a scene
 
-Click **New**, type a name, and press Enter. The new scene is created, refetched into the picker, and activated immediately, so the rig you have on screen becomes the saved configuration.
+Choose **New scene**, type a name, pick where it starts, and click **Create scene**:
 
-A few details worth knowing:
+- **Duplicate current** (the default) copies the zones, layers, and layout running now. A duplicate starts editable, so you can change it right away.
+- **Blank** starts an empty scene: one Main zone and no layers.
 
-- An empty name is ignored. If you open the input and leave it blank, nothing is created.
-- Pressing Escape cancels without creating anything.
-- If the scene is created but activation fails for some reason, you keep the new scene and get a toast telling you it could not switch, so the failure is never silent.
+The new scene is created and activated immediately. A few details worth knowing:
+
+- An empty name creates nothing.
+- **Cancel** or **Escape** returns to the list without creating anything.
+- If a duplicate is created but cannot be made editable, it still appears in the list, and a toast explains why Studio did not switch into it.
+
+{% <callout type="tip" title="Duplicate to make variants"> %}
+Duplicating keeps everything you built. Make your daily scene once, then duplicate it into Gaming, Movie, and Off: each copy starts with the same zones and the same device placement, and you change only the looks.
+{% </callout> %}
 
 ## Switch scenes
 
-Pick a different scene from the dropdown. The daemon activates it and the entire rig is rewritten to that configuration.
+Choose a different scene in the panel. The daemon activates it and the entire rig is rewritten to that configuration.
 
-Activation is deliberately not optimistic. Because switching rewrites every zone wholesale and can fail validation on the daemon side, the picker does not flip to the new scene until the daemon confirms the switch. If activation fails, you get a toast and the picker stays on the scene that is genuinely active.
+Activation is deliberately not optimistic. Because switching rewrites every zone wholesale and can fail validation on the daemon side, the picker does not flip to the new scene until the daemon confirms the switch. A spinner marks the row being switched to, and the panel closes once the switch settles. If activation fails, a toast says so and the picker stays on the scene that is genuinely active.
+
+Switching scenes also resets Studio's undo history, because the steps it holds belong to the previous scene.
 
 ## Rename a scene
 
-Open the actions menu and choose **Rename**, edit the name inline, and press Enter. Escape cancels. Renaming to the same name, or to an empty name, is a no-op.
+Choose **Rename**, edit the name, and click **Save name** or press Enter. **Cancel** or **Escape** backs out. Renaming to the same name, or to an empty name, changes nothing.
 
-Rename acts on the **active** scene, so it is offered only when the active scene is a real, saved one. It is never offered for the ephemeral default.
+Rename acts on the **active** scene, so it appears only when the active scene is a saved one, never for Default. If another client switches scenes while the rename form is open, the form stands down rather than renaming whatever became active.
 
 {% <callout type="warning"> %}
 Renaming uses the same whole-document replacement contract as every stored-scene edit. The UI first reads the complete scene, changes only its name, then sends the document back with its revision as `If-Match`. If another client changes the scene before the rename lands, the daemon rejects the stale write instead of overwriting it.
@@ -78,21 +89,18 @@ Renaming uses the same whole-document replacement contract as every stored-scene
 
 ## Delete a scene
 
-Open the actions menu and choose **Delete**. Like rename, delete acts on the active scene and is only offered for a real, saved scene, never the default. The row then arms itself and reads **"Delete scene? Click again"**; a second click removes the scene, and a toast confirms what was deleted.
+Choose **Delete**. Like rename, delete acts on the active saved scene and never appears for Default. The panel asks you to confirm, naming the scene and warning that its zones and layers go with it and that this cannot be undone. Choose **Delete scene** to remove it, or **Keep scene** to back out. A toast confirms what was deleted.
 
-## Scenes and the apply-target
+## Scenes and the target zone
 
-The scene you are composing is wired to where quick-applied effects land. When you select an LED zone in Studio, that zone becomes the app-wide **apply-target**, so applying an effect from the dashboard, the sidebar, or the command palette lands in the zone you are working on rather than somewhere unexpected.
+The active scene decides where quick-applied effects land. One zone of it is the app's **target zone**:
 
-The apply-target has three forms:
+- In Studio, it is the LED zone whose tab you have open.
+- On the Dashboard and the Effects page, the preview's compact zone tabs choose it. They appear only in a multi-zone scene.
 
-| Target | What it means |
-| --- | --- |
-| Main zone | The scene's Main LED zone (`ApplyTarget::Primary` in the Rust enum). This is the fallback whenever no specific zone is selected. |
-| A specific zone | Effects land in that one zone. |
-| All zones | Effects fan out to every LED zone in the scene. |
+Applying an effect from the Effects page, a favorite, or the command palette lands in the target zone, and the command palette names that zone in a multi-zone scene. Choosing a zone anywhere moves the preview, the controls, the presets, and the target together, and Studio opens on the same zone next time.
 
-A Screen or the synthetic Unassigned entry is never used as an apply-target. Selecting one leaves the current LED-zone target in place, and a target that points at a zone the active scene no longer has falls back to the Main zone, so a quick-apply always has a defined destination. Zones, the Main zone, and the Unassigned entry are covered in detail on the [Zones](@/studio/zones.md) page.
+The target is always one LED zone; there is no "every zone" target. A screen is never a target, and a target that points at a zone the active scene no longer has falls back to Main, so a quick-apply always has a defined destination. To give your whole rig one look, put it in one zone.
 
 ## Where scenes live in the bigger picture
 
