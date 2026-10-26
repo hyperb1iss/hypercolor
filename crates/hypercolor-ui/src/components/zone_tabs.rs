@@ -140,6 +140,20 @@ pub fn focus_soon(dom_id: String) {
     });
 }
 
+/// How a paused zone dims wherever it is drawn: its label in every tab,
+/// chip, and menu row, and the whole row where a row is the zone.
+pub const PAUSED_DIM: &str = "opacity-60";
+
+/// The hover title of a zone's tab, the same in every strip: what a click
+/// does, then the status in words when there is one.
+#[must_use]
+pub fn tab_title(name: &str, status: TabStatus) -> String {
+    match status.note() {
+        Some(note) => format!("Show and edit {name} ({})", note.to_lowercase()),
+        None => format!("Show and edit {name}"),
+    }
+}
+
 /// A zone's identity dot: its color, or a neutral tone when it has none.
 /// Sized to the text around it, so a chip, a tab, a menu row, and a
 /// section header each draw the same dot at their own density. The
@@ -158,9 +172,10 @@ pub fn ZoneDot(#[prop(into)] color: Signal<Option<String>>) -> impl IntoView {
 }
 
 /// One zone as every zone picker draws it: its dot, its name, and one
-/// optional status glyph with words for screen readers. The zone color
-/// stays on the dot; it never tints the tab. The glyph tones read the
-/// semantic variables directly, like the dot.
+/// optional status glyph with words for screen readers, all dimmed by
+/// [`PAUSED_DIM`] while the zone is paused. The zone color stays on the
+/// dot; it never tints the tab. The glyph tones read the semantic
+/// variables directly, like the dot.
 ///
 /// A tab passes `status_id` and points its `aria-describedby` there (see
 /// [`status_description`]), so the status describes the tab and its name
@@ -174,7 +189,10 @@ pub fn ZoneLabel(
     #[prop(optional, into)] status_id: Option<String>,
 ) -> impl IntoView {
     view! {
-        <span class="flex min-w-0 items-center gap-[0.5em]">
+        <span
+            class="flex min-w-0 items-center gap-[0.5em]"
+            class=(PAUSED_DIM, move || status.get() == TabStatus::Paused)
+        >
             <ZoneDot color=color />
             <span class="min-w-0 truncate">{move || name.get()}</span>
             {move || {
@@ -313,11 +331,7 @@ pub fn CompactZoneTabs() -> impl IntoView {
                         };
                         let status = Signal::derive(move || status.get().unwrap_or(TabStatus::Clear));
                         let name = zone.name.clone();
-                        let title = move || match status.get().note() {
-                            Some(note) => format!("Show and edit {name} ({})", note.to_lowercase()),
-                            None => format!("Show and edit {name}"),
-                        };
-                        let enabled = zone.enabled;
+                        let title = move || tab_title(&name, status.get());
                         let status_id = format!("{}-status", tab_id(&zone_id));
                         let described_by = {
                             let status_id = status_id.clone();
@@ -348,11 +362,7 @@ pub fn CompactZoneTabs() -> impl IntoView {
                                          text-[var(--text-secondary)] hover:border-[var(--border-strong)] \
                                          hover:bg-black/60 hover:text-[var(--text-primary)]"
                                     };
-                                    // Dimming rides in the same string: a
-                                    // reactive `class` rebuild replaces the
-                                    // whole attribute.
-                                    let paused = if enabled { "" } else { " opacity-70" };
-                                    format!("{base} {state}{paused}")
+                                    format!("{base} {state}")
                                 }
                                 on:click=move |_| select(zone_id.clone())
                             >

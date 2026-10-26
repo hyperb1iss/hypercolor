@@ -8,7 +8,7 @@ use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::api::ZoneResource;
 use hypercolor_ui::components::zone_tabs::{
-    TabStatus, next_tab, status_description, surface_status, tab_status,
+    TabStatus, next_tab, status_description, surface_status, tab_status, tab_title,
 };
 use hypercolor_ui::zones::surface::{
     Surface, SurfaceKind, apply_zone_id, primary_led_zone, target_zone,
@@ -232,4 +232,17 @@ fn a_tab_is_described_by_its_status_only_while_it_has_one() {
             Some("tab-status")
         );
     }
+}
+
+#[test]
+fn every_strip_titles_a_tab_the_same_way() {
+    assert_eq!(tab_title("Main", TabStatus::Clear), "Show and edit Main");
+    assert_eq!(
+        tab_title("Desk", TabStatus::Paused),
+        "Show and edit Desk (paused)"
+    );
+    assert_eq!(
+        tab_title("Fans", TabStatus::NoDevices),
+        "Show and edit Fans (no devices in this zone yet)"
+    );
 }

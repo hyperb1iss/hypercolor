@@ -22,7 +22,7 @@ use wasm_bindgen::closure::Closure;
 
 use crate::app::{CapabilitiesContext, WsContext};
 use crate::components::zone_tabs::{
-    TabStatus, ZoneLabel, ZoneTabLabel, focus_soon, next_tab, status_description, surface_status,
+    TabStatus, ZoneLabel, focus_soon, next_tab, status_description, surface_status, tab_title,
 };
 use crate::icons::*;
 use crate::pointer_gesture::{
@@ -542,7 +542,6 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
             None => surface_status(&surface, scene.as_ref(), &HashMap::new()),
         })
     });
-    let note = Memo::new(move |_| status.get().note());
     let name = Signal::derive(move || {
         surface
             .get()
@@ -625,7 +624,7 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
                     move || status_description(status.get(), &status_id)
                 }
                 tabindex=move || if is_active.get() { "0" } else { "-1" }
-                title=move || note.get()
+                title=move || tab_title(&name.get(), status.get())
                 class="flex h-full min-w-0 flex-1 touch-none select-none items-center pl-3 pr-2 text-[12px] font-medium"
                 on:click=move |_| {
                     if handles.swallow_click.get_value() {
@@ -1254,6 +1253,7 @@ fn OverflowMenu(
     handles: StripHandles,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
+    let ws = use_context::<WsContext>();
     let menu_ref = NodeRef::<html::Div>::new();
     Effect::new(move |_| {
         if anchor.get().is_some() {
@@ -1262,10 +1262,25 @@ fn OverflowMenu(
     });
     let rows = Memo::new(move |_| {
         let hidden = hidden_ids.get();
-        handles.lights.with(|lights| {
+        let surfaces = handles.lights.with(|lights| {
             hidden
                 .iter()
                 .filter_map(|id| lights.iter().find(|surface| surface.id == *id).cloned())
+                .collect::<Vec<_>>()
+        });
+        // A folded tab reports the same status its tab would.
+        studio.active_scene.with(|scene| {
+            surfaces
+                .into_iter()
+                .map(|surface| {
+                    let status = match ws {
+                        Some(ws) => ws
+                            .layer_health
+                            .with(|map| surface_status(&surface, scene.as_ref(), map)),
+                        None => surface_status(&surface, scene.as_ref(), &HashMap::new()),
+                    };
+                    (surface, status)
+                })
                 .collect::<Vec<_>>()
         })
     });
@@ -1301,13 +1316,15 @@ fn OverflowMenu(
                     {move || {
                         rows.get()
                             .into_iter()
-                            .map(|surface| {
+                            .map(|(surface, status)| {
                                 let id = surface.id.clone();
+                                let title = tab_title(&surface.name, status);
                                 view! {
                                     <button
                                         type="button"
                                         role="menuitem"
                                         class="dropdown-option flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-fg-secondary transition-colors hover:text-fg-primary"
+                                        title=title
                                         on:click=move |_| {
                                             anchor.set(None);
                                             let dom_id = zone_tab_dom_id(&id);
@@ -1315,7 +1332,11 @@ fn OverflowMenu(
                                             focus_soon(dom_id);
                                         }
                                     >
-                                        <ZoneTabLabel zone=surface />
+                                        <ZoneLabel
+                                            name=Signal::stored(surface.name)
+                                            color=Signal::stored(surface.color)
+                                            status=Signal::stored(status)
+                                        />
                                     </button>
                                 }
                             })

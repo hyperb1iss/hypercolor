@@ -14,7 +14,7 @@ use leptos_router::components::A;
 use crate::api;
 use crate::api::zones::ZoneOutcome;
 use crate::app::EffectsContext;
-use crate::components::zone_tabs::ZoneDot;
+use crate::components::zone_tabs::{PAUSED_DIM, ZoneDot};
 use crate::icons::*;
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
@@ -127,7 +127,7 @@ fn SidebarZoneRow(state: ZoneEffectState) -> impl IntoView {
     view! {
         <div
             class="flex items-center gap-2 px-1.5 py-1 rounded-md min-w-0"
-            class:opacity-60=!enabled
+            class=(PAUSED_DIM, !enabled)
         >
             <span class="flex shrink-0 text-[11px]">
                 <ZoneDot color=Signal::stored(color) />
