@@ -52,8 +52,10 @@ use stage::Stage;
 use undo_notice::{UndoNotice, UndoNoticeHost};
 use zone_strip::{ZONE_PANEL_ID, ZoneStrip, active_tab_dom_id};
 
-const TREE_WIDTH_KEY: &str = "hc-studio-tree-width";
-const TREE_WIDTH_RANGE: (f64, f64) = (240.0, 460.0);
+/// localStorage key for the device pane's width. The value keeps the
+/// pane's old name so a width people already set survives.
+const PANE_WIDTH_KEY: &str = "hc-studio-tree-width";
+const PANE_WIDTH_RANGE: (f64, f64) = (240.0, 460.0);
 /// localStorage key for the per-(scene, zone) hidden-outputs map.
 const HIDDEN_OUTPUTS_KEY: &str = "hc-studio-hidden-outputs";
 
@@ -97,8 +99,8 @@ pub struct StudioContext {
     pub(crate) history: history::StudioHistory,
     pub selected_surface_id: RwSignal<Option<String>>,
     pub active_scene: Signal<Option<api::SceneDocument>>,
-    /// Re-fetch the active scene. Zone mutations call this so the tree and
-    /// Stage pick up the new zone set and scene revision.
+    /// Re-fetch the active scene. Zone mutations call this so the device
+    /// pane and Stage pick up the new zone set and scene revision.
     pub refresh_scene: Callback<()>,
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
@@ -359,32 +361,32 @@ pub fn StudioPage() -> impl IntoView {
 
     // The device pane's width persists per browser; the Stage takes the
     // space that is left.
-    let tree_width = RwSignal::new(storage::get_clamped(
-        TREE_WIDTH_KEY,
+    let pane_width = RwSignal::new(storage::get_clamped(
+        PANE_WIDTH_KEY,
         280.0,
-        TREE_WIDTH_RANGE.0,
-        TREE_WIDTH_RANGE.1,
+        PANE_WIDTH_RANGE.0,
+        PANE_WIDTH_RANGE.1,
     ));
     Effect::new(move |_| {
-        storage::set(TREE_WIDTH_KEY, &tree_width.get().to_string());
+        storage::set(PANE_WIDTH_KEY, &pane_width.get().to_string());
     });
-    let tree_drag_start = StoredValue::new(0.0_f64);
+    let pane_drag_start = StoredValue::new(0.0_f64);
 
     // Narrow viewports collapse the pane into a slide-over drawer (§13).
-    let tree_drawer = RwSignal::new(false);
+    let pane_drawer = RwSignal::new(false);
     // Picking a zone or a Screen reveals the Stage behind the drawer.
     Effect::new(move |_| {
         let _ = selected_surface_id.get();
-        if tree_drawer.get_untracked() {
-            tree_drawer.set(false);
+        if pane_drawer.get_untracked() {
+            pane_drawer.set(false);
         }
     });
 
     let composition_open = RwSignal::new(false);
 
-    // Hidden-output state is the palette card's `hidden_zones` model
-    // re-scoped per zone, persisted across sessions so a deliberately
-    // hidden output stays hidden between visits.
+    // Which outputs are hidden, kept per zone and persisted across
+    // sessions so a deliberately hidden output stays hidden between
+    // visits.
     let hidden_outputs = RwSignal::new(load_hidden_outputs());
     Effect::new(move |_| {
         let snapshot = hidden_outputs.get();
@@ -508,7 +510,7 @@ pub fn StudioPage() -> impl IntoView {
         pane_expanded,
         pane_auto_expanded,
         undo_notice: RwSignal::new(None),
-        pane_drawer: tree_drawer,
+        pane_drawer,
         pointer_output_id,
         rig_layout,
         refresh_rig_layout,
@@ -579,7 +581,7 @@ pub fn StudioPage() -> impl IntoView {
                 <button
                     type="button"
                     class="inline-flex items-center gap-1.5 rounded-lg border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary btn-press"
-                    on:click=move |_| tree_drawer.set(true)
+                    on:click=move |_| pane_drawer.set(true)
                 >
                     <Icon icon=LuLightbulb width="13px" height="13px" />
                     "Devices"
@@ -599,21 +601,21 @@ pub fn StudioPage() -> impl IntoView {
                     // deliberately covers the bar instead of stacking above
                     // it. Keep bracket class syntax out of comments; the
                     // Tailwind scanner reads them and emits dead rules.
-                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--tree-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-[45] max-lg:border-r max-lg:border-edge-subtle/70 max-lg:transition-transform max-lg:duration-200 max-md:pb-[env(safe-area-inset-bottom)]"
-                    class=("max-lg:-translate-x-full", move || !tree_drawer.get())
-                    style:--tree-w=move || format!("{}px", tree_width.get())
+                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--pane-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-[45] max-lg:border-r max-lg:border-edge-subtle/70 max-lg:transition-transform max-lg:duration-200 max-md:pb-[env(safe-area-inset-bottom)]"
+                    class=("max-lg:-translate-x-full", move || !pane_drawer.get())
+                    style:--pane-w=move || format!("{}px", pane_width.get())
                 >
                     <DevicePane />
                 </div>
                 <div class="hidden lg:contents">
                     <ResizeHandle
                         on_drag_start=Callback::new(move |()| {
-                            tree_drag_start.set_value(tree_width.get_untracked());
+                            pane_drag_start.set_value(pane_width.get_untracked());
                         })
                         on_drag=Callback::new(move |delta: f64| {
-                            let next = (tree_drag_start.get_value() + delta)
-                                .clamp(TREE_WIDTH_RANGE.0, TREE_WIDTH_RANGE.1);
-                            tree_width.set(next);
+                            let next = (pane_drag_start.get_value() + delta)
+                                .clamp(PANE_WIDTH_RANGE.0, PANE_WIDTH_RANGE.1);
+                            pane_width.set(next);
                         })
                         on_drag_end=Callback::new(|()| {})
                     />
@@ -636,14 +638,14 @@ pub fn StudioPage() -> impl IntoView {
                     <UndoNoticeHost />
                 </div>
 
-                <Show when=move || tree_drawer.get()>
+                <Show when=move || pane_drawer.get()>
                     <div
                         // Above the mobile bottom nav (40), below the drawer
                         // (45): while the drawer is open a tap anywhere
                         // outside it, nav bar included, closes it instead of
                         // navigating away.
                         class="fixed inset-0 z-[42] bg-black/55 lg:hidden"
-                        on:click=move |_| tree_drawer.set(false)
+                        on:click=move |_| pane_drawer.set(false)
                     />
                 </Show>
             </div>
