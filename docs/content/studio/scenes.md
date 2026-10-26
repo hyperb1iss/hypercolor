@@ -42,7 +42,7 @@ Click the trigger to open the panel:
 
 {{< img path="img/ui/ui-scenes.webp" alt="The scene picker open: Default, the saved scenes, and the New scene, Rename, and Delete actions" />}}
 
-The panel works from the keyboard: the arrow keys, **Home**, and **End** move the highlight, **Enter** chooses, and **Escape** closes. Name entry and the delete confirmation happen inside the panel, so you never leave it mid-task.
+The panel is a menu: scenes are radio items with the active one checked, and the actions sit in their own group. It works from the keyboard. The arrow keys on the trigger open it, and focus moves into the menu as it opens. The arrow keys, **Home**, and **End** move the highlight, **Enter** or **Space** chooses, and **Tab** or **Escape** closes it and returns focus to the trigger. Name entry and the delete confirmation happen inside the panel, so you never leave it mid-task.
 
 ## The Default scene
 
@@ -57,7 +57,7 @@ The **Default** row is always in the panel. Choose it to return to the Default s
 Choose **New scene**, type a name, pick where it starts, and click **Create scene**:
 
 - **Duplicate current** (the default) copies the zones, layers, and layout running now. A duplicate starts editable, so you can change it right away.
-- **Blank** starts an empty scene: one Main zone and no layers.
+- **Blank** starts a fresh scene: one Main zone with every device in the rig, and no effects yet.
 
 The new scene is created and activated immediately. A few details worth knowing:
 

@@ -47,9 +47,9 @@ A card in the open zone carries exactly two trailing icons:
 | Icon | What it does |
 | --- | --- |
 | Eye | Hides every output of the device on this zone's canvas, or shows them again |
-| **⋯** (Device options) | Opens the card's menu: **Identify**, **Move to**, and **Remove from zone** |
+| **⋯** (Device options) | Opens the card's menu: **Identify**, **Move to**, and **Remove from this zone** |
 
-**Identify** flashes the device's LEDs through the daemon so you can match the card to a physical light, and a toast confirms the flash. **Move to** opens the move menu described below. **Remove from zone** sends the device's outputs in this zone to Unassigned.
+**Identify** flashes the device's LEDs through the daemon so you can match the card to a physical light, and a toast confirms the flash. **Move to** opens the move menu described below, hanging from the card's **⋯**. **Remove from this zone** sends the device's outputs in this zone to Unassigned.
 
 **Hide** is a Studio view convenience, not a render change. A hidden output's box fades to a faint gray ghost that ignores clicks, which declutters a busy canvas; the output keeps rendering on your hardware. Hidden state is client-side, kept per scene and per zone in your browser, and it is not the daemon's discovery memory. Use a channel row's eye to hide one output, or the card's eye to hide them all.
 
@@ -94,7 +94,7 @@ Every drag has a menu equivalent, which works from the keyboard, with one pointe
 - Clicking a compact row under **Other zones**, or pressing **Enter** on it.
 - The **Move to** button in the canvas properties panel, for the selected outputs.
 
-The menu lists every other LED zone with its identity dot, then **Unassigned**, then **New zone**. **New zone** creates a zone named after the device, moves the device in, and opens the new tab with the name selected so you can type over it.
+The menu lists every other LED zone with its identity dot, then **Unassigned**, then **A new zone** (screen readers hear "Move to a new zone"). **A new zone** creates a zone named after the device, moves the device in, and opens the new tab with the name selected so you can type over it.
 
 ### What moves: a whole device or one channel
 
@@ -119,11 +119,11 @@ To rescale everything afterward, click **Fit** in the Stage header. See [Layouts
 
 ## Undo and announcements
 
-Every move is one step in Studio's undo history: a menu choice, a drop, an Unassigned card's **+**, or a **Remove from zone**. A **New zone** move is one step too, zone and all: undoing it puts the device back and removes the zone. Press `Ctrl+Z` to undo and `Ctrl+Shift+Z` to redo, or use the **Undo** and **Redo** arrow buttons in the Stage header. Undo puts the outputs back in their old zone at the placement they had, unless you have moved them on that canvas since. Device moves, canvas edits, and zone changes share the one history, in the order you made them. It belongs to the current Studio visit and resets when you switch scenes or leave Studio.
+Every move is one step in Studio's undo history: a menu choice, a drop, an Unassigned card's **+**, or a **Remove from this zone**. An **A new zone** move is one step too, zone and all: undoing it puts the device back and removes the zone. Press `Ctrl+Z` to undo and `Ctrl+Shift+Z` to redo, or use the **Undo** and **Redo** arrow buttons in the Stage header. Undo puts the outputs back in their old zone at the placement they had, unless you have moved them on that canvas since. Device moves, canvas edits, and zone changes share the one history, in the order you made them. It belongs to the current Studio visit and resets when you switch scenes or leave Studio.
 
 Moves save as you make them, and a toast confirms each one. While a move is saving, the canvas holds still for a moment so the next edit lands on the updated zone.
 
-Screen readers hear every move announced by name and place, for example "Moved Razer Huntsman V2 to Keyboard from Main". A drag that ends without a move announces "Move cancelled", and a tab that springs open under a drag announces the zone it opened. After a move from a menu, focus returns to the control that opened it.
+Screen readers hear every move announced by name and place, for example "Moved Razer Huntsman V2 to Keyboard from Main", or "Moved Razer Huntsman V2 to a new zone from Main". A drag that ends without a move announces "Move cancelled", and a tab that springs open under a drag announces the zone it opened. Undo and redo announce what they did, such as "Undid: moved Razer Huntsman V2 back to Main". After a move from a menu, focus returns to the control that opened it.
 
 {% <callout type="info"> %}
 Every assignment carries the active scene's revision as a precondition. If another client or the CLI changed the scene while you were working, the move is rejected cleanly, the scene reloads, and a toast asks you to try again. Your edit is never silently clobbered. See [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the mechanics.

@@ -89,19 +89,18 @@ Labels declutter the same way. A box's label is its name and LED count, or its r
 
 ## The properties panel
 
-Select a single output and the panel below the canvas opens its full property set. With nothing selected it reads **Click an output on the canvas to edit its properties**.
+Select a single output and the panel below the canvas opens its properties. With nothing selected it reads **Click an output on the canvas to edit its properties**.
+
+The panel heads with the output's name and its channel (**Ch**) as the zone holds them, read-only. Below them sit the controls a canvas edit saves:
 
 | Control | What it does |
 | --- | --- |
-| Name + Ch | Rename the output; set its channel label. A reset arrow restores the default name. |
 | Pos X / Y | Exact pixel position of the output's center, plus center-horizontally and center-vertically buttons. |
 | Size W / H | Exact pixel size, with an aspect-ratio link toggle. |
 | Rot | Rotation in degrees, slider plus numeric entry. |
 | Scale | Uniform scale from 0.5× to 3×. |
-| Layer | Bring to front, send to back, or nudge one step in stacking order. |
-| Brightness | Per-output brightness; a multi-select shows "Mixed" until you collapse them to one value. |
 
-The panel also carries quick actions: **identify** (flash the physical output so you can find it), **reset to defaults** (recenter, unrotate, restore default size), **Move to** (send the selected outputs to another zone or to Unassigned), and **remove** (take the output out of this zone). All pixel values convert against the canvas dimensions, so they read in real pixels even though the layout stores normalized coordinates.
+The zone layout stores geometry only, so the panel offers no per-output stacking or brightness controls. The panel also carries quick actions: **identify** (flash the physical output so you can find it), **reset to defaults** (recenter, unrotate, restore default size), **Move to** (send the selected outputs to another zone or to Unassigned), and **remove** (take the output out of this zone). All pixel values convert against the canvas dimensions, so they read in real pixels even though the layout stores normalized coordinates.
 
 ## Selecting and compound selection
 
@@ -113,7 +112,7 @@ Compound selection lets you treat a whole device, or a wired component, as one u
 - **Escape** ascends one level back out.
 - A breadcrumb in the corner shows your current depth.
 
-When more than one output is selected, the properties panel switches to group controls for aligning, distributing, and transforming the whole set together.
+When more than one output is selected, the properties panel switches to group controls for aligning, distributing, packing, and mirroring the set, plus its position, rotation, and scale.
 
 ## Live commit and undo
 

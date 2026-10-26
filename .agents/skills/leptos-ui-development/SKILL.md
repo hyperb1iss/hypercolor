@@ -87,7 +87,7 @@ appears, check the capability before you check your rendering.
 
 ```rust
 let caps = expect_context::<CapabilitiesContext>();
-if caps.zone_crud_ready() { /* the + after the tabs, "New zone" in Move to */ }
+if caps.zone_crud_ready() { /* the + after the tabs, "A new zone" in Move to */ }
 ```
 
 `zone_crud_ready()` is the conjunction of `zone-crud`, `multi-zone-sampling`,

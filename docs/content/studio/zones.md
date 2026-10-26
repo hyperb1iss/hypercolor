@@ -51,12 +51,12 @@ A new zone starts empty: no devices, no layers. Its canvas reads **Drag devices 
 
 Two other routes make a zone and fill it in one move:
 
-- A device card's **Move to** menu ends with **New zone**. It creates a zone named after the device, moves the device in, and opens the tab with the name ready to type over.
+- A device card's **Move to** menu ends with **A new zone**. It creates a zone named after the device, moves the device in, and opens the tab with the name ready to type over.
 - Dragging a device from the pane onto **+** does the same thing.
 
 Making a zone is one step in Studio's undo history, and so is making one from a device, move included. `Ctrl+Z` removes the new zone again and puts back any device it took in. If the zone has gained devices or layers since, undo keeps it, says "Kept" and the zone's name, and carries on past that step.
 
-The **+** button and the **New zone** item appear only once the daemon reports it can create zones, so on a freshly started daemon they may take a moment to show up.
+The **+** button and the **A new zone** item appear only once the daemon reports it can create zones, so on a freshly started daemon they may take a moment to show up.
 
 ## Zone settings: rename, color, pause, reorder
 
@@ -66,7 +66,7 @@ Every zone's settings live on its tab. Open the zone menu with the **⋯** butto
 
 **Color.** **Color** opens a row of eight identity swatches (Purple, Cyan, Coral, Green, Yellow, Blue, Orange, and Red), a custom color picker, and **No color**. The color tints the zone's dot on its tab, in the device pane, in the preview's zone tabs, and on its Now Playing row in the sidebar. It is an identity cue for the zone, not a lighting color, so it never changes what your LEDs display.
 
-**Pause and resume.** **Pause zone** stops the zone driving its devices while it keeps its layers, canvas, and color, so **Resume zone** brings it back exactly as it was. A paused zone's tab shows a pause glyph, and its row under **Other zones** is dimmed. The per-zone pause buttons in the sidebar's Now Playing panel flip the same switch, outside Studio's undo history.
+**Pause and resume.** **Pause zone** stops the zone driving its devices while it keeps its layers, canvas, and color, so **Resume zone** brings it back exactly as it was. A paused zone's tab shows a pause glyph, and its row under **Other zones** is dimmed. The per-zone pause buttons in the sidebar's Now Playing panel flip the same switch; while Studio is open they are undo steps too.
 
 **Reorder.** **Move left** and **Move right** step the zone one tab over; dragging a tab along the strip drops it anywhere. Tab order is the scene's zone order, which the preview's zone tabs and the sidebar rows follow too.
 
@@ -96,7 +96,7 @@ The **Unassigned** section at the bottom of the device pane collects every devic
 
 ### Unassigned policy
 
-The section header carries the scene's policy for unclaimed outputs as a compact select:
+The section header carries the scene's policy for unclaimed outputs as a compact select. Its options list in full, however long the zone names, and the select is disabled for a moment while another Studio write runs. Changing it is not an undo step.
 
 | Option | What it does |
 | --- | --- |

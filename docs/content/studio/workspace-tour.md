@@ -30,7 +30,7 @@ The second row holds one tab per LED zone, in the scene's zone order. Each tab s
 - A **warning triangle** when a layer on the zone failed to render, or when the zone has no devices yet.
 - A **pause glyph** when the zone is paused.
 
-Hover a tab with a glyph for the reason. The selected tab carries the purple underline and the workspace's surface color, so it reads as joined to the pane and Stage below. Zone colors stay on the dots and never tint the tabs themselves.
+Hover a tab with a glyph for the reason; screen readers hear it as the tab's description, so the tab's name stays the zone's name. The selected tab carries the purple underline and the workspace's surface color, so it reads as joined to the pane and Stage below. Zone colors stay on the dots and never tint the tabs themselves.
 
 After the zone tabs come, in order:
 
@@ -42,7 +42,7 @@ The selected tab also carries a **⋯** button that opens the zone's menu: **Ren
 When the strip runs out of room, tabs shrink to a minimum width and then the tail folds into a **N more** menu. The open tab always stays visible.
 
 {% <callout type="tip" title="Keyboard"> %}
-The strip is a standard tab list. With a tab focused, the arrow keys move between tabs and open them as they go, and **Home** and **End** jump to the ends. **F2** renames the focused zone, and **Shift+F10** or the context-menu key opens its menu. Anywhere on the page outside a text field, **[** and **]** step to the previous and next tab.
+The strip is a standard tab list. With a tab focused, the arrow keys move between tabs and open them as they go, and **Home** and **End** jump to the ends. The preview's compact zone tabs on the Dashboard and Effects page share the same tab anatomy and key map. **F2** renames the focused zone, and **Shift+F10** or the context-menu key opens its menu. Anywhere on the page outside a text field, **[** and **]** step to the previous and next tab and move focus with them.
 {% </callout> %}
 
 ## The device pane (left column)
@@ -69,7 +69,7 @@ The **Other zones** section lists every other LED zone as one collapsed row: ide
 
 The **Unassigned** section lists hardware that no zone claims. Each card has an **Identify** button (the lightning bolt) that flashes the hardware, and a **+** that adds the device to the open zone.
 
-The section header carries the scene's policy for unclaimed outputs as a compact select: **Off**, **Hold last colors**, or **Follow** one of your zones. The policy is editable when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it shows as a read-only label.
+The section header carries the scene's policy for unclaimed outputs as a compact select: **Off**, **Hold last colors**, or **Follow** one of your zones, each listed in full. The select is disabled while another Studio write runs. The policy is editable when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it shows as a read-only label.
 
 In a multi-zone scene the section is always there, as a place to move devices out to. In a single-zone scene it appears only when something is actually unassigned.
 

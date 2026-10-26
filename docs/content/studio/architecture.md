@@ -142,11 +142,11 @@ The journal records five kinds of step:
 
 - `StudioEdit::Layout`: a zone's editor snapshot before and after.
 - `StudioEdit::Members`: the canonical `MemberEdit` receipts `POST /scene/members/edit` returns.
-- `StudioEdit::ZoneCreated`: a zone Studio made, together with the move that filled it when it came from **Move to** ▸ **New zone**, so the pair undoes as one step.
+- `StudioEdit::ZoneCreated`: a zone Studio made, together with the move that filled it when it came from **Move to** ▸ **A new zone**, so the pair undoes as one step.
 - `StudioEdit::ZonePatched`: a rename, recolor, pause or resume, or reorder, as the changed fields were and became.
 - `StudioEdit::ZoneDeleted`: the `DeletedZone` record of a delete.
 
-Undo replays a members step by swapping each receipt's `before` and `after`, rebased on the live scene; an output still where the step left it returns to the placement the step recorded. Undoing a `ZoneCreated` moves its devices back and deletes the zone, unless the zone has gained devices or layers since: then it keeps the zone, toasts "Kept" and the name, and records only the move it reversed. A restore or redo that makes a zone again under a new id remaps every journal entry that named the old one. An undo or redo waits for a canvas gesture to end, and one that finds a newer edit recorded since it was asked for stands down rather than reversing the wrong thing. The journal resets when the active scene changes.
+Undo replays a members step by swapping each receipt's `before` and `after`, rebased on the live scene; an output still where the step left it returns to the placement the step recorded. Undoing a `ZoneCreated` moves its devices back and deletes the zone, unless the zone has gained devices or layers since: then it keeps the zone, toasts "Kept" and the name, and records only the move it reversed. A restore or redo that makes a zone again under a new id remaps every journal entry that named the old one. Each undo and redo announces what it did through the drag controller's live region (`history/announce.rs`), for example "Undid: moved X back to Main". An undo or redo waits for a canvas gesture to end, and one that finds a newer edit recorded since it was asked for stands down rather than reversing the wrong thing. The journal resets when the active scene changes.
 
 A delete releases the zone's outputs through one membership edit, keeping their complete snapshots, then deletes the empty zone. Its `DeletedZone` record also keeps the zone's name, color, paused state, brightness, `index`, and layer stack (not its description). A restore rebuilds the zone, puts back the outputs that are still unclaimed, recreates the layers bottom to top, re-pauses or re-dims it, and moves it back to its `index`. The Undo bar (`undo_notice.rs`) and the journal entry share the record's `token`: the bar undoes normally when the delete is the latest step, otherwise it restores and drops the entry, and a deletion restored once is never restored again. Zone create and patches go through `StudioHistory::create_zone`, `create_zone_filled`, and `patch_zone`, called from `zone_controls.rs` and `moves.rs`.
 
@@ -233,7 +233,7 @@ Live control editing is separate. `patch_layer_controls` sends `PatchControlsReq
 
 ### Membership and zone writes
 
-Device adds, moves, unassigns, and their undo and redo all go through `POST /scene/members/edit`. An add from Unassigned sends the `assignment` form with `placements` the UI computed from the rig (`placement::assignment_hints`); a move sends explicit `changes` whose `after` states already carry the arrival geometry from `placement.rs`. Zone create posts to `/scene/zones`, and rename, color, pause, and reorder `PATCH /scene/zones/{zone}`, reordering through `index` against the scene's full zone order (`tab_model::zone_move_index`). A delete's restore also recreates the zone's layers through the layer routes.
+Device adds, moves, unassigns, and their undo and redo all go through `POST /scene/members/edit`. An add from Unassigned sends the `assignment` form with `placements` the UI computed from the rig (`placement::assignment_hints`); a move sends explicit `changes` whose `after` states already carry the arrival geometry from `placement.rs`. Zone create posts to `/scene/zones`, and rename, color, pause, and reorder `PATCH /scene/zones/{zone}`, reordering through `index` against the scene's full zone order (`tab_model::zone_move_index`). A delete's restore also recreates the zone's layers through the layer routes. While Studio is open it lends `ZonesContext::studio_zone_patch` its history's `patch_zone`, so the sidebar's per-zone pause is an undo step there; on other pages the sidebar writes directly. The Unassigned policy waits in the same queue but records no undo step.
 
 ## Capability gating
 
@@ -247,7 +247,7 @@ pub fn zone_crud_ready(&self) -> bool {
 }
 ```
 
-The **+** after the tabs and the **New zone** move target need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The Unassigned policy select gates separately on `scene-unassigned-behavior-write`.
+The **+** after the tabs and the **A new zone** move target need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The Unassigned policy select gates separately on `scene-unassigned-behavior-write`.
 
 {{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
 

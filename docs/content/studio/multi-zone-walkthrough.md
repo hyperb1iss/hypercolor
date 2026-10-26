@@ -37,7 +37,7 @@ Build the split in its own scene, so the scene you have now stays as it is.
 
 Studio switches to the new scene. The header now shows `Desk Session`, and the tab strip shows one **Main** tab with a **+** after it.
 
-Choose **Blank** instead to start with an empty Main zone and no layers. See [Scenes](@/studio/scenes.md) for both.
+Choose **Blank** instead to start with one Main zone holding every device in your rig, and no effects yet. See [Scenes](@/studio/scenes.md) for both.
 
 ## 2. Add a zone
 
@@ -61,7 +61,7 @@ The keyboard is still in Main. Pick whichever route suits you; each one is a sin
 - **From Unassigned.** A device no zone claims has a **+** on its card that adds it to the open tab's zone.
 
 {% <callout type="tip" title="Steps 2 and 3 in one move"> %}
-On the Main tab, open the keyboard card's **⋯** menu and choose **Move to**, then **New zone**. Studio creates a zone named after the keyboard, moves the keyboard in, and opens the tab with the name selected so you can type over it. One `Ctrl+Z` takes the whole thing back.
+On the Main tab, open the keyboard card's **⋯** menu and choose **Move to**, then **A new zone**. Studio creates a zone named after the keyboard, moves the keyboard in, and opens the tab with the name selected so you can type over it. One `Ctrl+Z` takes the whole thing back.
 {% </callout> %}
 
 Screen readers hear the move announced, for example "Moved Razer Huntsman V2 to Keyboard from Main", and a toast confirms it saved.
@@ -118,16 +118,18 @@ Studio commits every step as you take it, so undo is how you back out.
 
 Press `Ctrl+Z`, or use the **Undo** arrow button in the Stage header, to take back the last step. `Ctrl+Shift+Z` or **Redo** puts it back. One history holds every step in the order you made it:
 
-- **Device moves:** each move, drop, Unassigned **+**, and **Remove from zone**. Undoing a move puts the device back where it was, in its old zone.
+- **Device moves:** each move, drop, Unassigned **+**, and **Remove from this zone**. Undoing a move puts the device back where it was, in its old zone.
 - **Canvas edits:** each drag, resize, field change, and **Fit**.
-- **Zone changes:** each new zone, rename, recolor, pause or resume, and reorder. A **Move to** ▸ **New zone** is one step, zone and all, so one undo puts the device back and removes the zone. If a zone you made has gained devices or layers since, undo keeps it and says so, then carries on.
+- **Zone changes:** each new zone, rename, recolor, pause or resume, and reorder. A **Move to** ▸ **A new zone** is one step, zone and all, so one undo puts the device back and removes the zone. If a zone you made has gained devices or layers since, undo keeps it and says so, then carries on.
 - **Deleted zones:** a delete is a step like any other, and the **Deleted** bar's **Undo** button offers the same restore for eight seconds. The zone comes back with its name, color, layers, brightness, paused state, place among the tabs, and devices.
+
+Screen readers hear what each undo and redo did, such as "Undid: moved Razer Huntsman V2 back to Main" or "Redid: paused Main".
 
 The undo history lasts while you stay in Studio on this scene. Switching scenes or leaving Studio starts it fresh.
 
 ## 9. Decide what unassigned hardware does
 
-Anything you leave in no zone shows under **Unassigned** at the bottom of the device pane, for example after you delete a zone or choose **Remove from zone** on a card. The section's header sets what that hardware shows:
+Anything you leave in no zone shows under **Unassigned** at the bottom of the device pane, for example after you delete a zone or choose **Remove from this zone** on a card. The section's header sets what that hardware shows:
 
 - **Off**: unassigned outputs go dark. This is the default.
 - **Hold last colors**: they keep whatever they last showed.

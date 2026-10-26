@@ -44,7 +44,7 @@ When the active scene has more than one LED zone, the singular effect metadata i
 The "what it is showing" label resolves in order: the zone's directly-assigned effect name first, then the zone's top layer caption if the effect index does not know the name, then **No effect** if the zone is rendering nothing. A paused zone dims to make its state obvious at a glance.
 
 {% <callout type="tip"> %}
-The sidebar shows up to **three** zone rows. Any zones beyond that fold into a **"+N more zones"** link that opens Studio, where every zone is visible. The exact cap is `SIDEBAR_ZONE_ROW_CAP = 3`.
+The sidebar shows up to **three** zone rows. Any zones beyond that fold into a **"+N more zones"** link that opens Studio, where every zone has a tab. The exact cap is `SIDEBAR_ZONE_ROW_CAP = 3`.
 {% </callout> %}
 
 ### The row toggles are per-zone, and they say so
@@ -53,7 +53,7 @@ This is the important guarantee. In a multi-zone scene, pausing a zone never sil
 
 The center transport Pause / Resume button is the exception: it is global. It pauses or resumes every device's output at once, and its tooltip says so (**Pause all output** / **Resume all output**). Use the per-zone row toggles when you want to stop one zone and leave the rest rendering.
 
-Under the hood, a per-zone pause flips that zone's `enabled` flag through a guarded zone PATCH, not the global stop. If the scene changed underneath you between read and write, the toast reads **"Scene changed, try again"** and the panel reloads rather than clobbering someone else's edit. That optimistic-concurrency contract is shared across Studio; see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) for how the revision guard works.
+Under the hood, a per-zone pause flips that zone's `enabled` flag through a guarded zone PATCH, not the global stop. While Studio is open, the pause goes through Studio's history, so `Ctrl+Z` takes it back like a pause from the tab menu; on other pages it writes directly. If the scene changed underneath you between read and write, the toast reads **"Scene changed, try again"** and the panel reloads rather than clobbering someone else's edit. That optimistic-concurrency contract is shared across Studio; see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) for how the revision guard works.
 
 ## The Studio Stage now-playing chip
 
@@ -65,7 +65,7 @@ The chip appears for every LED zone and every screen, because both carry a layer
 
 ## The preview's zone tabs
 
-In a multi-zone scene, the preview on the Dashboard and the Effects page shows a row of compact zone tabs in its info overlay, one per LED zone: the zone's identity dot, its name, and a pause glyph while it is paused. Below the tabs, a caption names what the selected zone is showing. With a single zone the tabs are hidden and the preview shows the effect's own title instead.
+In a multi-zone scene, the preview on the Dashboard and the Effects page shows a row of compact zone tabs in its info overlay, one per LED zone: the zone's identity dot, its name, and one status glyph, the same ones the Studio tabs use (a warning for a failed layer or a zone with no devices, a pause glyph for a paused zone). Below the tabs, a caption names what the selected zone is showing. With a single zone the tabs are hidden and the preview shows the effect's own title instead.
 
 The tabs choose the app's **target zone**. Selecting one moves the preview, the controls, the presets, and the target for the next effect apply together, and Studio opens on that zone next time. The arrow keys move between the tabs and select as they go. Hovering a tab reads **Show and edit** and the zone's name.
 
