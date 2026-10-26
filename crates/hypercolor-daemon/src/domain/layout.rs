@@ -232,6 +232,14 @@ impl<'a> LayoutTestFixture<'a> {
 
 #[cfg(feature = "persistence-test-hooks")]
 impl LayoutTestWorkflows<'_> {
+    /// Exercise the same canvas authority workflow as a live render config update.
+    pub async fn resize_active_canvas(&self, width: u32, height: u32) -> Result<bool, String> {
+        self.context
+            .resize_active_canvas(width, height)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn publish(&self, layout: SpatialLayout) -> Result<(), String> {
         let guard = self.context.acquire_update_guard().await;
         self.context
