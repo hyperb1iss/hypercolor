@@ -54,7 +54,8 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "scenes",
                     "Update scene",
                 )
-                .body::<hypercolor_types::api::scenes::ReplaceSceneRequest>(),
+                .body::<hypercolor_types::api::scenes::ReplaceSceneRequest>()
+                .fenced(),
                 OperationDoc::delete::<hypercolor_types::api::scenes::DeleteSceneResponse>(
                     "delete_scene",
                     "scenes",

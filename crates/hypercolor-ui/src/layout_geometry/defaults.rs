@@ -831,7 +831,6 @@ fn attachment_slot_placements(
             .iter()
             .map(|zone| {
                 let size = normalize_zone_size_for_editor(
-                    center,
                     attachment_zone_size(zone, max_size),
                     &zone.topology,
                     attachment_zone_shape(&zone.category).as_ref(),
@@ -867,7 +866,6 @@ fn attachment_slot_placements(
         .map(|(zone, width)| {
             let position = NormalizedPosition::new(cursor + width * 0.5, center.y);
             let size = normalize_zone_size_for_editor(
-                position,
                 NormalizedPosition::new(width, row_height),
                 &zone.topology,
                 attachment_zone_shape(&zone.category).as_ref(),

@@ -198,7 +198,7 @@ fn remaining_shell_routes_keep_sidebar_preview_mode() {
 
 #[test]
 fn pages_with_their_own_preview_carry_a_zone_picker() {
-    // The dashboard and effects cabinets carry zone chips, and Studio its
+    // The dashboard and effects cabinets carry zone tabs, and Studio its
     // zone list, so their previews follow the focused zone.
     for path in [
         "/",

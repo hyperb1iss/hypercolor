@@ -73,7 +73,7 @@ pub(super) fn compose_layer_into_gpu(
             frame,
             output,
             native_screen_leases,
-        );
+        )?;
         set_texture_contents(
             surfaces,
             output_surface,
@@ -85,7 +85,7 @@ pub(super) fn compose_layer_into_gpu(
     }
 
     if gpu_frame.is_none() {
-        upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame);
+        upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame)?;
         if shader_mode == ComposeShaderMode::Replace
             && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
         {
@@ -125,7 +125,7 @@ pub(super) fn compose_layer_into_gpu(
         source_flip_y,
     );
     let params_offset =
-        encode_compose_params_upload(device, queue, pipeline, surfaces, encoder, &params);
+        encode_compose_params_upload(device, queue, pipeline, surfaces, encoder, &params)?;
     #[cfg(test)]
     {
         surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
@@ -284,16 +284,19 @@ fn dispatch_compose_pass(
     width: u32,
     height: u32,
 ) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: Some("SparkleFlinger GPU compose pass"),
-        timestamp_writes: None,
-    });
-    pass.set_pipeline(&pipeline.compose_pipeline);
-    pass.set_bind_group(0, bind_group, &[params_offset]);
-    pass.dispatch_workgroups(
-        width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-        height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-        1,
+    pipeline.timings.compute(
+        encoder,
+        crate::render_thread::sparkleflinger::gpu::timing::GpuStage::Compose,
+        "SparkleFlinger GPU compose pass",
+        |pass| {
+            pass.set_pipeline(&pipeline.compose_pipeline);
+            pass.set_bind_group(0, bind_group, &[params_offset]);
+            pass.dispatch_workgroups(
+                width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                1,
+            );
+        },
     );
 }
 

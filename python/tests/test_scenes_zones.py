@@ -10,7 +10,7 @@ import pytest
 import respx
 
 from hypercolor._generated.types import Unset
-from hypercolor.client import HypercolorClient
+from hypercolor.client import HypercolorClient, scene_fence
 from hypercolor.exceptions import HypercolorPreconditionError
 from hypercolor.models import SceneDocument
 
@@ -328,6 +328,41 @@ async def test_stale_revision_raises_precondition_error(client: HypercolorClient
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_stale_revision_reads_an_epoch_qualified_etag(client: HypercolorClient) -> None:
+    respx.post("http://hyperia.test:9420/api/v1/scene/zones").mock(
+        return_value=httpx.Response(
+            412,
+            headers={"ETag": '"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:14"'},
+            content=msgspec.json.encode(
+                {
+                    "error": {
+                        "code": "precondition_failed",
+                        "message": "version mismatch: expected 12, current 0b6f2b57:14",
+                        "details": {
+                            "expected": 12,
+                            "current": 14,
+                            "current_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
+                        },
+                    },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_stale_epoch",
+                        "timestamp": "2026-08-19T00:00:00Z",
+                    },
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorPreconditionError) as excinfo:
+        await client.create_zone("Desk", if_match=12)
+
+    assert excinfo.value.current_revision == 14
+    assert excinfo.value.current_fence == '"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:14"'
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_update_zone_distinguishes_clear_from_unset(client: HypercolorClient) -> None:
     route = respx.patch(f"http://hyperia.test:9420/api/v1/scene/zones/{ZONE_ID}").mock(
         return_value=httpx.Response(200, content=_envelope(ZONE))
@@ -416,3 +451,68 @@ async def test_set_unassigned_behavior_patches_live_scene(client: HypercolorClie
     assert json.loads(route.calls[0].request.content) == {
         "unassigned_behavior": {"fallback": ZONE_ID}
     }
+
+
+EPOCH = "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+
+
+def test_scene_fence_names_the_run_and_the_revision() -> None:
+    assert scene_fence(SceneDocument.from_dict({**LIVE_SCENE, "run_epoch": EPOCH})) == (
+        f'"{EPOCH}:12"'
+    )
+    assert scene_fence(SceneDocument.from_dict(LIVE_SCENE)) == '"12"'
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fence", "sent"),
+    [
+        (f'"{EPOCH}:12"', f'"{EPOCH}:12"'),
+        (f"{EPOCH}:12", f'"{EPOCH}:12"'),
+        (f' "{EPOCH}:12" ', f'"{EPOCH}:12"'),
+        (12, '"12"'),
+    ],
+)
+async def test_an_epoch_qualified_fence_is_sent_as_if_match(
+    client: HypercolorClient, fence: int | str, sent: str
+) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/scene/zones").mock(
+        return_value=httpx.Response(201, content=_envelope(ZONE))
+    )
+
+    await client.create_zone("Desk", if_match=fence)
+
+    assert route.calls[0].request.headers["if-match"] == sent
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_a_refusal_without_an_etag_still_reports_the_current_revision(
+    client: HypercolorClient,
+) -> None:
+    respx.post("http://hyperia.test:9420/api/v1/scene/zones").mock(
+        return_value=httpx.Response(
+            412,
+            content=msgspec.json.encode(
+                {
+                    "error": {
+                        "code": "precondition_failed",
+                        "message": "version mismatch",
+                        "details": {"expected": 12, "current": 14, "current_epoch": EPOCH},
+                    },
+                    "meta": {
+                        "api_version": "1.0",
+                        "request_id": "req_no_etag",
+                        "timestamp": "2026-08-19T00:00:00Z",
+                    },
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorPreconditionError) as excinfo:
+        await client.create_zone("Desk", if_match=f"{EPOCH}:12")
+
+    assert excinfo.value.current_revision == 14
+    assert excinfo.value.current_fence is None

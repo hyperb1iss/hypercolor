@@ -292,6 +292,10 @@ impl GpuSparkleFlinger {
             last_readback_bytes,
         ) {
             Ok(surface) => {
+                super::super::record_gpu_readback(
+                    super::super::GpuReadbackKind::SamplingCanvas,
+                    u64::from(pending.width) * u64::from(pending.height) * 4,
+                );
                 *latched = Some(LatchedSamplingSurface {
                     width: pending.width,
                     height: pending.height,

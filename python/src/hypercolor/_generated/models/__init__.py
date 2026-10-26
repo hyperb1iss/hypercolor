@@ -419,6 +419,9 @@ from .get_software_conflicts_response_200 import GetSoftwareConflictsResponse200
 from .get_system_response_200 import GetSystemResponse200
 from .gpu_compositor_probe_status import GpuCompositorProbeStatus
 from .gpu_error_status import GpuErrorStatus
+from .gpu_pass_timing_status import GpuPassTimingStatus
+from .gpu_pass_timings_status import GpuPassTimingsStatus
+from .gpu_transfer_status import GpuTransferStatus
 from .gradient_stop import GradientStop
 from .health_checks import HealthChecks
 from .health_response import HealthResponse
@@ -1052,6 +1055,9 @@ __all__ = (
     "GetSystemResponse200",
     "GpuCompositorProbeStatus",
     "GpuErrorStatus",
+    "GpuPassTimingStatus",
+    "GpuPassTimingsStatus",
+    "GpuTransferStatus",
     "GradientStop",
     "HealthChecks",
     "HealthResponse",

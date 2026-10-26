@@ -10,8 +10,9 @@ Fine-grained writes stay under that same root. Stored scenes remain a collection
 under `/api/v1/scenes`, but they do not expose a second nested zone API.
 
 The live document also carries the only concurrency token on the REST wire:
-`revision`. Structural writes generally accept optional `If-Match`; atomic
-membership edits require a numeric revision. Control
+`revision`, qualified by the `run_epoch` it belongs to. Structural writes
+generally accept optional `If-Match`; atomic membership edits require one.
+Control
 values are unguarded and target a real layer id from the document. A replaced
 layer has a new id, so a stale control write cannot reach the replacement.
 
@@ -44,9 +45,11 @@ DELETE /scenes/{id}
 POST   /scenes/{id}/activate
 ```
 
-`POST /scenes` seeds a Default zone server-side. `POST /scenes/snapshot` is the
+`POST /scenes` seeds a primary zone named "Main" server-side. `POST /scenes/snapshot` is the
 other creation path: it captures the live scene as a new stored scene instead of
-starting from a fresh default. Activating a stored scene
+starting from a fresh default. The copy is stored snapshot-locked, so the scene
+picker's **Duplicate current** follows it with a guarded `PUT /scenes/{id}` that
+sets `mutation_mode` to `live` before activating it. Activating a stored scene
 makes it the resource returned by `GET /scene`. To edit stored scene structure,
 activate it and edit the live tree, or replace the stored scene document with
 `PUT /scenes/{id}`.
@@ -55,7 +58,8 @@ activate it and edit the live tree, or replace the stored scene document with
 
 {% <api_endpoint method="GET" path="/api/v1/scene"> %}
 Return the complete live scene document. An active scene always exists, so this
-route always returns `200`. The JSON `revision` is also served as `ETag`.
+route always returns `200`. The JSON `run_epoch` and `revision` are also
+served together as the `ETag`, `"<run_epoch>:<revision>"`.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/scene"> %}
@@ -77,7 +81,7 @@ canonical stop gesture and optionally accepts `If-Match`.
 ### Zones and members
 
 {% <api_endpoint method="POST" path="/api/v1/scene/zones"> %}
-Create a custom zone. The Default zone and display zones are created by their
+Create a custom zone. The primary zone and display zones are created by their
 owning engine flows, not through this route.
 {% </api_endpoint> %}
 
@@ -86,7 +90,13 @@ Read one live zone resource.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}"> %}
-Patch the zone's name, enabled state, brightness, or color.
+Patch the zone's name, enabled state, brightness, or color, or move it with
+`index`: its new position in the scene's `zones` order, which counts LED and
+display zones together. An index past the end clamps to the last slot. Every
+field in one request lands in one commit. A patch that changes nothing, such as
+a move to the slot the zone already holds, keeps the revision and publishes no
+event. Studio's tab strip reorders zones with `index`, computed against the full
+zone order so Screens keep their place.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}"> %}
@@ -111,19 +121,37 @@ has `before` and `after` states: a state identifies its `zone_id`, complete
 
 To assign a device through the daemon's canonical output factory, send
 `assignment` with the target `zone_id`, `device_id`, optional `segments`, and
-optional `placements`, leaving `changes` empty. Studio uses this form when
-adding a device, preserving its prepared geometry when available.
+optional `placements`, leaving `changes` empty. Empty `segments` claims every
+light segment. Each placement is a seed for one newly minted output, keyed by
+`segment`, with normalized `position` and `size`, plus `rotation`, `scale`, and
+an optional `orientation`; the device binding and topology stay daemon-owned. A
+hint applies to every output minted for its segment, a segment without a hint
+gets the daemon's default placement, and naming a segment twice is rejected.
 
-A numeric `If-Match` is required. Omitting it or sending `*` is rejected.
+Studio uses this form when you add a device from Unassigned, and computes the
+`placements` from the rig (the active named layout): a zone's first devices are
+fitted to the zone's canvas together, and later arrivals keep their physical
+relation to the devices already there. A move between zones sends explicit
+`changes` instead, with the arrival geometry already in each `after` state.
+
+An `If-Match` fence is required. Omitting it or sending `*` is rejected.
 All changes validate before any commit, so a failed transaction makes no
 partial assignment changes. The response contains the committed `document`
 and canonical `changes` receipts, with complete output snapshots for undo
-and redo. Studio uses this route for device add, move, and remove actions.
+and redo. Studio uses this route for every device add, move, and unassign,
+for undo and redo of those steps, and for the two halves of a zone delete and
+its restore (releasing the zone's outputs, then putting them back).
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layout"> %}
 Write a compact zone layout containing member placements. Every placement names
-a member id from the live zone document.
+a member id from the live zone document, and the request names exactly the
+zone's current members, each once. Studio sends each finished canvas edit
+here, fenced at the revision it last confirmed for the zone. Only the fields
+you changed carry new values; every other field goes out as the daemon stored
+it, so under the fence it changes nothing.
+In a scene with no custom LED zones, a write to the primary zone also updates
+the active named layout.
 {% </api_endpoint> %}
 
 All mutating routes in this section are structural. The atomic membership-edit
@@ -208,10 +236,11 @@ The live tree embeds the ids a client needs for every follow-up:
     "unassigned_behavior": "off",
     "layout_id": null,
     "revision": 42,
+    "run_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
     "zones": [
       {
         "id": "84b20af9-0700-4b82-8488-88314b87fb5c",
-        "name": "Default zone",
+        "name": "Main",
         "role": "primary",
         "enabled": true,
         "brightness": 1.0,
@@ -256,41 +285,88 @@ current daemon run, so a client must not persist them.
 
 ### One token: `revision`
 
-The live scene's `revision` is the commit generation. A successful read or
-mutation returns it in the resource and quotes it in the response header:
+The live scene's `revision` is the commit generation, strictly increasing
+within one daemon run. A successful read or mutation returns it in the resource
+and serves it, qualified by the run it belongs to, as the response's entity
+tag:
 
 ```http
-ETag: "42"
+ETag: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42"
 ```
 
-No resource-specific version counters exist on the REST wire. Internal
+That tag is the fence: send it back unchanged as `If-Match`. It is the opaque
+`run_epoch`, a colon, and the revision, so a client that keeps the scene
+document can also build it from `run_epoch` and `revision`. No
+resource-specific version counters exist on the REST wire. Internal
 bookkeeping may use more detail, but clients coordinate through the one
 document revision.
 
+A read serves the revision its contents were committed at. The daemon reads
+the document and its `ETag` together, so a client never pairs one commit's
+fields with a later commit's revision. A write's reply carries the state its
+own commit produced at that commit's revision, never a later writer's. A
+layout Save on a primary zone that follows the active layout answers with the
+zone as the layout publication's own commit left it, at that commit's
+revision.
+
+### Revisions across daemon restarts
+
+Revisions count up within one daemon run, and only the run epoch tells two
+runs apart. That is why the fence carries it: an epoch-qualified fence from
+before a restart is stale whatever its revision, so it can never land on the
+new run's scene. Each run also starts its revisions at the wall clock in
+microseconds, so even a bare numeric fence from an earlier run is practically
+unreachable; a clock that jumped backwards is the case only the epoch covers.
+Expect a jump: the first revision of a new run sits far above the last one the
+old run served. Revisions stay below 2^53, so they are exact in a JSON double.
+Nothing about revisions is persisted, and nothing near a commit touches the
+disk.
+
+Each run also has an opaque `run_epoch`. The live document carries it, every
+HTTP response repeats it in the `hypercolor-run-epoch` header (zone write
+replies, `412` refusals, and `401` refusals included), and the WebSocket
+`hello` reports it in `state.scene` beside the revision it read. A stored-scene
+`PUT` checks the echoed field as part of its body fence (below). Compare epochs
+for equality only. A fence that names another run is always stale, whatever
+its revision, so a write fenced before a restart can never land after it. When
+the epoch changes, read `/scene` again and fence from that read.
+
 ### Structural preconditions
 
-Send the last revision when overwriting a stale structure would be harmful:
+Send the last fence when overwriting a stale structure would be harmful:
 
 ```http
 PATCH /api/v1/scene/zones/84b20af9-0700-4b82-8488-88314b87fb5c HTTP/1.1
-If-Match: "42"
+If-Match: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42"
 Content-Type: application/json
 
 { "name": "Desk halo", "color": "#7c5cff" }
 ```
 
-Most structural routes accept a quoted integer, a bare integer, or `*`.
-Omitting the header, or sending `*`, applies without a precondition on those
-routes. The exception is `POST /scene/members/edit`: it requires a quoted or
-bare numeric revision and rejects both missing headers and `*`. A stale
-integer returns the canonical `412 Precondition Failed` envelope:
+The epoch-qualified fence passes only while both the run and the revision are
+current. A bare revision, `"42"` or `42`, is still accepted for older clients
+and checks the revision alone, which is not safe across a restart: prefer the
+epoch-qualified form. Omitting the header, or sending `*`, applies without a
+precondition on most structural routes. The exception is
+`POST /scene/members/edit`, which requires a fence and rejects both a missing
+header and `*`. Anything else in `If-Match` is `400 malformed_request`: a weak
+tag, a list of tags (comma-joined or split over several `If-Match` lines), a
+run epoch that is not the lowercase hyphenated UUID the daemon serves, or a
+revision written with a sign or a leading zero. A stale fence returns the
+canonical `412 Precondition Failed` envelope, whose `ETag` is the current fence
+to rebase onto:
 
 ```json
 {
   "error": {
     "code": "precondition_failed",
-    "message": "version mismatch: expected 42, current 43",
-    "details": { "expected": 42, "current": 43 }
+    "message": "version mismatch: expected 0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42, current 0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:43",
+    "details": {
+      "expected": 42,
+      "current": 43,
+      "expected_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
+      "current_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+    }
   },
   "meta": {
     "api_version": "1.0",
@@ -300,12 +376,72 @@ integer returns the canonical `412 Precondition Failed` envelope:
 }
 ```
 
+An epoch-qualified fence puts its run in `details.expected_epoch`; a bare
+fence leaves it out. When that run is not the current one, the refusal can show
+equal revisions: the run is what was stale. The fence is checked against the
+commit itself, so a request that names an unknown effect or stored scene
+answers `404` as it would without the header. On the `/scene` routes the fence
+is checked before the zone, layer, or member is looked up, so there a stale
+fence answers `412` even for an id that does not exist.
+
 Structural writes include scene metadata, zone create, patch, and delete, zone
 layout replacement, member assignment and removal, layer create, replace,
 delete, and reorder, scene clear, stored-scene replacement, and both effect
 apply forms. After a `412`, read `/scene`, rebase the intended edit, and retry
-with the new revision. Membership edits also validate their `before` states;
+with the new fence. Membership edits also validate their `before` states;
 rebuild those states from the current document when rebasing.
+
+`PUT /scenes/{id}` also takes a fence in its body: a stored-scene document read
+back echoes `revision` and `run_epoch`, and together they must be current
+exactly as `If-Match` must. A document read in another run is refused. No
+other body field or query parameter carries a scene fence.
+
+### Retrying a write whose reply was lost
+
+A write whose reply never arrived may still have committed, and a read only
+proves it has not committed yet. Send an `Idempotency-Key` on the write and
+retry with the same key until an answer arrives:
+
+```http
+PUT /api/v1/scene/zones/84b20af9-0700-4b82-8488-88314b87fb5c/layout HTTP/1.1
+If-Match: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42"
+Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"
+Content-Type: application/json
+```
+
+The key is a client-generated opaque string, typically a UUID: visible ASCII
+with no spaces or quotes, at most 255 characters, sent bare or quoted. Keys are
+scoped per credential: each environment key, the desktop app's session
+credential, and each issued credential has a scope of its own, so two clients
+that pick the same key never see each other's answers. Requests that present no
+credential at all (security off, or a keyless loopback caller) share one
+anonymous scope. These routes honor it:
+`PATCH /scene`, `POST /scene/clear`, zone create, patch, and delete, zone
+layout replacement, `POST /scene/members/edit`, member assignment and removal,
+and layer create, reorder, replace, and delete. The control patch, effect
+apply, and stored-scene routes do not. The OpenAPI document lists the header
+on exactly the routes that honor it, and every other route ignores it.
+
+- **First request with a key:** applied normally. The daemon finishes it even
+  when the client disconnects, then stores the status, headers, and body.
+- **Same key, same request:** not applied again. The stored answer comes back
+  with `Idempotency-Replayed: true`, including a stored `412`. A repeat that
+  arrives while the original is still running waits for it.
+- **Same key, different request:** a different method, path, `If-Match`,
+  `Content-Type`, or body is refused with `422 idempotency_key_mismatch`. Use a
+  new key for a new write.
+- **No key:** the request behaves exactly as it always has.
+
+Keys live in memory for one daemon run. The daemon keeps up to the newest 1024
+answers and 32 MiB in total, each for at most one hour, and always keeps the
+newest answer even when it alone is larger. Past that, a reused key starts a
+new write, and an `If-Match` fence still refuses a resend of a write that
+landed. A key whose write is still running is never dropped; instead at most
+64 keyed writes, holding at most 16 MiB of request bodies, may be in flight at
+once. A new key past that answers `503 service_unavailable` without being
+recorded, so retrying the same key is safe, and a repeat of a key already in
+flight still waits for it. A new `run_epoch` means every key from the old run
+is gone.
 
 ### Control values never use `If-Match`
 
@@ -368,8 +504,8 @@ scene and applies the preview to its named zone. Clear it with:
 
 The daemon clears a connection's previews when that socket closes. A committed
 layout write retires only the preview version it replaced, so it cannot erase a
-newer drag. Saving, reverting, and unmounting also send the explicit clear
-command.
+newer drag. Studio also sends the explicit clear command when a commit lands,
+when you switch to another zone tab, and when the editor unmounts.
 
 ### The binary preview frame
 
@@ -398,13 +534,13 @@ sequenceDiagram
     participant Bus as Event bus
     participant Other as Other clients
 
-    UI->>API: PATCH /scene/zones/{zone} with If-Match "42"
-    alt revision is 42
+    UI->>API: PATCH /scene/zones/{zone} with If-Match "epoch:42"
+    alt run and revision are current
         API->>API: commit scene revision 43
-        API-->>UI: 200 with ETag "43"
+        API-->>UI: 200 with ETag "epoch:43"
         API->>Bus: publish scene event
         Bus-->>Other: refetch live scene
-    else revision changed
+    else run or revision changed
         API-->>UI: 412 with details.current
         UI->>API: GET /scene
         UI->>UI: rebase and retry

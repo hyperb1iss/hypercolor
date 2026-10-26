@@ -16,8 +16,11 @@ def _get_kwargs(
     id: str,
     *,
     body: ApplyEffectRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
 
     _kwargs: dict[str, Any] = {
         "method": "post",
@@ -110,11 +113,13 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ApplyEffectResponse200]:
     """Apply effect
 
     Args:
         id (str):
+        if_match (str | Unset):
         body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
             §2.3).
 
@@ -133,6 +138,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         id=id,
         body=body,
+        if_match=if_match,
     )
 
     response = client.get_httpx_client().request(
@@ -147,11 +153,13 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
 ) -> ApiErrorBody | ApplyEffectResponse200 | None:
     """Apply effect
 
     Args:
         id (str):
+        if_match (str | Unset):
         body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
             §2.3).
 
@@ -171,6 +179,7 @@ def sync(
         id=id,
         client=client,
         body=body,
+        if_match=if_match,
     ).parsed
 
 
@@ -179,11 +188,13 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | ApplyEffectResponse200]:
     """Apply effect
 
     Args:
         id (str):
+        if_match (str | Unset):
         body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
             §2.3).
 
@@ -202,6 +213,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         id=id,
         body=body,
+        if_match=if_match,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -214,11 +226,13 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ApplyEffectRequest | Unset = UNSET,
+    if_match: str | Unset = UNSET,
 ) -> ApiErrorBody | ApplyEffectResponse200 | None:
     """Apply effect
 
     Args:
         id (str):
+        if_match (str | Unset):
         body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
             §2.3).
 
@@ -239,5 +253,6 @@ async def asyncio(
             id=id,
             client=client,
             body=body,
+            if_match=if_match,
         )
     ).parsed

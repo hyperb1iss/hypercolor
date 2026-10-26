@@ -14,11 +14,7 @@ pub(super) struct PreparedDisplayPlanKey {
     pub source_height: u32,
     pub output_width: u32,
     pub output_height: u32,
-    pub edge_behavior: u8,
-    pub start_x_bits: u32,
-    pub start_y_bits: u32,
-    pub span_x_bits: u32,
-    pub span_y_bits: u32,
+    pub viewport: DisplayViewportSignature,
 }
 
 #[derive(Clone, Debug)]
@@ -49,12 +45,6 @@ pub(super) struct FastDisplayCrop {
     pub height: f64,
 }
 
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
 pub(super) fn render_display_view(
     source: &CanvasFrame,
     viewport: &DisplayViewport,
@@ -77,10 +67,10 @@ pub(super) fn render_display_view(
         return;
     }
 
-    if viewport.rotation.abs() <= f32::EPSILON
+    if is_orthogonal_rotation(viewport.rotation)
         && !matches!(viewport.edge_behavior, EdgeBehavior::FadeToBlack { .. })
     {
-        render_display_view_axis_aligned(
+        render_display_view_prepared(
             source,
             viewport,
             width,
@@ -92,6 +82,33 @@ pub(super) fn render_display_view(
         return;
     }
 
+    render_display_view_scalar(
+        source,
+        viewport,
+        width,
+        height,
+        rendered_rgb,
+        brightness_lut,
+    );
+}
+
+fn is_orthogonal_rotation(rotation: f32) -> bool {
+    let quarter_turns = rotation / std::f32::consts::FRAC_PI_2;
+    rotation.is_finite() && (quarter_turns - quarter_turns.round()).abs() <= f32::EPSILON
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "display coordinates are normalized before sampling"
+)]
+fn render_display_view_scalar(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    width: u32,
+    height: u32,
+    rendered_rgb: &mut [u8],
+    brightness_lut: Option<&[u8; 256]>,
+) {
     let width_f32 = width as f32;
     let height_f32 = height as f32;
 
@@ -114,7 +131,7 @@ pub(super) fn render_display_view(
     }
 }
 
-fn render_display_view_axis_aligned(
+fn render_display_view_prepared(
     source: &CanvasFrame,
     viewport: &DisplayViewport,
     width: u32,
@@ -228,26 +245,12 @@ fn prepared_display_plan_key(
     output_width: u32,
     output_height: u32,
 ) -> PreparedDisplayPlanKey {
-    let start_x = viewport.position.x - (viewport.size.x * viewport.scale * 0.5);
-    let start_y = viewport.position.y - (viewport.size.y * viewport.scale * 0.5);
-    let span_x = viewport.size.x * viewport.scale;
-    let span_y = viewport.size.y * viewport.scale;
-
     PreparedDisplayPlanKey {
         source_width: source.width,
         source_height: source.height,
         output_width,
         output_height,
-        edge_behavior: match viewport.edge_behavior {
-            EdgeBehavior::Clamp => 0,
-            EdgeBehavior::Wrap => 1,
-            EdgeBehavior::Mirror => 2,
-            EdgeBehavior::FadeToBlack { .. } => 3,
-        },
-        start_x_bits: start_x.to_bits(),
-        start_y_bits: start_y.to_bits(),
-        span_x_bits: span_x.to_bits(),
-        span_y_bits: span_y.to_bits(),
+        viewport: display_viewport_signature(viewport),
     }
 }
 
@@ -258,6 +261,9 @@ fn prepare_display_plan(
     output_height: u32,
     key: PreparedDisplayPlanKey,
 ) -> PreparedDisplayPlan {
+    if viewport.rotation.abs() > f32::EPSILON {
+        return prepare_rotated_display_plan(source, viewport, output_width, output_height, key);
+    }
     let start_x = viewport.position.x - (viewport.size.x * viewport.scale * 0.5);
     let start_y = viewport.position.y - (viewport.size.y * viewport.scale * 0.5);
     let span_x = viewport.size.x * viewport.scale;
@@ -280,24 +286,70 @@ fn prepare_display_plan(
     let mut samples = Vec::with_capacity(x_samples.len().saturating_mul(y_samples.len()));
     for y_sample in &y_samples {
         for x_sample in &x_samples {
-            samples.push(PreparedDisplaySample {
-                offsets: [
-                    rgba_offset(source_width, x_sample.lower, y_sample.lower),
-                    rgba_offset(source_width, x_sample.upper, y_sample.lower),
-                    rgba_offset(source_width, x_sample.lower, y_sample.upper),
-                    rgba_offset(source_width, x_sample.upper, y_sample.upper),
-                ],
-                corner_weights: [
-                    u32::from(x_sample.lower_weight) * u32::from(y_sample.lower_weight),
-                    u32::from(x_sample.upper_weight) * u32::from(y_sample.lower_weight),
-                    u32::from(x_sample.lower_weight) * u32::from(y_sample.upper_weight),
-                    u32::from(x_sample.upper_weight) * u32::from(y_sample.upper_weight),
-                ],
-            });
+            samples.push(prepare_display_sample(source_width, *x_sample, *y_sample));
         }
     }
 
     PreparedDisplayPlan { key, samples }
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "display coordinates are normalized before sampling"
+)]
+fn prepare_rotated_display_plan(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    output_width: u32,
+    output_height: u32,
+    key: PreparedDisplayPlanKey,
+) -> PreparedDisplayPlan {
+    let source_width = usize::try_from(source.width).unwrap_or_default();
+    let mut samples =
+        Vec::with_capacity(rgb_buffer_len(output_width, output_height).unwrap_or_default() / 3);
+    for y in 0..output_height {
+        for x in 0..output_width {
+            let local = NormalizedPosition::new(
+                (x as f32 + 0.5) / output_width as f32,
+                (y as f32 + 0.5) / output_height as f32,
+            );
+            // Keep the scalar transform's rounding, including its sine/cosine
+            // residuals at quarter turns. Snapping to exact axes can change
+            // edge wrapping and the quantized bilinear weights.
+            let position = viewport_local_to_canvas(local, viewport);
+            let x_sample = axis_sample(
+                apply_edge_normalized(position.x, viewport.edge_behavior).clamp(0.0, 1.0),
+                source.width,
+            );
+            let y_sample = axis_sample(
+                apply_edge_normalized(position.y, viewport.edge_behavior).clamp(0.0, 1.0),
+                source.height,
+            );
+            samples.push(prepare_display_sample(source_width, x_sample, y_sample));
+        }
+    }
+    PreparedDisplayPlan { key, samples }
+}
+
+fn prepare_display_sample(
+    source_width: usize,
+    x_sample: AxisSample,
+    y_sample: AxisSample,
+) -> PreparedDisplaySample {
+    PreparedDisplaySample {
+        offsets: [
+            rgba_offset(source_width, x_sample.lower, y_sample.lower),
+            rgba_offset(source_width, x_sample.upper, y_sample.lower),
+            rgba_offset(source_width, x_sample.lower, y_sample.upper),
+            rgba_offset(source_width, x_sample.upper, y_sample.upper),
+        ],
+        corner_weights: [
+            u32::from(x_sample.lower_weight) * u32::from(y_sample.lower_weight),
+            u32::from(x_sample.upper_weight) * u32::from(y_sample.lower_weight),
+            u32::from(x_sample.lower_weight) * u32::from(y_sample.upper_weight),
+            u32::from(x_sample.upper_weight) * u32::from(y_sample.upper_weight),
+        ],
+    }
 }
 
 #[allow(
@@ -648,6 +700,10 @@ pub(super) fn display_viewport_signature(viewport: &DisplayViewport) -> DisplayV
         fade_falloff_bits,
     }
 }
+
+#[cfg(test)]
+#[path = "render/orthogonal_tests.rs"]
+mod orthogonal_tests;
 
 #[cfg(test)]
 mod tests {

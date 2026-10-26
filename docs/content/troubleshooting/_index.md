@@ -31,7 +31,7 @@ Something is not working. Find your symptom in the table below and follow the li
 | Philips Hue link-button pairing fails or times out | [Network discovery: Hue pairing](@/troubleshooting/network-discovery.md) |
 | Network device vanishes after a DHCP lease renewal | [Network discovery: stable addressing](@/troubleshooting/network-discovery.md) |
 | Effect applies but all LEDs show the same color (no gradient) | [Studio: spatial layout](@/troubleshooting/studio.md) |
-| Scene switcher or zone controls behave unexpectedly | [Studio troubleshooting](@/troubleshooting/studio.md) |
+| Scene picker or zone tabs behave unexpectedly | [Studio troubleshooting](@/troubleshooting/studio.md) |
 | Daemon port 9420 already in use | [Common issues: port conflict](@/troubleshooting/common-issues.md) |
 | Daemon fails to start on first login (`XDG_RUNTIME_DIR` not set) | [Common issues: systemd linger](@/troubleshooting/common-issues.md) |
 | Effects apply but the web UI preview is dark | [Common issues: WebSocket preview](@/troubleshooting/common-issues.md) |

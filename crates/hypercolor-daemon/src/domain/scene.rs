@@ -29,7 +29,7 @@ use hypercolor_core::scene::{
     ZoneMutationError, default_primary_zone,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::api::scene::SideEffectOutcome;
+use hypercolor_types::api::scene::{SceneFence, SideEffectOutcome};
 use hypercolor_types::api::scenes::{
     MediaLayerDetail, MediaProducerCaps, MediaProducerCounts, MediaProducerLayers,
     ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest,
@@ -60,6 +60,7 @@ use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
+use crate::domain::scene_run::SceneRun;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
 use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
@@ -70,6 +71,19 @@ use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 // ── Owning service ───────────────────────────────────────────────────────
+
+/// What an authority layout publication committed to the scene, read under
+/// the write lock that admitted it: the revision that commit took and the
+/// primary zones that follow the layout, as the commit left them.
+///
+/// A caller that answers with the state its own publication produced
+/// reads it here, never from the live scene a later writer may have moved.
+#[derive(Debug, Clone)]
+pub(crate) struct LayoutSceneReceipt {
+    pub(crate) revision: SceneRevision,
+    pub(crate) scene_id: Option<SceneId>,
+    pub(crate) followed_zones: Vec<Zone>,
+}
 
 /// Cloneable authority for scene state, commit order, and scene events.
 #[derive(Clone)]
@@ -154,6 +168,8 @@ struct SceneServiceInner {
     snapshot_save_gate: Arc<RwLock<()>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     commits: Arc<SceneCommitSequencer>,
+    /// The opaque identity of the run this service's revisions belong to.
+    run_epoch: Arc<str>,
     event_bus: Arc<HypercolorBus>,
     plan: ArcSwap<ScenePlanSnapshot>,
     #[cfg(all(test, feature = "persistence-test-hooks"))]
@@ -259,7 +275,8 @@ impl SceneService {
         Ok(manager)
     }
 
-    /// Own a non-durable scene manager for isolated consumers.
+    /// Own a non-durable scene manager for isolated consumers. Its
+    /// revisions start at zero under a fresh epoch and persist nothing.
     #[must_use]
     pub fn in_memory(manager: SceneManager, event_bus: Arc<HypercolorBus>) -> Self {
         Self::build(
@@ -268,6 +285,7 @@ impl SceneService {
             None,
             None,
             Arc::new(ZoneLayoutPreviewStore::default()),
+            SceneRun::ephemeral(),
         )
     }
 
@@ -288,18 +306,28 @@ impl SceneService {
             Some(store),
             Some(root),
             Arc::new(ZoneLayoutPreviewStore::default()),
+            SceneRun::ephemeral(),
         ))
     }
 
-    /// Own a scene manager together with its durable and transient stores.
+    /// Own a scene manager together with its durable and transient stores,
+    /// continuing the revision sequence `run` resumed.
     #[must_use]
     pub(crate) fn new(
         manager: SceneManager,
         event_bus: Arc<HypercolorBus>,
         store: SceneStore,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
+        run: SceneRun,
     ) -> Self {
-        Self::build(manager, event_bus, Some(store), None, zone_layout_previews)
+        Self::build(
+            manager,
+            event_bus,
+            Some(store),
+            None,
+            zone_layout_previews,
+            run,
+        )
     }
 
     fn build(
@@ -308,8 +336,10 @@ impl SceneService {
         store: Option<SceneStore>,
         temporary_store_root: Option<tempfile::TempDir>,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
+        run: SceneRun,
     ) -> Self {
-        let commits = Arc::new(SceneCommitSequencer::new());
+        let (run_epoch, start) = run.into_parts();
+        let commits = Arc::new(SceneCommitSequencer::resuming(start));
         let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
         let store_writer = store.as_ref().map(SceneStore::file_writer);
         Self(Arc::new(SceneServiceInner {
@@ -321,6 +351,7 @@ impl SceneService {
             snapshot_save_gate: Arc::new(RwLock::new(())),
             zone_layout_previews,
             commits,
+            run_epoch,
             event_bus,
             plan,
             #[cfg(all(test, feature = "persistence-test-hooks"))]
@@ -339,10 +370,39 @@ impl SceneService {
         read(&*self.0.manager.read().await)
     }
 
+    /// Capture an owned scene-manager snapshot together with the revision
+    /// it was committed at.
+    ///
+    /// Every commit installs its candidate and advances the revision while
+    /// holding the scene write lock, so both reads here happen under one
+    /// read lock and can never pair one commit's contents with another
+    /// commit's revision.
+    pub async fn snapshot_with_revision(&self) -> (SceneManager, SceneRevision) {
+        let manager = self.0.manager.read().await;
+        (manager.clone(), self.0.commits.revision())
+    }
+
+    /// [`read_with`](Self::read_with), also handing the projection the
+    /// revision the state it reads was committed at.
+    pub(crate) async fn read_with_revision<R>(
+        &self,
+        read: impl FnOnce(&SceneManager, SceneRevision) -> R,
+    ) -> R {
+        let manager = self.0.manager.read().await;
+        read(&manager, self.0.commits.revision())
+    }
+
     /// Return the current admitted scene revision.
     #[must_use]
     pub fn revision(&self) -> SceneRevision {
         self.0.commits.revision()
+    }
+
+    /// The opaque identity of the daemon run these revisions belong to.
+    /// A revision means nothing beside a different epoch.
+    #[must_use]
+    pub fn run_epoch(&self) -> &str {
+        &self.0.run_epoch
     }
 
     /// Create a lock-free reader for the render thread.
@@ -369,6 +429,7 @@ impl SceneService {
         SceneMutation {
             candidate: manager.clone(),
             base_revision: self.0.commits.revision(),
+            run_epoch: Arc::clone(&self.0.run_epoch),
             events: Vec::new(),
             persists_scene_content: false,
             preview_scenes_to_clear: HashSet::new(),
@@ -501,6 +562,7 @@ impl SceneService {
                 DomainErrorDetails::EffectIdMigrationSuperseded {
                     expected_revision: migration.base_revision,
                     current_revision,
+                    run_epoch: Arc::clone(&self.0.run_epoch),
                 },
             ));
         }
@@ -615,6 +677,7 @@ impl SceneService {
         let SceneMutation {
             candidate,
             base_revision,
+            run_epoch: _,
             events,
             persists_scene_content,
             preview_scenes_to_clear,
@@ -666,6 +729,7 @@ impl SceneService {
                     DomainErrorDetails::SceneCommitSuperseded {
                         expected_revision: base_revision,
                         current_revision,
+                        run_epoch: Arc::clone(&self.0.run_epoch),
                     },
                 ));
             }
@@ -680,6 +744,7 @@ impl SceneService {
             if persists_scene_content && prepared.is_none() && !self.store_projection_current() {
                 prepared = Some(prepare()?);
             }
+            let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
 
             self.0
                 .zone_layout_previews
@@ -689,7 +754,6 @@ impl SceneService {
                 )
                 .await;
             *manager = candidate;
-            let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
             if store_changes {
                 self.move_store_projection(ticket.generation());
             }
@@ -924,6 +988,7 @@ impl SceneService {
             publish_renderer_state,
         )
         .await
+        .map(|_| ())
     }
 
     pub(crate) async fn publish_guarded_layout_activation<F>(
@@ -935,7 +1000,7 @@ impl SceneService {
         expected_resolved_zones_revision: u64,
         fence: Option<&super::scene_activation::LayoutSceneFence>,
         publish_renderer_state: F,
-    ) -> Result<(), LayoutTransactionRejection>
+    ) -> Result<LayoutSceneReceipt, LayoutTransactionRejection>
     where
         F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
     {
@@ -966,8 +1031,26 @@ impl SceneService {
         if let Some(fence) = fence {
             fence.publish(&manager, ticket.generation());
         }
+        let receipt = LayoutSceneReceipt {
+            revision: ticket.generation(),
+            scene_id: manager.active_scene_id().copied(),
+            followed_zones: manager
+                .active_scene()
+                .map(|scene| {
+                    scene
+                        .zones
+                        .iter()
+                        .filter(|zone| {
+                            zone.role == hypercolor_types::scene::ZoneRole::Primary
+                                && zone.display_target.is_none()
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
         ticket.release(Vec::new());
-        Ok(())
+        Ok(receipt)
     }
 
     pub(crate) async fn publish_renderer_only_layout_activation<F>(
@@ -1145,6 +1228,9 @@ impl AdmittedSceneEffectIdMigration {
 pub struct SceneMutation {
     candidate: SceneManager,
     base_revision: SceneRevision,
+    /// The run `base_revision` belongs to, so a stale fence refusal can
+    /// name the fence to rebase onto.
+    run_epoch: Arc<str>,
     events: Vec<HypercolorEvent>,
     persists_scene_content: bool,
     preview_scenes_to_clear: HashSet<SceneId>,
@@ -1204,6 +1290,12 @@ impl SceneMutation {
     #[must_use]
     pub const fn base_revision(&self) -> SceneRevision {
         self.base_revision
+    }
+
+    /// The daemon run [`base_revision`](Self::base_revision) belongs to.
+    #[must_use]
+    pub fn run_epoch(&self) -> &str {
+        &self.run_epoch
     }
 
     /// Read the candidate. Every intent method's effect is visible here
@@ -1704,7 +1796,10 @@ impl SceneMutation {
         target: super::runtime_zone::RuntimeZoneTarget,
         color: hypercolor_color::Rgb,
     ) -> Result<Zone, DomainError> {
-        super::scene_tree::check_scene_revision(self, Some(target.revision))?;
+        super::scene_tree::check_scene_fence(
+            self,
+            Some(&SceneFence::revision_only(target.revision)),
+        )?;
         let scene_id = self.active_scene_for_runtime_mutation("setting a zone color")?;
         if scene_id != target.scene_id {
             return Err(DomainError::conflict(
@@ -2586,7 +2681,7 @@ async fn apply_activation_layout(
         .await;
     drop(guard);
     match result {
-        Ok(()) => SceneLayoutActivationOutcome {
+        Ok(_) => SceneLayoutActivationOutcome {
             layout_id: Some(layout_id),
             applied: true,
             message: None,
@@ -2654,8 +2749,8 @@ pub struct ReplaceScene {
     /// Complete replacement document. Server-owned fields it echoes from
     /// a read are checked against the stored scene, never written.
     pub document: ReplaceSceneRequest,
-    /// Optional scene commit generation from `If-Match`.
-    pub expected_revision: Option<u64>,
+    /// Optional scene fence from `If-Match`.
+    pub fence: Option<SceneFence>,
 }
 
 /// The outcome of a scene library mutation.
@@ -2691,11 +2786,11 @@ pub struct SceneDeactivated {
     pub commit: SceneCommit,
 }
 
-/// Create a scene, seeded with a Default zone holding the current
+/// Create a scene, seeded with a primary zone holding the current
 /// device output roster.
 ///
-/// Every scene is born with that zone so the Studio scene selector
-/// always has one to select (Spec 65 §5.2); the user renames it freely.
+/// Every scene is born with that zone so Studio always has a zone to
+/// open (Spec 65 §5.2); the user renames it freely.
 ///
 /// # Errors
 ///
@@ -2814,11 +2909,17 @@ pub async fn replace_scene(
 
     let default_layout = ctx.layout.current();
     let mut mutation = ctx.scene.begin_mutation().await;
-    // A read-back body echoes the revision it was read at. That echo is a
-    // precondition in its own right, so a request carrying both it and
-    // `If-Match` lands only when each one is current.
-    crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, command.document.revision)?;
+    // A read-back body echoes the fence it was read at, run included. That
+    // echo is a precondition in its own right, so a request carrying both
+    // it and `If-Match` lands only when each one is current, and a document
+    // read in another daemon run is stale whatever its revision.
+    let document = &command.document;
+    let body_fence = document.revision.map(|revision| SceneFence {
+        run_epoch: document.run_epoch.clone().filter(|epoch| !epoch.is_empty()),
+        revision,
+    });
+    crate::domain::scene_tree::check_scene_fence(&mutation, command.fence.as_ref())?;
+    crate::domain::scene_tree::check_scene_fence(&mutation, body_fence.as_ref())?;
     let existing = mutation
         .scenes()
         .get(&command.scene_id)
@@ -3296,5 +3397,41 @@ fn push_zone_diff_events(
         if !after.iter().any(|current| current.id == zone.id) {
             events.push(zone_changed_event(scene_id, zone, ZoneChangeKind::Removed));
         }
+    }
+}
+
+#[cfg(test)]
+mod revision_pairing_tests {
+    use super::*;
+
+    /// The paired reads are atomic by construction: a commit installs its
+    /// candidate and advances the revision under the write lock, and the
+    /// projection runs under the read lock, so no commit can land between
+    /// reading the contents and reading the revision.
+    #[tokio::test]
+    async fn paired_reads_hold_off_every_commit_while_they_project() {
+        let service =
+            SceneService::in_memory(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+        let (_, before) = service.snapshot_with_revision().await;
+
+        service
+            .read_with_revision(|_, revision| {
+                assert_eq!(revision, before);
+                assert!(
+                    service.scene_write_is_blocked_for_test(),
+                    "a commit must not be able to land mid-projection"
+                );
+            })
+            .await;
+
+        let mutation = service.begin_mutation().await;
+        let commit = service
+            .commit_mutation(mutation)
+            .await
+            .expect("an unchallenged commit admits");
+        let (_, after) = service.snapshot_with_revision().await;
+        assert_eq!(after, commit.revision());
+        assert_eq!(after, before + 1);
+        assert!(!service.scene_write_is_blocked_for_test());
     }
 }

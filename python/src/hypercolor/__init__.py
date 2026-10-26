@@ -1,6 +1,6 @@
 """Public API for hypercolor-python."""
 
-from .client import HypercolorClient
+from .client import HypercolorClient, scene_fence
 from .exceptions import (
     HypercolorApiError,
     HypercolorAuthenticationError,
@@ -30,6 +30,7 @@ __all__ = [
     "HypercolorUnavailableError",
     "HypercolorValidationError",
     "SyncHypercolorClient",
+    "scene_fence",
 ]
 
-__version__ = "0.7.3"
+__version__ = "0.8.0"

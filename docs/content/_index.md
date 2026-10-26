@@ -67,15 +67,16 @@ loop with zero-copy frame encoding across 5 FPS tiers.
 
 ## The interfaces
 
-{{< img path="img/ui/studio.webp" alt="Hypercolor Studio: zones, effects, and layout editor" />}}
+{{< img path="img/ui/studio.webp" alt="Hypercolor Studio: zone tabs, the device pane, and the live zone canvas" />}}
 
 **Web UI**: served directly by the daemon at `http://localhost:9420`. Browse effects,
 tweak live controls, design spatial layouts, manage scenes and zones. Ambient reactivity
 tints the UI edges to match the active effect, and the responsive shell works as a phone
 remote for the rig.
 
-**Studio**: the [multi-zone workspace](@/studio/_index.md) inside the web UI. Assign
-different effects to different zones across your rig, then save the whole layout as a scene.
+**Studio**: the [multi-zone workspace](@/studio/_index.md) inside the web UI. Split your
+rig into zones, one tab each, and give every zone its own effect; each edit lands in the active
+scene as you make it.
 
 **TUI**: a Ratatui terminal dashboard with true-color LED preview and fullscreen effect
 rendering. Runs wherever you have a terminal. Launch with `hypercolor tui`.

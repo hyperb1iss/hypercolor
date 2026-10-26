@@ -4,13 +4,12 @@
 //! devices' layout boxes (Spec 86 §5.1). That is the right picture for
 //! hardware and an unreadable one for a person, so previews show one zone
 //! at a time. A page with a zone picker beside its preview shows the zone
-//! it has focused; every other page shows the Default zone. A single-zone
+//! it has focused; every other page shows the primary zone. A single-zone
 //! scene's canvas already is its one zone, so it keeps the scene canvas.
 
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
-use crate::apply_target::ApplyTarget;
 use crate::route_ui::mounted_page_has_own_preview;
 use crate::zones::{ZoneEffectState, ZonesContext};
 
@@ -44,7 +43,7 @@ impl PreviewZoneContext {
 /// The zone a page's preview shows, or `None` for the scene canvas.
 ///
 /// `focused_zone` is the picker's choice, already checked to be an LED
-/// zone of the active scene; `primary_zone` is the scene's Default zone.
+/// zone of the active scene; `primary_zone` is the scene's primary zone.
 #[must_use]
 pub fn preview_zone_for(
     multi_zone: bool,
@@ -92,8 +91,9 @@ pub fn preview_frame_owner(
 pub struct PlayerTarget {
     /// The effect previous, next, and shuffle step away from.
     pub current_effect: Option<String>,
-    /// Where the stepped-to effect applies.
-    pub apply_target: ApplyTarget,
+    /// The zone the stepped-to effect applies to; `None` is the primary
+    /// zone.
+    pub apply_zone: Option<String>,
 }
 
 /// The state of the zone a preview shows, for the controls beside it.
@@ -121,29 +121,29 @@ pub fn shown_zone_state(
 ///
 /// `shown` is the state of [`PreviewZoneContext::zone`]'s zone. While a
 /// zone is shown, the player applies to it, so a thumbnail of the Default
-/// zone never steers a zone focused on another page. The Default zone
+/// zone never steers a zone focused on another page. The primary zone
 /// steps from the primary effect, which an apply updates at once and which
-/// is what a Default zone apply replaces; another zone steps from its top
-/// effect. On the scene canvas the player keeps the scene-wide behavior:
-/// step from the primary effect and apply wherever quick-applies go.
+/// is what a primary zone apply replaces; another zone steps from its top
+/// effect. On the scene canvas the player steps from the primary effect
+/// and applies to `target_zone`, the apply zone of the app's target zone.
 #[must_use]
 pub fn player_target(
     shown: Option<&ZoneEffectState>,
     primary_effect: Option<&str>,
-    quick_apply_target: &ApplyTarget,
+    target_zone: Option<&str>,
 ) -> PlayerTarget {
     match shown {
         Some(state) if state.zone.role != ZoneRole::Primary => PlayerTarget {
             current_effect: state.effect_id.clone(),
-            apply_target: ApplyTarget::Zone(state.zone.id.clone()),
+            apply_zone: Some(state.zone.id.clone()),
         },
         Some(_) => PlayerTarget {
             current_effect: primary_effect.map(ToOwned::to_owned),
-            apply_target: ApplyTarget::Primary,
+            apply_zone: None,
         },
         None => PlayerTarget {
             current_effect: primary_effect.map(ToOwned::to_owned),
-            apply_target: quick_apply_target.clone(),
+            apply_zone: target_zone.map(ToOwned::to_owned),
         },
     }
 }

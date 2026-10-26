@@ -8,13 +8,22 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
 from ...models.delete_live_zone_layer_response_200 import DeleteLiveZoneLayerResponse200
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     zone: str,
     layer: str,
+    *,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
+    if not isinstance(if_match, Unset):
+        headers["If-Match"] = if_match
+
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: dict[str, Any] = {
         "method": "delete",
@@ -24,6 +33,7 @@ def _get_kwargs(
         ),
     }
 
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -80,6 +90,11 @@ def _parse_response(
 
         return response_500
 
+    if response.status_code == 503:
+        response_503 = ApiErrorBody.from_dict(response.json())
+
+        return response_503
+
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -102,12 +117,16 @@ def sync_detailed(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | DeleteLiveZoneLayerResponse200]:
     """Delete a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,6 +139,8 @@ def sync_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         layer=layer,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -134,12 +155,16 @@ def sync(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | DeleteLiveZoneLayerResponse200 | None:
     """Delete a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -153,6 +178,8 @@ def sync(
         zone=zone,
         layer=layer,
         client=client,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -161,12 +188,16 @@ async def asyncio_detailed(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | DeleteLiveZoneLayerResponse200]:
     """Delete a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -179,6 +210,8 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         zone=zone,
         layer=layer,
+        if_match=if_match,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -191,12 +224,16 @@ async def asyncio(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
+    if_match: str | Unset = UNSET,
+    idempotency_key: str | Unset = UNSET,
 ) -> ApiErrorBody | DeleteLiveZoneLayerResponse200 | None:
     """Delete a live zone layer
 
     Args:
         zone (str):
         layer (str):
+        if_match (str | Unset):
+        idempotency_key (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -211,5 +248,7 @@ async def asyncio(
             zone=zone,
             layer=layer,
             client=client,
+            if_match=if_match,
+            idempotency_key=idempotency_key,
         )
     ).parsed

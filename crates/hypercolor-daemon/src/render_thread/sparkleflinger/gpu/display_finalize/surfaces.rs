@@ -1,3 +1,4 @@
+use anyhow::Result;
 use hypercolor_types::canvas::{RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts};
 
 use super::super::super::DisplayFinalizeCacheKey;
@@ -37,13 +38,42 @@ impl PendingGpuDisplayFinalize {
             receiver: None,
             map_ready: false,
             slot,
+            #[cfg(test)]
+            unmaps: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
+    /// Unmap this finalization's readback buffer. Every display finalize
+    /// cleanup path goes through here, and each path unmaps exactly once:
+    /// on a destroyed buffer every extra unmap raises its own validation
+    /// error.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn unmap(&self) {
+        #[cfg(test)]
+        self.unmaps
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.buffer.unmap();
+    }
+
+    /// Clean up after a failed map: the one owner of that unmap, so the
+    /// callback handler that reports the failure leaves the buffer alone.
     pub(in crate::render_thread::sparkleflinger::gpu) fn unmap_after_failed_map(&mut self) {
         self.receiver = None;
         self.map_ready = false;
-        self.buffer.unmap();
+        self.unmap();
+    }
+
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger::gpu) fn unmap_count(&self) -> u32 {
+        self.unmaps.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Make the pending map callback report failure, the way a map the GPU
+    /// aborted does.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger::gpu) fn fail_map_for_test(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send(Err(wgpu::BufferAsyncError));
+        self.receiver = Some(receiver);
     }
 
     pub(in crate::render_thread::sparkleflinger::gpu) fn map_ready(&self) -> bool {
@@ -92,12 +122,24 @@ impl GpuDisplayFinalizeSurfaceSet {
         self.readback_surfaces.slot_counts()
     }
 
-    pub(in crate::render_thread::sparkleflinger::gpu) fn new(
+    /// Allocate a surface set inside scoped GPU error handling. A buffer or
+    /// texture the device could not create comes back invalid without an
+    /// error of its own, so the scope is what keeps an invalid set from
+    /// being cached and reused by every later finalization on the route.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn try_new(
         device: &wgpu::Device,
         generation: u64,
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> Result<Self> {
+        super::super::try_create_gpu_resources(
+            device,
+            "GPU display finalize surfaces could not be allocated",
+            || Self::new(device, generation, width, height),
+        )
+    }
+
+    fn new(device: &wgpu::Device, generation: u64, width: u32, height: u32) -> Self {
         let padded_bytes_per_row = padded_bytes_per_row(width);
         let yuv_layout = DisplayYuv420Layout::new(width, height);
         let yuv_output = device.create_buffer(&wgpu::BufferDescriptor {
@@ -145,6 +187,8 @@ impl GpuDisplayFinalizeSurfaceSet {
             ),
             scene_source: None,
             face_source: None,
+            scene_source_retry: None,
+            face_source_retry: None,
             pending_upload_buffers: PendingUploadBuffers::default(),
             #[cfg(test)]
             scene_upload_count: 0,
@@ -191,6 +235,20 @@ impl GpuDisplayFinalizeSurfaceSet {
     ) {
         if slot < DISPLAY_FINALIZE_READBACK_SLOT_COUNT {
             self.readback_slots_in_use[slot] = false;
+        }
+    }
+
+    /// Undo a dispatch whose encoder will never be submitted: free its
+    /// readback slot, drop its staged uploads, and forget what the source
+    /// textures were recorded to hold so the next dispatch fills them again.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn abandon_dispatch(&mut self, slot: usize) {
+        self.release_readback_slot(slot);
+        self.pending_upload_buffers.clear();
+        for source in [&mut self.scene_source, &mut self.face_source]
+            .into_iter()
+            .flatten()
+        {
+            source.forget_contents();
         }
     }
 }

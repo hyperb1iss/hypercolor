@@ -215,8 +215,8 @@ pub async fn apply_effect(
     let transition = match request.transition.unwrap_or_default() {
         TransitionType::Cut => RequestedTransition::cut(),
     };
-    let expected_revision = match crate::api::scene::parse_if_match(&headers) {
-        Ok(revision) => revision,
+    let fence = match crate::api::scene::parse_if_match(&headers) {
+        Ok(fence) => fence,
         Err(error) => return error.into_response(),
     };
 
@@ -290,7 +290,7 @@ pub async fn apply_effect(
             controls,
             preset_id: resolved_preset.as_ref().map(|preset| preset.id),
             target_zone: request.zone,
-            expected_revision,
+            fence,
             transition,
             wake_output: true,
         },
@@ -319,15 +319,12 @@ pub async fn apply_effect(
     );
 
     let revision = applied.commit.revision();
-    let mut response = envelope::ok(SceneApplyEffectResponse {
+    let response = envelope::ok(SceneApplyEffectResponse {
         zone: crate::domain::scene_tree::zone_resource(&applied.zone),
         transition: TransitionType::Cut,
         output: applied.output,
     });
-    if let Ok(value) = HeaderValue::from_str(&format!("\"{revision}\"")) {
-        response.headers_mut().insert(header::ETAG, value);
-    }
-    response
+    crate::api::scene::with_revision(state.scene_manager.run_epoch(), response, revision)
 }
 
 /// Query string for `GET /api/v1/effects/{id}/cover`.

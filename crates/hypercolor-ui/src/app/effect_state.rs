@@ -2,14 +2,10 @@ use std::collections::HashMap;
 
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::ControlDefinition;
-use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerSource, LayerTransform};
-use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
-use crate::components::layer_panel::source::remembered_effect_layer_source;
 use crate::preferences::EffectPreferences;
-use crate::toasts;
 use crate::ws::EffectErrorHint;
 
 use super::EffectsContext;
@@ -23,90 +19,6 @@ pub(super) struct ActiveEffectSnapshot {
     controls: Vec<ControlDefinition>,
     control_values: HashMap<String, ControlValue>,
     preset_id: Option<String>,
-}
-
-pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effect_id: String) {
-    // Bake remembered preferences into the layer source, mirroring the
-    // primary-zone apply path — an all-zones apply should start every
-    // zone in the user's saved state, not at defaults.
-    let prefs = ctx.preferences.get(&effect_id);
-    let Ok(source) = remembered_effect_layer_source(&effect_id, prefs.as_ref()) else {
-        toasts::toast_error("That effect has an invalid identifier");
-        return;
-    };
-    let scene = match api::fetch_active_scene().await {
-        Ok(scene) => scene,
-        Err(error) => {
-            toasts::toast_error(&format!("Couldn't load the active scene: {error}"));
-            return;
-        }
-    };
-    let zone_ids = scene
-        .zones
-        .iter()
-        .filter(|zone| zone.role != ZoneRole::Display)
-        .map(|zone| zone.id.to_string())
-        .collect::<Vec<_>>();
-    if zone_ids.is_empty() {
-        toasts::toast_error("No light zones are available");
-        return;
-    }
-
-    let mut applied = 0_usize;
-    let mut failed = 0_usize;
-    for zone_id in &zone_ids {
-        match apply_effect_layer(zone_id, &source).await {
-            Ok(()) => applied += 1,
-            Err(_) => failed += 1,
-        }
-    }
-    ctx.refresh_active_scene();
-    if failed == 0 {
-        toasts::toast_success(&format!("Effect applied to {applied} zone(s)"));
-    } else if applied == 0 {
-        toasts::toast_error("Effect apply failed");
-    } else {
-        toasts::toast_error(&format!(
-            "Effect applied to {applied} zone(s), {failed} failed"
-        ));
-    }
-}
-
-async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> api::ApiResult<()> {
-    let stack = api::list_layers(zone_id).await?;
-    let outcome = if let Some(layer) = stack
-        .items
-        .iter()
-        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
-    {
-        let mut request = api::update_request_from_layer(layer);
-        request.source = source.clone();
-        api::update_layer(
-            zone_id,
-            &layer.id.to_string(),
-            &request,
-            Some(stack.revision),
-        )
-        .await?
-    } else {
-        let request = api::CreateLayerRequest {
-            name: None,
-            source: source.clone(),
-            blend: Some(BlendMode::Alpha),
-            opacity: Some(1.0),
-            transform: Some(LayerTransform::default()),
-            adjust: Some(LayerAdjust::default()),
-            bindings: None,
-            enabled: None,
-        };
-        api::create_layer(zone_id, &request, Some(stack.revision)).await?
-    };
-    match outcome {
-        api::LayerStackOutcome::Applied(_) => Ok(()),
-        api::LayerStackOutcome::Stale { current } => Err(api::ApiError::precondition_failed(
-            format!("Layer stack changed at revision {current}"),
-        )),
-    }
 }
 
 pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::PrimaryEffectView) {

@@ -96,6 +96,7 @@ fn rename_patch(name: &str) -> ZoneMetaPatch {
         brightness: None,
         enabled: None,
         make_primary: None,
+        index: None,
     }
 }
 
@@ -151,16 +152,16 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         name: "candidate zone".to_owned(),
         color: None,
         fallback_canvas: (640, 480),
-        expected_revision: None,
+        fence: None,
     };
     let update = UpdateZone {
         zone_id: shared_zone_id,
         patch: rename_patch("candidate zone renamed"),
-        expected_revision: None,
+        fence: None,
     };
     let delete = DeleteZone {
         zone_id: shared_zone_id,
-        expected_revision: None,
+        fence: None,
     };
     let inserted_layer_id = SceneLayerId::new();
     let inserted_layer = color_layer(inserted_layer_id, 2);
@@ -294,7 +295,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
                 name: "blocked".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
-                expected_revision: Some(revision),
+                fence: Some(revision.into()),
             },
         )
         .await,
@@ -305,7 +306,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
             UpdateZone {
                 zone_id,
                 patch: rename_patch("blocked"),
-                expected_revision: Some(revision),
+                fence: Some(revision.into()),
             },
         )
         .await,
@@ -315,7 +316,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
             &state.domains.scene,
             DeleteZone {
                 zone_id,
-                expected_revision: Some(revision),
+                fence: Some(revision.into()),
             },
         )
         .await,
@@ -326,7 +327,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
             zone_id,
             color_layer(SceneLayerId::new(), 2),
             None,
-            Some(revision),
+            Some(revision.into()),
         )
         .await,
     );
@@ -335,12 +336,18 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
             &state.domains.scene,
             zone_id,
             layer_ids.into_iter().rev().collect(),
-            Some(revision),
+            Some(revision.into()),
         )
         .await,
     );
     assert_conflict(
-        remove_layer(&state.domains.scene, zone_id, layer_ids[0], Some(revision)).await,
+        remove_layer(
+            &state.domains.scene,
+            zone_id,
+            layer_ids[0],
+            Some(revision.into()),
+        )
+        .await,
     );
 
     let manager = state.scene_manager.snapshot().await;

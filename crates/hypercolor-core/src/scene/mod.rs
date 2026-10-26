@@ -38,7 +38,10 @@ use hypercolor_types::scene::{
 };
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
-const DEFAULT_ZONE_NAME: &str = "Default zone";
+/// The name a scene's primary zone is born with.
+pub const DEFAULT_ZONE_NAME: &str = "Main";
+/// The description a scene's primary zone is born with.
+pub const DEFAULT_ZONE_DESCRIPTION: &str = "The scene's main zone.";
 
 /// Error variants for precondition-checked layer mutations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +99,9 @@ pub struct ZoneMetaPatch {
     pub brightness: Option<f32>,
     pub enabled: Option<bool>,
     pub make_primary: Option<bool>,
+    /// Move the zone to this position in the scene's zone order, clamped
+    /// to the last slot.
+    pub index: Option<usize>,
 }
 
 // ── SceneManager ────────────────────────────────────────────────────────
@@ -574,7 +580,7 @@ impl SceneManager {
             let mut zone = Zone {
                 id: ZoneId::new(),
                 name: DEFAULT_ZONE_NAME.to_owned(),
-                description: Some("Default zone.".to_owned()),
+                description: Some(DEFAULT_ZONE_DESCRIPTION.to_owned()),
                 layers: Vec::new(),
                 layout: next_primary_layout,
                 brightness: 1.0,
@@ -870,6 +876,12 @@ impl SceneManager {
         Ok(())
     }
 
+    /// Patch a zone's metadata, role, and position in one step.
+    ///
+    /// A promotion to primary and a move to a different slot are
+    /// structural, so they bump `zones_revision` and are refused on a
+    /// snapshot scene. A move to the slot the zone already holds changes
+    /// nothing.
     pub fn update_zone_meta(
         &mut self,
         scene_id: &SceneId,
@@ -888,6 +900,14 @@ impl SceneManager {
         let Some(index) = scene.zones.iter().position(|zone| zone.id == zone_id) else {
             return Err(ZoneMutationError::ZoneMissing);
         };
+        let last_slot = scene.zones.len().saturating_sub(1);
+        let destination = patch
+            .index
+            .map(|requested| requested.min(last_slot))
+            .filter(|&destination| destination != index);
+        if destination.is_some() && scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
 
         if role_change {
             for zone in &mut scene.zones {
@@ -898,6 +918,16 @@ impl SceneManager {
             let zone = &mut scene.zones[index];
             zone.role = ZoneRole::Primary;
             zone.display_target = None;
+        }
+        let index = match destination {
+            Some(destination) => {
+                let zone = scene.zones.remove(index);
+                scene.zones.insert(destination, zone);
+                destination
+            }
+            None => index,
+        };
+        if role_change || destination.is_some() {
             bump_zones_revision(scene);
         }
 
@@ -1679,7 +1709,7 @@ pub fn default_primary_zone(mut layout: SpatialLayout) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: DEFAULT_ZONE_NAME.to_owned(),
-        description: Some("Default zone.".to_owned()),
+        description: Some(DEFAULT_ZONE_DESCRIPTION.to_owned()),
         layers: Vec::new(),
         layout,
         brightness: 1.0,
@@ -1828,11 +1858,6 @@ fn empty_default_spatial_layout() -> SpatialLayout {
     }
 }
 
-/// Place a freshly assigned output at a modest default size, cascaded by
-/// its slot in the target zone so successive adds neither stack on one
-/// spot nor blanket the whole canvas. `size` is a normalized extent and
-/// `position` is the box center, so a 0.2 x 0.15 box centered inside the
-/// canvas stays small and movable; the user repositions from there.
 /// How [`SceneManager::assign_output_to_zone`] places an output that lands in a
 /// zone it did not previously belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1847,6 +1872,11 @@ pub enum OutputPlacement {
     Preserve,
 }
 
+/// Place a freshly assigned output at a modest default size, cascaded by
+/// its slot in the target zone so successive adds neither stack on one
+/// spot nor blanket the whole canvas. `size` is a normalized extent and
+/// `position` is the box center, so a 0.2 x 0.15 box centered inside the
+/// canvas stays small and movable; the user repositions from there.
 fn reset_device_zone_placement(zone: &mut Output, slot: usize) {
     const COLS: usize = 5;
     let col = (slot % COLS) as f32;

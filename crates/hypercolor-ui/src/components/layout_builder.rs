@@ -1,8 +1,9 @@
 //! The Studio Stage spatial layout editor.
 //!
-//! [`ZoneLayoutProvider`] owns the selected zone's editor session,
-//! persistence, history, and live preview. [`LayoutWorkspace`] renders
-//! that session inside the Stage.
+//! [`ZoneLayoutProvider`] owns the selected zone's editor session, its
+//! live commits, history, and live preview. [`LayoutWorkspace`] renders
+//! that session inside the Stage. Layout edits commit when their gesture
+//! ends, exactly like membership and layer edits; there is no staged save.
 
 use leptos::ev;
 use leptos::prelude::*;
@@ -11,52 +12,25 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::app::{DevicesContext, WsContext};
 use crate::components::layout_canvas::LayoutCanvas;
-use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_history::{LayoutEditorSnapshot, RemovedOutputCache};
+use crate::layout_history::LayoutEditorSnapshot;
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
     suppress_press_defaults,
 };
 use crate::storage;
-use crate::toasts;
 use hypercolor_leptos_ext::events::target_is_text_entry;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
-// Panel size defaults and constraints
-const SIDEBAR_DEFAULT: f64 = 280.0;
-const SIDEBAR_MIN: f64 = 180.0;
-const SIDEBAR_MAX: f64 = 480.0;
+// Zone-properties panel size default and constraints
 const BOTTOM_DEFAULT: f64 = 160.0;
 const BOTTOM_MIN: f64 = 96.0;
 const BOTTOM_MAX: f64 = 500.0;
 
-const LS_KEY_SIDEBAR: &str = "hc-layout-sidebar-width";
 const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
-
-#[derive(Debug, PartialEq, Eq)]
-struct ZoneSaveCompletion {
-    update_editor: bool,
-    clear_preview: bool,
-    clear_active_preview: bool,
-}
-
-fn zone_save_completion(
-    selected_zone_id: Option<&str>,
-    active_preview_key: Option<&str>,
-    saved_zone_id: &str,
-    is_latest_save: bool,
-) -> ZoneSaveCompletion {
-    let active_preview_matches = active_preview_key == Some(saved_zone_id);
-    ZoneSaveCompletion {
-        update_editor: is_latest_save && selected_zone_id == Some(saved_zone_id),
-        clear_preview: is_latest_save || !active_preview_matches,
-        clear_active_preview: is_latest_save && active_preview_matches,
-    }
-}
 
 fn load_panel_size(key: &str, default: f64, min: f64, max: f64) -> f64 {
     storage::get_clamped(key, default, min, max)
@@ -78,12 +52,12 @@ pub struct LayoutWriteHandle {
     set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
     set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
-    removed_zone_cache: ReadSignal<RemovedOutputCache>,
-    set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     studio_history: crate::pages::studio::history::StudioHistory,
     selected_surface: Signal<Option<String>>,
     interaction_start: RwSignal<Option<LayoutEditorSnapshot>>,
     set_dirty: WriteSignal<bool>,
+    /// Commits a zone's edited layout; the provider installs it.
+    on_commit: StoredValue<Option<Callback<String>>>,
 }
 
 impl LayoutWriteHandle {
@@ -93,7 +67,6 @@ impl LayoutWriteHandle {
             zones: current.zones,
             selected_zone_ids: self.selected_zone_ids.get_untracked(),
             compound_depth: self.compound_depth.get_untracked(),
-            removed_zone_cache: self.removed_zone_cache.get_untracked(),
         })
     }
 
@@ -102,7 +75,6 @@ impl LayoutWriteHandle {
             zones,
             selected_zone_ids,
             compound_depth,
-            removed_zone_cache,
         } = snapshot;
         self.set_layout.update(move |current| {
             if let Some(layout) = current {
@@ -111,11 +83,27 @@ impl LayoutWriteHandle {
         });
         self.set_selected_zone_ids.set(selected_zone_ids);
         self.set_compound_depth.set(compound_depth);
-        self.set_removed_zone_cache.set(removed_zone_cache);
     }
 
     pub fn in_interaction(self) -> bool {
         self.interaction_start.with_untracked(Option::is_some)
+    }
+
+    /// Record a finished edit in Studio history and commit it.
+    fn record(self, zone_id: String, before: LayoutEditorSnapshot, after: LayoutEditorSnapshot) {
+        if before == after {
+            return;
+        }
+        self.studio_history
+            .record_layout(zone_id.clone(), before, after);
+        self.commit(zone_id);
+    }
+
+    /// Commit the zone's current editor state.
+    pub(crate) fn commit(self, zone_id: String) {
+        if let Some(commit) = self.on_commit.get_value() {
+            commit.run(zone_id);
+        }
     }
 
     pub fn update(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
@@ -136,7 +124,7 @@ impl LayoutWriteHandle {
             return;
         };
         if let Some(zone_id) = self.selected_surface.get_untracked() {
-            self.studio_history.record_layout(zone_id, before, after);
+            self.record(zone_id, before, after);
         }
     }
 
@@ -144,14 +132,18 @@ impl LayoutWriteHandle {
         self.set_layout.update(f);
     }
 
+    /// Replace the editor's layout. A gesture under way ends with it, and
+    /// Studio history picks up what waited for that gesture on the next
+    /// tick.
     pub fn set(self, value: Option<SpatialLayout>) {
+        let ended_gesture = self.interaction_start.with_untracked(Option::is_some);
         self.interaction_start.set(None);
         self.set_layout.set(value);
         self.set_dirty.set(false);
-    }
-
-    pub fn mark_clean(self) {
-        self.set_dirty.set(false);
+        if ended_gesture {
+            let history = self.studio_history;
+            leptos::task::spawn_local(async move { history.resume() });
+        }
     }
 
     pub fn begin_interaction(self) {
@@ -164,6 +156,20 @@ impl LayoutWriteHandle {
     }
 
     pub fn finish_interaction(self) {
+        self.close_interaction();
+        self.studio_history.resume();
+    }
+
+    /// Close a gesture whose surface is being torn down. Studio history
+    /// picks its queue up on the next tick, so a teardown during
+    /// navigation never starts a write.
+    pub fn abandon_interaction(self) {
+        self.close_interaction();
+        let history = self.studio_history;
+        leptos::task::spawn_local(async move { history.resume() });
+    }
+
+    fn close_interaction(self) {
         let before = self.interaction_start.get_untracked();
         self.interaction_start.set(None);
         if let (Some(before), Some(after), Some(zone_id)) = (
@@ -171,7 +177,7 @@ impl LayoutWriteHandle {
             self.capture_snapshot(),
             self.selected_surface.get_untracked(),
         ) {
-            self.studio_history.record_layout(zone_id, before, after);
+            self.record(zone_id, before, after);
         }
     }
 
@@ -199,15 +205,6 @@ impl LayoutWriteHandle {
         true
     }
 
-    pub fn replace_zones_with_history(self, zones: Vec<Output>) {
-        self.update(move |current| {
-            if let Some(layout) = current {
-                layout.zones = zones;
-            }
-        });
-        self.set_dirty.set(true);
-    }
-
     pub fn undo(self) {
         self.studio_history.replay(false);
     }
@@ -218,23 +215,19 @@ impl LayoutWriteHandle {
 }
 
 mod editor_session;
+pub mod gesture;
+pub mod keyed;
+pub mod ledger;
+pub(crate) mod writer;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
-use editor_session::{
-    LayoutEditorSession, ZoneDraft, embedded_attachment_profiles, merge_draft, reconcile_replay,
-};
+use editor_session::{LayoutEditorSession, embedded_attachment_profiles, reconcile_replay};
 
-/// The layout editor body with its device palette, canvas viewport,
-/// zone-properties panel, and resizable-panel state. It consumes the
-/// [`LayoutEditorContext`] provided by [`ZoneLayoutProvider`].
+/// The layout editor body: the canvas viewport above a resizable
+/// zone-properties panel. It consumes the [`LayoutEditorContext`]
+/// provided by [`ZoneLayoutProvider`].
 #[component]
-pub(crate) fn LayoutWorkspace(
-    /// Compact embedding (Studio Stage). The device palette collapses
-    /// into a slide-over drawer instead of a permanent left column, so
-    /// the canvas reads as the hero rather than one panel among four.
-    #[prop(optional)]
-    compact: bool,
-) -> impl IntoView {
+pub(crate) fn LayoutWorkspace() -> impl IntoView {
     let editor = expect_context::<LayoutEditorContext>();
     let has_layout = Signal::derive(move || editor.layout.with(Option::is_some));
 
@@ -279,13 +272,7 @@ pub(crate) fn LayoutWorkspace(
         });
     on_cleanup(move || history_shortcuts.remove());
 
-    // --- Resizable panel state ---
-    let (sidebar_width, set_sidebar_width) = signal(load_panel_size(
-        LS_KEY_SIDEBAR,
-        SIDEBAR_DEFAULT,
-        SIDEBAR_MIN,
-        SIDEBAR_MAX,
-    ));
+    // --- Resizable zone-properties panel ---
     let (bottom_height, set_bottom_height) = signal(load_panel_size(
         LS_KEY_BOTTOM,
         BOTTOM_DEFAULT,
@@ -293,43 +280,26 @@ pub(crate) fn LayoutWorkspace(
         BOTTOM_MAX,
     ));
 
-    // Which panel edge is being dragged, and its size at the press so a
-    // cancelled drag can put it back.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum PanelDrag {
-        Sidebar,
-        Bottom,
-    }
+    // The splitter's height at the press, so a cancelled drag can put it
+    // back.
     #[derive(Clone, Copy, Debug)]
     struct PanelGrip {
-        panel: PanelDrag,
         start_size: f64,
     }
-    let (dragging, set_dragging) = signal(None::<PanelDrag>);
+    let (dragging, set_dragging) = signal(false);
     let grip = StoredValue::new(PointerGesture::<PanelGrip>::new());
     let container_ref = NodeRef::<leptos::html::Div>::new();
-    let sidebar_grip_ref = NodeRef::<leptos::html::Div>::new();
     let bottom_grip_ref = NodeRef::<leptos::html::Div>::new();
 
-    let grip_element = move |panel: PanelDrag| -> Option<web_sys::Element> {
-        match panel {
-            PanelDrag::Sidebar => sidebar_grip_ref.get_untracked().map(Into::into),
-            PanelDrag::Bottom => bottom_grip_ref.get_untracked().map(Into::into),
-        }
-    };
+    let grip_element =
+        move || -> Option<web_sys::Element> { bottom_grip_ref.get_untracked().map(Into::into) };
 
     let finish_grip = move |outcome: GestureEnd, state: PanelGrip| {
-        set_dragging.set(None);
-        match (outcome, state.panel) {
-            (GestureEnd::Cancel, PanelDrag::Sidebar) => set_sidebar_width.set(state.start_size),
-            (GestureEnd::Cancel, PanelDrag::Bottom) => set_bottom_height.set(state.start_size),
+        set_dragging.set(false);
+        match outcome {
+            GestureEnd::Cancel => set_bottom_height.set(state.start_size),
             // Persist on release.
-            (GestureEnd::Commit, PanelDrag::Sidebar) => {
-                if let Some(width) = sidebar_width.try_get_untracked() {
-                    save_panel_size(LS_KEY_SIDEBAR, width);
-                }
-            }
-            (GestureEnd::Commit, PanelDrag::Bottom) => {
+            GestureEnd::Commit => {
                 if let Some(height) = bottom_height.try_get_untracked() {
                     save_panel_size(LS_KEY_BOTTOM, height);
                 }
@@ -337,18 +307,18 @@ pub(crate) fn LayoutWorkspace(
         }
     };
 
-    // Each splitter captures its pointer on press, so the drag keeps
+    // The splitter captures its pointer on press, so the drag keeps
     // tracking anywhere on screen without window listeners.
-    let start_grip = move |ev: web_sys::PointerEvent, panel: PanelDrag| {
+    let start_grip = move |ev: web_sys::PointerEvent| {
         suppress_press_defaults(&ev);
-        let Some(element) = grip_element(panel) else {
+        let Some(element) = grip_element() else {
             return;
         };
         let pointer_id = ev.pointer_id();
         let press = grip
             .try_update_value(|g| {
-                g.press(pointer_id, |owner, state| {
-                    holds_capture(grip_element(state.panel).as_ref(), owner)
+                g.press(pointer_id, |owner, _| {
+                    holds_capture(grip_element().as_ref(), owner)
                 })
             })
             .unwrap_or(Press::Busy);
@@ -357,14 +327,11 @@ pub(crate) fn LayoutWorkspace(
             Press::Stale(stale) => finish_grip(GestureEnd::Cancel, stale),
             Press::Ready => {}
         }
-        let start_size = match panel {
-            PanelDrag::Sidebar => sidebar_width.get_untracked(),
-            PanelDrag::Bottom => bottom_height.get_untracked(),
-        };
+        let start_size = bottom_height.get_untracked();
         capture_pointer(&element, &ev);
         let button = ev.button();
-        grip.update_value(|g| g.start(pointer_id, button, PanelGrip { panel, start_size }));
-        set_dragging.set(Some(panel));
+        grip.update_value(|g| g.start(pointer_id, button, PanelGrip { start_size }));
+        set_dragging.set(true);
     };
 
     let end_grip = move |ev: web_sys::PointerEvent, how: PointerEnd| {
@@ -381,32 +348,21 @@ pub(crate) fn LayoutWorkspace(
             end_grip(ev, PointerEnd::Up);
             return;
         }
-        let Some(panel) = grip.with_value(|g| g.state(ev.pointer_id()).map(|state| state.panel))
-        else {
+        if !grip.with_value(|g| g.state(ev.pointer_id()).is_some()) {
             return;
-        };
+        }
         let Some(container) = container_ref.try_get_untracked().flatten() else {
             return;
         };
         ev.prevent_default();
         let rect = container.get_bounding_client_rect();
-
-        match panel {
-            PanelDrag::Sidebar => {
-                let x = f64::from(ev.client_x()) - rect.left();
-                let clamped = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(rect.width() - 200.0));
-                set_sidebar_width.set(clamped);
-            }
-            PanelDrag::Bottom => {
-                let y = f64::from(ev.client_y()) - rect.top();
-                let panel_h = rect.height() - y;
-                let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
-                set_bottom_height.set(clamped);
-            }
-        }
+        let y = f64::from(ev.client_y()) - rect.top();
+        let panel_h = rect.height() - y;
+        let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
+        set_bottom_height.set(clamped);
     };
 
-    // The splitters render under `Show`, so they can leave the DOM mid-drag
+    // The splitter renders under `Show`, so it can leave the DOM mid-drag
     // while this state lives on. A detached element's lost capture goes to
     // the document, not the splitter, so a window listener ends the drag.
     let detached_capture_loss = window_event_listener(ev::lostpointercapture, move |ev| {
@@ -423,8 +379,7 @@ pub(crate) fn LayoutWorkspace(
                         <div class="text-center space-y-3 animate-enter-fade">
                             <Icon icon=LuLayoutTemplate width="48px" height="48px"
                                   style="color: rgba(255, 106, 193, 0.25); filter: drop-shadow(0 0 12px rgba(255, 106, 193, 0.15))" />
-                            <div class="text-fg-tertiary/50 text-sm">"Select or create a layout to begin"</div>
-                            <div class="text-fg-tertiary/40 text-xs font-mono tracking-wide">"Drag devices onto the canvas to build your spatial mapping"</div>
+                            <div class="text-fg-tertiary/50 text-sm">"Choose a zone tab to edit its canvas"</div>
                         </div>
                     </div>
                 }
@@ -434,40 +389,13 @@ pub(crate) fn LayoutWorkspace(
                 class="relative flex min-h-0 flex-1 overflow-hidden"
                 node_ref=container_ref
                 style=move || {
-                    match dragging.get() {
-                        Some(PanelDrag::Sidebar) => "cursor: col-resize; user-select: none",
-                        Some(PanelDrag::Bottom) => "cursor: row-resize; user-select: none",
-                        None => "",
+                    if dragging.get() {
+                        "cursor: row-resize; user-select: none"
+                    } else {
+                        ""
                     }
                 }
             >
-                // Full-page editor keeps the palette as a permanent
-                // resizable column. Compact embeddings drop it here and
-                // surface it through the slide-over drawer below instead.
-                {(!compact).then(|| view! {
-                    <div
-                        class="shrink-0 min-h-0 overflow-y-auto"
-                        style=move || format!("width: {:.0}px", sidebar_width.get())
-                    >
-                        <LayoutPalette />
-                    </div>
-
-                    <div
-                        node_ref=sidebar_grip_ref
-                        class="shrink-0 w-1 cursor-col-resize group/handle relative touch-none touch-grab
-                               hover:bg-accent-muted/20 active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
-                        on:pointerdown=move |ev| start_grip(ev, PanelDrag::Sidebar)
-                        on:pointermove=move_grip
-                        on:pointerup=move |ev| end_grip(ev, PointerEnd::Up)
-                        on:pointercancel=move |ev| end_grip(ev, PointerEnd::Cancel)
-                        on:lostpointercapture=move |ev| end_grip(ev, PointerEnd::LostCapture)
-                    >
-                        <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
-                        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
-                                    rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
-                    </div>
-                })}
-
                 // Main area: canvas above, zone properties below
                 <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                     // Canvas viewport — flexes to fill remaining space.
@@ -483,7 +411,7 @@ pub(crate) fn LayoutWorkspace(
                         node_ref=bottom_grip_ref
                         class="shrink-0 h-1 cursor-row-resize group/handle relative touch-none touch-grab
                                hover:bg-accent-muted/20 active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
-                        on:pointerdown=move |ev| start_grip(ev, PanelDrag::Bottom)
+                        on:pointerdown=start_grip
                         on:pointermove=move_grip
                         on:pointerup=move |ev| end_grip(ev, PointerEnd::Up)
                         on:pointercancel=move |ev| end_grip(ev, PointerEnd::Cancel)
@@ -507,17 +435,16 @@ pub(crate) fn LayoutWorkspace(
     }
 }
 
-/// The Studio Stage's zone-canvas actions — Save and Revert plus the
-/// dirty and has-layout flags. Provided by [`ZoneLayoutProvider`]; the
-/// Stage header consumes it. Undo / redo and the editor write handle come
-/// from [`LayoutEditorContext`].
+/// The Studio Stage's zone-canvas actions: Fit, plus the flags the header
+/// keys off. Provided by [`ZoneLayoutProvider`]; the Stage header consumes
+/// it. Undo / redo and the editor write handle come from
+/// [`LayoutEditorContext`].
 #[derive(Clone, Copy)]
 pub(crate) struct ZoneCanvasActions {
-    /// Persist the selected zone's layout through the per-zone API.
-    pub save: Callback<()>,
-    /// Restore the canvas to the last saved state.
-    pub revert: Callback<()>,
-    pub is_dirty: Signal<bool>,
+    /// Scale and center every member of the zone to fill its canvas.
+    pub fit: Callback<()>,
+    /// Whether the zone has members to fit.
+    pub can_fit: Signal<bool>,
     /// Whether an editable zone layout is loaded. The header hides its
     /// actions when nothing is selected.
     pub has_layout: Signal<bool>,
@@ -541,8 +468,9 @@ fn editor_layout_for_zone(zone: &api::ZoneResource) -> SpatialLayout {
 /// Studio Stage, scoped to the selected zone's canonical placements.
 ///
 /// This provider adapts the selected zone's normalized placements and
-/// persists them through the per-zone layout API at `PUT
-/// .../zones/{id}/layout`. Switching zones switches the canvas. Mount it
+/// commits each finished edit through the per-zone layout API at `PUT
+/// .../zones/{id}/layout`. Switching zones switches the canvas and never
+/// drops an edit: its commit was queued when its gesture ended. Mount it
 /// once above the Stage; it provides
 /// [`LayoutEditorContext`], [`LayoutZoneDisplayContext`], and
 /// [`ZoneCanvasActions`].
@@ -552,8 +480,8 @@ pub(crate) fn ZoneLayoutProvider(
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
     selected_zone_id: Signal<Option<String>>,
-    /// Re-fetch the active scene after a save so the tree and Stage pick
-    /// up the new scene revision.
+    /// Re-fetch the active scene after a commit so the device pane and
+    /// Stage pick up the new scene revision.
     refresh_scene: Callback<()>,
     children: Children,
 ) -> impl IntoView {
@@ -564,8 +492,6 @@ pub(crate) fn ZoneLayoutProvider(
     let studio_history = expect_context::<crate::pages::studio::history::StudioHistory>();
     let session = LayoutEditorSession::new(false, studio_history, selected_zone_id);
     let layout = session.layout;
-    let saved_layout = session.saved_layout;
-    let set_saved_layout = session.set_saved_layout;
     let set_selected_zone_ids = session.set_selected_zone_ids;
     let set_compound_depth = session.set_compound_depth;
     let set_layout = session.write;
@@ -606,8 +532,9 @@ pub(crate) fn ZoneLayoutProvider(
         attachment_profiles,
     });
 
-    // Canonical placement changes refresh clean fields while local drafts keep
-    // their edited fields. Layer control updates leave this memo unchanged.
+    // The selected zone as the daemon last reported it, with the scene's
+    // revision and the canvas it is drawn for. The zone's ledger turns it
+    // into what the canvas shows.
     let canonical_zone = Memo::new(move |_| {
         let zone_id = selected_zone_id.get()?;
         let scene = studio_history.current_scene_tracked()?;
@@ -618,83 +545,89 @@ pub(crate) fn ZoneLayoutProvider(
         if zone.role == ZoneRole::Display {
             return None;
         }
-        let mut canonical = editor_layout_for_zone(zone);
-        let (width, height) = render_canvas_size.get();
-        canonical.canvas_width = width;
-        canonical.canvas_height = height;
         Some((
             scene.id,
-            zone_id,
-            layout_geometry::normalize_layout_for_editor(canonical),
+            scene.revision,
+            zone.clone(),
+            render_canvas_size.get(),
         ))
     });
+    // Moves whenever the writer changes a ledger, so the canvas redraws
+    // what its zone now shows.
+    let ledger_tick = RwSignal::new(0_u64);
     let loaded_key = StoredValue::new(None::<(hypercolor_types::scene::SceneId, String)>);
-    let drafts = StoredValue::new(std::collections::HashMap::<
-        (hypercolor_types::scene::SceneId, String),
-        ZoneDraft,
-    >::new());
     Effect::new(move |_| {
         let next = canonical_zone.get();
-        let replay = studio_history
-            .layout_replay_for_zone(next.as_ref().map(|(_, zone_id, _)| zone_id.as_str()));
-        // Capture the outgoing editor before changing the selected surface.
-        if let (Some(key), Some(baseline), Some(snapshot)) = (
-            loaded_key.get_value(),
-            saved_layout.get_untracked(),
-            set_layout.capture_snapshot(),
-        ) {
-            drafts.update_value(|drafts| {
-                let mut next = ZoneDraft { baseline, snapshot };
-                if let Some(previous) = drafts.get(&key) {
-                    // Removed members can return through assignment Undo. Keep
-                    // their drafts without rendering them while unassigned.
-                    for output in &previous.snapshot.zones {
-                        if !next
-                            .snapshot
-                            .zones
-                            .iter()
-                            .any(|current| current.id == output.id)
-                        {
-                            next.snapshot.zones.push(output.clone());
-                        }
-                    }
-                    for output in &previous.baseline.zones {
-                        if !next
-                            .baseline
-                            .zones
-                            .iter()
-                            .any(|current| current.id == output.id)
-                        {
-                            next.baseline.zones.push(output.clone());
-                        }
-                    }
-                }
-                drafts.insert(key, next);
-            });
-        }
-        let Some((scene_id, zone_id, canonical)) = next else {
+        ledger_tick.track();
+        // A document of another daemon run waits until the socket names
+        // that run, and is offered again then.
+        ws_ctx.run_epoch.track();
+        let replay = studio_history.layout_replay_for_zone(
+            next.as_ref()
+                .map(|(_, _, zone, _)| zone.id.to_string())
+                .as_deref(),
+        );
+        let Some((scene_id, revision, zone, canvas)) = next else {
             set_layout.set(None);
-            set_saved_layout.set(None);
             loaded_key.set_value(None);
             return;
         };
+        let zone_id = zone.id.to_string();
+        if let Some(scene) = studio_history
+            .current_scene()
+            .filter(|scene| scene.id == scene_id && scene.revision == revision)
+        {
+            writer::observe(&scene, canvas, Some(&zone_id));
+        }
+        let Some(display) = writer::display(scene_id, &zone_id) else {
+            return;
+        };
+        let mut shown = editor_layout_for_zone(&zone);
+        shown.canvas_width = canvas.0;
+        shown.canvas_height = canvas.1;
+        shown.zones = display;
         let key = (scene_id, zone_id.clone());
-        // Drafts from an old scene cannot be revived by a later scene switch.
-        drafts.update_value(|drafts| drafts.retain(|(id, _), _| *id == scene_id));
-        let draft = drafts.with_value(|drafts| drafts.get(&key).cloned());
-        let snapshot = draft.as_ref().map(|draft| merge_draft(&canonical, draft));
-        set_saved_layout.set(Some(canonical.clone()));
-        set_layout.set(Some(canonical.clone()));
-        if let Some(snapshot) = snapshot {
-            set_layout.apply_snapshot(snapshot);
+        if loaded_key.get_value().as_ref() == Some(&key) {
+            // The zone being edited, drawn again: its selection and any
+            // gesture under way stay. What changed meanwhile joins the
+            // gesture's press-time snapshot, so undoing the gesture takes
+            // back the gesture alone; a field the snapshot holds at a value
+            // of its own keeps it.
+            let previous = layout
+                .with_untracked(|current| current.as_ref().map(|layout| layout.zones.clone()));
+            if let (Some(previous), Some(mut gesture)) =
+                (previous, set_layout.interaction_start.get_untracked())
+            {
+                gesture::rebase_unedited(&mut gesture.zones, &previous, &shown.zones);
+                set_layout.interaction_start.set(Some(gesture));
+            }
+            // A new revision that leaves the drawing alone (a layer tweak,
+            // another zone's edit) touches nothing, so the canvas does not
+            // redraw for it.
+            let unchanged = layout.with_untracked(|current| {
+                current.as_ref().is_some_and(|current| {
+                    current.zones == shown.zones
+                        && (current.canvas_width, current.canvas_height)
+                            == (shown.canvas_width, shown.canvas_height)
+                })
+            });
+            if !unchanged {
+                let present: std::collections::HashSet<String> =
+                    shown.zones.iter().map(|output| output.id.clone()).collect();
+                set_layout.update_without_history(|current| *current = Some(shown));
+                let gone = session
+                    .selected_zone_ids
+                    .with_untracked(|ids| ids.iter().any(|id| !present.contains(id)));
+                if gone {
+                    set_selected_zone_ids.update(|ids| ids.retain(|id| present.contains(id)));
+                }
+            }
         } else {
+            set_layout.set(Some(shown));
             set_selected_zone_ids.set(std::collections::HashSet::new());
             set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
-            session
-                .set_removed_zone_cache
-                .set(RemovedOutputCache::new());
+            loaded_key.set_value(Some(key));
         }
-        loaded_key.set_value(Some(key));
         let applied_replay = replay.filter(|replay| replay.zone_id == zone_id);
         if let Some(replay) = applied_replay.as_ref() {
             let mut snapshot = replay.snapshot.clone();
@@ -703,65 +636,54 @@ pub(crate) fn ZoneLayoutProvider(
                 .expect("selected editor was initialized");
             reconcile_replay(&current, &replay.previous, &mut snapshot);
             set_layout.apply_snapshot(snapshot);
+            // Only the outputs the replay resized: normalizing is not always
+            // a fixed point, and a box whose size did not change must not
+            // read as a resize.
+            set_layout.update_without_history(|layout| {
+                let Some(layout) = layout.as_mut() else {
+                    return;
+                };
+                let aspect =
+                    layout_geometry::canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
+                for output in &mut layout.zones {
+                    let resized = current
+                        .zones
+                        .iter()
+                        .find(|before| before.id == output.id)
+                        .is_none_or(|before| before.size != output.size);
+                    if resized {
+                        output.size = layout_geometry::normalize_zone_size_for_editor(
+                            output.size,
+                            &output.topology,
+                            output.shape.as_ref(),
+                            aspect,
+                        );
+                    }
+                }
+            });
         }
-        set_layout.update_without_history(|current| {
-            if let Some(layout) = current.take() {
-                *current = Some(layout_geometry::normalize_layout_for_editor(layout));
-            }
-        });
-        let dirty = layout.with_untracked(|current| {
-            current
-                .as_ref()
-                .is_some_and(|current| current.zones != canonical.zones)
-        });
+        if let Some(replay) = applied_replay {
+            // An undo or redo is an edit like any other: it makes intents,
+            // ahead of anything that waited for it.
+            set_layout.commit(zone_id.clone());
+            studio_history.complete_layout(replay.redo);
+        }
+        let dirty = writer::pending(scene_id, &zone_id);
         set_layout.set_dirty.set(dirty);
-        if !dirty && let Some(preview) = active_preview_key.get_value() {
+        if !dirty
+            && !set_layout.in_interaction()
+            && let Some(preview) = active_preview_key.get_value()
+        {
             ws_ctx.clear_zone_layout_preview.run(preview);
             active_preview_key.set_value(None);
         }
-        if let Some(replay) = applied_replay {
-            studio_history.complete_layout(replay.redo);
-        }
     });
 
-    // The daemon can retune its canvas live (and config lands after the
-    // first scene paint), so the extent follows it without a reload. This
-    // is not an edit: no history entry, no dirty flag.
-    Effect::new(move |_| {
-        let (canvas_width, canvas_height) = render_canvas_size.get();
-        // Circular zones are normalized against the pixel aspect, so a live
-        // extent change re-normalizes them for the new canvas too.
-        let stamp = |layout: &mut Option<SpatialLayout>| {
-            if let Some(layout) = layout.as_mut() {
-                layout.canvas_width = canvas_width;
-                layout.canvas_height = canvas_height;
-                let aspect = layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height);
-                for zone in &mut layout.zones {
-                    zone.size = layout_geometry::normalize_zone_size_for_editor(
-                        zone.position,
-                        zone.size,
-                        &zone.topology,
-                        zone.shape.as_ref(),
-                        aspect,
-                    );
-                }
-            }
-        };
-        let stale = layout.with_untracked(|current| {
-            current
-                .as_ref()
-                .is_some_and(|l| (l.canvas_width, l.canvas_height) != (canvas_width, canvas_height))
-        });
-        if stale {
-            set_layout.update_without_history(stamp);
-            set_saved_layout.update(stamp);
-        }
-    });
-
-    // Every unsaved edit previews on the hardware, not just canvas drags:
-    // a rotation, scale, align, or undo from the properties panel lands on
-    // the LEDs the same way a drag does. Only a dirty layout pushes, so a
-    // load, a revert, or a save never re-arms a preview.
+    // Every edit previews on the hardware the moment it lands, not just
+    // canvas drags: a rotation, scale, align, or undo from the properties
+    // panel reaches the LEDs the same way a drag does, and its commit then
+    // retires the preview. Only a layout that differs from the zone pushes,
+    // so a load or a landed commit never re-arms a preview.
     Effect::new(move |previous: Option<Option<Vec<Output>>>| {
         let snapshot = layout.with(|current| current.as_ref().map(|l| l.zones.clone()));
         let changed = previous.is_some_and(|previous| previous != snapshot);
@@ -774,158 +696,155 @@ pub(crate) fn ZoneLayoutProvider(
         snapshot
     });
 
-    let save = Callback::new(move |()| {
-        let Some(current) = layout.get_untracked() else {
-            return;
-        };
-        let Some(zone_id) = selected_zone_id.get_untracked() else {
-            return;
-        };
-        let Some(scene) = studio_history.current_scene() else {
-            return;
-        };
-        let revision = scene.revision;
-        let Some(generation) = studio_history.begin() else {
-            return;
-        };
-        leptos::task::spawn_local(async move {
-            match api::zones::update_zone_layout(&zone_id, &current, revision).await {
-                Ok(api::zones::ZoneOutcome::Applied((zone, saved_revision))) => {
-                    if !studio_history.is_current(generation) {
-                        return;
-                    }
-                    let mut acknowledged = editor_layout_for_zone(&zone);
-                    acknowledged.canvas_width = current.canvas_width;
-                    acknowledged.canvas_height = current.canvas_height;
-                    let acknowledged = layout_geometry::normalize_layout_for_editor(acknowledged);
-                    drafts.update_value(|drafts| {
-                        if let Some(draft) = drafts.get_mut(&(scene.id, zone_id.clone())) {
-                            draft.baseline = acknowledged.clone();
-                        }
-                    });
-                    studio_history.record_saved_zone(
-                        scene.id,
-                        zone,
-                        saved_revision.unwrap_or_else(|| revision.saturating_add(1)),
-                    );
-                    let completion = zone_save_completion(
-                        selected_zone_id.get_untracked().as_deref(),
-                        active_preview_key.get_value().as_deref(),
-                        &zone_id,
-                        studio_history.is_current(generation),
-                    );
-                    if completion.update_editor {
-                        let clean = layout.with_untracked(|layout| {
-                            layout
-                                .as_ref()
-                                .is_some_and(|layout| layout.zones == acknowledged.zones)
-                        });
-                        set_saved_layout.set(Some(acknowledged));
-                        set_layout.set_dirty.set(!clean);
-                        toasts::toast_success("Zone layout saved");
-                    }
-                    if completion.clear_preview {
-                        ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
-                    }
-                    if completion.clear_active_preview {
-                        active_preview_key.set_value(None);
-                    }
-                    refresh_scene.run(());
-                }
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                    if !studio_history.is_current(generation) {
-                        return;
-                    }
-                    let completion = zone_save_completion(
-                        selected_zone_id.get_untracked().as_deref(),
-                        active_preview_key.get_value().as_deref(),
-                        &zone_id,
-                        studio_history.is_current(generation),
-                    );
-                    if completion.clear_preview {
-                        ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
-                    }
-                    if completion.clear_active_preview {
-                        active_preview_key.set_value(None);
-                    }
-                    if completion.update_editor {
-                        toasts::toast_error("Scene changed elsewhere; reloaded, try again");
-                    }
-                    refresh_scene.run(());
-                }
-                Err(error) => {
-                    if studio_history.is_current(generation) {
-                        toasts::toast_error(&format!("Save failed: {error}"));
-                    }
-                }
-            }
-            studio_history.finish(generation);
-        });
+    // The ledgers belong to the active scene, and another scene's never
+    // land. Every zone with a ledger takes in each new scene, not only the
+    // one on the canvas.
+    Effect::new(move |_| {
+        ws_ctx.run_epoch.track();
+        if let Some(scene) = studio_history.current_scene_tracked() {
+            writer::observe(&scene, render_canvas_size.get(), None);
+        }
     });
 
-    let revert = Callback::new(move |()| {
-        if studio_history.busy.get_untracked() {
-            return;
+    // An edit becomes intents in the zone's ledger, and the writer sends
+    // them.
+    set_layout
+        .on_commit
+        .set_value(Some(Callback::new(move |zone_id: String| {
+            let Some(edited) = layout
+                .with_untracked(|current| current.as_ref().map(|layout| layout.zones.clone()))
+            else {
+                return;
+            };
+            let Some(scene_id) = studio_history.current_scene().map(|scene| scene.id) else {
+                return;
+            };
+            if writer::edit(scene_id, &zone_id, &edited) {
+                writer::wake();
+            }
+            set_layout
+                .set_dirty
+                .set(writer::pending(scene_id, &zone_id));
+        })));
+
+    // While this canvas is mounted, the writer takes its turn with Studio's
+    // other scene operations, records what lands in Studio's history, and
+    // redraws the canvas when a ledger changes.
+    let lent = writer::attach(writer::WriterHooks {
+        begin: Callback::new(move |()| studio_history.begin_commit()),
+        end: Callback::new(move |generation| studio_history.end_commit(generation)),
+        landed: Callback::new(
+            move |(fence, zone, revision): (u64, api::ZoneResource, u64)| {
+                if let Some(base) = studio_history
+                    .current_scene()
+                    .filter(|scene| scene.revision == fence)
+                {
+                    studio_history.record_saved_zone(&base, zone, revision);
+                }
+                refresh_scene.run(());
+            },
+        ),
+        refetched: Callback::new(move |scene| studio_history.adopt(scene)),
+        changed: Callback::new(move |()| ledger_tick.update(|tick| *tick += 1)),
+        idle: Callback::new(move |()| studio_history.resume()),
+    });
+    on_cleanup(move || writer::detach(lent));
+
+    // Studio history lets the writer go ahead of any operation waiting for
+    // the scene, and holds a waiting undo or redo until a gesture ends.
+    studio_history.attach_editor(Some(crate::pages::studio::history::EditorHooks {
+        commits_pending: Callback::new(move |()| {
+            studio_history
+                .current_scene()
+                .is_some_and(|scene| writer::busy(scene.id))
+        }),
+        drain_commits: Callback::new(move |()| writer::wake()),
+        gesture_active: Callback::new(move |()| set_layout.in_interaction()),
+    }));
+    on_cleanup(move || studio_history.attach_editor(None));
+
+    // An edit made while a structural operation held the scene goes out
+    // once it finishes.
+    Effect::new(move |_| {
+        if !studio_history.busy.get() {
+            writer::wake();
         }
-        let Some(saved) = saved_layout.get_untracked() else {
-            return;
-        };
-        set_layout.replace_zones_with_history(saved.zones.clone());
-        set_layout.mark_clean();
-        if let Some(key) = active_preview_key.get_value() {
-            ws_ctx.clear_zone_layout_preview.run(key);
-            active_preview_key.set_value(None);
+    });
+
+    // The socket opening again lets a paused writer try again, for as long
+    // as the page lives; a new daemon run re-anchors its ledgers first, and
+    // history lets go of the newest document it knew, which belongs to the
+    // run that ended.
+    writer::watch_connection(ws_ctx.connection_generation, ws_ctx.run_epoch);
+    Effect::new(move |previous: Option<Option<String>>| {
+        let run = ws_ctx.run_epoch.get();
+        if previous.is_some_and(|previous| previous.is_some() && previous != run) {
+            studio_history.forget_latest();
         }
-        toasts::toast_info("Zone layout reverted");
+        run
+    });
+
+    // One edit: the whole group scales and recenters together, so undo
+    // steps back over the Fit in one go.
+    let fit = Callback::new(move |()| {
+        // Frame the boxes the canvas shows; hidden and undrawn outputs move
+        // with them.
+        let hidden = session.hidden_zones.get_untracked();
+        let framed: std::collections::HashSet<String> =
+            devices_ctx.devices_resource.with_untracked(|devices| {
+                let devices = devices
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map_or(&[][..], Vec::as_slice);
+                layout.with_untracked(|current| {
+                    current
+                        .as_ref()
+                        .map(|layout| {
+                            let suppressed =
+                                crate::layout_utils::suppressed_attachment_source_zone_ids(layout);
+                            layout
+                                .zones
+                                .iter()
+                                .filter(|zone| {
+                                    !suppressed.contains(&zone.id)
+                                        && !hidden.contains(&zone.id)
+                                        && crate::components::layout_canvas::draws_output(
+                                            zone, devices,
+                                        )
+                                })
+                                .map(|zone| zone.id.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+            });
+        let mut fitted = false;
+        set_layout.update(|current| {
+            if let Some(layout) = current.as_mut() {
+                let canvas = (layout.canvas_width, layout.canvas_height);
+                fitted = crate::pages::studio::placement::fit_outputs(
+                    &mut layout.zones,
+                    canvas,
+                    |output| framed.contains(&output.id),
+                );
+            }
+        });
+        if fitted {
+            set_layout.set_dirty.set(true);
+        }
     });
 
     provide_context(ZoneCanvasActions {
-        save,
-        revert,
-        is_dirty,
+        fit,
+        can_fit: Signal::derive(move || {
+            layout.with(|current| {
+                current
+                    .as_ref()
+                    .is_some_and(|layout| !layout.zones.is_empty())
+            })
+        }),
         has_layout: Signal::derive(move || layout.with(Option::is_some)),
     });
 
     children()
-}
-
-#[cfg(test)]
-mod zone_save_tests {
-    use super::{ZoneSaveCompletion, zone_save_completion};
-
-    #[test]
-    fn current_zone_completion_updates_editor_and_retires_its_preview() {
-        assert_eq!(
-            zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", true),
-            ZoneSaveCompletion {
-                update_editor: true,
-                clear_preview: true,
-                clear_active_preview: true,
-            }
-        );
-    }
-
-    #[test]
-    fn old_zone_completion_does_not_mutate_the_new_zone() {
-        assert_eq!(
-            zone_save_completion(Some("zone-b"), Some("zone-b"), "zone-a", true),
-            ZoneSaveCompletion {
-                update_editor: false,
-                clear_preview: true,
-                clear_active_preview: false,
-            }
-        );
-    }
-
-    #[test]
-    fn superseded_save_does_not_clear_the_newer_preview() {
-        assert_eq!(
-            zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", false),
-            ZoneSaveCompletion {
-                update_editor: false,
-                clear_preview: false,
-                clear_active_preview: false,
-            }
-        );
-    }
 }

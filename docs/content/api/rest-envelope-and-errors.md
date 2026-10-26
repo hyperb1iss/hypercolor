@@ -121,14 +121,17 @@ daemon's only error rendering; this is the complete mapping.
 | `unauthorized` | `401 Unauthorized` | Missing or invalid credentials. See [auth & security](@/api/auth-and-security.md). |
 | `forbidden` | `403 Forbidden` | Credentials are valid but lack the permission for this operation (for example, a read-only key attempting a write). |
 | `{resource}_not_found` | `404 Not Found` | The resource does not exist. The prefix names the kind that missed: `scene_not_found`, `layer_not_found`, `device_not_found`, `route_not_found` for an unmatched path, and so on. |
-| `conflict` | `409 Conflict` | A state conflict: a duplicate name, an ambiguous lookup, a mutation the current state refuses. |
-| `precondition_failed` | `412 Precondition Failed` | An `If-Match` version precondition failed. `details` carries `expected` and `current`, and the response repeats `current` in its `ETag`. |
+| `conflict` | `409 Conflict` | A state conflict: a duplicate name, an ambiguous lookup, a mutation the current state refuses. A scene write that lost its commit race carries `details.kind` `scene_commit_superseded` with `expected_revision` and `current_revision`, plus `expected_epoch` and `current_epoch` naming the daemon run both revisions count in. Read the scene again and retry. |
+| `control_bound` | `409 Conflict` | A control write named keys that an input binding drives. `details.bound` lists them; drop those keys, or clear their bindings in the same request. |
+| `precondition_failed` | `412 Precondition Failed` | An `If-Match` version precondition failed. `details` carries `expected` and `current`, and the response repeats the current version in its `ETag`. For a scene fence `details` also carries `current_epoch` (and `expected_epoch` when the fence named a run; a fence naming another run is always stale), and the `ETag` is the epoch-qualified current fence, `"<run_epoch>:<revision>"`. |
 | `payload_too_large` | `413 Payload Too Large` | The request body exceeds the size limit. `details.limit_bytes` names the limit when the refusing route knows it (asset and effect uploads) and is omitted otherwise. |
 | `unsupported_media_type` | `415 Unsupported Media Type` | The `Content-Type` is not accepted for this endpoint. |
 | `validation_error` | `422 Unprocessable Entity` | The request was well-formed but semantically invalid: a value out of range, an incompatible combination of fields. |
+| `idempotency_key_mismatch` | `422 Unprocessable Entity` | An `Idempotency-Key` was reused on a request whose method, path, `If-Match`, `Content-Type`, or body differs from the request it first named. See [retrying a write](@/studio/zone-api-and-concurrency.md#retrying-a-write-whose-reply-was-lost). |
 | `rate_limited` | `429 Too Many Requests` | The request was throttled by the rate limiter. See below for retry headers. |
 | `internal_error` | `500 Internal Server Error` | An unexpected daemon-side failure. The `message` is intentionally generic; the `request_id` is your key to the daemon logs. |
 | `device_unavailable` | `503 Service Unavailable` | The device exists but cannot serve the request right now. |
+| `service_unavailable` | `503 Service Unavailable` | A daemon capability cannot serve the request right now. A keyed scene write answers this while too many keyed scene writes are already in flight; nothing is recorded, so retry with the same `Idempotency-Key`. |
 
 {% <callout type="danger"> %}
 `validation_error` maps to **422**, not 400. A well-formed request that fails a

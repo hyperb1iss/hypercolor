@@ -26,7 +26,8 @@ use hypercolor_types::effect::{
     EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, HypercolorEvent, LayerStackChangeKind, SceneSettingsChangeKind,
+    ChangeTrigger, EffectStopReason, HypercolorEvent, LayerStackChangeKind,
+    SceneSettingsChangeKind, ZoneChangeKind,
 };
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
@@ -93,13 +94,22 @@ fn if_match(mut request: Request<Body>, revision: u64) -> Request<Body> {
     request
 }
 
+/// The response's scene fence, checked to be epoch-qualified and returned
+/// as the quoted revision, so assertions compare revisions while every
+/// served ETag is held to the `"<run_epoch>:<revision>"` form.
 fn response_etag(response: &axum::response::Response) -> String {
-    response
+    let etag = response
         .headers()
         .get(http::header::ETAG)
         .and_then(|value| value.to_str().ok())
-        .expect("response should include ETag")
-        .to_owned()
+        .expect("response should include ETag");
+    let fence = hypercolor_types::api::scene::SceneFence::parse(etag)
+        .expect("the ETag should be a scene fence");
+    assert!(
+        fence.run_epoch.is_some(),
+        "scene ETags name their run: {etag}"
+    );
+    format!("\"{}\"", fence.revision)
 }
 
 fn sample_effect(name: &str) -> EffectMetadata {
@@ -288,11 +298,26 @@ async fn the_scene_document_always_answers_and_carries_one_revision() {
         StatusCode::OK,
         "an active scene always exists (Spec 78 §1.1)"
     );
-    assert_eq!(response_etag(&response), "\"0\"");
+    let etag = response_etag(&response);
+    let run_epoch = response
+        .headers()
+        .get(hypercolor_types::api::envelope::RUN_EPOCH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("every response names the daemon run")
+        .to_owned();
     let document = body_json(response).await;
 
     assert_eq!(document["data"]["is_default"], true);
-    assert_eq!(document["data"]["revision"], 0);
+    let revision = document["data"]["revision"]
+        .as_u64()
+        .expect("the document carries its revision");
+    assert_eq!(etag, format!("\"{revision}\""));
+    assert_eq!(
+        revision,
+        state.scene_manager.revision(),
+        "a fresh run starts at the revision it resumed, before any commit"
+    );
+    assert_eq!(document["data"]["run_epoch"], run_epoch.as_str());
     for absent in ["groups_revision", "layers_version", "controls_version"] {
         assert!(
             document["data"].get(absent).is_none(),
@@ -356,6 +381,7 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
         })
         .await;
     let app = api::build_router(Arc::clone(&state), None);
+    let before = state.scene_manager.revision();
 
     let response = send(
         &app,
@@ -367,7 +393,7 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response_etag(&response), "\"1\"");
+    assert_eq!(response_etag(&response), format!("\"{}\"", before + 1));
     let applied = body_json(response).await;
     let zone_id = applied["data"]["zone"]["id"].as_str().expect("zone id");
     let layer_id = applied["data"]["zone"]["layers"][0]["id"]
@@ -1113,6 +1139,150 @@ async fn only_custom_zones_are_created_through_the_zone_route() {
         assert_eq!(body["error"]["code"], "validation_error");
         assert_eq!(body["error"]["details"]["field"], "role");
     }
+}
+
+fn zone_order(document: &serde_json::Value) -> Vec<String> {
+    document["data"]["zones"]
+        .as_array()
+        .expect("zones array")
+        .iter()
+        .map(|zone| zone["id"].as_str().expect("zone id").to_owned())
+        .collect()
+}
+
+fn zone_changes(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(ZoneId, ZoneChangeKind)> {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|timestamped| match timestamped.event {
+            HypercolorEvent::ZoneChanged { zone_id, kind, .. } => Some((zone_id, kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn patching_a_zone_index_moves_it_through_the_whole_zone_order() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let panel_id = seed_display_zone(&state, effect_id).await.to_string();
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({ "name": "Desk" }),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let desk_id = body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+    let document = read_document(&app).await;
+    let primary_id = primary_zone(&document)["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+    assert_eq!(
+        zone_order(&document),
+        [primary_id.clone(), panel_id.clone(), desk_id.clone()],
+        "display zones hold slots in the same order as LED zones"
+    );
+    let revision = document["data"]["revision"].as_u64().expect("revision");
+    let mut events = state.event_bus.subscribe_all();
+
+    // A move rides with the other fields and lands in one commit.
+    let moved = send(
+        &app,
+        if_match(
+            json_request(
+                "PATCH",
+                format!("/api/v1/scene/zones/{desk_id}"),
+                json!({ "index": 0, "name": "Desk Left" }),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(moved.status(), StatusCode::OK);
+    assert_eq!(response_etag(&moved), format!("\"{}\"", revision + 1));
+    assert_eq!(body_json(moved).await["data"]["name"], "Desk Left");
+    let document = read_document(&app).await;
+    assert_eq!(
+        zone_order(&document),
+        [desk_id.clone(), primary_id.clone(), panel_id.clone()]
+    );
+    let desk_zone_id = ZoneId(desk_id.parse::<Uuid>().expect("zone id parses"));
+    assert_eq!(
+        zone_changes(&mut events),
+        [(desk_zone_id, ZoneChangeKind::Updated)],
+        "a move tells clients to refresh the zone"
+    );
+
+    // The revision the move replaced is stale now.
+    let stale = send(
+        &app,
+        if_match(
+            json_request(
+                "PATCH",
+                format!("/api/v1/scene/zones/{desk_id}"),
+                json!({ "index": 2 }),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+
+    // An index past the end clamps to the last slot.
+    let clamped = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{primary_id}"),
+            json!({ "index": 99 }),
+        ),
+    )
+    .await;
+    assert_eq!(clamped.status(), StatusCode::OK);
+    assert_eq!(response_etag(&clamped), format!("\"{}\"", revision + 2));
+    let document = read_document(&app).await;
+    assert_eq!(
+        zone_order(&document),
+        [desk_id.clone(), panel_id.clone(), primary_id.clone()]
+    );
+    let _ = zone_changes(&mut events);
+
+    // A move to the slot the zone already holds commits nothing.
+    let unmoved = send(
+        &app,
+        if_match(
+            json_request(
+                "PATCH",
+                format!("/api/v1/scene/zones/{primary_id}"),
+                json!({ "index": 2 }),
+            ),
+            revision + 2,
+        ),
+    )
+    .await;
+    assert_eq!(unmoved.status(), StatusCode::OK);
+    assert_eq!(
+        response_etag(&unmoved),
+        format!("\"{}\"", revision + 2),
+        "a no-op move keeps the revision"
+    );
+    assert_eq!(body_json(unmoved).await["data"]["id"], primary_id.as_str());
+    let document = read_document(&app).await;
+    assert_eq!(document["data"]["revision"], revision + 2);
+    assert_eq!(zone_order(&document), [desk_id, panel_id, primary_id]);
+    assert!(
+        zone_changes(&mut events).is_empty(),
+        "a no-op move publishes nothing"
+    );
 }
 
 // ── Layer stack ──────────────────────────────────────────────────────────
@@ -2741,7 +2911,7 @@ async fn membership_edit_domain_rejects_nonfinite_topology_coordinates() {
                     }),
                 }],
             },
-            revision,
+            revision.into(),
         )
         .await;
         assert!(matches!(

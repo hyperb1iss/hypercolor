@@ -8,8 +8,10 @@
 //! Layer identity is contractual (Spec 78 §1.4): every layer id is
 //! minted at creation, replacement mints a fresh id, and only control
 //! patches and reorders mutate in place. The document carries one wire
-//! version — `revision`, the commit generation — served as `ETag` and
-//! honored via optional `If-Match` on structural mutations (§1.6).
+//! version, the commit generation `revision`, beside the `run_epoch`
+//! that names the daemon run the revision belongs to. Together they are
+//! served as an epoch-qualified `ETag` ([`SceneFence`]) and honored via
+//! optional `If-Match` on structural mutations (§1.6).
 //!
 //! OpenAPI derives are available behind the crate's `schema` feature. The
 //! daemon enables that feature and registers these types through its
@@ -30,6 +32,116 @@ use crate::scene::{
 };
 use crate::spatial::{LedTopology, NormalizedPosition, Orientation};
 use serde::{Deserialize, Serialize};
+
+/// A scene revision fence as it travels in `ETag` and `If-Match`.
+///
+/// The daemon serves `"<run_epoch>:<revision>"`, for example
+/// `"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"`: the run epoch
+/// (a lowercase hyphenated UUID, compared by equality only) and the
+/// revision within that run, joined by a colon, as one strong entity tag.
+/// Sent back as `If-Match`, it passes only when both the run
+/// and the revision are current, so a fence from an earlier daemon run is
+/// always stale. A bare numeric fence (`"42"` or `42`) is still accepted
+/// for older clients and checks the revision alone; only the
+/// epoch-qualified form is safe across daemon restarts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneFence {
+    /// The run the revision belongs to; `None` for a bare numeric fence.
+    pub run_epoch: Option<String>,
+    /// The scene revision within that run.
+    pub revision: u64,
+}
+
+/// Why a string is not a scene fence.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("a scene fence is \"<run_epoch>:<revision>\" or a bare revision: {0}")]
+pub struct SceneFenceParseError(String);
+
+impl SceneFence {
+    /// The fence for `revision` in the run named `run_epoch`.
+    #[must_use]
+    pub fn new(run_epoch: impl Into<String>, revision: u64) -> Self {
+        Self {
+            run_epoch: Some(run_epoch.into()),
+            revision,
+        }
+    }
+
+    /// A bare numeric fence, which checks the revision alone.
+    #[must_use]
+    pub const fn revision_only(revision: u64) -> Self {
+        Self {
+            run_epoch: None,
+            revision,
+        }
+    }
+
+    /// The quoted entity tag the daemon serves as `ETag`.
+    #[must_use]
+    pub fn to_etag(&self) -> String {
+        match &self.run_epoch {
+            Some(run_epoch) => format!("\"{run_epoch}:{}\"", self.revision),
+            None => format!("\"{}\"", self.revision),
+        }
+    }
+
+    /// Parse an `ETag` or `If-Match` value: the epoch-qualified form or a
+    /// bare revision, quoted or not. Both parts are read exactly as the
+    /// daemon serves them: the epoch is a lowercase hyphenated UUID and the
+    /// revision is plain decimal, so a sign or a leading zero is refused
+    /// rather than read as some other revision, and a list such as
+    /// `run:1,run:2` can never pass as one epoch. Weak tags, `*` and lists
+    /// are not fences.
+    ///
+    /// # Errors
+    ///
+    /// [`SceneFenceParseError`] when the value is neither form.
+    pub fn parse(value: &str) -> Result<Self, SceneFenceParseError> {
+        let trimmed = value.trim();
+        let tag = trimmed
+            .strip_prefix('"')
+            .and_then(|inner| inner.strip_suffix('"'))
+            .unwrap_or(trimmed);
+        let invalid = || SceneFenceParseError(trimmed.to_owned());
+        let (run_epoch, revision) = match tag.rsplit_once(':') {
+            Some((run_epoch, revision)) => (Some(run_epoch), revision),
+            None => (None, tag),
+        };
+        if run_epoch.is_some_and(|run_epoch| !is_run_epoch(run_epoch)) {
+            return Err(invalid());
+        }
+        let revision = decimal_revision(revision).ok_or_else(invalid)?;
+        Ok(Self {
+            run_epoch: run_epoch.map(str::to_owned),
+            revision,
+        })
+    }
+}
+
+impl From<u64> for SceneFence {
+    fn from(revision: u64) -> Self {
+        Self::revision_only(revision)
+    }
+}
+
+/// A run epoch written the one way the daemon mints it: a lowercase
+/// hyphenated UUID, `8-4-4-4-12` hex digits.
+fn is_run_epoch(epoch: &str) -> bool {
+    epoch.len() == 36
+        && epoch.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
+}
+
+/// A revision written the one way [`SceneFence::to_etag`] writes it: ASCII
+/// digits, no sign, no leading zero, within `u64`.
+fn decimal_revision(digits: &str) -> Option<u64> {
+    let canonical = !digits.is_empty()
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+        && (digits.len() == 1 || !digits.starts_with('0'));
+    if canonical { digits.parse().ok() } else { None }
+}
 
 /// The `GET /scene` document: the full live tree.
 ///
@@ -71,9 +183,17 @@ pub struct SceneDocument {
     #[serde(default)]
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub mutation_mode: SceneMutationMode,
-    /// The commit generation. Served as `ETag`; the one wire version
-    /// token (Spec 78 §1.6).
+    /// The commit generation, strictly increasing within a daemon run
+    /// (Spec 78 §1.6). Served with `run_epoch` as the epoch-qualified
+    /// `ETag`, `"<run_epoch>:<revision>"`; see [`SceneFence`].
     pub revision: u64,
+    /// Opaque identity of the daemon run `revision` belongs to, also
+    /// served on every response as the `hypercolor-run-epoch` header.
+    /// Compare by equality only: a change means the daemon restarted.
+    /// A fence that names another run is always stale. Empty from daemons
+    /// that predate it.
+    #[serde(default)]
+    pub run_epoch: String,
     /// Every authored zone with its full stack, declaration order.
     pub zones: Vec<ZoneResource>,
 }
@@ -251,6 +371,11 @@ pub struct PatchZoneRequest {
         reason = "the double Option IS the tri-state wire pattern: missing = leave, null = clear, value = set"
     )]
     pub color: Option<Option<String>>,
+    /// Move the zone to this position in the scene's zone order, clamped
+    /// to the last slot. Zone order is Studio's tab order and the paint
+    /// order of the scene preview projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
 }
 
 #[allow(

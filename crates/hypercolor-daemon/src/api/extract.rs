@@ -108,6 +108,24 @@ where
     }
 }
 
+/// Buffer a request's whole body under the route's body ceiling and hand
+/// back the parts beside it, for middleware that must see the bytes before
+/// the handler does (idempotency fingerprints). An oversized or unreadable
+/// body is refused exactly as the handler's own body extractor would
+/// refuse it.
+pub(crate) async fn buffer_request(
+    request: Request,
+) -> Result<(Parts, axum::body::Bytes), DomainError> {
+    let (parts, body) = request.into_parts();
+    // The probe carries the parts' extensions, so the ceiling a
+    // `DefaultBodyLimit` layer installed still applies.
+    let probe = Request::from_parts(parts.clone(), body);
+    let bytes = <axum::body::Bytes as FromRequest<()>>::from_request(probe, &())
+        .await
+        .map_err(|rejection| bytes_rejection(&rejection))?;
+    Ok((parts, bytes))
+}
+
 /// Typed path parameters. A segment that will not parse is `400
 /// malformed_request` naming the key and value.
 #[derive(Debug, Clone, Copy, Default)]

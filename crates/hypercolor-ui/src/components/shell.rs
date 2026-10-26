@@ -14,8 +14,9 @@ use crate::ambient::AmbientHuePublisher;
 use crate::app::{EffectsContext, FrameAnalysisContext};
 use crate::components::mobile_nav::MobileNav;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
-use crate::components::scene_switcher::active_saved_scene_id;
+use crate::components::scene_picker::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
+use crate::components::zone_tabs::ZoneTabLabel;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_shortcut_path};
 use crate::zones::{ScenesContext, ZonesContext};
@@ -61,7 +62,7 @@ pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
 
     // One zone per preview: the page's focused zone where it has a zone
-    // picker, the Default zone everywhere else.
+    // picker, the primary zone everywhere else.
     crate::preview_zone::follow_preview_zone(use_location().pathname);
 
     // Ambient hue extraction — driven by the shared frame-analysis pass in
@@ -101,11 +102,12 @@ pub fn Shell(children: Children) -> impl IntoView {
         });
     }
 
-    // Global keyboard shortcuts
+    // Global keyboard shortcuts, heard on the window so they work before
+    // anything on the page has focus. The handle goes with the shell.
     let navigate = use_navigate();
     // Extension-contributed nav items (empty in the standalone OSS app).
     let extension_nav = use_context::<NavExtensionItems>().unwrap_or_default();
-    let keydown_handler = move |ev: leptos::ev::KeyboardEvent| {
+    let keydown = window_event_listener(leptos::ev::keydown, move |ev| {
         let key = ev.key();
         let ctrl_or_meta = ev.ctrl_key() || ev.meta_key();
 
@@ -115,7 +117,7 @@ pub fn Shell(children: Children) -> impl IntoView {
             return;
         }
 
-        if key == "Escape" && palette_open.get() {
+        if key == "Escape" && palette_open.get_untracked() {
             set_palette_open.set(false);
             return;
         }
@@ -133,14 +135,11 @@ pub fn Shell(children: Children) -> impl IntoView {
             ev.prevent_default();
             focus_page_search();
         }
-    };
+    });
+    on_cleanup(move || keydown.remove());
 
     view! {
-        <div
-            class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-clip noise-overlay"
-            on:keydown=keydown_handler
-            tabindex="-1"
-        >
+        <div class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-clip noise-overlay">
             <Sidebar />
             <main class="flex flex-col flex-1 min-h-0 min-w-0 overflow-clip
                          max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
@@ -289,7 +288,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                     <input
                         node_ref=input_ref
                         type="text"
-                        placeholder="Search effects..."
+                        placeholder="Search effects and scenes..."
                         class="flex-1 bg-transparent text-sm text-fg-primary placeholder-fg-tertiary outline-none"
                         role="combobox"
                         aria-expanded="true"
@@ -341,22 +340,15 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                             .then(|| zones_ctx.target_zone())
                             .flatten()
                             .map(|zone| {
-                                let dot = zone
-                                    .color
-                                    .clone()
-                                    .unwrap_or_else(|| "var(--color-accent)".to_owned());
                                 view! {
                                     <span
-                                        class="inline-flex items-center gap-1.5 shrink-0 text-[9px] \
-                                               font-mono px-2 py-0.5 rounded-full border \
+                                        class="inline-flex max-w-[180px] min-w-0 items-center gap-1.5 shrink-0 \
+                                               text-[9px] font-mono px-2 py-0.5 rounded-full border \
                                                border-edge-subtle bg-surface-overlay/40 text-fg-tertiary"
                                         title="Effects apply to this zone"
                                     >
-                                        <span
-                                            class="w-1.5 h-1.5 rounded-full shrink-0"
-                                            style:background=dot
-                                        />
-                                        {format!("applies to: {}", zone.name)}
+                                        <span class="shrink-0">"applies to"</span>
+                                        <ZoneTabLabel zone=zone />
                                     </span>
                                 }
                             })

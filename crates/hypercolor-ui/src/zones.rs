@@ -38,12 +38,16 @@ pub struct ZonesContext {
     /// `multi_zone` and the zone lists describe it rather than an empty
     /// page still loading. See [`scene_read_settles`].
     pub scene_resolved: Memo<bool>,
-    /// The zone quick-applies and the controls panel target. `None`
-    /// means the primary zone. Set by Studio's selection and by explicit
-    /// zone pickers; surfaces that consume it must render it visibly.
+    /// The one record of which LED zone effect applies, presets, the
+    /// controls, and the preview target. `None`, or an id that has left
+    /// the scene, means the primary zone. Written by the zone tabs and by
+    /// Studio's selection; read through [`ZonesContext::target_zone`].
     pub focused_zone: RwSignal<Option<String>>,
     /// Refetch the shared active-scene resource.
     pub refresh: Callback<()>,
+    /// The zone patch Studio records as an undo step, while Studio is
+    /// open. Elsewhere it is `None`, and a zone patch writes directly.
+    pub studio_zone_patch: StoredValue<Option<Callback<(String, api::zones::PatchZoneRequest)>>>,
 }
 
 impl ZonesContext {
@@ -53,26 +57,24 @@ impl ZonesContext {
             .with(|zones| zones.iter().find(|zone| zone.id == id).cloned())
     }
 
-    /// The zone writes currently target: the focused zone when it still
-    /// exists in the active scene, otherwise the primary LED zone.
+    /// The LED zone writes currently target. See [`surface::target_zone`].
     pub fn target_zone(&self) -> Option<Surface> {
-        let focused = self
-            .focused_zone
-            .get()
-            .and_then(|id| self.zone(&id))
-            .filter(|zone| zone.kind == SurfaceKind::Light);
-        focused.or_else(|| self.primary_zone())
+        let focused = self.focused_zone.get();
+        self.zones
+            .with(|zones| surface::target_zone(zones, focused.as_deref()).cloned())
     }
 
-    /// The primary (Default) LED zone of the active scene.
+    /// [`ZonesContext::target_zone`] without tracking, for event handlers.
+    pub fn target_zone_untracked(&self) -> Option<Surface> {
+        let focused = self.focused_zone.get_untracked();
+        self.zones
+            .with_untracked(|zones| surface::target_zone(zones, focused.as_deref()).cloned())
+    }
+
+    /// The primary LED zone of the active scene.
     pub fn primary_zone(&self) -> Option<Surface> {
-        self.led_zones.with(|zones| {
-            zones
-                .iter()
-                .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Primary)
-                .or_else(|| zones.first())
-                .cloned()
-        })
+        self.zones
+            .with(|zones| surface::primary_led_zone(zones).cloned())
     }
 
     /// Untracked focused-zone id, validated against the current scene.
@@ -92,7 +94,7 @@ impl ZonesContext {
         &self,
         effect_id: &str,
         zone_id: Option<&str>,
-    ) -> Option<(api::EffectLayerTarget, u64)> {
+    ) -> Option<(api::EffectLayerTarget, api::Fence)> {
         self.active_scene
             .with_untracked(|scene| effect_target_in_scene(scene.as_ref()?, effect_id, zone_id))
     }
@@ -102,7 +104,7 @@ fn effect_target_in_scene(
     scene: &api::SceneDocument,
     effect_id: &str,
     zone_id: Option<&str>,
-) -> Option<(api::EffectLayerTarget, u64)> {
+) -> Option<(api::EffectLayerTarget, api::Fence)> {
     let zone = match zone_id {
         Some(zone_id) => scene
             .zones
@@ -134,7 +136,7 @@ fn effect_target_in_scene(
             zone_id: zone.id.to_string(),
             layer_id: layer.id.to_string(),
         },
-        scene.revision,
+        api::Fence::of(scene),
     ))
 }
 
@@ -240,25 +242,6 @@ pub struct ScenesContext {
     pub activate: Callback<String>,
     /// Return to the ephemeral default scene.
     pub deactivate: Callback<()>,
-}
-
-impl ScenesContext {
-    /// Whether the user has somewhere to switch *to* — the gate for
-    /// rendering scene-switcher affordances at all. True with two or
-    /// more saved scenes, or with one saved scene while the ephemeral
-    /// default is running (Default ↔ the saved scene is still a switch).
-    pub fn has_multiple(&self) -> bool {
-        let saved = self.scenes.with(Vec::len);
-        if saved > 1 {
-            return true;
-        }
-        saved == 1
-            && self.active.with(|active| {
-                active
-                    .as_ref()
-                    .is_none_or(|scene| scene.kind == hypercolor_types::scene::SceneKind::Ephemeral)
-            })
-    }
 }
 
 /// Whether one read of the active scene tells the page what scene this
@@ -420,6 +403,7 @@ pub fn provide_scene_contexts(
         scene_resolved,
         focused_zone: RwSignal::new(None),
         refresh: refresh_active,
+        studio_zone_patch: StoredValue::new(None),
     };
     let scenes_ctx = ScenesContext {
         scenes,

@@ -1,14 +1,13 @@
 //! Zone-scoped effect controls for the effects page.
 //!
-//! In a multi-zone scene the controls card grows a zone tab strip. The
-//! primary tab keeps the page's existing plumbing untouched — the
+//! The controls edit the target zone, which the preview's zone tabs pick.
+//! The primary zone keeps the page's existing plumbing untouched: the
 //! `active_controls` / `active_control_values` signals and the
-//! current-controls PATCH session. A non-primary tab edits that zone's
-//! own controls through the real effect layer read from `/scene`, so
-//! tuning zone 2 no longer silently rewrites the primary zone — design
-//! doc 57 §1.3's "most misleading interaction in the app".
+//! current-controls PATCH session. Any other zone edits its own controls
+//! through the real effect layer read from `/scene`, so tuning zone 2
+//! never silently rewrites the primary zone.
 //!
-//! Single-zone scenes render no strip and exactly today's panel.
+//! Single-zone scenes render exactly the primary panel.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +21,7 @@ use leptos::prelude::*;
 use crate::api;
 use crate::app::EffectsContext;
 use crate::components::control_panel::ControlPanel;
+use crate::components::zone_tabs::ZoneTabLabel;
 use crate::control_session::{
     ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
 };
@@ -39,10 +39,10 @@ const ZONE_CONTROLS_DEBOUNCE_MS: f64 = 75.0;
 /// carry the connection epoch so reconnecting refreshes their definitions.
 pub type ZoneControlSchemaCache = StoredValue<HashMap<String, (u64, Vec<ControlDefinition>)>>;
 
-/// The controls-card body: an optional zone tab strip plus the panel
-/// for the selected zone. The primary tab renders the caller-supplied
-/// signals and change handler verbatim; non-primary tabs mount a
-/// [`ZoneControlsPanel`] scoped to that zone's real effect layer.
+/// The controls-card body: the panel for the target zone. The primary
+/// zone renders the caller-supplied signals and change handler verbatim;
+/// any other zone mounts a [`ZoneControlsPanel`] scoped to that zone's
+/// real effect layer.
 #[component]
 pub fn ZoneScopedControls(
     /// Primary-zone control schema (today's plumbing).
@@ -109,12 +109,6 @@ pub fn ZoneScopedControls(
     view! {
         <div class="space-y-2.5">
             {move || {
-                zones_ctx
-                    .multi_zone
-                    .get()
-                    .then(|| view! { <ZoneTabStrip selected_zone_id=selected_zone_id /> })
-            }}
-            {move || {
                 let Some(_) = selected_zone_id.get() else {
                     // Primary tab — today's exact panel.
                     return view! {
@@ -148,76 +142,25 @@ pub fn ZoneScopedControls(
     }
 }
 
-/// One tab per LED zone of the active scene: zone color dot + name.
-/// Selection mirrors `ZonesContext::focused_zone` (`None` = primary),
-/// the same visible choice the apply-target picker and sidebar follow.
+/// The zone the controls card edits, named in its header while the
+/// scene has more than one LED zone.
 #[component]
-fn ZoneTabStrip(selected_zone_id: Memo<Option<String>>) -> impl IntoView {
+pub fn ControlsZoneName() -> impl IntoView {
     let zones_ctx = expect_context::<ZonesContext>();
-
-    view! {
-        <div
-            class="flex flex-wrap items-center gap-1"
-            role="tablist"
-            aria-label="Zone controls target"
-        >
-            {move || {
-                zones_ctx
-                    .led_zones
-                    .get()
-                    .into_iter()
-                    .map(|zone| {
-                        let is_primary = zone.role == ZoneRole::Primary;
-                        let selected = {
-                            let zone_id = zone.id.clone();
-                            Signal::derive(move || match selected_zone_id.get() {
-                                None => is_primary,
-                                Some(id) => !is_primary && id == zone_id,
-                            })
-                        };
-                        let focus_id = zone.id.clone();
-                        let dot = zone
-                            .color
-                            .clone()
-                            .unwrap_or_else(|| "var(--color-accent)".to_owned());
-                        let dot_glow = format!("0 0 6px {dot}");
-                        view! {
-                            <button
-                                type="button"
-                                role="tab"
-                                aria-selected=move || selected.get().to_string()
-                                title=format!("Tune controls for {}", zone.name)
-                                class=move || {
-                                    let base = "inline-flex min-w-0 items-center gap-1.5 rounded-lg \
-                                                border px-2.5 py-1 text-[11px] font-medium \
-                                                transition-all duration-150 focus-visible:outline-none \
-                                                focus-visible:ring-1 focus-visible:ring-accent/50";
-                                    let state = if selected.get() {
-                                        "border-accent/50 bg-accent/12 text-fg-primary"
-                                    } else {
-                                        "border-edge-subtle bg-surface-sunken/50 text-fg-secondary \
-                                         hover:border-edge-strong hover:text-fg-primary"
-                                    };
-                                    format!("{base} {state}")
-                                }
-                                on:click=move |_| {
-                                    zones_ctx
-                                        .focused_zone
-                                        .set((!is_primary).then(|| focus_id.clone()));
-                                }
-                            >
-                                <span
-                                    class="h-1.5 w-1.5 shrink-0 rounded-full"
-                                    style:background=dot
-                                    style:box-shadow=dot_glow
-                                />
-                                <span class="max-w-[110px] truncate">{zone.name.clone()}</span>
-                            </button>
-                        }
-                    })
-                    .collect_view()
-            }}
-        </div>
+    move || {
+        if !zones_ctx.multi_zone.get() {
+            return None;
+        }
+        let zone = zones_ctx.target_zone()?;
+        let title = format!("Editing {}", zone.name);
+        Some(view! {
+            <span
+                class="inline-flex min-w-0 max-w-[160px] items-center gap-1.5 text-[11px] font-medium text-fg-secondary"
+                title=title
+            >
+                <ZoneTabLabel zone=zone />
+            </span>
+        })
     }
 }
 

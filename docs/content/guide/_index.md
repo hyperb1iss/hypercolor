@@ -20,7 +20,7 @@ Your path through this guide depends on two questions: **how you're installing**
 
 Not everyone needs to build from source. The right starting point depends on your OS and your goals.
 
-| If you are…                              | Start here                                                                 |
+| If you are...                             | Start here                                                                 |
 | ---------------------------------------- | -------------------------------------------------------------------------- |
 | A Linux user who wants a quick install   | [Choose your install](@/guide/choose-your-install.md) → prebuilt one-liner |
 | On Windows or macOS                      | [Choose your install](@/guide/choose-your-install.md) → desktop package    |
@@ -129,9 +129,9 @@ The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/p
 
 **Web UI**: served by the daemon at `http://localhost:9420` with no separate process needed. Browse effects, adjust controls live, manage devices, and design spatial layouts from any browser.
 
-{{< img path="img/ui/studio.webp" alt="Web UI showing the Studio zone editor" />}}
+{{< img path="img/ui/studio.webp" alt="Web UI showing Studio, with zone tabs above the device pane and the live canvas" />}}
 
-**Studio**: the zone editor inside the web UI. Divide your canvas into zones, each running an independent effect with its own controls. See the [Studio section](@/studio/_index.md) for the full walkthrough.
+**Studio**: the zone editor inside the web UI. Divide your rig into zones, each with its own canvas and an independent effect with its own controls. See the [Studio section](@/studio/_index.md) for the full walkthrough.
 
 **TUI**: a Ratatui terminal dashboard with true-color LED preview, audio visualization, and fullscreen effect rendering.
 

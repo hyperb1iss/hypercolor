@@ -27,7 +27,7 @@ use hypercolor_core::effect::{EffectEntry, EffectRegistry, RescanReport};
 use strum::VariantNames;
 use tempfile::NamedTempFile;
 
-use hypercolor_types::api::scene::SideEffectOutcome;
+use hypercolor_types::api::scene::{SceneFence, SideEffectOutcome};
 use hypercolor_types::config::EffectErrorFallbackPolicy;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::control::EffectJsonValueError;
@@ -907,8 +907,8 @@ pub struct ApplyEffect {
     /// Which zone to load into. `None` targets the primary zone, which
     /// is created when the active scene has none.
     pub target_zone: Option<ZoneId>,
-    /// The structural revision the caller observed, when guarded.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller observed, when guarded.
+    pub fence: Option<SceneFence>,
     /// The requested transition.
     pub transition: RequestedTransition,
     /// Whether the post-commit output wake belongs to this gesture.
@@ -989,7 +989,7 @@ pub async fn apply_effect(
     let layout = ctx.full_scope_layout();
 
     let mut mutation = ctx.scene.begin_mutation().await;
-    crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
+    crate::domain::scene_tree::check_scene_fence(&mutation, command.fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("applying an effect")?;
 
     // A target naming the primary zone — or no target at all — takes the

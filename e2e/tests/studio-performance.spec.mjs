@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-import { getStack } from "./helpers.mjs";
+import { getStack, parseFence } from "./helpers.mjs";
 
 const OUTPUT_COUNT = 80;
 const FIRST_ZONE = "11111111-1111-4111-8111-111111111111";
@@ -254,9 +254,9 @@ test("Studio hover keeps smaller overlapping outputs reachable", async ({ page }
 test("Studio switches light zones without fetching the scene again", async ({ page }) => {
   const fixture = await openStudio(page);
   const before = fixture.sceneRequests();
-  await page.getByRole("button", { name: "Empty lights 0 devices", exact: true }).click();
+  await page.getByRole("tab", { name: "Empty lights", exact: true }).click();
   await expect(page.locator(outputSelector)).toHaveCount(0);
-  await page.getByRole("button", { name: "Fixture lights 80 devices", exact: true }).click();
+  await page.getByRole("tab", { name: "Fixture lights", exact: true }).click();
   await expect(page.locator(outputSelector)).toHaveCount(OUTPUT_COUNT);
   await nextPaint(page);
   await page.waitForLoadState("networkidle");
@@ -306,7 +306,7 @@ test("Studio preserves the inspector during control events and refreshes values 
     } });
   });
   await page.getByTitle("Open the composition panel", { exact: true }).click();
-  const selectEmpty = page.getByRole("button", { name: "Empty lights 0 devices", exact: true });
+  const selectEmpty = page.getByRole("tab", { name: "Empty lights", exact: true });
   await selectEmpty.click();
   const inspector = page.getByRole("complementary");
   const speed = inspector.locator('div:has(> label:text-is("Fixture speed")) > input[type="range"]');
@@ -328,7 +328,7 @@ test("Studio preserves the inspector during control events and refreshes values 
   expect(await originalControl.evaluate((element) => element.isConnected)).toBe(true);
   await expect(speed).toHaveValue("0.8");
   const before = fixture.sceneRequests();
-  await page.getByRole("button", { name: "Fixture lights 80 devices", exact: true }).click();
+  await page.getByRole("tab", { name: "Fixture lights", exact: true }).click();
   await expect(page.locator(outputSelector)).toHaveCount(OUTPUT_COUNT);
   await selectEmpty.click();
   await expect(speed).toHaveValue("0.8");
@@ -342,5 +342,7 @@ test("Studio preserves the inspector during control events and refreshes values 
     element.value = "0.5";
     element.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  expect((await pendingWrite).headers()["if-match"]).toBe("43");
+  // This fixture is a daemon that names no runs (its scene carries no
+  // run_epoch), the legacy case: the fence is the bare revision.
+  expect(parseFence((await pendingWrite).headers()["if-match"])).toEqual({ epoch: null, revision: "43" });
 });

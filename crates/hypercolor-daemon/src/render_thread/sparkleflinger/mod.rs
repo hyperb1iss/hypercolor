@@ -5,6 +5,8 @@ pub(crate) mod gpu;
 #[cfg(feature = "wgpu")]
 mod gpu_area_sat;
 #[cfg(feature = "wgpu")]
+mod gpu_buffer_init;
+#[cfg(feature = "wgpu")]
 mod gpu_sampling;
 mod transform;
 #[cfg(all(test, feature = "wgpu"))]
@@ -1249,6 +1251,22 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => {
                 Some(gpu.display_finalize_readback_slots_in_use())
             }
+        }
+    }
+
+    /// Block until the GPU backend's submissions have finished.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn wait_for_gpu_idle_for_test(&self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+            gpu.wait_for_gpu_idle();
+        }
+    }
+
+    /// Lose the GPU backend's device the way a driver device loss does.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn lose_gpu_device_for_test(&self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+            gpu.lose_device();
         }
     }
 

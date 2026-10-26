@@ -23,11 +23,13 @@ use leptos::reactive::owner::LocalStorage;
 
 use hypercolor_leptos_ext::raf::Scheduler;
 
+use crate::api;
 use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::device_card::{DeviceClass, classify_device};
 use crate::compound_selection::{self, CompoundDepth};
 use crate::render_canvas;
+use leptos_use::{UseElementSizeReturn, use_element_size};
 
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
@@ -39,7 +41,9 @@ use crate::style_utils::device_accent_colors;
 use hypercolor_types::spatial::{NormalizedPosition, Output};
 
 mod interaction;
+pub mod labels;
 mod overlays;
+pub mod picking;
 mod render;
 pub(crate) mod stacking;
 
@@ -47,11 +51,83 @@ use interaction::{
     DragRuntime, InteractionKind, collect_zone_elements, pointer_to_normalized,
     update_canvas_slot_size,
 };
+use labels::{LabelBox, LabelRoom, visibility_class};
 use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
+use picking::HitBox;
 use render::{
     ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_position_style,
     zone_shape_style,
 };
+
+/// A box's place in paint order: its area rank lifted by selection, and
+/// lifted again for the box pressed last.
+fn paint_order(
+    id: &str,
+    selected: &std::collections::HashSet<String>,
+    primary: Option<&str>,
+    ranks: &HashMap<String, usize>,
+) -> usize {
+    stacking::z_index(
+        stacking::Tier {
+            primary: primary == Some(id),
+            lifted: selected.contains(id),
+        },
+        ranks.get(id).copied().unwrap_or(0),
+    )
+}
+
+/// Whether the canvas draws an output. A raw channel of a generic
+/// controller stays out of the layout until a component is attached to
+/// it, while fixed devices (keyboards, AIOs) always draw because their
+/// LEDs mean something without one.
+pub(crate) fn draws_output(zone: &Output, devices: &[api::DeviceSummary]) -> bool {
+    zone.attachment.is_some()
+        || !devices
+            .iter()
+            .find(|device| device.layout_device_id == zone.device_id)
+            .is_some_and(|device| classify_device(device) == DeviceClass::Controller)
+}
+
+/// What a box shows: its geometry style, accent, and identity. `None` for
+/// an output the canvas does not draw.
+fn zone_render_data(
+    zone: &Output,
+    canvas_aspect: f32,
+    devices: &[api::DeviceSummary],
+    attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
+) -> Option<ZoneRenderData> {
+    if !draws_output(zone, devices) {
+        return None;
+    }
+    let rotation = zone.rotation.to_degrees();
+    let (primary, secondary) = device_accent_colors(&zone.device_id);
+    let display = layout_utils::effective_zone_display(zone, devices, attachment_profiles);
+    Some(ZoneRenderData {
+        position_style: zone_position_style(zone),
+        label_style: upright_label_style(rotation),
+        label_below: labels::callout_below(zone, canvas_aspect),
+        primary_rgb: primary,
+        secondary_rgb: secondary,
+        name: display.label,
+        detail: labels::detail_line(
+            zone.topology.led_count(),
+            layout_utils::display_resolution(zone, devices),
+        ),
+        shape: zone.shape.clone(),
+    })
+}
+
+/// Lets the page around the canvas take a box drag that leaves it. While a
+/// box drags, `hover` hears the pointer's client position with the dragged
+/// output ids; `release` hears the release and returns true when it took
+/// the drop, in which case the boxes go back where they were; `cancel`
+/// hears a drag that ended any other way.
+#[derive(Clone, Copy)]
+pub struct CanvasDragOut {
+    pub hover: Callback<(f64, f64, Vec<String>)>,
+    pub release: Callback<(f64, f64, Vec<String>), bool>,
+    pub cancel: Callback<()>,
+}
 
 /// Throttle the in-drag preview push to the daemon. Matches the existing
 /// debounce we use outside drags so the spatial engine isn't recomputed at
@@ -82,6 +158,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     let devices_ctx = expect_context::<DevicesContext>();
     let zone_display_ctx =
         expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
+    let drag_out = use_context::<CanvasDragOut>();
 
     let ws = expect_context::<WsContext>();
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
@@ -228,6 +305,119 @@ pub fn LayoutCanvas() -> impl IntoView {
     // canvas stacking or focus dimming.
     let pointer_zone_id = editor.pointer_zone_id;
 
+    // Display metadata for every box the canvas draws, resolved once per
+    // layout or device change. Hover and selection reuse it across every
+    // style and label binding, and its keys are the boxes a press can hit.
+    let render_map: Memo<HashMap<String, ZoneRenderData>> = Memo::new(move |_| {
+        let suppressed = suppressed_zone_ids.get();
+        devices_ctx.devices_resource.with(|devices| {
+            let devices = devices
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .map_or(&[][..], Vec::as_slice);
+            zone_display_ctx
+                .attachment_profiles
+                .with(|attachment_profiles| {
+                    layout.with(|current| {
+                        current
+                            .as_ref()
+                            .map(|l| {
+                                let aspect = layout_geometry::canvas_pixel_aspect(
+                                    l.canvas_width,
+                                    l.canvas_height,
+                                );
+                                l.zones
+                                    .iter()
+                                    .filter(|zone| !suppressed.contains(&zone.id))
+                                    .filter_map(|zone| {
+                                        zone_render_data(zone, aspect, devices, attachment_profiles)
+                                            .map(|data| (zone.id.clone(), data))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    })
+                })
+        })
+    });
+
+    // Which boxes can name themselves at rest, measured on the viewport as
+    // drawn. Selection lifts boxes in paint order, so it is an input too.
+    let UseElementSizeReturn {
+        width: viewport_width,
+        height: viewport_height,
+    } = use_element_size(viewport_ref);
+    let label_rooms: Memo<HashMap<String, LabelRoom>> = Memo::new(move |_| {
+        #[allow(clippy::cast_possible_truncation, reason = "viewport pixels")]
+        let (width, height) = (viewport_width.get() as f32, viewport_height.get() as f32);
+        if width <= 0.0 || height <= 0.0 {
+            return HashMap::new();
+        }
+        let selected = selected_zone_ids.get();
+        let primary = primary_zone_id.get();
+        let hidden = hidden_zones.get();
+        stacking_rank.with(|ranks| {
+            render_map.with(|drawn| {
+                layout.with(|current| {
+                    let Some(l) = current.as_ref() else {
+                        return HashMap::new();
+                    };
+                    let boxes: Vec<LabelBox> = l
+                        .zones
+                        .iter()
+                        .filter(|zone| !hidden.contains(&zone.id))
+                        .filter_map(|zone| {
+                            let data = drawn.get(&zone.id)?;
+                            // Measured in units of the viewport height, then scaled up.
+                            let hit = HitBox::from_output(zone, width / height, 0);
+                            Some(LabelBox {
+                                id: zone.id.clone(),
+                                center: (hit.center.0 * height, hit.center.1 * height),
+                                size: (hit.half.0 * 2.0 * height, hit.half.1 * 2.0 * height),
+                                rotation: zone.rotation,
+                                name_chars: data.name.chars().count(),
+                                z: paint_order(&zone.id, &selected, primary.as_deref(), ranks),
+                            })
+                        })
+                        .collect();
+                    labels::label_rooms(&boxes)
+                })
+            })
+        })
+    });
+    let selection_size = Memo::new(move |_| selected_zone_ids.with(std::collections::HashSet::len));
+
+    // The box a press at `point` means: the smallest drawn box under it,
+    // whichever element caught the press. A cycling press steps from the
+    // box pressed last to the next selection down the stack.
+    let press_target = move |point: NormalizedPosition, cycle: bool, depth: &CompoundDepth| {
+        let selected = selected_zone_ids.get_untracked();
+        let primary = primary_zone_id.get_untracked();
+        let hidden = hidden_zones.get_untracked();
+        stacking_rank.with_untracked(|ranks| {
+            render_map.with_untracked(|drawn| {
+                layout.with_untracked(|current| {
+                    let l = current.as_ref()?;
+                    let aspect =
+                        layout_geometry::canvas_pixel_aspect(l.canvas_width, l.canvas_height);
+                    let boxes: Vec<HitBox> = l
+                        .zones
+                        .iter()
+                        .filter(|zone| drawn.contains_key(&zone.id) && !hidden.contains(&zone.id))
+                        .map(|zone| {
+                            let order = paint_order(&zone.id, &selected, primary.as_deref(), ranks);
+                            HitBox::from_output(zone, aspect, order)
+                        })
+                        .collect();
+                    let stack = picking::hit_stack(&boxes, (point.x * aspect, point.y));
+                    picking::pick_hit(&stack, primary.as_deref(), cycle, |id| {
+                        compound_selection::resolve_click(l, id, depth)
+                    })
+                })
+            })
+        })
+    };
+
     // Per-id zone lookup memo — lets every per-zone style closure resolve
     // its zone in O(1). Replaces the O(N) `zones.iter().find(|z| z.id == zid)`
     // scan that ran inside each `zone_style` derive.
@@ -335,17 +525,37 @@ pub fn LayoutCanvas() -> impl IntoView {
                 layout_geometry::canvas_pixel_aspect(l.canvas_width, l.canvas_height)
             })
         });
+        // Only boxes the gesture resized: normalizing is not always a fixed
+        // point, and a box whose size did not change must not read as a
+        // resize.
         for zone in &mut runtime.current_zones {
-            zone.size = layout_geometry::normalize_zone_size_for_editor(
-                zone.position,
-                zone.size,
-                &zone.topology,
-                zone.shape.as_ref(),
-                aspect,
-            );
+            let resized = runtime
+                .base_zones
+                .iter()
+                .find(|base| base.id == zone.id)
+                .is_none_or(|base| base.size != zone.size);
+            if resized {
+                zone.size = layout_geometry::normalize_zone_size_for_editor(
+                    zone.size,
+                    &zone.topology,
+                    zone.shape.as_ref(),
+                    aspect,
+                );
+            }
         }
-        let final_zones = std::mem::take(&mut runtime.current_zones);
-        let committed = set_layout.commit_zones(final_zones);
+        // Only what the gesture changed lands, over the editor as it is now:
+        // another client's move that arrived mid-drag is not put back.
+        let gestured = std::mem::take(&mut runtime.current_zones);
+        let merged = layout.with_untracked(|current| {
+            current.as_ref().map(|current| {
+                crate::components::layout_builder::gesture::merge_gesture(
+                    &current.zones,
+                    &runtime.base_zones,
+                    &gestured,
+                )
+            })
+        });
+        let committed = merged.is_some_and(|merged| set_layout.commit_zones(merged));
         set_layout.finish_interaction();
         swallow_next_click.set_value(true);
         if committed {
@@ -367,9 +577,23 @@ pub fn LayoutCanvas() -> impl IntoView {
         let ended = drag_runtime
             .try_update_value(|g| g.end(pointer_id, how))
             .flatten();
-        if let Some((outcome, runtime)) = ended {
-            finish_interaction(outcome, runtime);
+        let Some((mut outcome, runtime)) = ended else {
+            return;
+        };
+        if let Some(out) = drag_out
+            && let Some(ids) = runtime.dragged_ids()
+        {
+            let taken = outcome == GestureEnd::Commit
+                && out
+                    .release
+                    .run((f64::from(ev.client_x()), f64::from(ev.client_y()), ids));
+            if taken {
+                outcome = GestureEnd::Cancel;
+            } else if outcome == GestureEnd::Cancel {
+                out.cancel.run(());
+            }
         }
+        finish_interaction(outcome, runtime);
     };
 
     // Claim the interaction for a press, or report that another pointer
@@ -412,7 +636,10 @@ pub fn LayoutCanvas() -> impl IntoView {
         else {
             return;
         };
-        set_layout.finish_interaction();
+        if let Some(out) = drag_out {
+            out.cancel.try_run(());
+        }
+        set_layout.abandon_interaction();
         if runtime.moved.get()
             && let Some(snapshot) = layout.try_get_untracked().flatten()
         {
@@ -446,6 +673,13 @@ pub fn LayoutCanvas() -> impl IntoView {
                 if !owns {
                     return;
                 }
+                if let Some(out) = drag_out
+                    && let Some(ids) = drag_runtime.with_value(|g| {
+                        g.state(ev.pointer_id()).and_then(DragRuntime::dragged_ids)
+                    })
+                {
+                    out.hover.run((f64::from(ev.client_x()), f64::from(ev.client_y()), ids));
+                }
                 pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
                 if let Some(scheduler) = scheduler_for_move.borrow().as_ref() {
                     scheduler.schedule();
@@ -461,6 +695,7 @@ pub fn LayoutCanvas() -> impl IntoView {
             <div class="absolute inset-0 flex items-start justify-center p-2 overflow-hidden">
                 <div
                     class="relative rounded-lg overflow-hidden bg-black"
+                    data-studio-canvas=""
                     node_ref=viewport_ref
                     style=move || viewport_style.get()
                     on:click=move |_| {
@@ -527,65 +762,14 @@ pub fn LayoutCanvas() -> impl IntoView {
                             let zid = zone_id.clone();
                             let zid_select = zone_id.clone();
                             let zid_dblclick = zone_id.clone();
-                            let zid_drag = zone_id.clone();
-                            let zid_drag2 = zone_id.clone();
                             let zid_resize_nw = zone_id.clone();
                             let zid_resize_ne = zone_id.clone();
                             let zid_resize_sw = zone_id.clone();
                             let zid_resize_se = zone_id.clone();
 
-                            // Resolve display metadata once per layout/device change. Hover
-                            // and selection reuse it across every style and label binding.
                             let zone_style = Memo::new({
                                 let zid = zid.clone();
-                                move |_| devices_ctx.devices_resource.with(|devices| {
-                                    let devices = devices.as_ref()
-                                        .and_then(|result| result.as_ref().ok())
-                                        .map_or(&[][..], Vec::as_slice);
-                                    zone_display_ctx.attachment_profiles.with(|attachment_profiles| {
-                                    zones_by_id.with(|map| {
-                                        let zone = map.get(&zid)?;
-                                        // A generic ARGB controller is just raw channels until
-                                        // the user attaches a component, so an unattached channel
-                                        // stays out of the layout entirely — only configured
-                                        // hardware draws. Fixed devices (keyboards, AIOs) always
-                                        // render; they have meaningful LEDs without a component.
-                                        if zone.attachment.is_none()
-                                            && devices
-                                                .iter()
-                                                .find(|device| {
-                                                    device.layout_device_id == zone.device_id
-                                                })
-                                                .is_some_and(|device| {
-                                                    classify_device(device) == DeviceClass::Controller
-                                                })
-                                        {
-                                            return None;
-                                        }
-                                        let rotation = zone.rotation.to_degrees();
-
-                                        let (primary, secondary) = device_accent_colors(&zone.device_id);
-                                        let display = layout_utils::effective_zone_display(
-                                            zone,
-                                            devices,
-                                            attachment_profiles,
-                                        );
-
-                                        Some(ZoneRenderData {
-                                            position_style: zone_position_style(zone),
-                                            label_style: upright_label_style(rotation),
-                                            // The viewport clips, so a box hugging the top edge
-                                            // shows its hover readout below itself instead.
-                                            label_below: zone.position.y - zone.size.y * 0.5 < 0.06,
-                                            primary_rgb: primary,
-                                            secondary_rgb: secondary,
-                                            name: display.label,
-                                            led_count: zone.topology.led_count(),
-                                            shape: zone.shape.clone(),
-                                        })
-                                    })
-                                    })
-                                })
+                                move |_| render_map.with(|map| map.get(&zid).cloned())
                             });
 
                             let is_selected = {
@@ -625,6 +809,19 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         primary: is_primary.get(),
                                         lifted: is_selected.get(),
                                     }, rank)
+                                })
+                            };
+                            let label_mode = {
+                                let zid = zid.clone();
+                                Memo::new(move |_| {
+                                    let room = label_rooms
+                                        .with(|rooms| rooms.get(&zid).copied())
+                                        .unwrap_or(LabelRoom::Clear);
+                                    let selected = is_selected.get();
+                                    let hovered = is_hovered.get();
+                                    let pinned = hovered
+                                        || (selected && (is_primary.get() || selection_size.get() == 1));
+                                    labels::label_mode(room, selected || hovered, pinned)
                                 })
                             };
                             let zid_enter = zid.clone();
@@ -728,26 +925,6 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             return;
                                         }
                                         swallow_next_click.set_value(false);
-                                        primary_zone_id.set(Some(zid_select.clone()));
-
-                                        // Compound-aware selection
-                                        let depth = compound_depth.get_untracked();
-                                        let (ids, clicked_different_device) = layout.with_untracked(|l| {
-                                            let Some(l) = l.as_ref() else {
-                                                return (std::collections::HashSet::new(), false);
-                                            };
-                                            let ids = compound_selection::resolve_click(l, &zid_select, &depth);
-                                            // Check if clicked zone is from a different device than entered
-                                            let different = match &depth {
-                                                CompoundDepth::Device { device_id } | CompoundDepth::Slot { device_id, .. } => {
-                                                    l.zones.iter()
-                                                        .find(|z| z.id == zid_select)
-                                                        .is_some_and(|z| z.device_id != *device_id)
-                                                }
-                                                CompoundDepth::Root => false,
-                                            };
-                                            (ids, different)
-                                        });
 
                                         // A cancelled mouse press also stops the browser moving
                                         // focus, and a tap leaves it wherever the tap lands; hand
@@ -758,6 +935,35 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         };
                                         let viewport_el: web_sys::HtmlElement = (*viewport).clone();
                                         let _ = viewport_el.focus();
+                                        let mouse_norm = pointer_to_normalized(
+                                            &viewport_el,
+                                            ev.client_x(),
+                                            ev.client_y(),
+                                        );
+
+                                        let depth = compound_depth.get_untracked();
+                                        let target = mouse_norm
+                                            .and_then(|point| press_target(point, ev.alt_key(), &depth))
+                                            .unwrap_or_else(|| zid_select.clone());
+                                        primary_zone_id.set(Some(target.clone()));
+
+                                        // Compound-aware selection
+                                        let (ids, clicked_different_device) = layout.with_untracked(|l| {
+                                            let Some(l) = l.as_ref() else {
+                                                return (std::collections::HashSet::new(), false);
+                                            };
+                                            let ids = compound_selection::resolve_click(l, &target, &depth);
+                                            // Check if clicked zone is from a different device than entered
+                                            let different = match &depth {
+                                                CompoundDepth::Device { device_id } | CompoundDepth::Slot { device_id, .. } => {
+                                                    l.zones.iter()
+                                                        .find(|z| z.id == target)
+                                                        .is_some_and(|z| z.device_id != *device_id)
+                                                }
+                                                CompoundDepth::Root => false,
+                                            };
+                                            (ids, different)
+                                        });
 
                                         let is_shift = ev.shift_key();
                                         if is_shift {
@@ -780,11 +986,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         }
                                         set_selected_zone_ids.set(ids);
 
-                                        let Some(mouse_norm) = pointer_to_normalized(
-                                            &viewport_el,
-                                            ev.client_x(),
-                                            ev.client_y(),
-                                        ) else {
+                                        let Some(mouse_norm) = mouse_norm else {
                                             return;
                                         };
                                         // Capture on the pressed box itself, never an ancestor:
@@ -799,7 +1001,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let Some(snapshot) = layout.get_untracked() else {
                                             return;
                                         };
-                                        let primary_zone_id = zid_drag.clone();
+                                        let primary_zone_id = target.clone();
                                         let Some(primary_zone) = snapshot
                                             .zones
                                             .iter()
@@ -825,7 +1027,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         );
 
                                         set_layout.begin_interaction();
-                                        interacting_zone_id.set(Some(zid_drag2.clone()));
+                                        interacting_zone_id.set(Some(target));
 
                                         capture_pointer(&capture, &ev);
                                         let runtime = DragRuntime {
@@ -836,6 +1038,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 initial_positions,
                                             },
                                             capture,
+                                            canvas: (snapshot.canvas_width, snapshot.canvas_height),
                                             base_zones: snapshot.zones.clone(),
                                             current_zones: snapshot.zones,
                                             elements,
@@ -850,9 +1053,13 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     on:dblclick=move |ev| {
                                         ev.stop_propagation();
                                         let depth = compound_depth.get_untracked();
+                                        // The presses before it already resolved which box this means.
+                                        let target = primary_zone_id
+                                            .get_untracked()
+                                            .unwrap_or_else(|| zid_dblclick.clone());
                                         layout.with_untracked(|l| {
                                             let Some(l) = l.as_ref() else { return; };
-                                            let Some(zone) = l.zones.iter().find(|z| z.id == zid_dblclick) else { return; };
+                                            let Some(zone) = l.zones.iter().find(|z| z.id == target) else { return; };
                                             match &depth {
                                                 CompoundDepth::Root => {
                                                     // Enter device
@@ -860,7 +1067,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     set_compound_depth.set(CompoundDepth::Device { device_id: device_id.clone() });
                                                     // Select the clicked zone's slot compound or individual zone
                                                     let inner_depth = CompoundDepth::Device { device_id };
-                                                    set_selected_zone_ids.set(compound_selection::resolve_click(l, &zid_dblclick, &inner_depth));
+                                                    set_selected_zone_ids.set(compound_selection::resolve_click(l, &target, &inner_depth));
                                                 }
                                                 CompoundDepth::Device { device_id } => {
                                                     if zone.device_id != *device_id {
@@ -868,14 +1075,14 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                         let new_did = zone.device_id.clone();
                                                         set_compound_depth.set(CompoundDepth::Device { device_id: new_did.clone() });
                                                         let inner = CompoundDepth::Device { device_id: new_did };
-                                                        set_selected_zone_ids.set(compound_selection::resolve_click(l, &zid_dblclick, &inner));
+                                                        set_selected_zone_ids.set(compound_selection::resolve_click(l, &target, &inner));
                                                     } else if let Some(slot_id) = zone.attachment.as_ref().map(|a| a.slot_id.clone()) {
                                                         // Enter slot
                                                         set_compound_depth.set(CompoundDepth::Slot {
                                                             device_id: device_id.clone(),
                                                             slot_id,
                                                         });
-                                                        set_selected_zone_ids.set(std::collections::HashSet::from([zid_dblclick.clone()]));
+                                                        set_selected_zone_ids.set(std::collections::HashSet::from([target.clone()]));
                                                     }
                                                     // No attachment → already at individual level, no-op
                                                 }
@@ -885,7 +1092,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                         let new_did = zone.device_id.clone();
                                                         set_compound_depth.set(CompoundDepth::Device { device_id: new_did.clone() });
                                                         let inner = CompoundDepth::Device { device_id: new_did };
-                                                        set_selected_zone_ids.set(compound_selection::resolve_click(l, &zid_dblclick, &inner));
+                                                        set_selected_zone_ids.set(compound_selection::resolve_click(l, &target, &inner));
                                                     }
                                                     // Same device, same/different slot — already at deepest level
                                                 }
@@ -919,20 +1126,26 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         })
                                     }}
 
-                                    // Zone label — glass micro-panel (hover)
+                                    // Callout for a box too small to hold its name: on hover,
+                                    // or pinned while the selection or the pane points at it.
+                                    // One class binding: a reactive `class` replaces the whole
+                                    // attribute, so the edge it hangs from rides in it too.
                                     <div
-                                        class="absolute left-0 text-[9px] font-mono whitespace-nowrap
-                                                opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none
-                                                px-2 py-0.5 rounded glass-subtle"
-                                        class=("-top-6", move || !zone_style.get().is_some_and(|zd| zd.label_below))
-                                        class=("-bottom-6", move || zone_style.get().is_some_and(|zd| zd.label_below))
+                                        class=move || format!(
+                                            "absolute left-0 text-[9px] font-mono whitespace-nowrap transition-opacity \
+                                             pointer-events-none px-2 py-0.5 rounded glass-subtle {} {}",
+                                            if zone_style.get().is_some_and(|zd| zd.label_below) { "-bottom-6" } else { "-top-6" },
+                                            visibility_class(label_mode.get().callout),
+                                        )
+                                        // Turned past a quarter, the box would hang its callout
+                                        // upside down; the callout flips upright in place.
                                         style=move || {
                                             zone_style.get()
-                                                .map(|zd| format!("color: rgba({}, 0.9)", zd.primary_rgb))
+                                                .map(|zd| format!("color: rgba({}, 0.9); {}", zd.primary_rgb, zd.label_style))
                                                 .unwrap_or_default()
                                         }
                                     >
-                                        {move || zone_style.get().map(|zd| format!("{} · {} LEDs", zd.name, zd.led_count)).unwrap_or_default()}
+                                        {move || zone_style.get().map(|zd| format!("{} · {}", zd.name, zd.detail)).unwrap_or_default()}
                                     </div>
 
                                     // Resize handles (selected only) — small circles with accent glow.
@@ -1006,6 +1219,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                         keep_aspect_ratio: keep_aspect_ratio.get_untracked(),
                                                     },
                                                     capture,
+                                                    canvas: (snapshot.canvas_width, snapshot.canvas_height),
                                                     base_zones: snapshot.zones.clone(),
                                                     current_zones: snapshot.zones,
                                                     elements,
@@ -1110,7 +1324,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         style="background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)"
                                     >
                                         <div
-                                            class="flex flex-col items-center max-w-full"
+                                            class=move || format!(
+                                                "flex flex-col items-center max-w-full transition-opacity {}",
+                                                visibility_class(label_mode.get().inside),
+                                            )
                                             style=move || zone_style.get().map(|zd| zd.label_style).unwrap_or_default()
                                         >
                                             <div
@@ -1130,7 +1347,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 class="text-[9px] font-mono select-none tabular-nums mt-1 shrink min-h-0 overflow-hidden"
                                                 style="color: rgba(255, 255, 255, 0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.7)"
                                             >
-                                                {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
+                                                {move || zone_style.get().map(|zd| zd.detail).unwrap_or_default()}
                                             </div>
                                         </div>
                                     </div>
@@ -1153,9 +1370,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                     // Empty canvas hint — shown over the live effect when no zones are placed
                     <Show when=move || !has_zones.get()>
                         <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <div class="text-center space-y-1.5 px-4 py-3 rounded-xl bg-black/50 backdrop-blur-sm">
-                                <div class="text-white/40 text-sm font-medium">"Add devices from the palette"</div>
-                                <div class="text-white/25 text-xs">"Drag zones to position them on the canvas"</div>
+                            <div class="px-4 py-3 rounded-xl bg-black/50 backdrop-blur-sm text-center text-sm font-medium text-white/40">
+                                "Drag devices here, or add them from Unassigned"
                             </div>
                         </div>
                     </Show>

@@ -2,51 +2,66 @@
 @import "./tokens/primitives.css";
 @import "./tokens/semantic.css";
 
-/* ── Leptoaster — SilkCircuit Theme ─────────────────────────────────────── */
+/* ── Toasts ──────────────────────────────────────────────────────────────
 
-:root {
-    --leptoaster-font-family: 'Satoshi', 'Inter', system-ui, -apple-system, sans-serif;
+   Toasts float at the bottom right of the content area, clear of the
+   sidebar on the left. The transform makes the host the containing block
+   for leptoaster's fixed containers, so on phones they sit above the
+   mobile tab bar instead of covering it.
+
+   The theme variables live on the host, not :root: leptoaster's Toaster
+   renders its own <style> that re-declares every --leptoaster-* variable
+   on :root after this sheet, so a :root theme here never applies. Each
+   level is Prism glass tinted by its status token, which already flips
+   with the theme, so one block serves both. */
+.toast-host {
+    --leptoaster-font-family: var(--font-sans);
     --leptoaster-font-size: 13px;
     --leptoaster-line-height: 1.4;
     --leptoaster-font-weight: 500;
     --leptoaster-progress-height: 2px;
     --leptoaster-z-index: 9990;
 
-    --leptoaster-success-background-color: rgba(80, 250, 123, 0.08);
-    --leptoaster-success-border-color: rgba(80, 250, 123, 0.25);
-    --leptoaster-success-text-color: #50fa7b;
+    --leptoaster-success-background-color: color-mix(in oklab, var(--status-success) 12%, var(--glass-bg-dense));
+    --leptoaster-success-border-color: color-mix(in oklab, var(--status-success) 35%, transparent);
+    --leptoaster-success-text-color: var(--status-success);
 
-    --leptoaster-error-background-color: rgba(255, 99, 99, 0.08);
-    --leptoaster-error-border-color: rgba(255, 99, 99, 0.25);
-    --leptoaster-error-text-color: #ff6363;
+    --leptoaster-error-background-color: color-mix(in oklab, var(--status-error) 12%, var(--glass-bg-dense));
+    --leptoaster-error-border-color: color-mix(in oklab, var(--status-error) 35%, transparent);
+    --leptoaster-error-text-color: var(--status-error);
 
-    --leptoaster-info-background-color: rgba(130, 170, 255, 0.08);
-    --leptoaster-info-border-color: rgba(130, 170, 255, 0.25);
-    --leptoaster-info-text-color: #82AAFF;
+    --leptoaster-info-background-color: color-mix(in oklab, var(--status-info) 12%, var(--glass-bg-dense));
+    --leptoaster-info-border-color: color-mix(in oklab, var(--status-info) 35%, transparent);
+    --leptoaster-info-text-color: var(--status-info);
 
-    --leptoaster-warn-background-color: rgba(241, 250, 140, 0.08);
-    --leptoaster-warn-border-color: rgba(241, 250, 140, 0.25);
-    --leptoaster-warn-text-color: #f1fa8c;
+    --leptoaster-warn-background-color: color-mix(in oklab, var(--status-warning) 12%, var(--glass-bg-dense));
+    --leptoaster-warn-border-color: color-mix(in oklab, var(--status-warning) 35%, transparent);
+    --leptoaster-warn-text-color: var(--status-warning);
+
+    position: fixed;
+    inset: 0;
+    z-index: var(--leptoaster-z-index);
+    pointer-events: none;
+    transform: translateZ(0);
 }
 
-/* Light theme — the neon toast text above is tuned for dark surfaces and
-   washes out on white; swap to darkened equivalents of the same hues. */
-[data-theme="light"] {
-    --leptoaster-success-background-color: rgba(15, 138, 77, 0.08);
-    --leptoaster-success-border-color: rgba(15, 138, 77, 0.30);
-    --leptoaster-success-text-color: #0f7a44;
+.toast-host > div {
+    pointer-events: auto;
+}
 
-    --leptoaster-error-background-color: rgba(211, 58, 58, 0.08);
-    --leptoaster-error-border-color: rgba(211, 58, 58, 0.30);
-    --leptoaster-error-text-color: #c22f2f;
+/* Leptoaster styles each toast inline; the radius needs !important to
+   match the rest of the floating chrome. */
+.toast-host .toast {
+    border-radius: var(--radius-xl) !important;
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+    box-shadow: 0 8px 24px oklch(0 0 0 / 0.25);
+}
 
-    --leptoaster-info-background-color: rgba(59, 111, 212, 0.08);
-    --leptoaster-info-border-color: rgba(59, 111, 212, 0.30);
-    --leptoaster-info-text-color: #2f5cb8;
-
-    --leptoaster-warn-background-color: rgba(154, 125, 0, 0.08);
-    --leptoaster-warn-border-color: rgba(154, 125, 0, 0.30);
-    --leptoaster-warn-text-color: #7d6600;
+@media (max-width: 767.98px) {
+    .toast-host {
+        bottom: calc(3.5rem + env(safe-area-inset-bottom));
+    }
 }
 
 /* ── Base Resets ─────────────────────────────────────────────────────────── */
@@ -647,6 +662,13 @@ input[type="range"].slider-silk::-moz-range-track {
     85%      { transform: scaleY(0.55); }
 }
 
+/* Spring-loaded tab hold: a ring that fills while a drag rests on a tab.
+   The SVG circle uses pathLength="1", so the dash runs from 1 to 0. */
+@keyframes spring-fill {
+    from { stroke-dashoffset: 1; }
+    to   { stroke-dashoffset: 0; }
+}
+
 /* ── Animation Utility Classes ───────────────────────────────────────────── */
 
 .animate-enter-up       { animation: enter-up 0.35s var(--ease-silk) both; }
@@ -662,6 +684,7 @@ input[type="range"].slider-silk::-moz-range-track {
 .animate-edge-shimmer   { animation: edgeShimmer 3s ease-in-out infinite; }
 .animate-glow-reveal    { animation: glowReveal 0.5s var(--ease-silk) both; }
 .animate-swap-in        { animation: swapIn 0.22s var(--ease-silk) both; }
+.animate-spring-fill    { animation: spring-fill 0.5s linear both; }
 
 /* Effect-swap stagger — three variants with cascading delays so the
    title lands first, then the description, then the category chip. */
@@ -1180,7 +1203,8 @@ button:hover:not(:disabled) > .relative {
 
     .glass,
     .glass-dense,
-    .glass-subtle {
+    .glass-subtle,
+    .toast-host .toast {
         backdrop-filter: none;
         -webkit-backdrop-filter: none;
     }
@@ -1376,6 +1400,7 @@ body.resizing * {
     .animate-cabinet-ignite,
     .animate-eq-bar,
     .animate-swap-in,
+    .animate-spring-fill,
     .animate-picker-in,
     .logo-bg-mark,
     .search-glow,

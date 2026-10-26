@@ -459,13 +459,23 @@ impl DaemonState {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
+        // A fresh run: a new epoch, so no fence from an earlier run passes,
+        // and revisions that start at the clock.
+        let scene_run = crate::domain::scene_run::SceneRun::from_clock();
+        let scene_revision_start = scene_run.start_revision();
         let scene_manager = crate::domain::scene::SceneService::new(
             scene_manager_inner,
             Arc::clone(&event_bus),
             scene_store_inner,
             Arc::clone(&zone_layout_previews),
+            scene_run,
         );
-        info!(path = %scenes_path.display(), "Scene manager created");
+        info!(
+            path = %scenes_path.display(),
+            run_epoch = scene_manager.run_epoch(),
+            revision = scene_revision_start,
+            "Scene manager created"
+        );
 
         // ── Render Loop ─────────────────────────────────────────────────
         let render_loop = RenderLoop::new(config.daemon.target_fps);

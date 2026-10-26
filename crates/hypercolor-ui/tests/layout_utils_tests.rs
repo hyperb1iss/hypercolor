@@ -251,49 +251,6 @@ fn attachment_binding_slot_alias_matches_generated_zone_ids_and_names() {
 }
 
 #[test]
-fn representative_zone_for_device_prefers_visible_attachment_over_suppressed_source() {
-    let layout = prism_attachment_layout();
-
-    assert_eq!(
-        layout_utils::representative_zone_id_for_device(&layout, "usb:prism8:test").as_deref(),
-        Some("front-fan-1")
-    );
-}
-
-#[test]
-fn representative_zone_for_device_slot_uses_slot_alias_and_skips_source_slot() {
-    let layout = prism_attachment_layout();
-
-    assert_eq!(
-        layout_utils::representative_zone_id_for_device_slot(
-            &layout,
-            "usb:prism8:test",
-            Some("Channel 1"),
-        )
-        .as_deref(),
-        Some("front-fan-1")
-    );
-}
-
-#[test]
-fn selected_zone_matches_device_slot_when_attachment_alias_is_selected() {
-    let layout = prism_attachment_layout();
-
-    assert!(layout_utils::selected_zone_matches_device_slot(
-        &layout,
-        "front-fan-2",
-        "usb:prism8:test",
-        Some("Channel 1"),
-    ));
-    assert!(!layout_utils::selected_zone_matches_device_slot(
-        &layout,
-        "front-fan-2",
-        "usb:prism8:test",
-        Some("Channel 2"),
-    ));
-}
-
-#[test]
 fn apply_slot_display_names_to_seeded_attachment_layout_renames_matching_zones() {
     let mut seeded = prism_seeded_attachment_layout();
     let slot_display_names = HashMap::from([("channel-1".to_owned(), "Radiator".to_owned())]);
@@ -445,4 +402,47 @@ fn sync_device_display_name_in_layout_updates_plain_and_prefixed_defaults() {
     assert_eq!(layout.zones[0].name, "Aurora Hub");
     assert_eq!(layout.zones[1].name, "Aurora Hub · Channel 1");
     assert_eq!(layout.zones[2].name, "Top Radiator");
+}
+
+#[test]
+fn a_display_output_reports_its_resolution_and_an_led_output_none() {
+    let mut lcd = ring_zone(
+        "lcd",
+        "TL LCD 2",
+        "usb:prism8:test",
+        Some("Display"),
+        0,
+        None,
+    );
+    lcd.topology = LedTopology::Matrix {
+        width: 400,
+        height: 400,
+        serpentine: false,
+        start_corner: hypercolor_types::spatial::Corner::TopLeft,
+    };
+    let fan = ring_zone("fan", "Fan", "usb:prism8:test", Some("Channel 1"), 1, None);
+    let devices = vec![sample_device_summary(
+        "TL LCD",
+        vec![
+            api::SegmentSummary {
+                id: "segment_0".to_owned(),
+                name: "Display".to_owned(),
+                led_count: 160_000,
+                topology: "display".to_owned(),
+                topology_hint: Some(api::SegmentTopologySummary::Display {
+                    width: 400,
+                    height: 400,
+                    circular: true,
+                }),
+            },
+            sample_zone_summary("channel-1", "Channel 1", 20),
+        ],
+    )];
+
+    assert_eq!(
+        layout_utils::display_resolution(&lcd, &devices),
+        Some((400, 400))
+    );
+    assert_eq!(layout_utils::display_resolution(&fan, &devices), None);
+    assert_eq!(layout_utils::display_resolution(&lcd, &[]), None);
 }

@@ -3,7 +3,9 @@ use anyhow::{Context, Result};
 use super::super::frame_set::{
     gpu_composed_from_surface, gpu_composed_with_preview_surface, gpu_composed_without_surfaces,
 };
-use super::super::preview::{CachedPreviewSurfaceKey, preview_request_matches_plan};
+use super::super::preview::{
+    CachedPreviewSurfaceKey, PreviewStagingFailed, preview_request_matches_plan,
+};
 use super::super::screen_upload::ScreenUploadPoolSaturated;
 use super::super::source::{cached_readback_key, copy_frame_into_output_texture};
 use super::super::{GpuCompositorOutputSurface, GpuSparkleFlinger};
@@ -24,6 +26,10 @@ impl GpuSparkleFlinger {
             Ok(composed) => super::super::GpuComposeOutcome::Produced(composed),
             Err(error) if error.is::<ScreenUploadPoolSaturated>() => {
                 tracing::debug!(%error, "retaining GPU output while screen uploads are saturated");
+                super::super::GpuComposeOutcome::Retained(gpu_composed_without_surfaces())
+            }
+            Err(error) if error.is::<PreviewStagingFailed>() => {
+                tracing::debug!(%error, "retaining GPU output without this frame's preview");
                 super::super::GpuComposeOutcome::Retained(gpu_composed_without_surfaces())
             }
             Err(error) => super::super::GpuComposeOutcome::Failed(error),
@@ -181,7 +187,8 @@ impl GpuSparkleFlinger {
                 self.discard_pending_preview_map();
             }
             self.ready_preview_surface = None;
-            return self.read_back_current_output_surface(
+            // The restaged readback carries the output's own deferred work.
+            let restaged = self.read_back_current_output_surface(
                 plan.width,
                 plan.height,
                 Some(key.clone()),
@@ -191,6 +198,10 @@ impl GpuSparkleFlinger {
                 native_screen_leases,
                 prepared_preview_surface,
             );
+            if restaged.as_ref().is_err_and(composition_was_lost) {
+                self.invalidate_output_identity();
+            }
+            return restaged;
         }
         let reuse_cached_readback = readback_key.as_ref().is_some_and(|key| {
             self.cached_readback_surface.as_ref().is_some_and(|cached| {
@@ -287,7 +298,7 @@ impl GpuSparkleFlinger {
             .and_then(Option::as_ref);
 
         if first_layer.can_bypass_for_size(plan.width, plan.height) {
-            copy_frame_into_output_texture(
+            let copy_result = copy_frame_into_output_texture(
                 &self.device,
                 &self.queue,
                 &mut self.pipeline,
@@ -301,6 +312,13 @@ impl GpuSparkleFlinger {
                 #[cfg(test)]
                 &mut surfaces.front_upload_count,
             );
+            if let Err(error) = copy_result {
+                drop(uploaded_screen_frames);
+                return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                surfaces.abandon_encoded_composition();
+                self.invalidate_output_identity();
+                return Err(error);
+            }
         } else {
             // The first layer only blends against FRONT when it cannot take
             // the direct-copy path inside `compose_layer_into_gpu`; skip the
@@ -325,6 +343,8 @@ impl GpuSparkleFlinger {
             if let Err(error) = compose_result {
                 drop(uploaded_screen_frames);
                 return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                surfaces.abandon_encoded_composition();
+                self.invalidate_output_identity();
                 return Err(error);
             }
             use_front_as_current = false;
@@ -349,6 +369,8 @@ impl GpuSparkleFlinger {
             if let Err(error) = compose_result {
                 drop(uploaded_screen_frames);
                 return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
+                surfaces.abandon_encoded_composition();
+                self.invalidate_output_identity();
                 return Err(error);
             }
             use_front_as_current = !use_front_as_current;
@@ -395,7 +417,7 @@ impl GpuSparkleFlinger {
             ));
         }
 
-        self.read_back_current_output_surface(
+        let read_back = self.read_back_current_output_surface(
             plan.width,
             plan.height,
             readback_key,
@@ -404,6 +426,33 @@ impl GpuSparkleFlinger {
             Some(encoder),
             native_screen_leases,
             prepared_preview_surface,
-        )
+        );
+        if read_back.as_ref().is_err_and(composition_was_lost) {
+            self.invalidate_output_identity();
+        }
+        read_back
     }
+
+    /// Stop trusting the compositor's output after a composition failed.
+    ///
+    /// Dropping the failed composition's encoder cannot cancel the
+    /// `Queue::write_texture` uploads it already queued into the output
+    /// textures, which still run at the next submit, and the previous
+    /// composition's own deferred encoder may have been dropped unsubmitted
+    /// along the way. Either way the texture `current_output` names no
+    /// longer provably holds `cached_composition_key`'s frame, so the next
+    /// plan composes from scratch instead of reusing it.
+    fn invalidate_output_identity(&mut self) {
+        self.current_output = None;
+        self.cached_composition_key = None;
+        self.output_generation = self.output_generation.saturating_add(1);
+        self.invalidate_output_sample();
+    }
+}
+
+/// Whether a failed output readback also lost the composition it read from.
+/// Only a preview that failed after its composition was kept for
+/// submission leaves the output intact.
+fn composition_was_lost(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<PreviewStagingFailed>().is_none()
 }

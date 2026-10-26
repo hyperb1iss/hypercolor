@@ -1,4 +1,5 @@
 use super::*;
+use hypercolor_types::api::system::{GpuPassTimingsStatus, GpuTransferStatus};
 
 #[expect(
     clippy::too_many_lines,
@@ -406,15 +407,21 @@ async fn status_includes_latest_frame_surface_stats() {
         "publication_test"
     );
     assert_eq!(json["data"]["latest_frame"]["output_errors"], 0);
-    let expected_effect_health = serde_json::to_value(super::effect_health_status(
-        crate::performance::EffectHealthSummary {
+    let mut expected_effect_health =
+        super::effect_health_status(crate::performance::EffectHealthSummary {
             errors_total: 1,
             fallbacks_applied_total: 1,
             producer_gpu_readback_failures_total: 2,
-        },
-    ))
-    .expect("effect health status should serialize");
-    assert_eq!(json["data"]["effect_health"], expected_effect_health);
+        });
+    let mut actual_effect_health: hypercolor_types::api::system::EffectHealthStatus =
+        serde_json::from_value(json["data"]["effect_health"].clone())
+            .expect("effect health must match the shared diagnostic contract");
+    // Parallel GPU tests can complete work between these two snapshots.
+    actual_effect_health.gpu_pass_timings = GpuPassTimingsStatus::default();
+    expected_effect_health.gpu_pass_timings = GpuPassTimingsStatus::default();
+    actual_effect_health.gpu_transfers = GpuTransferStatus::default();
+    expected_effect_health.gpu_transfers = GpuTransferStatus::default();
+    assert_eq!(actual_effect_health, expected_effect_health);
     assert_eq!(json["data"]["preview_runtime"]["canvas_receivers"], 1);
     assert_eq!(json["data"]["preview_runtime"]["scene_canvas_receivers"], 1);
     assert_eq!(

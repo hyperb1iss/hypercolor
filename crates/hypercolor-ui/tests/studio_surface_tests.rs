@@ -145,17 +145,17 @@ fn a_renamed_primary_zone_shows_its_typed_name_when_multi_zone() {
 }
 
 #[test]
-fn an_unnamed_primary_zone_reads_as_default_zone() {
-    // The daemon seeds the Default zone as "Primary"; until renamed, the
-    // rail shows "Default zone" rather than leaking that internal label.
+fn an_unnamed_primary_zone_reads_as_main() {
+    // The daemon seeds the primary zone as "Primary"; until renamed, the
+    // rail shows "Main" rather than leaking that internal label.
     let surfaces = surfaces_from_zones(&[
         zone_resource("Primary", ZoneRole::Primary, None),
         zone_resource("Case Fans", ZoneRole::Custom, None),
     ]);
-    assert_eq!(surfaces[0].name, "Default zone");
-    // The relabel holds at every scale — a solo unnamed zone reads the same.
+    assert_eq!(surfaces[0].name, "Main");
+    // The relabel holds at every scale; a solo unnamed zone reads the same.
     let solo = surfaces_from_zones(&[zone_resource("Primary", ZoneRole::Primary, None)]);
-    assert_eq!(solo[0].name, "Default zone");
+    assert_eq!(solo[0].name, "Main");
 }
 
 #[test]
@@ -165,23 +165,6 @@ fn a_surface_carries_backing_zone_role_and_accent_color() {
     let surfaces = surfaces_from_zones(&[zone]);
     assert_eq!(surfaces[0].role, ZoneRole::Custom);
     assert_eq!(surfaces[0].color.as_deref(), Some("#e135ff"));
-}
-
-#[test]
-fn only_custom_led_zones_are_deletable() {
-    let surfaces = surfaces_from_zones(&[
-        zone_resource("Default", ZoneRole::Primary, None),
-        zone_resource("Case Fans", ZoneRole::Custom, None),
-        zone_resource(
-            "AIO Screen",
-            ZoneRole::Display,
-            Some(DisplayFaceTarget::new(DeviceId::new())),
-        ),
-    ]);
-    // Primary is the permanent Default zone; a Screen is not a zone.
-    assert!(!surfaces[0].is_deletable_zone());
-    assert!(surfaces[1].is_deletable_zone());
-    assert!(!surfaces[2].is_deletable_zone());
 }
 
 #[test]

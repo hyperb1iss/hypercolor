@@ -60,6 +60,8 @@ workspace = true
 
 [features]
 allocation-contract-tests = []
+# Retain native adapter discovery while integration tests run independent devices.
+gpu-test-fixtures = []
 builtin-drivers = [
     "dep:hypercolor-driver-builtin",
     "hypercolor-driver-builtin/default",
@@ -95,7 +97,7 @@ hypercolor-color = { workspace = true }
 hypercolor-gpu-frame = { workspace = true }
 hypercolor-types = { workspace = true, features = ["schema"] }
 hypercolor-openrgb-host = { workspace = true }
-hypercolor-core = { path = "../hypercolor-core", version = "0.7.3", default-features = false }
+hypercolor-core = { path = "../hypercolor-core", version = "0.8.0", default-features = false }
 hypercolor-platform-fs = { workspace = true }
 hypercolor-linux-session = { workspace = true }
 hypercolor-macos-owner = { workspace = true }
@@ -104,7 +106,7 @@ hypercolor-driver-support = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false, optional = true }
 hypercolor-network = { workspace = true }
 hypercolor-openrgb-sdk = { workspace = true, optional = true }
-hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", version = "0.7.3", default-features = false, features = ["ws-core", "axum"] }
+hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", version = "0.8.0", default-features = false, features = ["ws-core", "axum"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_path_to_error = { workspace = true }
@@ -159,7 +161,7 @@ dispatch2 = "0.3.1"
 hypercolor-macos-capture = { workspace = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-input = { workspace = true }
-hypercolor-macos-session = { path = "../hypercolor-macos-session", version = "0.7.3" }
+hypercolor-macos-session = { path = "../hypercolor-macos-session", version = "0.8.0" }
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }

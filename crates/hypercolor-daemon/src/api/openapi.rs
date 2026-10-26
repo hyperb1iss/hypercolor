@@ -6,7 +6,8 @@ use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::{ObjectBuilder, Schema, Type};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
-    Content, HttpMethod, OpenApi as OpenApiDocument, Ref, Required, Response, ResponseBuilder,
+    Content, HttpMethod, OpenApi as OpenApiDocument, Ref, RefOr, Required, Response,
+    ResponseBuilder,
 };
 use utoipa::{Modify, OpenApi};
 use utoipa_axum::router::UtoipaMethodRouter;
@@ -128,6 +129,7 @@ pub(crate) struct OperationDoc {
     additional_schemas: Vec<SchemaRegistrar>,
     query: Option<ParameterProvider>,
     headers: Vec<Parameter>,
+    idempotent: bool,
 }
 
 impl OperationDoc {
@@ -215,6 +217,7 @@ impl OperationDoc {
             additional_schemas: Vec::new(),
             query: None,
             headers: Vec::new(),
+            idempotent: false,
         }
     }
 
@@ -276,16 +279,49 @@ impl OperationDoc {
         self
     }
 
-    pub(crate) fn required_header(mut self, name: &'static str, description: &'static str) -> Self {
+    /// Document the optional scene fence this operation honors as
+    /// `If-Match`.
+    pub(crate) fn fenced(mut self) -> Self {
+        self.headers
+            .push(fence_header(Required::False, OPTIONAL_FENCE));
+        self
+    }
+
+    /// Document the scene fence this operation requires as `If-Match`.
+    pub(crate) fn requires_fence(mut self) -> Self {
+        self.headers
+            .push(fence_header(Required::True, REQUIRED_FENCE));
+        self
+    }
+
+    /// Honor an optional `Idempotency-Key` on this operation. Declaring the
+    /// header here is what turns the behavior on (`api::idempotency`), so
+    /// the document and the router cannot disagree about which writes
+    /// replay instead of applying twice.
+    pub(crate) fn idempotent(mut self) -> Self {
         self.headers.push(
             ParameterBuilder::new()
-                .name(name)
+                .name(super::idempotency::DOCUMENTED_HEADER)
                 .parameter_in(ParameterIn::Header)
-                .required(Required::True)
-                .description(Some(description))
-                .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+                .required(Required::False)
+                .description(Some(
+                    "Client-generated opaque key (a UUID) naming one logical write. A repeat \
+                     with the same key and the same request is not applied again: it answers \
+                     with the stored status and body plus `Idempotency-Replayed: true`, waiting \
+                     for the original when it is still running. The same key on a different \
+                     request answers 422 `idempotency_key_mismatch`. Keys are kept in memory \
+                     for one daemon run, which the `hypercolor-run-epoch` response header names.",
+                ))
+                .schema(Some(
+                    ObjectBuilder::new()
+                        .schema_type(Type::String)
+                        .max_length(Some(
+                            hypercolor_types::api::envelope::IDEMPOTENCY_KEY_MAX_LEN,
+                        )),
+                ))
                 .build(),
         );
+        self.idempotent = true;
         self
     }
 
@@ -293,6 +329,30 @@ impl OperationDoc {
         self.additional_schemas.push(register_schema::<T>);
         self
     }
+}
+
+/// What an optional scene `If-Match` fence is and how it is checked.
+const OPTIONAL_FENCE: &str = "Scene fence guarding the write: the ETag a read or a write served, \
+\"<run_epoch>:<revision>\". It passes only while both the daemon run and the scene revision are \
+current, so a fence from an earlier daemon run is always stale. A bare revision (\"42\" or 42) \
+is still accepted and checks the revision alone; only the epoch-qualified form is safe across \
+daemon restarts. `*` or no header applies without a precondition.";
+
+/// [`OPTIONAL_FENCE`], for an operation that cannot run unfenced.
+const REQUIRED_FENCE: &str = "Scene fence guarding the write: the ETag a read or a write served, \
+\"<run_epoch>:<revision>\". It passes only while both the daemon run and the scene revision are \
+current, so a fence from an earlier daemon run is always stale. A bare revision (\"42\" or 42) \
+is still accepted and checks the revision alone; only the epoch-qualified form is safe across \
+daemon restarts. Required; the wildcard * is not accepted.";
+
+fn fence_header(required: Required, description: &'static str) -> Parameter {
+    ParameterBuilder::new()
+        .name("If-Match")
+        .parameter_in(ParameterIn::Header)
+        .required(required)
+        .description(Some(description))
+        .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+        .build()
 }
 
 pub(crate) fn documented_route<S, const N: usize>(
@@ -320,16 +380,26 @@ where
 }
 
 fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Operation {
+    let replayed = document.idempotent;
     let mut builder = OperationBuilder::new()
         .tag(document.tag)
         .summary(Some(document.summary))
         .operation_id(Some(document.operation_id))
         .response(
             document.success_status,
-            success_response(document.summary, document.success),
+            with_replay_header(
+                success_response(document.summary, document.success),
+                replayed,
+            ),
         );
     if let Some(status) = document.alternate_success_status {
-        builder = builder.response(status, success_response(document.summary, document.success));
+        builder = builder.response(
+            status,
+            with_replay_header(
+                success_response(document.summary, document.success),
+                replayed,
+            ),
+        );
     }
     if document.not_modified {
         builder = builder.response(
@@ -343,7 +413,11 @@ fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Opera
     for status in [
         "400", "401", "403", "404", "409", "412", "422", "429", "500",
     ] {
-        builder = builder.response(status, error_response(status));
+        builder = builder.response(status, with_replay_header(error_response(status), replayed));
+    }
+    if replayed {
+        // Never recorded, so never replayed: no `Idempotency-Replayed`.
+        builder = builder.response("503", keyed_capacity_response());
     }
 
     for name in path_parameter_names(path) {
@@ -423,6 +497,26 @@ fn success_response(summary: &str, shape: ResponseShape) -> Response {
     }
 }
 
+/// Declare `Idempotency-Replayed` on a response an opted-in operation can
+/// replay.
+fn with_replay_header(mut response: Response, replayed: bool) -> Response {
+    if replayed {
+        response.headers.insert(
+            hypercolor_types::api::envelope::IDEMPOTENCY_REPLAYED_HEADER.to_owned(),
+            RefOr::T(
+                utoipa::openapi::header::HeaderBuilder::new()
+                    .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+                    .description(Some(
+                        "`true` when this answer was stored for an earlier request with the same \
+                         Idempotency-Key and replayed instead of applied again; absent otherwise.",
+                    ))
+                    .build(),
+            ),
+        );
+    }
+    response
+}
+
 fn error_response(status: &str) -> Response {
     let description = match status {
         "400" => "Malformed request",
@@ -438,6 +532,24 @@ fn error_response(status: &str) -> Response {
     };
     ResponseBuilder::new()
         .description(description)
+        .content(
+            "application/json",
+            Content::new(Some(Ref::from_schema_name("ApiErrorBody"))),
+        )
+        .build()
+}
+
+/// The refusal a keyed write gets when the daemon takes nothing on for it:
+/// too many keyed writes are in flight (`api::idempotency`), or the daemon
+/// is still starting. Nothing is recorded for its key either way.
+fn keyed_capacity_response() -> Response {
+    ResponseBuilder::new()
+        .description(
+            "`service_unavailable`: the daemon took nothing on for this request, because too \
+             many keyed writes are already in flight or it is still starting. Nothing was applied \
+             or recorded for this Idempotency-Key, so send the same request again with the same \
+             key.",
+        )
         .content(
             "application/json",
             Content::new(Some(Ref::from_schema_name("ApiErrorBody"))),

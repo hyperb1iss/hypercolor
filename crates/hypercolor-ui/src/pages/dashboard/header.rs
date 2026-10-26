@@ -1,199 +1,199 @@
-//! Dashboard header widgets — status strip and loading skeleton.
+//! The dashboard's status line: one calm row under the title.
 //!
-//! The preview widget lives in the shared `components::preview_cabinet`
-//! module so both the dashboard and the effects page render the same
-//! cinematic cabinet.
+//! `● Running · up 11h 40m · 23 devices · 60 fps`. The dot is the only
+//! color and carries the daemon's health in status tokens; every value is
+//! secondary text. Health, devices, and fps ride the WebSocket; the uptime
+//! is anchored to the shared status snapshot and advanced on each metrics
+//! message. The preview widget lives in the shared
+//! `components::preview_cabinet` module.
 
+use hypercolor_leptos_ext::prelude::now_ms;
 use leptos::prelude::*;
-use leptos_icons::Icon;
+use leptos_router::components::A;
 
-use crate::api::SystemStatus;
-use crate::components::scene_switcher::{
-    SceneSwitcherMenu, active_scene_label, active_scene_locked,
-};
-use crate::components::status_pill::StatusPill;
-use crate::icons::*;
-use crate::live_uptime::{format_uptime, use_live_uptime};
-use crate::zones::ScenesContext;
+use crate::app::{DaemonStatusContext, WsContext};
+use crate::live_uptime::{advanced_uptime_seconds, format_uptime};
+use crate::ws::messages::ConnectionState;
 
-// ── Status strip ─────────────────────────────────────────────────────
+use super::fps_display::stabilize_fps_for_display;
 
-/// Inline status pills — no outer padding or border, so it can sit on the
-/// same row as the page title in the dashboard header.
-#[component]
-pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
-    let running = status.running;
-    let live_uptime = use_live_uptime(status.uptime_seconds);
-    let uptime = Signal::derive(move || format_uptime(live_uptime.get()));
-    let device_count = status.device_count;
-    let effect_count = status.effect_count;
-    let active_scene = status.active_scene;
-    let active_scene_snapshot_locked = status.active_scene_snapshot_locked;
+/// The daemon's health, as the status line's dot reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonHealth {
+    Running,
+    Paused,
+    Connecting,
+    Offline,
+}
 
-    let status_color = if running {
-        "var(--color-status-success)"
-    } else {
-        "var(--color-status-error)"
-    };
+/// The status token a health state paints its dot with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthTone {
+    Success,
+    Warning,
+    Error,
+}
 
-    view! {
-        // Desktop keeps the pill grammar, minus the WS Clients pill —
-        // that number is developer telemetry and lives with the perf
-        // panels. Phones condense to one mono line where the pulsing dot
-        // carries the running state; only the scene pill stays a control.
-        <div class="flex items-center gap-4 shrink-0 max-md:gap-2.5">
-            <div class="max-md:hidden flex items-center gap-4">
-                <StatusPill
-                    label="Status"
-                    value=if running { "Running" } else { "Stopped" }
-                    color=status_color
-                    pulsing=running
-                />
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                <StatusPill
-                    label="Uptime"
-                    value=uptime
-                    color="var(--color-cyan)"
-                    pulsing=false
-                />
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                <StatusPill
-                    label="Devices"
-                    value=format!("{device_count}")
-                    color="var(--color-coral)"
-                    pulsing=false
-                />
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                <StatusPill
-                    label="Effects"
-                    value=format!("{effect_count}")
-                    color="var(--color-accent)"
-                    pulsing=false
-                />
-            </div>
-            <div class="md:hidden flex items-center gap-2 min-w-0 text-[11px] font-mono text-fg-tertiary">
-                <div
-                    class="w-2 h-2 rounded-full shrink-0"
-                    class=("animate-pulse", running)
-                    style=format!("background: {status_color}; box-shadow: 0 0 8px {status_color}")
-                />
-                <span class="tabular-nums shrink-0">{move || uptime.get()}</span>
-                <span class="text-fg-tertiary/40">"·"</span>
-                <span class="tabular-nums shrink-0">{format!("{device_count} dev")}</span>
-                <span class="text-fg-tertiary/40">"·"</span>
-                <span class="tabular-nums shrink-0">{format!("{effect_count} fx")}</span>
-            </div>
-            <ScenePill
-                fallback_scene=active_scene
-                fallback_locked=active_scene_snapshot_locked
-            />
-        </div>
+impl DaemonHealth {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Running => "Running",
+            Self::Paused => "Paused",
+            Self::Connecting => "Connecting",
+            Self::Offline => "Offline",
+        }
+    }
+
+    #[must_use]
+    pub const fn tone(self) -> HealthTone {
+        match self {
+            Self::Running => HealthTone::Success,
+            Self::Paused | Self::Connecting => HealthTone::Warning,
+            Self::Offline => HealthTone::Error,
+        }
     }
 }
 
-/// The status strip's scene pill. The label comes from the shared scene
-/// resource (so external switches stay fresh), falling back to the
-/// page's one-shot status snapshot while that resource loads. With more
-/// than one scene to pick from, the pill becomes a switcher trigger;
-/// otherwise it stays the familiar static pill. Lock styling is kept
-/// for snapshot-locked scenes.
-#[component]
-fn ScenePill(fallback_scene: Option<String>, fallback_locked: bool) -> impl IntoView {
-    let scenes_ctx = expect_context::<ScenesContext>();
-    let (open, set_open) = signal(false);
+/// Health from the two live signals the socket carries: its own state,
+/// and the output pause its events report. The daemon's render loop only
+/// stops on shutdown, which drops the socket, so a connected daemon is
+/// running or paused.
+#[must_use]
+pub const fn daemon_health(connection: ConnectionState, output_paused: bool) -> DaemonHealth {
+    match (connection, output_paused) {
+        (ConnectionState::Connecting, _) => DaemonHealth::Connecting,
+        (ConnectionState::Disconnected | ConnectionState::Error, _) => DaemonHealth::Offline,
+        (ConnectionState::Connected, true) => DaemonHealth::Paused,
+        (ConnectionState::Connected, false) => DaemonHealth::Running,
+    }
+}
 
-    // `(value, locked, interactive)` for the pill, or `None` to render
-    // nothing (default scene with nowhere to switch to).
-    let pill = Memo::new(move |_| {
-        let interactive = scenes_ctx.has_multiple();
-        scenes_ctx.active.with(|active| {
-            let is_saved = active
+/// "1 device", "23 devices".
+#[must_use]
+pub fn device_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 device".to_owned()
+    } else {
+        format!("{count} devices")
+    }
+}
+
+/// The delivered frame rate, whole frames per second.
+#[must_use]
+pub fn fps_label(fps: f64) -> String {
+    format!("{fps:.0} fps")
+}
+
+/// The values the status line shows after the health word, in line order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusValue {
+    Uptime,
+    Devices,
+    Fps,
+}
+
+/// Classes for the separator in front of `value`, given the values the
+/// line shows. Phones hide the health word, so there the first value
+/// shown leads the line and its separator hides with the word; wider
+/// screens keep every separator.
+#[must_use]
+pub fn separator_class(value: StatusValue, shown: &[StatusValue]) -> &'static str {
+    if shown.first() == Some(&value) {
+        "text-fg-tertiary/50 max-md:hidden"
+    } else {
+        "text-fg-tertiary/50"
+    }
+}
+
+#[component]
+pub(super) fn StatusLine() -> impl IntoView {
+    let ws = expect_context::<WsContext>();
+    let daemon_status = expect_context::<DaemonStatusContext>();
+    let status = daemon_status.status;
+
+    let health =
+        Memo::new(move |_| daemon_health(ws.connection_state.get(), ws.output_paused.get()));
+    // The snapshot's uptime, advanced from when the snapshot landed.
+    let uptime = Memo::new(move |_| {
+        ws.metrics_tick.track();
+        let received_at = daemon_status.received_at_ms.get();
+        status.with(|status| {
+            status.as_ref().map(|status| {
+                format_uptime(advanced_uptime_seconds(
+                    status.uptime_seconds,
+                    received_at,
+                    now_ms(),
+                ))
+            })
+        })
+    });
+    let devices = Memo::new(move |_| {
+        ws.metrics
+            .with(|metrics| metrics.as_ref().map(|metrics| metrics.devices.connected))
+            .or_else(|| status.with(|status| status.as_ref().map(|status| status.device_count)))
+    });
+    let fps = Memo::new(move |_| {
+        ws.metrics.with(|metrics| {
+            metrics
                 .as_ref()
-                .is_some_and(|scene| scene.kind != hypercolor_types::scene::SceneKind::Ephemeral);
-            if is_saved {
-                return Some((
-                    active_scene_label(active.as_ref()),
-                    active_scene_locked(active.as_ref()),
-                    interactive,
-                ));
-            }
-            if active.is_none()
-                && let Some(name) = fallback_scene.clone()
-            {
-                return Some((name, fallback_locked, interactive));
-            }
-            interactive.then(|| ("Default".to_owned(), false, true))
+                .map(|metrics| stabilize_fps_for_display(metrics.fps.delivered, metrics.fps.target))
+                .filter(|fps| *fps > 0.0)
         })
     });
 
-    view! {
-        {move || pill.get().map(|(value, locked, interactive)| {
-            let label = if locked { "Scene Lock" } else { "Scene" };
-            let color = if locked {
-                "var(--color-status-warning)"
-            } else {
-                "var(--color-cyan)"
-            };
-            let value_text = if locked { format!("{value} · snap") } else { value };
-            view! {
-                <div class="w-px h-5 bg-edge-subtle/30" />
-                {if interactive {
-                    view! {
-                        <div class="relative dashboard-scene-pill">
-                            <button
-                                type="button"
-                                class="group flex items-center gap-1.5 rounded-lg px-1.5 py-1 \
-                                       -mx-1.5 -my-1 transition-colors hover:bg-surface-hover/30 \
-                                       focus-visible:outline-none focus-visible:ring-1 \
-                                       focus-visible:ring-accent/50 btn-press"
-                                title="Switch scene"
-                                aria-haspopup="menu"
-                                aria-expanded=move || open.get().to_string()
-                                on:click=move |_| set_open.update(|value| *value = !*value)
-                            >
-                                <StatusPill
-                                    label=label
-                                    value=value_text
-                                    color=color
-                                    pulsing=false
-                                />
-                                <span class="text-fg-tertiary group-hover:text-fg-secondary transition-colors">
-                                    <Icon icon=LuChevronDown width="12px" height="12px" />
-                                </span>
-                            </button>
-                            <SceneSwitcherMenu
-                                anchor_class="dashboard-scene-pill"
-                                is_open=open
-                                set_open=set_open
-                                placement="left-0 top-full mt-2 w-52"
-                            />
-                        </div>
-                    }.into_any()
-                } else {
-                    view! {
-                        <StatusPill label=label value=value_text color=color pulsing=false />
-                    }.into_any()
-                }}
-            }
-        })}
-    }
-}
+    let shown = Memo::new(move |_| {
+        [
+            uptime.with(Option::is_some).then_some(StatusValue::Uptime),
+            devices
+                .with(Option::is_some)
+                .then_some(StatusValue::Devices),
+            fps.with(Option::is_some).then_some(StatusValue::Fps),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+    });
+    let separator = move |value: StatusValue| {
+        view! {
+            <span
+                class=move || shown.with(|shown| separator_class(value, shown))
+                aria-hidden="true"
+            >
+                "·"
+            </span>
+        }
+    };
 
-// ── Skeleton ─────────────────────────────────────────────────────────
-
-#[component]
-pub(super) fn StatusSkeleton() -> impl IntoView {
     view! {
-        <div class="flex items-center gap-4 shrink-0 animate-pulse">
-            {(0..5).map(|_| view! {
-                <div class="flex items-center gap-2.5">
-                    <div class="w-2 h-2 rounded-full bg-surface-overlay/60" />
-                    <div>
-                        <div class="h-2 w-10 bg-surface-overlay/50 rounded mb-1" />
-                        <div class="h-3 w-14 bg-surface-overlay/50 rounded" />
-                    </div>
-                </div>
-            }).collect_view()}
+        <div class="flex min-w-0 items-center gap-2 text-[12px] text-fg-secondary tabular-nums max-md:text-[11px]">
+            <span
+                class="h-2 w-2 shrink-0 rounded-full"
+                class=("bg-status-success", move || health.get().tone() == HealthTone::Success)
+                class=("bg-status-warning", move || health.get().tone() == HealthTone::Warning)
+                class=("bg-status-error", move || health.get().tone() == HealthTone::Error)
+                aria-hidden="true"
+            />
+            // Phones keep the dot and drop the word; readers keep both.
+            <span class="shrink-0 max-md:sr-only">{move || health.get().label()}</span>
+            {move || uptime.get().map(|uptime| view! {
+                {separator(StatusValue::Uptime)}
+                <span class="shrink-0">{format!("up {uptime}")}</span>
+            })}
+            {move || devices.get().map(|count| view! {
+                {separator(StatusValue::Devices)}
+                <A
+                    href=crate::route_ui::route_href("/devices")
+                    attr:class="shrink-0 rounded transition-colors hover:text-fg-primary"
+                    attr:title="Open Devices"
+                >
+                    {device_count_label(count)}
+                </A>
+            })}
+            {move || fps.get().map(|fps| view! {
+                {separator(StatusValue::Fps)}
+                <span class="shrink-0">{fps_label(fps)}</span>
+            })}
         </div>
     }
 }

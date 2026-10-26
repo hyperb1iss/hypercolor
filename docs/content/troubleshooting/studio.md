@@ -5,19 +5,29 @@ weight = 40
 +++
 
 Studio edits the always-present live tree under `/api/v1/scene`. Structural
-writes may carry the scene document's `revision` in `If-Match`; the daemon
-returns HTTP 412 when that revision is stale. Control values follow a different
-rule: they never use `If-Match` and instead address a real layer id from the
-live document.
+writes may carry the scene's fence, the `ETag` the last read or write returned,
+in `If-Match`; the daemon returns HTTP 412 when that fence is stale, and an
+epoch-qualified fence from before a daemon restart is always stale. Control
+values follow a different rule: they never use `If-Match` and instead address a
+real layer id from the live document.
 
-{{< img path="img/ui/studio.webp" alt="Studio workspace with zone tree and layout canvas" />}}
+{{< img path="img/ui/studio.webp" alt="Studio workspace with zone tabs, the device pane, and the open zone's canvas" />}}
 
-## Save rejected: "Scene changed elsewhere, reloaded, try again"
+## Edit rejected: "Scene changed elsewhere. Reloaded, try again."
 
-The daemon returned `412 Precondition Failed` because the `If-Match` value no
-longer matched the live scene's `revision`. The response carries the
-authoritative value in `error.details.current`. Studio reloads `GET /scene` so
-you can reapply the edit without overwriting another client's change.
+The daemon returned `412 Precondition Failed` because the `If-Match` fence no
+longer matched the live scene: its `revision` moved on, or the daemon restarted
+and the fence names the earlier run. The response's `ETag` is the current fence,
+and `error.details` carries `current` and `current_epoch`. Studio reloads
+`GET /scene` so you can reapply the edit without overwriting another client's
+change.
+
+Canvas edits retry on their own: Studio reads the zone again, keeps only the
+changes the daemon does not hold yet, and sends them once more. After three
+stale rejections in a row the toast reads "Layout change not saved yet: the
+scene keeps changing elsewhere. It goes out again with your next edit." The
+edit stays on your canvas until then. A lost reply is settled the same way:
+Studio rereads the scene before sending anything else.
 
 If the rejection repeats, another browser tab, CLI command, or MCP agent is
 actively changing the scene. Run the daemon with debug logging and watch the
@@ -27,7 +37,7 @@ live-tree routes:
 journalctl --user -u hypercolor -f | grep '/scene'
 ```
 
-A missing `If-Match` is an unconditional structural write. Send a revision when
+A missing `If-Match` is an unconditional structural write. Send the fence when
 you need conflict detection, and update it from each successful response's
 `ETag` before issuing the next guarded mutation.
 
@@ -74,8 +84,9 @@ member placements in Studio. If blocks overlap at the origin, or have no useful
 spatial separation, the sampler reads nearly the same canvas location for every
 output.
 
-Move each member to its physical position, then save. Some effects intentionally
-render one color per zone. Switch to a spatial effect such as Borealis, Color
+Move each output to its physical position, or click **Fit** in the Stage
+header to spread the zone's devices across the canvas; the change commits when
+you release. Some effects intentionally render one color per zone. Switch to a spatial effect such as Borealis, Color
 Wave, or Gradient to distinguish an effect choice from a placement problem.
 
 ## Zone went stale mid-edit
@@ -112,12 +123,17 @@ ls -la ~/.config/hypercolor/
 Also verify that the daemon is starting with the same config path that received
 the write. `hypercolor service status` and the startup log show the active path.
 
-## Studio shows a different layout than `/layout`
+## A zone's canvas differs from the named layout
 
-The two views edit related but distinct resources. Studio writes a zone's
-member placement override through
-`PUT /api/v1/scene/zones/{zone}/layout`. The `/layout` page manages the named
-layout collection under `/api/v1/layouts`.
+The two edit related but distinct resources. Studio writes a zone's member
+placement through `PUT /api/v1/scene/zones/{zone}/layout`. Named layouts live
+in the collection under `/api/v1/layouts` (`hypercolor layouts` on the CLI).
+
+In a scene with a single LED zone, the Main zone follows the active named
+layout, and a canvas edit there writes through to it. Once a scene has a second
+LED zone, every zone's canvas belongs to that scene alone, so it drifts from the
+named layout by design. Studio still places devices joining a zone from the
+active named layout.
 
 A scene can deliberately reference a named layout through `scene.layout_id`.
 The daemon does not infer that link from the current effect. Effect-layout
@@ -129,9 +145,9 @@ Studio pushes an in-memory `zone_layout_preview` WebSocket command while you
 drag. The command is keyed by `zone_id` and always targets the active scene. A
 disconnected socket cannot deliver it, so check the WebSocket indicator first.
 
-The preview is temporary. Saving writes the member placements through the live
-zone layout route and clears the preview. Reverting, unmounting, or disconnecting
-also clears it.
+The preview is temporary. Releasing the drag commits the member placements
+through the live zone layout route and clears the preview. Switching zone tabs,
+leaving Studio, or disconnecting also clears it.
 
 ## Layer ordering looks reversed
 
@@ -151,27 +167,32 @@ daemon log for the exact response instead of retrying a stale revision.
 
 The live scene's `unassigned_behavior` controls device segments that are not
 members of any zone. Patch it through `PATCH /api/v1/scene`. Studio exposes the
-same setting in the Unassigned row for multi-zone scenes.
+same setting as the select on the **Unassigned** section header in the device
+pane.
 
 ## Debug a revision conflict directly
 
-Read the live scene and its `ETag`, then use that one revision on a structural
+Read the live scene and its `ETag`, then send that one fence on a structural
 write:
 
 ```bash
 curl -s -D /tmp/hypercolor-scene-headers \
   http://localhost:9420/api/v1/scene \
-  | jq '{id: .data.id, revision: .data.revision}'
+  | jq '{id: .data.id, revision: .data.revision, run_epoch: .data.run_epoch}'
+
+grep -i '^etag' /tmp/hypercolor-scene-headers
+# etag: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"
 
 curl -s -X POST http://localhost:9420/api/v1/scene/zones \
   -H 'Content-Type: application/json' \
-  -H 'If-Match: "42"' \
+  -H 'If-Match: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"' \
   -d '{"name":"Desk"}'
 ```
 
 A successful mutation returns the new `ETag`. A stale write returns
-`precondition_failed` with `error.details.current`. There are no separate zone,
-layer, or control version tokens.
+`precondition_failed` with `error.details.current` and `current_epoch`, and the
+current fence as its `ETag`. There are no separate zone, layer, or control
+version tokens.
 
 For the complete contract, see
 [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).

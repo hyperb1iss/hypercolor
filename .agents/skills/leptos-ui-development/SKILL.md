@@ -14,7 +14,7 @@ description: >-
 
 # Hypercolor UI Development
 
-The UI is a **Leptos 0.8 CSR** app compiled to WASM via **Trunk**, excluded from the Cargo workspace. `cargo check --workspace` does NOT cover it — always build/check separately.
+The UI is a **Leptos 0.8 CSR** app compiled to WASM via **Trunk**, excluded from the Cargo workspace. `cargo check --workspace` does NOT cover it, so always build and check it separately.
 
 ## Build Pipeline
 
@@ -23,13 +23,13 @@ just ui-dev          # Dev server on :9430, proxies API to daemon on :9420
 cd crates/hypercolor-ui && trunk build   # One-shot build
 ```
 
-Trunk pre-build hook runs Tailwind CSS compilation. Config in `Trunk.toml` — proxies `/api` to `127.0.0.1:9420`.
+Trunk pre-build hook runs Tailwind CSS compilation. Config in `Trunk.toml`, which proxies `/api` to `127.0.0.1:9420`.
 
 ## Verification
 
 `cargo check -p hypercolor-ui --lib` is the check that covers the app.
-Everything lives in the lib target: `src/lib.rs` declares 46 `pub mod`s, and
-`src/main.rs` is a three-line shim that calls `hypercolor_ui::run()`. The bin
+Everything lives in the lib target: `src/lib.rs` declares every module as `pub mod`,
+and `src/main.rs` is a three-line shim that calls `hypercolor_ui::run()`. The bin
 is the hollow half.
 
 Do not run cargo in this crate while a Trunk dev server is serving. The two
@@ -55,16 +55,16 @@ and read with `expect_context::<T>()`. The ones you will actually reach for:
 | Context                 | Provides                                | Notable members                                                                                                                                            |
 | ----------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `WsContext`             | Everything streamed off the daemon socket | `canvas_frame`, `connection_generation`, the `last_*_event` hint family, `metrics`, `sensors`, `layer_health`, `output_paused`, `set_preview_consumers` |
-| `ZonesContext`          | The active scene's zones                 | `active_scene`, `zones`, `led_zones`, `multi_zone`, `focused_zone`, `refresh`                                                                              |
+| `ZonesContext`          | The active scene's zones                 | `active_scene`, `zones`, `led_zones`, `multi_zone`, `scene_resolved`, `focused_zone` (the one target zone), `target_zone()`, `refresh`                    |
 | `ScenesContext`         | Saved scenes and activation              | `scenes`, `active`, `switching`, `activate`, `deactivate`, `refresh`                                                                                        |
-| `EffectsContext`        | Effect library plus active-effect state  | `effects_index` (Memo, no setter), `zone_effects`, `focused_zone_effect`, `apply_target`, `scene_refresh`, and read/write pairs for the `active_*` signals |
+| `EffectsContext`        | Effect library plus active-effect state  | `effects_index` (Memo, no setter), `zone_effects`, `zones`, `scene_refresh`, `apply_effect` (lands in the target zone), and read/write pairs for the `active_*` signals |
 | `CapabilitiesContext`   | Daemon-advertised capability names       | `has(name)`, `zone_crud_ready()`                                                                                                                            |
 | `DevicesContext`        | Device and layout resources              | `devices_resource`, `layouts_resource`                                                                                                                      |
 | `DisplaysContext`       | Display resources                        | `displays_resource`                                                                                                                                         |
 | `ConfigContext`         | Daemon config mirror                     | `config`, `refresh`, `audio_enabled` (Memo)                                                                                                                 |
 | `ConfigSchemaContext`   | The config key registry                  | `entries`                                                                                                                                                   |
 | `FrameAnalysisContext`  | Shared canvas analysis pass              | `live_canvas` (dominant hue, palette)                                                                                                                       |
-| `StudioContext`         | Studio page state                        | `selected_surface_id`, `composition_open`, `selected_output_ids`, `hidden_outputs`                                                                           |
+| `StudioContext`         | Studio page state                        | `history` (`StudioHistory`), `selected_surface_id` (the open tab), `composition_open`, `rig_layout`, `selected_output_ids`, `hidden_outputs`               |
 | `PreviewTelemetryContext` | Preview delivery telemetry            | `presenter`, `set_presenter`                                                                                                                                |
 
 Sub-tree contexts are provided lower down and are only visible inside their
@@ -87,7 +87,7 @@ appears, check the capability before you check your rendering.
 
 ```rust
 let caps = expect_context::<CapabilitiesContext>();
-if caps.zone_crud_ready() { /* + New zone, zone rows */ }
+if caps.zone_crud_ready() { /* the + after the tabs, "A new zone" in Move to */ }
 ```
 
 `zone_crud_ready()` is the conjunction of `zone-crud`, `multi-zone-sampling`,
@@ -113,7 +113,7 @@ SceneDocument
 
 The UI's presentation type for a zone is `zones::Surface` (`src/zones/surface.rs`):
 `id`, `name`, `kind` (`SurfaceKind::Light` for LED zones, `Screen` for display
-faces), `enabled`, `role` (`Primary` is the permanent Default zone, `Custom` is
+faces), `enabled`, `role` (`Primary` is the permanent primary zone, `Custom` is
 deletable), `color`, `display_device_id`, `layer_ids`, `top_layer`.
 `ZoneEffectState` (`src/zones.rs:141`) pairs a `Surface` with what it is showing:
 `effect_id`, `effect_name`, `effect_category`, `control_values`, `preset_id`,
@@ -121,9 +121,17 @@ and the scene `revision` those values were read at.
 
 `EffectsContext::zone_effects` is the multi-zone now-playing source of truth,
 in scene order. The singular `active_*` signals mirror the primary zone only,
-so anything zone-aware reads `zone_effects` or `focused_zone_effect`.
+so anything zone-aware reads `zone_effects`.
 
-The API modules (`src/api/`, sixteen alongside `mod.rs`) map onto the tree:
+The target zone has one record: `ZonesContext::focused_zone`. Studio's open
+LED tab and the preview's `CompactZoneTabs` write it; `target_zone()` resolves
+it (a stale, Screen, or `None` value means the primary zone), and
+`surface::apply_zone_id` turns it into the zone an apply names. There is no
+`ApplyTarget` and no all-zones apply. Show a zone's name only through
+`surface::zone_display_name`, which renders an unnamed, "Primary", or
+"Default zone" primary as "Main".
+
+The API modules in `src/api/` map onto the tree:
 
 | Module      | Surface                                                                    |
 | ----------- | -------------------------------------------------------------------------- |
@@ -149,9 +157,25 @@ write because the control is bound, it resends the same patch with those keys
 in `clear_bindings`, so removing the binding and applying the value land in one
 atomic commit.
 
-Studio lives in `src/pages/studio/` (10 modules: `mod`, `stage`, `zone_tree`,
-`zone_controls`, `zone_add_device`, `device_card`, `device_assignment`,
-`composition_panel`, `face_composition`, `scene_selector`).
+## Studio
+
+Studio lives in `src/pages/studio/`, one zone tab at a time:
+
+| Area | Modules |
+| ---- | ------- |
+| Page state | `mod` (`StudioContext`, selection, the target-zone effect) |
+| Tab strip | `zone_strip`, `tab_model`, `zone_controls` (zone create, rename, color, pause, reorder) |
+| Device pane | `device_pane`, `pane_model`, `device_card`, `offline_device_card`, `device_assignment`, `screen_list` |
+| Stage and layers | `stage`, `composition_panel`, `face_composition` |
+| Moves | `drag`, `drag_model`, `move_menu`, `moves` (one drag controller, the "Move to" twin, announcements) |
+| History and placement | `history`, `undo_notice`, `placement` (rig seeding, first-arrival fit, Fit) |
+
+Rules the code depends on:
+
+- **Every membership and zone-structure write goes through `StudioHistory`** (`assign_device`, `edit_members`, `create_zone`, `create_zone_filled`, `patch_zone`, `delete_zone`, `undo_deletion`). It fences writes by scene revision, runs one at a time, queues the rest in order, and records the undo journal. Calling `api::zones::*` from a component skips undo and races the queue.
+- **Layout edits commit live through a ledger.** `LayoutWriteHandle` records each finished edit in the history and turns it into per-field intents in the zone's ledger (`components/layout_builder/ledger.rs`; its module doc is the contract: confirmed state by revision plus ordered intents, writes fenced at the confirmed revision). The page-lifetime writer in `writer.rs` sends them, one write at a time, and outlives a Studio mount. There is no Save; never reintroduce a dirty-draft model or write fields that hold no intent.
+- **The rules are Leptos-free.** `tab_model`, `pane_model`, `placement`, `drag_model`, `history`, `layout_builder/ledger`, and `layout_canvas/{picking,labels}` are tested from `tests/studio_*_tests.rs`. Change the rule and its test there, not inside a component.
+- **Arrivals carry geometry.** An add from Unassigned sends `MemberPlacementHint`s computed from `StudioContext::rig_layout`; a move sends `MemberEdit`s whose `after` states already hold the placement. Never send an assignment that leaves the daemon's default cascade when the rig knows where the device sits.
 
 ## Never Poll: Events, Hints, and Epochs
 
@@ -178,12 +202,12 @@ let status_resource = api::daemon_resource(api::fetch_status);
 
 // Reactive inputs are read in the sync part of the closure; the async block
 // owns them. Reading a signal inside the future would not register it.
-let layers_resource = api::daemon_resource(move || {
-    let zone_id = selected_surface_id.get();
+let face_resource = api::daemon_resource(move || {
+    let display_id = selected_display_id.get();
     async move {
-        match zone_id {
-            Some(zone_id) => api::list_layers(&zone_id).await,
-            None => Ok(empty_layer_stack()),
+        match display_id {
+            Some(display_id) => api::fetch_display_face(&display_id).await,
+            None => Ok(None),
         }
     }
 });
@@ -258,7 +282,7 @@ pub struct PreviewFrameView {
 }
 ```
 
-**`Jpeg` is load-bearing.** Display previews arrive JPEG-encoded, and
+**`Jpeg` matters.** Display previews arrive JPEG-encoded, and
 `rgba_at(pixel_index)` returns `None` for that format because there are no raw
 pixels to read. Any consumer doing pixel math has to handle it. For `Rgb` and
 `Rgba`, `rgba_at` samples zero-copy off the heap view; the shared frame-analysis
@@ -289,7 +313,7 @@ The control panel groups controls for rendering. **Memoize structure, not values
 ```rust
 let grouped = Memo::new(move |_| {
     let defs = control_definitions.get(); // reads definitions
-    // Group by definition structure — NOT by control_values
+    // Group by definition structure, NOT by control_values
     // Reading values here would teardown/rebuild entire widget tree on every slider move
 });
 ```
@@ -385,7 +409,7 @@ The helper set is `fetch_json`, `fetch_json_optional`, `fetch_all_pages`,
 `_empty` variants, and `send_json_versioned` for revision-checked mutations.
 Errors come back as `ApiError`; `ApiResult<T>` is the alias.
 
-Async operations run via `leptos::task::spawn_local()` — no threading in WASM.
+Async operations run via `leptos::task::spawn_local()`; there is no threading in WASM.
 
 ## Canvas Preview
 
@@ -447,7 +471,7 @@ reset on reconnect to avoid a glitchy display.
 
 ## leptos_icons Gotcha
 
-`Icon`'s `style` prop is `MaybeProp<String>` — accepts `&str` or `String`, **not closures**. Use conditional rendering (`if`/`Show`) to vary icon styles reactively, not a closure-based style prop.
+`Icon`'s `style` prop is `MaybeProp<String>`: it accepts `&str` or `String`, **not closures**. Use conditional rendering (`if`/`Show`) to vary icon styles reactively, not a closure-based style prop.
 
 ## Key File Locations
 
@@ -458,7 +482,7 @@ reset on reconnect to avoid a glitchy display.
 | Studio page            | `src/pages/studio/`                                              |
 | WebSocket layer        | `src/ws/{connection,messages,preview,input,interactive_preview}.rs` |
 | API transport          | `src/api/client.rs`, `src/api/mod.rs` (`daemon_resource`)        |
-| API modules            | `src/api/` (sixteen domain modules)                              |
+| API modules            | `src/api/` (one module per domain)                               |
 | Canvas preview         | `src/components/canvas_preview.rs`, `src/components/preview_runtime/` |
 | Effect controls        | `src/components/control_panel/`                                  |
 | Layer stack UI         | `src/components/layer_panel/`                                    |
@@ -472,5 +496,5 @@ reset on reconnect to avoid a glitchy display.
 
 ## Detailed References
 
-- **`references/signal-patterns.md`** — Leptos 0.8 reactivity patterns specific to this codebase: StoredValue for closures, untracked access for snapshots, Resource + Memo composition
-- **`references/websocket-protocol.md`** — Full binary frame parsing, channel subscription, reconnection state machine, backpressure handling
+- **`references/signal-patterns.md`**: Leptos 0.8 reactivity patterns specific to this codebase: StoredValue for closures, untracked access for snapshots, Resource + Memo composition
+- **`references/websocket-protocol.md`**: full binary frame parsing, channel subscription, reconnection state machine, backpressure handling

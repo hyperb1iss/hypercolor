@@ -113,7 +113,7 @@ pub async fn apply_effect_preset(
     effect_id: &str,
     preset_id: &str,
     zone_id: Option<&str>,
-    expected_revision: u64,
+    fence: &client::Fence,
 ) -> ApiResult<EffectLayerTarget> {
     let path = format!(
         "/api/v1/effects/{}/presets/{}/apply",
@@ -131,12 +131,12 @@ pub async fn apply_effect_preset(
         zone,
         ..ApplyEffectRequest::default()
     };
-    apply_effect_preset_with(effect_id, expected_revision, move |revision| async move {
+    apply_effect_preset_with(effect_id, fence, move |fence| async move {
         client::send_json_versioned::<_, ApplyEffectResponse>(
             HttpMethod::Post,
             &path,
             Some(&body),
-            Some(revision),
+            Some(&fence),
         )
         .await
     })
@@ -145,19 +145,20 @@ pub async fn apply_effect_preset(
 
 async fn apply_effect_preset_with<Send, SendFuture>(
     effect_id: &str,
-    expected_revision: u64,
+    fence: &client::Fence,
     send: Send,
 ) -> ApiResult<EffectLayerTarget>
 where
-    Send: FnOnce(u64) -> SendFuture,
+    Send: FnOnce(client::Fence) -> SendFuture,
     SendFuture: Future<Output = ApiResult<client::MutationOutcome<ApplyEffectResponse>>>,
 {
-    match send(expected_revision).await? {
+    match send(fence.clone()).await? {
         client::MutationOutcome::Applied(response) => {
             effect_target_from_apply(effect_id, &response)
         }
         client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
-            "Scene changed from revision {expected_revision} to {current} before preset apply"
+            "Scene changed from revision {} to {current} before preset apply",
+            fence.revision
         ))),
     }
 }
@@ -196,13 +197,13 @@ pub async fn stop_effect() -> ApiResult<()> {
 /// Reset one observed effect layer to its defaults.
 pub async fn reset_effect_controls(
     target: &EffectLayerTarget,
-    expected_revision: u64,
+    fence: &client::Fence,
 ) -> ApiResult<EffectLayerTarget> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    if scene.revision != expected_revision {
+    if client::Fence::of(&scene) != *fence {
         return Err(ApiError::precondition_failed(format!(
-            "Scene changed from revision {expected_revision} to {} before controls reset",
-            scene.revision
+            "Scene changed from revision {} to {} before controls reset",
+            fence.revision, scene.revision
         )));
     }
     let zone = scene
@@ -258,13 +259,14 @@ pub async fn reset_effect_controls(
             bindings: Some(layer.bindings.clone()),
             enabled: Some(layer.enabled),
         }),
-        Some(expected_revision),
+        Some(fence),
     )
     .await?;
     match outcome {
         client::MutationOutcome::Applied(zone) => effect_target_from_zone(&target.effect_id, &zone),
         client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
-            "Scene changed from revision {expected_revision} to {current} before controls reset"
+            "Scene changed from revision {} to {current} before controls reset",
+            fence.revision
         ))),
     }
 }
@@ -490,7 +492,11 @@ mod tests {
         let new_layer = "00000000-0000-0000-0000-000000000004";
         let observed_layer = Rc::new(RefCell::new(old_layer.to_owned()));
         let request_observed_layer = Rc::clone(&observed_layer);
-        let result = poll_twice(apply_effect_preset_with(effect, 7, move |_| {
+        let fence = crate::api::Fence {
+            revision: 7,
+            run: "run-a".to_owned(),
+        };
+        let result = poll_twice(apply_effect_preset_with(effect, &fence, move |_| {
             SuspendedPresetApply {
                 apply: SuspendedApply {
                     response: Some(apply_response(effect, &[old_layer, new_layer])),

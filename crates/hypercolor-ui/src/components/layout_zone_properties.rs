@@ -7,10 +7,9 @@ use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
 use crate::async_helpers::spawn_identify;
-use crate::components::device_brightness_slider::DeviceBrightnessSlider;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
-use crate::style_utils::device_accent_colors;
+use crate::pages::studio::move_menu::OutputMoveButton;
 
 mod compound_panel;
 
@@ -30,86 +29,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let compound_depth = editor.compound_depth;
     let zone_display_ctx =
         expect_context::<crate::components::layout_builder::LayoutZoneDisplayContext>();
+    let studio_history = expect_context::<crate::pages::studio::history::StudioHistory>();
 
-    // Brightness aggregate for the currently-selected zones — returns
-    // `(value_0_to_100, mixed)`. Each `Output` carries its own
-    // `brightness: Option<f32>` (None = 1.0). When the selection spans
-    // zones with different brightness values the slider shows "Mixed"
-    // at the average; dragging collapses them all to a shared value.
-    let brightness_value = Signal::derive(move || {
-        let zone_ids = selected_zone_ids.get();
-        if zone_ids.is_empty() {
-            return (100u8, false);
-        }
-        layout.with(|current| {
-            let Some(l) = current.as_ref() else {
-                return (100u8, false);
-            };
-            let values: Vec<u8> = l
-                .zones
-                .iter()
-                .filter(|z| zone_ids.contains(&z.id))
-                .map(|z| {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let pct = (z.brightness.unwrap_or(1.0).clamp(0.0, 1.0) * 100.0).round() as u8;
-                    pct
-                })
-                .collect();
-            if values.is_empty() {
-                return (100u8, false);
-            }
-            let first = values[0];
-            let mixed = values.iter().any(|v| *v != first);
-            if mixed {
-                let sum: u32 = values.iter().map(|v| u32::from(*v)).sum();
-                #[allow(clippy::cast_possible_truncation)]
-                let avg = (sum / values.len() as u32) as u8;
-                (avg, true)
-            } else {
-                (first, false)
-            }
-        })
-    });
-
-    // Write handler — update `brightness` on every selected zone. Setting
-    // back to 100 clears to `None` so serialized layouts stay clean.
-    let set_zone_brightness = move |pct: u8| {
-        let zone_ids = selected_zone_ids.get_untracked();
-        if zone_ids.is_empty() {
-            return;
-        }
-        let new_brightness = if pct >= 100 {
-            None
-        } else {
-            Some(f32::from(pct) / 100.0)
-        };
-        set_layout.update(|l| {
-            let Some(layout) = l.as_mut() else { return };
-            for zone in &mut layout.zones {
-                if zone_ids.contains(&zone.id) {
-                    zone.brightness = new_brightness;
-                }
-            }
-        });
-        set_is_dirty.set(true);
-    };
-
-    // Accent color for the brightness slider — take the first selected
-    // zone's device accent so it feels tied to the selection.
-    let brightness_rgb = Signal::derive(move || {
-        let zone_ids = selected_zone_ids.get();
-        layout.with(|current| {
-            current
-                .as_ref()
-                .and_then(|l| {
-                    l.zones
-                        .iter()
-                        .find(|z| zone_ids.contains(&z.id))
-                        .map(|z| device_accent_colors(&z.device_id).0)
-                })
-                .unwrap_or_else(|| "225, 53, 255".to_string())
-        })
-    });
     // Canvas pixel dimensions for display conversion
     let canvas_dims = Signal::derive(move || {
         layout.with(|current| {
@@ -156,7 +77,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     updater(zone);
                     let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
-                        zone.position,
                         zone.size,
                         &zone.topology,
                         zone.shape.as_ref(),
@@ -175,7 +95,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 if changed && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                     let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
-                        zone.position,
                         zone.size,
                         &zone.topology,
                         zone.shape.as_ref(),
@@ -249,9 +168,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             ids=ids
                             layout=layout
                             canvas_dims=canvas_dims
-                            brightness_value=brightness_value
-                            brightness_rgb=brightness_rgb.get()
-                            on_brightness_change=Callback::new(set_zone_brightness)
                             set_layout=set_layout
                             set_is_dirty=set_is_dirty
                             compound_depth=compound_depth
@@ -283,6 +199,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
 
                 let zone_id = zone.id.clone();
                 let zone_name = zone_display.label.clone();
+                let zone_title = zone_name.clone();
                 let device_id_display = zone.device_id.clone();
                 let device_id_title = zone.device_id.clone();
                 let channel_name = zone.zone_name.clone();
@@ -301,17 +218,11 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let led_count = zone.topology.led_count();
                 let topology_label = topology_name(&zone.topology);
                 let attachment = zone.attachment.clone();
-                let default_name = zone_display.default_label.clone();
-                let name_is_default = zone_name == default_name;
-                let display_order = zone.display_order;
                 let identify_target = zone_display.identify_target.clone();
                 let reset_device_name =
                     crate::layout_utils::effective_device_name(&zone.device_id, &devices)
                         .unwrap_or_else(|| zone.device_id.clone());
 
-                let zid_name = zone_id.clone();
-                let zid_name_reset = zone_id.clone();
-                let zid_channel = zone_id.clone();
                 let zid_pos_x = zone_id.clone();
                 let zid_pos_y = zone_id.clone();
                 let zid_center_h = zone_id.clone();
@@ -322,71 +233,38 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let zid_rotation_input = zone_id.clone();
                 let zid_scale = zone_id.clone();
                 let zid_scale_input = zone_id.clone();
-                let zid_front = zone_id.clone();
-                let zid_up = zone_id.clone();
-                let zid_down = zone_id.clone();
                 let identify_action = identify_target.clone();
                 let zid_reset_defaults = zone_id.clone();
                 let reset_device_id = zone.device_id.clone();
                 let reset_zone_name = zone.zone_name.clone();
-                let zid_back = zone_id.clone();
+                let move_ids = vec![zone_id.clone()];
                 let zid_remove = zone_id;
 
                 view! {
                     <div class="space-y-2">
-                        // ── Row 1: Identity · Metadata · Assignment · Layer · Actions ──
+                        // ── Row 1: Identity · Metadata · Actions ──
                         // Wraps so the toolbar reflows down instead of
                         // overflowing and overlapping as the window narrows.
                         <div class="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
-                            // Name + Channel
+                            // Name and channel. A canvas edit saves geometry only,
+                            // so these show what the zone holds and are not edited
+                            // here.
                             <div class="flex items-center gap-1.5 min-w-0 shrink">
-                                <input
-                                    type="text"
-                                    class="min-w-0 flex-1 max-w-[200px] bg-surface-sunken border border-edge-subtle rounded-md px-2.5 py-1
-                                           text-sm text-fg-primary placeholder-fg-tertiary
-                                           focus:outline-none focus:border-accent-muted glow-ring transition-colors"
-                                    prop:value=zone_name
-                                    on:change=move |ev| {
-                                        let event = Change::from_event(ev);
-                                        if let Some(val) = event.value_string() {
-                                            let zid = zid_name.clone();
-                                            update_zone(zid, Box::new(move |z| z.name = val));
-                                        }
-                                    }
-                                />
-                                {(!name_is_default).then(|| {
-                                    let default = default_name.clone();
+                                <span
+                                    class="min-w-0 max-w-[200px] truncate text-sm text-fg-primary"
+                                    title=zone_title
+                                >
+                                    {zone_name}
+                                </span>
+                                {channel_name.map(|channel| {
+                                    let channel_title = channel.clone();
                                     view! {
-                                        <button
-                                            class="shrink-0 text-fg-tertiary/30 hover:text-accent transition-colors btn-press"
-                                            title="Reset to default name"
-                                            on:click=move |_| {
-                                                let val = default.clone();
-                                                let zid = zid_name_reset.clone();
-                                                update_zone(zid, Box::new(move |z| z.name = val));
-                                            }
-                                        >
-                                            <Icon icon=LuRotateCcw width="11px" height="11px" />
-                                        </button>
+                                        <span class="text-[9px] text-fg-tertiary/35 font-mono uppercase ml-0.5">"Ch"</span>
+                                        <span class="max-w-24 truncate text-xs font-mono text-fg-secondary" title=channel_title>
+                                            {channel}
+                                        </span>
                                     }
                                 })}
-                                <span class="text-[9px] text-fg-tertiary/35 font-mono uppercase ml-0.5">"Ch"</span>
-                                <input
-                                    type="text"
-                                    placeholder="\u{2014}"
-                                    class="w-24 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1
-                                           text-xs text-fg-primary font-mono placeholder-fg-tertiary/20
-                                           focus:outline-none focus:border-accent-muted glow-ring transition-colors"
-                                    prop:value=channel_name.clone().unwrap_or_default()
-                                    on:change=move |ev| {
-                                        let event = Change::from_event(ev);
-                                        if let Some(val) = event.value_string() {
-                                            let zid = zid_channel.clone();
-                                            let zone_name = if val.trim().is_empty() { None } else { Some(val) };
-                                            update_zone(zid, Box::new(move |z| z.zone_name = zone_name));
-                                        }
-                                    }
-                                />
                             </div>
 
                             // Metadata — condensed inline, device id clickable tooltip
@@ -414,112 +292,9 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 })}
                             </div>
 
-                            // Layer controls — compact pill, pushed to the
-                            // trailing edge; wraps below when the row is tight.
-                            <div class="flex items-center shrink-0 rounded-md ml-auto"
-                                 style="background: rgba(255, 255, 255, 0.02)">
-                                <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pl-1.5 pr-0.5">
-                                    "Layer"
-                                </span>
-                                {layer_icon_button(LuSkipForward, "Bring to front", {
-                                    let zid = zid_front;
-                                    move |_| {
-                                        let zid = zid.clone();
-                                        set_layout.update(|l| {
-                                            if let Some(layout) = l {
-                                                let max = layout.zones.iter().map(|z| z.display_order).max().unwrap_or(0);
-                                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
-                                                    zone.display_order = max + 1;
-                                                }
-                                            }
-                                        });
-                                        set_is_dirty.set(true);
-                                    }
-                                })}
-                                {layer_icon_button(LuChevronUp, "Move up one layer", {
-                                    let zid = zid_up;
-                                    move |_| {
-                                        let zid = zid.clone();
-                                        set_layout.update(|l| {
-                                            if let Some(layout) = l {
-                                                let current_order = layout.zones.iter()
-                                                    .find(|z| z.id == zid)
-                                                    .map(|z| z.display_order);
-                                                if let Some(order) = current_order {
-                                                    let next_up = layout.zones.iter()
-                                                        .filter(|z| z.display_order > order)
-                                                        .map(|z| z.display_order)
-                                                        .min();
-                                                    if let Some(swap_order) = next_up {
-                                                        for z in &mut layout.zones {
-                                                            if z.id == zid {
-                                                                z.display_order = swap_order;
-                                                            } else if z.display_order == swap_order {
-                                                                z.display_order = order;
-                                                            }
-                                                        }
-                                                    } else if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
-                                                        zone.display_order += 1;
-                                                    }
-                                                }
-                                            }
-                                        });
-                                        set_is_dirty.set(true);
-                                    }
-                                })}
-                                {layer_icon_button(LuChevronDown, "Move down one layer", {
-                                    let zid = zid_down;
-                                    move |_| {
-                                        let zid = zid.clone();
-                                        set_layout.update(|l| {
-                                            if let Some(layout) = l {
-                                                let current_order = layout.zones.iter()
-                                                    .find(|z| z.id == zid)
-                                                    .map(|z| z.display_order);
-                                                if let Some(order) = current_order {
-                                                    let next_down = layout.zones.iter()
-                                                        .filter(|z| z.display_order < order)
-                                                        .map(|z| z.display_order)
-                                                        .max();
-                                                    if let Some(swap_order) = next_down {
-                                                        for z in &mut layout.zones {
-                                                            if z.id == zid {
-                                                                z.display_order = swap_order;
-                                                            } else if z.display_order == swap_order {
-                                                                z.display_order = order;
-                                                            }
-                                                        }
-                                                    } else if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
-                                                        zone.display_order -= 1;
-                                                    }
-                                                }
-                                            }
-                                        });
-                                        set_is_dirty.set(true);
-                                    }
-                                })}
-                                {layer_icon_button(LuSkipBack, "Send to back", {
-                                    let zid = zid_back;
-                                    move |_| {
-                                        let zid = zid.clone();
-                                        set_layout.update(|l| {
-                                            if let Some(layout) = l {
-                                                let min = layout.zones.iter().map(|z| z.display_order).min().unwrap_or(0);
-                                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
-                                                    zone.display_order = min - 1;
-                                                }
-                                            }
-                                        });
-                                        set_is_dirty.set(true);
-                                    }
-                                })}
-                                <span class="text-[9px] font-mono text-fg-tertiary/25 tabular-nums px-1">
-                                    {display_order}
-                                </span>
-                            </div>
-
                             // Zone actions — destructive separated by divider
                             <div class="flex items-center gap-0.5 shrink-0">
+                                <OutputMoveButton output_ids=move_ids />
                                 {identify_action.map(|target| view! {
                                     <button
                                         class="shrink-0 p-1 rounded-md text-fg-tertiary/30 hover:text-accent hover:bg-accent/8
@@ -604,7 +379,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                 && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
                                                     zone.position = hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5);
                                                     zone.size = crate::layout_geometry::normalize_zone_size_for_editor(
-                                                        zone.position,
                                                         defaults.size,
                                                         &defaults.topology,
                                                         defaults.shape.as_ref(),
@@ -620,33 +394,26 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     <Icon icon=LuRotateCcw width="12px" height="12px" />
                                 </button>
                                 <div class="w-px h-3 bg-edge-subtle mx-1" />
+                                // Membership, not geometry: the output leaves the zone
+                                // through the same undoable edit the pane uses.
                                 <button
                                     class="shrink-0 p-1 rounded-md text-status-error/30 hover:text-status-error hover:bg-status-error/8
-                                           transition-colors btn-press"
-                                    title="Remove output from layout"
+                                           transition-colors btn-press disabled:opacity-40"
+                                    title="Remove output from zone"
+                                    disabled=move || studio_history.busy.get()
                                     on:click=move |_| {
                                         let zid = zid_remove.clone();
-                                        set_layout.update(|l| {
-                                            if let Some(layout) = l
-                                                && let Some(pos) = layout.zones.iter().position(|z| z.id == zid) {
-                                                    let removed = layout.zones.remove(pos);
-                                                    let key = (removed.device_id.clone(), removed.zone_name.clone());
-                                                    editor.set_removed_zone_cache.update(|c| { c.insert(key, removed); });
-                                                }
-                                        });
+                                        let Some(zone_id) = layout.with_untracked(|l| l.as_ref().map(|l| l.id.clone())) else {
+                                            return;
+                                        };
+                                        studio_history.remove_outputs(&zone_id, &[zid]);
                                         set_selected_zone_ids.set(std::collections::HashSet::new());
                                         editor.set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
-                                        set_is_dirty.set(true);
                                     }
                                 >
                                     <Icon icon=LuTrash2 width="12px" height="12px" />
                                 </button>
                             </div>
-                            <DeviceBrightnessSlider
-                                value=brightness_value
-                                on_change=Callback::new(set_zone_brightness)
-                                rgb=brightness_rgb.get()
-                            />
                         </div>
 
                         // ── Row 2: Transform controls in pill sections ──
@@ -872,25 +639,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     }
 }
 
-/// Icon-only button for layer ordering controls.
-fn layer_icon_button(
-    icon: icondata_core::Icon,
-    title: &'static str,
-    on_click: impl Fn(web_sys::MouseEvent) + 'static,
-) -> impl IntoView {
-    view! {
-        <button
-            class="p-1 rounded text-fg-tertiary/35 hover:text-accent transition-colors btn-press"
-            title=title
-            on:click=on_click
-        >
-            <Icon icon=icon width="12px" height="12px" />
-        </button>
-    }
-}
-
 /// Icon-only button for group align/distribute/pack/mirror operations.
-/// Slightly larger than layer buttons so alignment icons read at a glance.
 fn compound_op_button(
     icon: icondata_core::Icon,
     title: &'static str,
