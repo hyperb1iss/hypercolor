@@ -1,9 +1,13 @@
 use hypercolor_types::api::scene::{MemberEdit, MemberState, PatchZoneRequest, SceneDocument};
+use hypercolor_types::layer::{
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+};
 use hypercolor_types::scene::ZoneId;
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, StudioEdit, StudioJournal, prepare_members_replay, zone_patch_before,
+    DeletedZone, StudioEdit, StudioJournal, prepare_members_replay, restore_layer_requests,
+    zone_patch_before,
 };
 use std::collections::HashSet;
 
@@ -164,6 +168,45 @@ fn removed_output_restoration_keeps_recorded_snapshot_without_live_hardware() {
         prepare_members_replay(&scene, vec![change.clone()]).expect("server validates restore"),
         vec![change]
     );
+}
+
+fn layer(name: &str, rgba: [f32; 4], blend: BlendMode, opacity: f32) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: Some(name.to_owned()),
+        source: LayerSource::ColorFill { rgba },
+        blend,
+        opacity,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: false,
+    }
+}
+
+#[test]
+fn a_deleted_zone_keeps_its_layers_and_restores_them_bottom_to_top() {
+    let mut scene = scene();
+    let wash = layer("Wash", [0.2, 0.4, 0.6, 1.0], BlendMode::Alpha, 1.0);
+    let glow = layer("Glow", [1.0, 0.0, 0.5, 1.0], BlendMode::Screen, 0.4);
+    scene.zones[0].layers = vec![wash.clone(), glow.clone()];
+    let record = DeletedZone::of(&scene.zones[0], 0, 7);
+    assert_eq!(record.token, 7);
+    assert_eq!(record.zone_id, scene.zones[0].id.to_string());
+    assert_eq!(record.layers, vec![wash.clone(), glow.clone()]);
+
+    let requests = restore_layer_requests(&record);
+    assert_eq!(requests.len(), 2);
+    for (request, layer) in requests.iter().zip([&wash, &glow]) {
+        assert_eq!(request.name, layer.name);
+        assert_eq!(request.source, layer.source);
+        assert_eq!(request.blend, Some(layer.blend));
+        assert_eq!(request.opacity, Some(layer.opacity));
+        assert_eq!(request.transform, Some(layer.transform));
+        assert_eq!(request.adjust, Some(layer.adjust));
+        assert_eq!(request.bindings.as_ref(), Some(&layer.bindings));
+        assert_eq!(request.enabled, Some(layer.enabled));
+    }
 }
 
 #[test]

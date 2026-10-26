@@ -4,7 +4,10 @@
 
 use std::collections::HashSet;
 
-use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, MemberState, PatchZoneRequest};
+use hypercolor_types::api::scene::{
+    CreateLayerRequest, EditMembersRequest, MemberEdit, MemberState, PatchZoneRequest,
+};
+use hypercolor_types::layer::SceneLayer;
 use hypercolor_types::spatial::Output;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -28,6 +31,8 @@ pub struct DeletedZone {
     pub index: usize,
     /// Complete snapshots of the outputs the zone held, in zone order.
     pub outputs: Vec<Output>,
+    /// The zone's layer stack, bottom to top, as the scene had it.
+    pub layers: Vec<SceneLayer>,
 }
 
 impl DeletedZone {
@@ -43,8 +48,20 @@ impl DeletedZone {
             enabled: zone.enabled,
             index,
             outputs: Vec::new(),
+            layers: zone.layers.clone(),
         }
     }
+}
+
+/// The requests that rebuild a deleted zone's layers, bottom to top, each
+/// with its source, controls, blend, opacity, transform, and adjustments.
+#[must_use]
+pub fn restore_layer_requests(record: &DeletedZone) -> Vec<CreateLayerRequest> {
+    record
+        .layers
+        .iter()
+        .map(|layer| CreateLayerRequest::from(api::update_request_from_layer(layer)))
+        .collect()
 }
 
 /// The fields `after` sets, as `zone` (at `index` in the scene's zone
@@ -475,6 +492,7 @@ impl StudioHistory {
                 after: None,
             })
             .collect();
+        record.layers.clone_from(&zone.layers);
         let mut revision = scene.revision;
         if !changes.is_empty() {
             let request = EditMembersRequest {
@@ -521,7 +539,7 @@ impl StudioHistory {
     }
 
     /// Rebuild a deleted zone: its name, color, paused state, outputs
-    /// (those still unclaimed), and, best effort, its position.
+    /// (those still unclaimed), layers, and, best effort, its position.
     /// Returns the zone it made.
     async fn rebuild_zone(self, record: &DeletedZone) -> Option<api::ZoneResource> {
         let revision = live_revision().await?;
@@ -565,6 +583,21 @@ impl StudioHistory {
             } else if moved_on > 0 {
                 problems.push("devices you moved since stayed where they are");
             }
+        }
+
+        let mut revision = live_revision().await;
+        let mut layers_back = true;
+        for request in restore_layer_requests(record) {
+            match api::create_layer(&zone_key, &request, revision).await {
+                Ok(api::LayerStackOutcome::Applied(stack)) => revision = Some(stack.revision),
+                _ => {
+                    layers_back = false;
+                    break;
+                }
+            }
+        }
+        if !layers_back {
+            problems.push("its layers could not all be put back");
         }
 
         if !record.enabled

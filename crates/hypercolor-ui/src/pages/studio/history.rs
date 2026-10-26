@@ -29,7 +29,7 @@ pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 
 mod zones;
 
-pub use zones::{DeletedZone, zone_patch_before};
+pub use zones::{DeletedZone, restore_layer_requests, zone_patch_before};
 pub(crate) use zones::{Moved, NewZone};
 
 #[derive(Clone, Debug, PartialEq)]
