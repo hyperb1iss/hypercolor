@@ -628,8 +628,9 @@ pub(crate) fn ZoneLayoutProvider(
                 .expect("selected editor was initialized");
             reconcile_replay(&current, &replay.previous, &mut snapshot);
             set_layout.apply_snapshot(snapshot);
-            // Only the outputs the replay moved: normalizing is not always a
-            // fixed point, and an untouched box must not read as an edit.
+            // Only the outputs the replay resized: normalizing is not always
+            // a fixed point, and a box whose size did not change must not
+            // read as a resize.
             set_layout.update_without_history(|layout| {
                 let Some(layout) = layout.as_mut() else {
                     return;
@@ -637,15 +638,12 @@ pub(crate) fn ZoneLayoutProvider(
                 let aspect =
                     layout_geometry::canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
                 for output in &mut layout.zones {
-                    let moved = current
+                    let resized = current
                         .zones
                         .iter()
                         .find(|before| before.id == output.id)
-                        .is_none_or(|before| {
-                            crate::pages::studio::placement::Footprint::of(before)
-                                != crate::pages::studio::placement::Footprint::of(output)
-                        });
-                    if moved {
+                        .is_none_or(|before| before.size != output.size);
+                    if resized {
                         output.size = layout_geometry::normalize_zone_size_for_editor(
                             output.size,
                             &output.topology,
