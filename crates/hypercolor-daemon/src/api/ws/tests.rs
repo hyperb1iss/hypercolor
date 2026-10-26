@@ -5979,6 +5979,36 @@ async fn command_response_from_http_unwraps_error_envelope() {
 }
 
 #[tokio::test]
+async fn a_socket_conflict_names_the_run_its_revisions_count_in() {
+    // A socket reply carries no headers, so the run epoch the HTTP answer
+    // stamps never reaches it: the conflict details must name the run.
+    let response = crate::domain::DomainError::conflict_details(
+        "scene state changed",
+        crate::domain::DomainErrorDetails::SceneCommitSuperseded {
+            expected_revision: 6,
+            current_revision: 7,
+            run_epoch: std::sync::Arc::from("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"),
+        },
+    )
+    .into_response();
+    let message = command_response_from_http("cmd_conflict".to_owned(), response).await;
+    let ServerMessage::Response { status, error, .. } = message else {
+        panic!("expected response variant");
+    };
+    assert_eq!(status, 409);
+    let details = &error.expect("the conflict rides through")["details"];
+    assert_eq!(details["current_revision"], 7);
+    assert_eq!(
+        details["current_epoch"],
+        "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+    );
+    assert_eq!(
+        details["expected_epoch"],
+        "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+    );
+}
+
+#[tokio::test]
 async fn command_response_from_http_keeps_an_unenveloped_rejection_readable() {
     let rejection = "Failed to deserialize the JSON body into the target type: \
                      frobnicate: unknown field `frobnicate`";

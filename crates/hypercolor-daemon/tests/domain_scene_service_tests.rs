@@ -1262,11 +1262,13 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
                 Some(DomainErrorDetails::SceneCommitSuperseded {
                     expected_revision,
                     current_revision,
+                    run_epoch,
                 }),
             ..
         } => {
             assert_eq!(expected_revision, commit.revision() - 1);
             assert_eq!(current_revision, commit.revision());
+            assert_eq!(&*run_epoch, state.scene_manager.run_epoch());
         }
         other => panic!("expected a superseded-commit Conflict, got {other:?}"),
     }

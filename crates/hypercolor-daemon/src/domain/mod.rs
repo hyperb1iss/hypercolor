@@ -501,6 +501,9 @@ pub enum DomainErrorDetails {
         expected_revision: u64,
         /// The revision the scene holds now.
         current_revision: u64,
+        /// The daemon run both revisions belong to, without which neither
+        /// revision is comparable.
+        run_epoch: std::sync::Arc<str>,
     },
     /// A persisted effect-id migration lost its race with newer state.
     EffectIdMigrationSuperseded {
@@ -508,6 +511,8 @@ pub enum DomainErrorDetails {
         expected_revision: u64,
         /// The revision the scene holds now.
         current_revision: u64,
+        /// The daemon run both revisions belong to.
+        run_epoch: std::sync::Arc<str>,
     },
     /// Work resolved against a catalog generation the registry left.
     EffectResolutionSuperseded {

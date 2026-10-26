@@ -32,21 +32,30 @@ const fn status(error: &DomainError) -> StatusCode {
 /// Wire projection for one typed recovery-context payload.
 fn details_json(details: &DomainErrorDetails) -> serde_json::Value {
     match details {
+        // Both revisions are one run's, named the way a 412 names its
+        // fences, so a socket client (which sees no headers) can still tell
+        // which run they count in.
         DomainErrorDetails::SceneCommitSuperseded {
             expected_revision,
             current_revision,
+            run_epoch,
         } => serde_json::json!({
             "kind": "scene_commit_superseded",
             "expected_revision": expected_revision,
             "current_revision": current_revision,
+            "expected_epoch": run_epoch.as_ref(),
+            "current_epoch": run_epoch.as_ref(),
         }),
         DomainErrorDetails::EffectIdMigrationSuperseded {
             expected_revision,
             current_revision,
+            run_epoch,
         } => serde_json::json!({
             "kind": "effect_id_migration_superseded",
             "expected_revision": expected_revision,
             "current_revision": current_revision,
+            "expected_epoch": run_epoch.as_ref(),
+            "current_epoch": run_epoch.as_ref(),
         }),
         DomainErrorDetails::EffectResolutionSuperseded {
             expected_generation,
@@ -318,6 +327,36 @@ mod tests {
         );
         let json = body_json(conflict.into_response()).await;
         assert_eq!(json["error"]["details"]["current_revision"], 4);
+    }
+
+    #[tokio::test]
+    async fn a_superseded_commit_names_the_run_its_revisions_count_in() {
+        let superseded = DomainError::conflict_details(
+            "scene state changed",
+            DomainErrorDetails::SceneCommitSuperseded {
+                expected_revision: 6,
+                current_revision: 7,
+                run_epoch: std::sync::Arc::from("run"),
+            },
+        );
+        let json = body_json(superseded.into_response()).await;
+        let details = &json["error"]["details"];
+        assert_eq!(details["kind"], "scene_commit_superseded");
+        assert_eq!(details["expected_revision"], 6);
+        assert_eq!(details["current_revision"], 7);
+        assert_eq!(details["expected_epoch"], "run");
+        assert_eq!(details["current_epoch"], "run");
+
+        let migration = DomainError::conflict_details(
+            "migration superseded",
+            DomainErrorDetails::EffectIdMigrationSuperseded {
+                expected_revision: 6,
+                current_revision: 7,
+                run_epoch: std::sync::Arc::from("run"),
+            },
+        );
+        let json = body_json(migration.into_response()).await;
+        assert_eq!(json["error"]["details"]["current_epoch"], "run");
     }
 
     #[tokio::test]

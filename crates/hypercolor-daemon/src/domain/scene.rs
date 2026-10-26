@@ -562,6 +562,7 @@ impl SceneService {
                 DomainErrorDetails::EffectIdMigrationSuperseded {
                     expected_revision: migration.base_revision,
                     current_revision,
+                    run_epoch: Arc::clone(&self.0.run_epoch),
                 },
             ));
         }
@@ -728,6 +729,7 @@ impl SceneService {
                     DomainErrorDetails::SceneCommitSuperseded {
                         expected_revision: base_revision,
                         current_revision,
+                        run_epoch: Arc::clone(&self.0.run_epoch),
                     },
                 ));
             }
