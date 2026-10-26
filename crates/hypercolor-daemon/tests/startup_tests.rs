@@ -2796,3 +2796,34 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
 
     state.shutdown().await.expect("shutdown should succeed");
 }
+
+#[test]
+fn browser_e2e_config_disables_every_compiled_driver() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = std::process::Command::new("node")
+        .args([
+            "--input-type=module",
+            "-e",
+            "import { buildConfigToml } from './e2e/harness/global-setup.mjs'; process.stdout.write(buildConfigToml());",
+        ])
+        .current_dir(root)
+        .output()
+        .expect("node should render the browser fixture config");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixture: HypercolorConfig =
+        toml::from_str(std::str::from_utf8(&output.stdout).expect("fixture config is UTF-8"))
+            .expect("fixture config should deserialize");
+    for id in default_config().drivers.keys() {
+        assert!(
+            fixture
+                .drivers
+                .get(id)
+                .is_some_and(|driver| !driver.enabled),
+            "browser fixture must explicitly disable compiled driver {id}"
+        );
+    }
+}

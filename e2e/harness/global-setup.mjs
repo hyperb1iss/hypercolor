@@ -173,9 +173,20 @@ async function waitForHtml(url, label) {
   throw new Error(`Timed out waiting for ${label} at ${url}`);
 }
 
-function buildConfigToml() {
+export function buildConfigToml() {
   return [
-    "schema_version = 4",
+    "schema_version = 5",
+    "",
+    "[discovery]",
+    "mdns_enabled = false",
+    "background_enabled = false",
+    "blocks_scan = false",
+    "",
+    ...["asus", "blocks", "corsair", "dygma", "govee", "hue", "lianli",
+      "nanoleaf", "nollie", "openrgb", "prismrgb", "push2", "qmk",
+      "razer", "smbus", "usb", "wled"].flatMap((driver) => [
+        `[drivers.${driver}]`, "enabled = false", "",
+      ]),
     "",
     "[mcp]",
     "enabled = true",
