@@ -217,14 +217,16 @@ fn plan_move(
     let canvas = studio.render_canvas_size.get_untracked();
     if payload.origin == Origin::Unassigned {
         let segments = payload.segments.clone();
+        let device = registry_device(drag, &payload.device_id);
         // A channel brings only its own segment, so only its hint counts.
-        let mut hints = registry_device(drag, &payload.device_id)
+        let mut hints = device
+            .as_ref()
             .map(|device| {
                 studio.rig_layout.with_untracked(|rig| {
                     placement::assignment_hints(
                         scene,
                         rig.as_ref(),
-                        &device,
+                        device,
                         zone_id,
                         &segments,
                         canvas,
@@ -232,9 +234,18 @@ fn plan_move(
                 })
             })
             .unwrap_or_default();
-        // Hints already carry the geometry, so a drop point only moves
-        // them; without hints the arrivals are placed once minted.
-        let point = point.filter(|point| !center_hints_on(&mut hints, *point, canvas));
+        let claimed = if segments.is_empty() {
+            device.as_ref().map_or(0, light_segment_count)
+        } else {
+            segments.len()
+        };
+        // Hints that place every arrival already carry the geometry, so a
+        // drop point only moves them. Otherwise the daemon mints some
+        // arrivals unplaced, and the point centers the whole group once
+        // they land.
+        let seeds_all = !hints.is_empty() && hints.len() >= claimed;
+        let point =
+            point.filter(|point| !(seeds_all && center_hints_on(&mut hints, *point, canvas)));
         return Planned::Write(MovePlan::Assign {
             device_id: payload.device_id.clone(),
             segments,
