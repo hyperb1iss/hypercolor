@@ -5,7 +5,11 @@
 //! status-code checks, envelope unwrapping, and response deserialization so
 //! domain modules only specify the URL, request body type, and response type.
 
+use std::future::Future;
+use std::time::Duration;
 use std::{cell::RefCell, fmt, rc::Rc};
+
+use futures_util::future::{Either, select};
 
 use gloo_net::http::{Method, RequestBuilder};
 use hypercolor_types::api::envelope::{IDEMPOTENCY_KEY_HEADER, RUN_EPOCH_HEADER};
@@ -456,6 +460,25 @@ async fn dispatch(request: HttpRequest) -> Result<HttpResponse, ApiError> {
 
 struct BrowserHttpTransport;
 
+/// Aborts its browser request when dropped before the response is read,
+/// as when a deadline gives up on it, so the request does not stay open.
+struct AbortOnDrop(Option<web_sys::AbortController>);
+
+impl AbortOnDrop {
+    /// The response is read: nothing is left to abort.
+    fn finish(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(controller) = self.0.take() {
+            controller.abort();
+        }
+    }
+}
+
 impl HttpTransport for BrowserHttpTransport {
     fn send(&self, request: HttpRequest) -> super::http_transport::HttpTransportFuture<'_> {
         Box::pin(async move { browser_send(request).await })
@@ -469,7 +492,12 @@ async fn browser_send(
         daemon_url(&request.path).ok_or_else(|| super::http_transport::HttpTransportError {
             message: "verified Hypercolor connection is unavailable".to_owned(),
         })?;
-    let mut builder = RequestBuilder::new(&url).method(browser_method(request.method));
+    let controller = web_sys::AbortController::new().ok();
+    let signal = controller.as_ref().map(web_sys::AbortController::signal);
+    let abort = AbortOnDrop(controller);
+    let mut builder = RequestBuilder::new(&url)
+        .method(browser_method(request.method))
+        .abort_signal(signal.as_ref());
     if let Some(token) = authorization_token() {
         builder = builder.header("Authorization", &format!("Bearer {token}"));
     }
@@ -513,6 +541,7 @@ async fn browser_send(
             .map_err(|error| super::http_transport::HttpTransportError {
                 message: error.to_string(),
             })?;
+    abort.finish();
     Ok(HttpResponse {
         status,
         headers,
@@ -600,26 +629,113 @@ fn save_api_key_impl(_api_key: &str) {}
 // auth header, optional `If-Match` precondition, serialization, and error
 // mapping live in exactly one place.
 
+/// How long a keyed scene write waits for its answer, well above what a
+/// write on a local daemon takes. Past it the write counts as unanswered
+/// and goes out again under its key, which the daemon applies at most
+/// once, so giving up on a request that is merely slow cannot apply it
+/// twice.
+pub const KEYED_WRITE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long a read of the active scene waits for its answer, so a stalled
+/// daemon cannot hold up what waits on the read.
+pub const SCENE_READ_DEADLINE: Duration = Duration::from_secs(10);
+
+/// What a write is fenced at: the scene revision it was based on, and the
+/// daemon run that revision belongs to (empty when the daemon names none).
+/// The daemon applies the write only while the scene still stands there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fence {
+    pub revision: u64,
+    pub run: String,
+}
+
+impl Fence {
+    /// The fence a write against `scene`, as read, carries.
+    #[must_use]
+    pub fn of(scene: &hypercolor_types::api::scene::SceneDocument) -> Self {
+        Self {
+            revision: scene.revision,
+            run: scene.run_epoch.clone(),
+        }
+    }
+
+    /// The same run's fence at `revision`.
+    #[must_use]
+    pub fn at(&self, revision: u64) -> Self {
+        Self {
+            revision,
+            run: self.run.clone(),
+        }
+    }
+
+    /// The `If-Match` value the daemon checks the fence by. Every fence
+    /// the UI sends is spelled here.
+    #[must_use]
+    pub fn if_match(&self) -> String {
+        self.revision.to_string()
+    }
+}
+
+/// The deadline came before the work did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Expired;
+
+/// `work`, unless `deadline` finishes first. The work is dropped then,
+/// which aborts a browser request still on its way.
+pub async fn within<T>(
+    work: impl Future<Output = T>,
+    deadline: impl Future<Output = ()>,
+) -> Result<T, Expired> {
+    let work = std::pin::pin!(work);
+    let deadline = std::pin::pin!(deadline);
+    match select(work, deadline).await {
+        Either::Left((output, _)) => Ok(output),
+        Either::Right(((), _)) => Err(Expired),
+    }
+}
+
+/// Wait `delay` without blocking the page.
+#[cfg(target_arch = "wasm32")]
+pub async fn sleep(delay: Duration) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let millis = i32::try_from(delay.as_millis()).unwrap_or(i32::MAX);
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, millis);
+    });
+    let _ = JsFuture::from(promise).await;
+}
+
+/// Off the browser there is no clock to wait on, so this never finishes:
+/// a deadline never expires there, and nothing that waits runs there.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn sleep(_delay: Duration) {
+    std::future::pending::<()>().await;
+}
+
 /// Build and send one JSON request. Attaches the stored API key, an
 /// optional `If-Match` version precondition, an optional idempotency key,
 /// and, when a body is supplied, serializes it with a `Content-Type:
-/// application/json` header. Performs no status-code handling; callers
-/// classify the response.
+/// application/json` header. Waits for the response no longer than
+/// `deadline`, when one is given. Performs no status-code handling;
+/// callers classify the response.
 async fn send_request<Req>(
     method: HttpMethod,
     url: &str,
     body: Option<&Req>,
-    if_match: Option<u64>,
+    if_match: Option<&Fence>,
     idempotency_key: Option<&str>,
+    deadline: Option<Duration>,
 ) -> ApiResult<HttpResponse>
 where
     Req: Serialize + ?Sized,
 {
     let mut headers = Vec::new();
-    if let Some(version) = if_match {
+    if let Some(fence) = if_match {
         headers.push(HttpHeader {
             name: "If-Match".to_owned(),
-            value: version.to_string(),
+            value: fence.if_match(),
         });
     }
     if let Some(key) = idempotency_key {
@@ -640,13 +756,23 @@ where
         }
         None => HttpRequestBody::Empty,
     };
-    dispatch(HttpRequest {
+    let request = HttpRequest {
         method,
         path: url.to_owned(),
         headers,
         body,
-    })
-    .await
+    };
+    let Some(deadline) = deadline else {
+        return dispatch(request).await;
+    };
+    within(dispatch(request), sleep(deadline))
+        .await
+        .unwrap_or_else(|Expired| {
+            Err(ApiError::Network(format!(
+                "no answer within {} s",
+                deadline.as_secs()
+            )))
+        })
 }
 
 /// Unwrap the canonical [`ApiResponse`] from a successful response.
@@ -665,7 +791,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    let resp = send_request(method, url, body, None, None).await?;
+    let resp = send_request(method, url, body, None, None, None).await?;
     let resp = ensure_success(resp)?;
     parse_envelope(&resp)
 }
@@ -675,7 +801,7 @@ async fn send_json_discard<Req>(method: HttpMethod, url: &str, body: Option<&Req
 where
     Req: Serialize + ?Sized,
 {
-    let resp = send_request(method, url, body, None, None).await?;
+    let resp = send_request(method, url, body, None, None, None).await?;
     ensure_success(resp)?;
     Ok(())
 }
@@ -718,7 +844,13 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    let resp = send_request(method, url, body, if_match, None).await?;
+    // A fence named by its revision alone, from a caller that does not
+    // track the daemon's run.
+    let fence = if_match.map(|revision| Fence {
+        revision,
+        run: String::new(),
+    });
+    let resp = send_request(method, url, body, fence.as_ref(), None, None).await?;
     versioned_outcome(&resp)
 }
 
@@ -772,20 +904,30 @@ impl<T> KeyedResponse<T> {
 
 /// [`send_json_versioned_with_revision`] under the idempotency key `key`,
 /// which names one logical write: send every retry of that write under the
-/// same key, and the daemon applies it at most once, answering a repeat
-/// with the answer it gave first.
+/// same key, with the same body and preconditions, and the daemon applies
+/// it at most once, answering a repeat with the answer it gave first. No
+/// answer within [`KEYED_WRITE_DEADLINE`] reads as none at all.
 pub async fn send_json_keyed<Req, Res>(
     method: HttpMethod,
     url: &str,
     body: Option<&Req>,
-    if_match: Option<u64>,
+    if_match: Option<&Fence>,
     key: &str,
 ) -> KeyedResponse<(Res, Option<u64>)>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    match send_request(method, url, body, if_match, Some(key)).await {
+    match send_request(
+        method,
+        url,
+        body,
+        if_match,
+        Some(key),
+        Some(KEYED_WRITE_DEADLINE),
+    )
+    .await
+    {
         Ok(resp) => KeyedResponse {
             run: response_run(&resp),
             status: Some(resp.status),
@@ -808,7 +950,8 @@ fn response_run(resp: &HttpResponse) -> Option<String> {
         .filter(|run| !run.is_empty())
 }
 
-/// Read the scene revision a successful mutation reported in `ETag`.
+/// Read the scene revision a successful mutation reported in `ETag`, the
+/// counterpart of [`Fence::if_match`].
 fn etag_revision(resp: &HttpResponse) -> Option<u64> {
     resp.headers
         .iter()
@@ -834,6 +977,16 @@ where
     T: DeserializeOwned,
 {
     send_json::<(), T>(HttpMethod::Get, url, None).await
+}
+
+/// [`fetch_json`], waiting no longer than `deadline` for the answer.
+pub async fn fetch_json_within<T>(url: &str, deadline: Duration) -> ApiResult<T>
+where
+    T: DeserializeOwned,
+{
+    let resp = send_request::<()>(HttpMethod::Get, url, None, None, None, Some(deadline)).await?;
+    let resp = ensure_success(resp)?;
+    parse_envelope(&resp)
 }
 
 /// Page size requested from every list route. The daemon defaults to 50 and
@@ -878,7 +1031,7 @@ pub async fn fetch_json_optional<T>(url: &str) -> ApiResult<Option<T>>
 where
     T: DeserializeOwned,
 {
-    let resp = send_request::<()>(HttpMethod::Get, url, None, None, None).await?;
+    let resp = send_request::<()>(HttpMethod::Get, url, None, None, None, None).await?;
     if resp.status == 404 {
         return Ok(None);
     }

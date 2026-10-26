@@ -10,7 +10,7 @@ use hypercolor_types::api::scene::{
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 
-use super::client::{KeyedResponse, MutationOutcome};
+use super::client::{Fence, KeyedResponse, MutationOutcome};
 use super::http_transport::HttpMethod;
 use super::{ApiError, ApiResult, client};
 
@@ -55,26 +55,26 @@ pub async fn create_layer(
     stack_outcome(outcome, expected_revision).await
 }
 
-/// [`create_layer`] under an idempotency key, fenced at `expected_revision`.
-/// The stack's revision is the one the daemon reported in `ETag`.
+/// [`create_layer`] under an idempotency key, fenced at `fence`. The
+/// stack's revision is the one the daemon reported in `ETag`.
 pub async fn create_layer_keyed(
     zone_id: &str,
     request: &CreateLayerRequest,
-    expected_revision: u64,
+    fence: &Fence,
     key: &str,
 ) -> KeyedResponse<LayerStackResponse> {
     client::send_json_keyed::<_, ZoneResource>(
         HttpMethod::Post,
         &format!("/api/v1/scene/zones/{zone_id}/layers"),
         Some(request),
-        Some(expected_revision),
+        Some(fence),
         key,
     )
     .await
     .map(|(zone, landed)| {
         layer_stack(
             zone,
-            landed.unwrap_or_else(|| expected_revision.saturating_add(1)),
+            landed.unwrap_or_else(|| fence.revision.saturating_add(1)),
         )
     })
 }

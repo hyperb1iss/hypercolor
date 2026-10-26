@@ -24,8 +24,11 @@ pub struct ZoneEffectRef<'a> {
     pub preset_id: Option<PresetId>,
 }
 
+/// Read the active scene, waiting no longer than
+/// [`client::SCENE_READ_DEADLINE`], so a stalled daemon cannot hold up
+/// whatever waits on the read.
 pub async fn fetch_active_scene() -> ApiResult<SceneDocument> {
-    client::fetch_json("/api/v1/scene").await
+    client::fetch_json_within("/api/v1/scene", client::SCENE_READ_DEADLINE).await
 }
 
 pub async fn deactivate_scene() -> ApiResult<()> {

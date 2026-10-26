@@ -164,7 +164,7 @@ pub(super) async fn live_scene(scene_id: SceneId) -> Result<api::SceneDocument, 
 async fn create_zone(name: &str, color: Option<&str>, fence: &Fence) -> Written<api::ZoneResource> {
     let key = keyed::new_key();
     written(fence, key.clone(), || {
-        api::zones::create_zone(name, color, fence.revision, &key)
+        api::zones::create_zone(name, color, fence, &key)
     })
     .await
 }
@@ -177,17 +177,14 @@ async fn update_zone(
 ) -> Written<api::ZoneResource> {
     let key = keyed::new_key();
     written(fence, key.clone(), || {
-        api::zones::update_zone_keyed(zone_id, request, fence.revision, &key)
+        api::zones::update_zone_keyed(zone_id, request, fence, &key)
     })
     .await
 }
 
 /// Delete a zone fenced at `fence`, under `key`.
 async fn delete_zone(zone_id: &str, fence: &Fence, key: &str) -> Answer<()> {
-    keyed::send(&fence.run, || {
-        api::zones::delete_zone(zone_id, fence.revision, key)
-    })
-    .await
+    keyed::send(&fence.run, || api::zones::delete_zone(zone_id, fence, key)).await
 }
 
 /// Put complete output snapshots back into a zone in one transaction.
@@ -888,7 +885,7 @@ impl StudioHistory {
                 for request in restore_layer_requests(record) {
                     let key = keyed::new_key();
                     let result = keyed::send(&at.run, || {
-                        api::create_layer_keyed(&zone_key, &request, at.revision, &key)
+                        api::create_layer_keyed(&zone_key, &request, at, &key)
                     })
                     .await
                     .into_result();

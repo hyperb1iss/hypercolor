@@ -226,7 +226,7 @@ impl StudioHistory {
                     .any(|zone| zone.id.to_string() == record.zone_id);
                 let deleted = if own_run {
                     match keyed::send(&fence.run, || {
-                        api::zones::delete_zone(&record.zone_id, fence.revision, key)
+                        api::zones::delete_zone(&record.zone_id, fence, key)
                     })
                     .await
                     {
@@ -257,10 +257,8 @@ impl StudioHistory {
                     }
                     return Some(None);
                 }
-                match keyed::send(&fence.run, || {
-                    api::zones::edit_members(request, fence.revision, key)
-                })
-                .await
+                match keyed::send(&fence.run, || api::zones::edit_members(request, fence, key))
+                    .await
                 {
                     // The receipt, possibly a replay of the first answer:
                     // layout edits made since stand, so nothing is forgotten.
@@ -284,7 +282,7 @@ impl StudioHistory {
                     return Some(None);
                 }
                 match keyed::send(&fence.run, || {
-                    api::zones::create_zone(name, color.as_deref(), fence.revision, key)
+                    api::zones::create_zone(name, color.as_deref(), fence, key)
                 })
                 .await
                 {
@@ -323,7 +321,7 @@ impl StudioHistory {
                     return Some(landed.then(patched));
                 }
                 match keyed::send(&fence.run, || {
-                    api::zones::update_zone_keyed(zone_id, after, fence.revision, key)
+                    api::zones::update_zone_keyed(zone_id, after, fence, key)
                 })
                 .await
                 {

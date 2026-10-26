@@ -1709,3 +1709,28 @@ fn a_membership_move_of_ours_drops_the_leftover_placement_edit() {
     assert!(!model.ledger().has_pending());
     assert!(model.ledgers.take_write(ZONE).is_none());
 }
+
+#[test]
+fn a_reply_ahead_of_its_own_commit_is_taken_whole() {
+    // A follow-mode zone's reply carries the revision of the publication
+    // after the write, which another writer may have moved past it.
+    let desk = SceneId::new();
+    let mut ledgers = ledgers();
+    ledgers.observe(&scene_read(desk, 10, &[("main", 0.2)]), Some("main"));
+    moved(&mut ledgers, "main", 0.4);
+    let write = ledgers.take_write("main").expect("a write");
+    assert_eq!(write.fence, 10);
+    let outputs = vec![output("a", 0.4, 0.2)];
+    let ledger = ledgers.ledger_mut("main").expect("a ledger");
+    assert_eq!(
+        ledger.applied(write.id, 13, outputs.clone(), shown(&outputs)),
+        Some(Vec::new())
+    );
+    assert_eq!(ledger.revision(), Some(13));
+    assert!(!ledger.has_pending());
+    // A read of the revision in between is older, and changes nothing.
+    ledgers.observe(&scene_read(desk, 12, &[("main", 0.8)]), Some("main"));
+    let ledger = ledgers.zone("main").expect("kept");
+    assert_eq!(ledger.revision(), Some(13));
+    assert_eq!(read(&ledger.display().expect("drawn"), "a", Field::X), 0.4);
+}

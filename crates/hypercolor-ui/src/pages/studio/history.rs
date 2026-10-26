@@ -11,6 +11,7 @@
 use std::collections::VecDeque;
 
 use super::placement::{self, Footprint};
+pub(crate) use crate::api::Fence;
 use crate::components::layout_builder::keyed;
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
@@ -27,34 +28,6 @@ use leptos::reactive::owner::LocalStorage;
 /// dropped from the queue. Only a Studio torn down mid-write drops it
 /// unsettled, since nothing is left to hear it.
 pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
-
-/// Where a scene write is fenced: a scene revision, and the daemon run it
-/// belongs to, which the write's idempotency key is good for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Fence {
-    pub revision: u64,
-    pub run: String,
-}
-
-impl Fence {
-    /// The fence a write against `scene` as read carries.
-    #[must_use]
-    pub(crate) fn of(scene: &api::SceneDocument) -> Self {
-        Self {
-            revision: scene.revision,
-            run: scene.run_epoch.clone(),
-        }
-    }
-
-    /// The same run's fence at `revision`.
-    #[must_use]
-    pub(crate) fn at(&self, revision: u64) -> Self {
-        Self {
-            revision,
-            run: self.run.clone(),
-        }
-    }
-}
 
 mod announce;
 mod held;
@@ -870,7 +843,7 @@ impl StudioHistory {
             let key = keyed::new_key();
             let fence = Fence::of(&scene);
             let result = written(&fence, key.clone(), || {
-                api::zones::update_unassigned_behavior(&behavior, scene.revision, &key)
+                api::zones::update_unassigned_behavior(&behavior, &fence, &key)
             })
             .await;
             if self.is_current(generation) {
@@ -1356,7 +1329,7 @@ pub(super) async fn edit_members(
 ) -> Written<EditMembersResponse> {
     let key = keyed::new_key();
     written(fence, key.clone(), || {
-        api::zones::edit_members(request, fence.revision, &key)
+        api::zones::edit_members(request, fence, &key)
     })
     .await
 }

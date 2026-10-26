@@ -504,7 +504,7 @@ async fn run(first: Option<(WriterHooks, u64)>) -> Ended {
         release(held);
         match next {
             Next::Stop(ended) => return ended,
-            Next::Wait(delay) => keyed::sleep(delay).await,
+            Next::Wait(delay) => api::client::sleep(delay).await,
             Next::Go => {}
         }
         let Some(claimed) = claim() else {
@@ -738,7 +738,11 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
         version: 1,
     };
     let canvas = canvas();
-    let response = api::zones::update_zone_layout(zone_id, &layout, write.fence, &write.key).await;
+    let fence = api::Fence {
+        revision: write.fence,
+        run: write.run.clone(),
+    };
+    let response = api::zones::update_zone_layout(zone_id, &layout, &fence, &write.key).await;
     let (status, outcome) = match keyed::classify(&write.run, response) {
         Answer::Final { status, outcome } => (status, outcome),
         Answer::Lost(_) => {

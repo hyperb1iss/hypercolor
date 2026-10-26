@@ -7,6 +7,12 @@
 //! waiting for it when that request is still under way, rather than a
 //! second apply. Whatever the daemon answers is final for the key.
 //!
+//! Two answers are no answer: a request with no answer within
+//! [`crate::api::client::KEYED_WRITE_DEADLINE`], which is given up on, and
+//! a `503` the daemon gives when it cannot take the write right now (it
+//! never records the key then). Both go out again under the same key, so
+//! a request given up on that commits late is still applied once.
+//!
 //! Keys live for one daemon run. An answer from another run (the daemon
 //! restarted while the write was out) says nothing about what the first
 //! request did, so the caller settles that write from a fresh read of the
@@ -15,8 +21,13 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::api::client::KeyedResponse;
+use crate::api::client::{KeyedResponse, sleep};
 use crate::api::{ApiError, ApiResult, MutationOutcome};
+
+/// The daemon's error code for a write it cannot take right now, as when
+/// too many keyed writes are in flight. It keeps nothing under the key
+/// then, so the same write may go out again.
+pub const TRY_AGAIN_CODE: &str = "service_unavailable";
 
 /// The waits before each retry of a write no answer came back for.
 pub const RETRY_DELAYS: [Duration; 3] = [
@@ -73,17 +84,25 @@ pub fn classify<T>(run: &str, response: KeyedResponse<T>) -> Answer<T> {
         return Answer::Lost(lost_error(response.outcome, None));
     };
     match response.run {
-        Some(answered) if run.is_empty() || answered == run => Answer::Final {
-            status,
-            outcome: response.outcome,
-        },
+        Some(answered) if run.is_empty() || answered == run => {
+            final_answer(status, response.outcome)
+        }
         Some(_) => Answer::OtherRun,
-        None if run.is_empty() => Answer::Final {
-            status,
-            outcome: response.outcome,
-        },
+        None if run.is_empty() => final_answer(status, response.outcome),
         None => Answer::Lost(lost_error(response.outcome, Some(status))),
     }
+}
+
+/// The daemon's own answer, unless it is one that asks for the write again.
+fn final_answer<T>(status: u16, outcome: ApiResult<MutationOutcome<T>>) -> Answer<T> {
+    match outcome {
+        Err(error @ ApiError::Http { status: 503, .. }) if try_again(&error) => Answer::Lost(error),
+        outcome => Answer::Final { status, outcome },
+    }
+}
+
+fn try_again(error: &ApiError) -> bool {
+    matches!(error, ApiError::Http { code: Some(code), .. } if code == TRY_AGAIN_CODE)
 }
 
 fn lost_error<T>(outcome: ApiResult<MutationOutcome<T>>, status: Option<u16>) -> ApiError {
@@ -115,21 +134,3 @@ where
         }
     }
 }
-
-/// Wait `delay` without blocking the page.
-#[cfg(target_arch = "wasm32")]
-pub async fn sleep(delay: Duration) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let millis = i32::try_from(delay.as_millis()).unwrap_or(i32::MAX);
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, millis);
-    });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-}
-
-/// Wait `delay` without blocking the page. Off the browser nothing runs the
-/// writer, so there is nothing to wait for.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn sleep(_delay: Duration) {}

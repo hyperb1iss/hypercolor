@@ -5,13 +5,13 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use hypercolor_ui::api::client::{
-    ApiError, HttpTransportInstallError, MutationOutcome, fetch_json, fetch_json_optional,
-    head_status, install_http_transport, install_verified_daemon_connection, post_json,
-    post_multipart, send_json_versioned,
+    ApiError, Expired, Fence, HttpTransportInstallError, MutationOutcome, fetch_json,
+    fetch_json_optional, head_status, install_http_transport, install_verified_daemon_connection,
+    post_json, post_multipart, send_json_keyed, send_json_versioned, within,
 };
 use hypercolor_ui::api::http_transport::{
-    HttpMethod, HttpMultipartPart, HttpRequest, HttpRequestBody, HttpResponse, HttpTransport,
-    HttpTransportError, HttpTransportFuture,
+    HttpHeader, HttpMethod, HttpMultipartPart, HttpRequest, HttpRequestBody, HttpResponse,
+    HttpTransport, HttpTransportError, HttpTransportFuture,
 };
 
 struct FakeHttpTransport {
@@ -249,4 +249,87 @@ fn injected_transport_preserves_the_logical_http_contract() {
             .iter()
             .all(|header| !header.name.eq_ignore_ascii_case("authorization"))
     }));
+}
+
+#[test]
+fn a_keyed_write_goes_out_again_exactly_as_it_first_went() {
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    let mut answered =
+        data_response(200, serde_json::json!({ "id": "zone" })).expect("a test response");
+    answered.headers = vec![
+        HttpHeader {
+            name: "Hypercolor-Run-Epoch".to_owned(),
+            value: "run-a".to_owned(),
+        },
+        HttpHeader {
+            name: "ETag".to_owned(),
+            value: "\"8\"".to_owned(),
+        },
+    ];
+    let responses = Rc::new(RefCell::new(VecDeque::from([
+        Err(HttpTransportError {
+            message: "connection reset".to_owned(),
+        }),
+        Ok(answered),
+    ])));
+    install_verified_daemon_connection("http://127.0.0.1:9420", None);
+    install_http_transport(Rc::new(FakeHttpTransport {
+        requests: Rc::clone(&requests),
+        responses,
+    }))
+    .expect("first install succeeds");
+
+    let body = serde_json::json!({ "placements": [{ "member": "a", "position": { "x": 0.25, "y": 0.5 } }] });
+    let fence = Fence {
+        revision: 7,
+        run: "run-a".to_owned(),
+    };
+    let send = || {
+        send_json_keyed::<_, serde_json::Value>(
+            HttpMethod::Put,
+            "/api/v1/scene/zones/zone/layout",
+            Some(&body),
+            Some(&fence),
+            "write-key",
+        )
+    };
+    let lost = ready(send());
+    assert_eq!(lost.run, None, "no response names no run");
+    assert_eq!(lost.status, None);
+    let answer = ready(send());
+    assert_eq!(answer.run.as_deref(), Some("run-a"));
+    assert_eq!(answer.status, Some(200));
+    assert!(matches!(
+        answer.outcome,
+        Ok(MutationOutcome::Applied((_, Some(8))))
+    ));
+
+    // The daemon fingerprints method, path, If-Match, Content-Type and body,
+    // so the retry must be the first request again, byte for byte.
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+    let header = |name: &str| {
+        requests[0]
+            .headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case(name))
+            .map(|header| header.value.clone())
+    };
+    assert_eq!(header("idempotency-key").as_deref(), Some("write-key"));
+    assert_eq!(header("If-Match"), Some(fence.if_match()));
+    assert_eq!(fence.if_match(), "7", "a fence is spelled by its revision");
+    assert_eq!(header("Content-Type").as_deref(), Some("application/json"));
+}
+
+#[test]
+fn a_deadline_gives_up_on_work_that_never_finishes() {
+    assert_eq!(
+        ready(within(std::future::pending::<u8>(), std::future::ready(()))),
+        Err(Expired)
+    );
+    assert_eq!(
+        ready(within(std::future::ready(3_u8), std::future::pending())),
+        Ok(3)
+    );
 }
