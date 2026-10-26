@@ -45,14 +45,14 @@ pub async fn create_layer(
     request: &CreateLayerRequest,
     expected_revision: Option<u64>,
 ) -> ApiResult<LayerStackOutcome> {
-    let outcome = client::send_json_versioned::<_, ZoneResource>(
+    let outcome = client::send_json_versioned_with_revision::<_, ZoneResource>(
         HttpMethod::Post,
         &format!("/api/v1/scene/zones/{zone_id}/layers"),
         Some(request),
         expected_revision,
     )
     .await?;
-    stack_outcome(outcome, expected_revision).await
+    stack_outcome(outcome).await
 }
 
 /// [`create_layer`] under an idempotency key, fenced at `fence`. The
@@ -63,20 +63,27 @@ pub async fn create_layer_keyed(
     fence: &Fence,
     key: &str,
 ) -> KeyedResponse<LayerStackResponse> {
-    client::send_json_keyed::<_, ZoneResource>(
+    let KeyedResponse {
+        run,
+        status,
+        outcome,
+    } = client::send_json_keyed::<_, ZoneResource>(
         HttpMethod::Post,
         &format!("/api/v1/scene/zones/{zone_id}/layers"),
         Some(request),
         Some(fence),
         key,
     )
-    .await
-    .map(|(zone, landed)| {
-        layer_stack(
-            zone,
-            landed.unwrap_or_else(|| fence.revision.saturating_add(1)),
-        )
-    })
+    .await;
+    let outcome = match outcome {
+        Ok(outcome) => stack_outcome(outcome).await,
+        Err(error) => Err(error),
+    };
+    KeyedResponse {
+        run,
+        status,
+        outcome,
+    }
 }
 
 pub async fn update_layer(
@@ -85,14 +92,14 @@ pub async fn update_layer(
     request: &ReplaceLayerRequest,
     expected_revision: Option<u64>,
 ) -> ApiResult<LayerStackOutcome> {
-    let outcome = client::send_json_versioned::<_, ZoneResource>(
+    let outcome = client::send_json_versioned_with_revision::<_, ZoneResource>(
         HttpMethod::Put,
         &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}"),
         Some(request),
         expected_revision,
     )
     .await?;
-    stack_outcome(outcome, expected_revision).await
+    stack_outcome(outcome).await
 }
 
 pub async fn delete_layer(
@@ -100,14 +107,14 @@ pub async fn delete_layer(
     layer_id: &str,
     expected_revision: Option<u64>,
 ) -> ApiResult<LayerStackOutcome> {
-    let outcome = client::send_json_versioned::<(), ZoneResource>(
+    let outcome = client::send_json_versioned_with_revision::<(), ZoneResource>(
         HttpMethod::Delete,
         &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}"),
         None,
         expected_revision,
     )
     .await?;
-    stack_outcome(outcome, expected_revision).await
+    stack_outcome(outcome).await
 }
 
 /// Patch one real effect layer. Control writes are unguarded by contract;
@@ -159,24 +166,26 @@ pub async fn reorder_layers(
     expected_revision: Option<u64>,
 ) -> ApiResult<LayerStackOutcome> {
     let request = ReorderLayersRequest { order: layer_ids };
-    let outcome = client::send_json_versioned::<_, ZoneResource>(
+    let outcome = client::send_json_versioned_with_revision::<_, ZoneResource>(
         HttpMethod::Patch,
         &format!("/api/v1/scene/zones/{zone_id}/layers/order"),
         Some(&request),
         expected_revision,
     )
     .await?;
-    stack_outcome(outcome, expected_revision).await
+    stack_outcome(outcome).await
 }
 
+/// The layer stack a layer write left, at the revision its `ETag` names.
+/// A reply that names none is read back from the live scene rather than
+/// guessed at.
 async fn stack_outcome(
-    outcome: MutationOutcome<ZoneResource>,
-    expected_revision: Option<u64>,
+    outcome: MutationOutcome<(ZoneResource, Option<u64>)>,
 ) -> ApiResult<LayerStackOutcome> {
     match outcome {
-        MutationOutcome::Applied(zone) => {
-            let stack = match expected_revision {
-                Some(revision) => layer_stack(zone, revision.saturating_add(1)),
+        MutationOutcome::Applied((zone, landed)) => {
+            let stack = match landed {
+                Some(revision) => layer_stack(zone, revision),
                 None => {
                     let zone_id = zone.id;
                     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;

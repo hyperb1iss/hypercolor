@@ -8,10 +8,13 @@
 //! commit late, after the client gave up waiting on it, and a retry under
 //! the same key gets the stored answer (waiting for a stalled original)
 //! rather than a second apply. Keys live for one daemon run. A restart
-//! starts a new run whose revisions never repeat an old one's, kills the
-//! requests still on their way, and forgets every key, while the replies
-//! and reads the old run already sent still arrive. Every reply and read
-//! names its run, and the socket's handshake names the run it reaches.
+//! starts a new run whose revisions start over, so its numbers say nothing
+//! about the old run's; it kills the requests still on their way and
+//! forgets every key, while the replies and reads the old run already sent
+//! still arrive. Every reply and read names its run, the socket's handshake
+//! names the run it reaches, and a write's fence names its run as well as
+//! its revision: the daemon refuses a fence from another run whatever its
+//! number, as `If-Match` refuses an epoch-qualified fence of another run.
 //!
 //! The model has two outputs and two edited fields (x and y). The canvas
 //! draws widths normalized (half again the stored width), so the client's
@@ -61,8 +64,6 @@ const CHECKED: [Field; 3] = [Field::X, Field::Y, Field::Width];
 const VALUES: [f32; 5] = [0.1, 0.2, 0.4, 0.6, 0.8];
 /// How much wider the canvas draws an output than the daemon stores it.
 const DRAWN: f32 = 1.5;
-/// How far a new daemon run's revisions start past the old run's.
-const RUN_GAP: u64 = 1_000;
 
 fn output(id: &str, x: f32, y: f32) -> Output {
     Output {
@@ -444,7 +445,8 @@ impl Model {
             self.log.push(format!("write #{id} replayed"));
             return answer;
         }
-        if outgoing.write.fence != self.revision {
+        // The fence holds only in its own run, whatever its number.
+        if outgoing.write.run != run_name(self.run) || outgoing.write.fence != self.revision {
             self.reached.entry(id).or_insert(false);
             self.log.push(format!("write #{id} stale"));
             let answer = Message::Stale { id, run: self.run };
@@ -452,12 +454,6 @@ impl Model {
                 .insert(outgoing.write.key.clone(), answer.clone());
             return answer;
         }
-        assert_eq!(
-            outgoing.write.run,
-            run_name(self.run),
-            "write #{id} passed under a fence from an earlier daemon run\n{}",
-            self.trace()
-        );
         assert!(
             self.applied_keys
                 .insert((self.run, outgoing.write.key.clone())),
@@ -604,7 +600,7 @@ impl Model {
     fn restart(&mut self) {
         self.tick();
         self.run += 1;
-        self.revision += RUN_GAP;
+        self.revision = 1;
         for outgoing in self.to_server.drain(..) {
             self.to_client.push(Message::Lost {
                 id: outgoing.write.id,
@@ -710,9 +706,12 @@ impl Model {
                     .as_ref()
                     .is_some_and(|outgoing| outgoing.write.run == run_name(run));
                 if own {
-                    let taken =
-                        self.ledger_mut()
-                            .applied(id, revision, outputs.clone(), shown(&outputs));
+                    let taken = self.ledger_mut().applied(
+                        id,
+                        Some(revision),
+                        outputs.clone(),
+                        shown(&outputs),
+                    );
                     if taken.is_none() && self.ledger().unsettled() {
                         // Sent in a run that has since ended: a read settles it.
                         self.log.push(format!("#{id} left for a read to settle"));
@@ -1671,7 +1670,7 @@ fn write_ids_and_keys_never_repeat_on_one_page() {
     assert_eq!(
         ledgers.ledger_mut("main").expect("a ledger").applied(
             first.id,
-            5,
+            Some(5),
             outputs.clone(),
             shown(&outputs)
         ),
@@ -1723,7 +1722,7 @@ fn a_reply_ahead_of_its_own_commit_is_taken_whole() {
     let outputs = vec![output("a", 0.4, 0.2)];
     let ledger = ledgers.ledger_mut("main").expect("a ledger");
     assert_eq!(
-        ledger.applied(write.id, 13, outputs.clone(), shown(&outputs)),
+        ledger.applied(write.id, Some(13), outputs.clone(), shown(&outputs)),
         Some(Vec::new())
     );
     assert_eq!(ledger.revision(), Some(13));
@@ -1733,4 +1732,47 @@ fn a_reply_ahead_of_its_own_commit_is_taken_whole() {
     let ledger = ledgers.zone("main").expect("kept");
     assert_eq!(ledger.revision(), Some(13));
     assert_eq!(read(&ledger.display().expect("drawn"), "a", Field::X), 0.4);
+}
+
+#[test]
+fn a_fence_from_another_run_is_refused_even_when_its_number_matches() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    let fence = model.in_flight.as_ref().expect("a write out").write.fence;
+    model.stall_request();
+    while model.deliver(0) {}
+    // The daemon restarts and its new run counts up to the very number the
+    // old run's write is fenced at, before the socket names the new run.
+    model.restart();
+    while model.revision < fence {
+        model.remote(
+            "b",
+            Field::Y,
+            if model.revision.is_multiple_of(2) {
+                0.4
+            } else {
+                0.6
+            },
+        );
+    }
+    assert_eq!(model.revision, fence, "the numbers match across runs");
+    // The retry reaches the new run, which refuses it for its run alone.
+    model.retry();
+    model.deliver_write(false);
+    while model.deliver(0) {}
+    assert!(
+        model.applied_keys.is_empty(),
+        "no write applied under the old run's fence"
+    );
+    assert!(model.ledgers.wants_read(), "its key settles nothing now");
+    // Once the socket names the new run the ledger re-anchors on it. The
+    // old run is gone, so the write it never took is given up on and the
+    // user told, rather than sent again over what the new run may hold.
+    model.hello();
+    assert!(model.ledger().reanchoring());
+    model.settle();
+    model.check();
+    assert!(model.excused.contains(&("a", Field::X)));
+    assert_eq!(read(&model.server, "a", Field::X), 0.2);
 }

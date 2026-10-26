@@ -13,6 +13,7 @@ use futures_util::future::{Either, select};
 
 use gloo_net::http::{Method, RequestBuilder};
 use hypercolor_types::api::envelope::{IDEMPOTENCY_KEY_HEADER, RUN_EPOCH_HEADER};
+use hypercolor_types::api::scene::SceneFence;
 use hypercolor_types::api::{ApiErrorBody, ApiResponse, ListResponse};
 #[cfg(any(test, all(debug_assertions, target_arch = "wasm32")))]
 use hypercolor_types::service::ProtectedControlCredential;
@@ -668,11 +669,23 @@ impl Fence {
         }
     }
 
-    /// The `If-Match` value the daemon checks the fence by. Every fence
-    /// the UI sends is spelled here.
+    /// The fence as the daemon's contract spells it: epoch-qualified when
+    /// the run is known, so it passes only in that run; a bare revision
+    /// otherwise.
+    #[must_use]
+    pub fn scene_fence(&self) -> SceneFence {
+        if self.run.is_empty() {
+            SceneFence::revision_only(self.revision)
+        } else {
+            SceneFence::new(self.run.clone(), self.revision)
+        }
+    }
+
+    /// The `If-Match` value the daemon checks the fence by: the entity tag
+    /// it serves as `ETag`. Every fence the UI sends is spelled here.
     #[must_use]
     pub fn if_match(&self) -> String {
-        self.revision.to_string()
+        self.scene_fence().to_etag()
     }
 }
 
@@ -953,12 +966,14 @@ fn response_run(resp: &HttpResponse) -> Option<String> {
 }
 
 /// Read the scene revision a successful mutation reported in `ETag`, the
-/// counterpart of [`Fence::if_match`].
+/// counterpart of [`Fence::if_match`]. `None` when the reply carries no
+/// fence the contract can read; nothing stands in for it.
 fn etag_revision(resp: &HttpResponse) -> Option<u64> {
     resp.headers
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case("etag"))
-        .and_then(|header| header.value.trim().trim_matches('"').parse().ok())
+        .and_then(|header| SceneFence::parse(&header.value).ok())
+        .map(|fence| fence.revision)
 }
 
 /// Extract the authoritative version token from a `412` response body.
@@ -1181,9 +1196,9 @@ pub async fn delete_empty(url: &str) -> ApiResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApiError, DaemonTransport, HttpHeader, HttpResponse, MutationOutcome, authorization_token,
-        begin_native_daemon_verification, clear_verified_daemon_connection, daemon_url,
-        etag_revision, extract_error_message, install_verified_daemon_connection,
+        ApiError, DaemonTransport, Fence, HttpHeader, HttpResponse, MutationOutcome, SceneFence,
+        authorization_token, begin_native_daemon_verification, clear_verified_daemon_connection,
+        daemon_url, etag_revision, extract_error_message, install_verified_daemon_connection,
         parse_dev_control_credential_fragment, reset_daemon_transport_for_test,
         stale_current_version, validate_relative_path,
     };
@@ -1307,10 +1322,38 @@ mod tests {
                 .collect(),
             body: Vec::new(),
         };
+        assert_eq!(
+            etag_revision(&response(&[(
+                "etag",
+                "\"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901\""
+            )])),
+            Some(1_798_012_345_678_901)
+        );
         assert_eq!(etag_revision(&response(&[("etag", "\"18\"")])), Some(18));
         assert_eq!(etag_revision(&response(&[("ETag", "19")])), Some(19));
         assert_eq!(etag_revision(&response(&[("etag", "W/\"x\"")])), None);
+        assert_eq!(etag_revision(&response(&[("etag", "\"run:018\"")])), None);
         assert_eq!(etag_revision(&response(&[])), None);
+    }
+
+    #[test]
+    fn a_fence_goes_out_as_the_tag_it_came_back_as() {
+        let fence = Fence {
+            revision: 1_798_012_345_678_901,
+            run: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10".to_owned(),
+        };
+        assert_eq!(
+            fence.if_match(),
+            "\"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901\""
+        );
+        let parsed = SceneFence::parse(&fence.if_match()).expect("its own tag parses");
+        assert_eq!(parsed, fence.scene_fence());
+        // A daemon that names no runs gets the bare revision.
+        let bare = Fence {
+            revision: 42,
+            run: String::new(),
+        };
+        assert_eq!(bare.if_match(), "\"42\"");
     }
 
     #[test]

@@ -226,12 +226,9 @@ fn injected_transport_preserves_the_logical_http_contract() {
     assert!(requests[1].headers.iter().any(|header| {
         header.name.eq_ignore_ascii_case("content-type") && header.value == "application/json"
     }));
-    assert!(
-        requests[2]
-            .headers
-            .iter()
-            .any(|header| { header.name.eq_ignore_ascii_case("if-match") && header.value == "16" })
-    );
+    assert!(requests[2].headers.iter().any(|header| {
+        header.name.eq_ignore_ascii_case("if-match") && header.value == "\"16\""
+    }));
     assert_eq!(requests[7].method, HttpMethod::Head);
     assert_eq!(requests[7].path, "/api/v1/example/cover");
     assert_eq!(
@@ -318,7 +315,11 @@ fn a_keyed_write_goes_out_again_exactly_as_it_first_went() {
     };
     assert_eq!(header("idempotency-key").as_deref(), Some("write-key"));
     assert_eq!(header("If-Match"), Some(fence.if_match()));
-    assert_eq!(fence.if_match(), "7", "a fence is spelled by its revision");
+    assert_eq!(
+        fence.if_match(),
+        "\"run-a:7\"",
+        "a fence names its run as well as its revision"
+    );
     assert_eq!(header("Content-Type").as_deref(), Some("application/json"));
 }
 

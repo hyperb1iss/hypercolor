@@ -779,19 +779,21 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
     streaks.lost = 0;
     match outcome {
         Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
-            let revision = landed.unwrap_or_else(|| write.fence.saturating_add(1));
             let (raw, shown) = zone_outputs(&zone, canvas);
             let taken = with_writer(|writer| {
                 let cancelled = writer
                     .ledgers
                     .ledger_mut(zone_id)?
-                    .applied(write.id, revision, raw, shown)?;
-                // Only this write landed between its fence and its revision,
-                // so every other zone still stands as confirmed there.
-                if revision == write.fence.saturating_add(1) {
+                    .applied(write.id, landed, raw, shown)?;
+                // When the reply's own fence is the very next commit after the
+                // write's, only this write landed in between, so every other
+                // zone still stands as confirmed there.
+                if let Some(landed) = landed
+                    && landed.checked_sub(write.fence) == Some(1)
+                {
                     for (id, ledger) in writer.ledgers.zones_mut() {
                         if id != zone_id {
-                            ledger.advance(write.fence, revision);
+                            ledger.advance(write.fence, landed);
                         }
                     }
                 }
@@ -807,8 +809,10 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
                 output_ids: cancelled,
                 cause: Cause::OutputLeft,
             }]);
-            if let Some(hooks) = hooks() {
-                let _ = hooks.landed.try_run((write.fence, zone, revision));
+            // A reply that names no fence cannot be placed in history's
+            // order of documents; the next read brings the scene instead.
+            if let (Some(hooks), Some(landed)) = (hooks(), landed) {
+                let _ = hooks.landed.try_run((write.fence, zone, landed));
             }
             Next::Go
         }

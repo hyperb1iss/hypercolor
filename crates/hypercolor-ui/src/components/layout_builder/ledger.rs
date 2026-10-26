@@ -432,7 +432,9 @@ impl ZoneLedger {
 
     /// Write `id` landed at `revision`: the intents it carried retire, and
     /// the reply's zone becomes confirmed if it is newer. Returns the ids of
-    /// outputs whose intents that cancelled.
+    /// outputs whose intents that cancelled. A reply that names no revision
+    /// (`None`) retires the intents and leaves confirmed as it is, since its
+    /// zone cannot be ordered among the reads; nothing is guessed for it.
     ///
     /// `None` when the reply settles nothing: it answers no write still
     /// out, or a write sent in a run that has since ended. That one landed
@@ -442,7 +444,7 @@ impl ZoneLedger {
     pub fn applied(
         &mut self,
         id: u64,
-        revision: u64,
+        revision: Option<u64>,
         raw: Vec<Output>,
         shown: Vec<Output>,
     ) -> Option<Vec<String>> {
@@ -453,6 +455,9 @@ impl ZoneLedger {
         }
         let sent = self.settle(id)?;
         self.pending.retain(|intent| intent.seq > sent.through);
+        let Some(revision) = revision else {
+            return Some(Vec::new());
+        };
         if self
             .confirmed
             .as_ref()
