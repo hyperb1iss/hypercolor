@@ -10,7 +10,9 @@
 //! its own daemon run it goes out again under its key, and the daemon's
 //! answer says what it did (a replay of the first answer when the first
 //! request landed, receipt and all). Once that run has ended, which
-//! commits nothing more, a read of the scene says what it can.
+//! commits nothing more, or the daemon has let the first answer go, which
+//! it does only once that request is done, a read of the scene says what
+//! it can.
 
 use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, PatchZoneRequest};
 use hypercolor_types::scene::SceneId;
@@ -79,6 +81,42 @@ pub(super) struct Unresolved {
 #[must_use]
 pub fn settles_by_key(fence_run: &str, live_run: &str) -> bool {
     !fence_run.is_empty() && fence_run == live_run
+}
+
+/// What a held write's key can say about it now.
+enum Told<T> {
+    /// The daemon's own answer to the write: the first request's, replayed,
+    /// or this one's, when the first never reached it.
+    Answer(api::ApiResult<api::MutationOutcome<T>>),
+    /// Only the scene can tell, as this read of it shows: the write's run
+    /// has ended, which commits nothing more, or the daemon let the first
+    /// answer go, which it does only once that request is done.
+    Read(api::SceneDocument),
+}
+
+/// Ask what became of a write held under `fence` and its key, with the
+/// scene `live` as read just now: in the write's own run, `attempt` sends
+/// it again under its key. `None` while nothing can tell yet.
+async fn told<T, F, Fut>(
+    scene_id: SceneId,
+    fence: &Fence,
+    live: api::SceneDocument,
+    attempt: F,
+) -> Option<Told<T>>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = api::client::KeyedResponse<T>>,
+{
+    if !settles_by_key(&fence.run, &live.run_epoch) {
+        return Some(Told::Read(live));
+    }
+    match keyed::resend(&fence.run, attempt).await {
+        Answer::Final { outcome, .. } => Some(Told::Answer(outcome)),
+        // The first request may have committed after `live` was read and
+        // before its answer went, so a read from now tells.
+        Answer::Forgotten => live_scene(scene_id).await.ok().map(Told::Read),
+        Answer::OtherRun | Answer::Lost(_) => None,
+    }
 }
 
 /// What a delete whose outcome was unknown turned out to be: a delete when
@@ -231,92 +269,79 @@ impl StudioHistory {
     async fn what_it_did(self, item: &Unresolved) -> Option<Option<StudioEdit>> {
         let live = live_scene(item.scene_id).await.ok()?;
         let Pending { fence, key, write } = &item.pending;
-        let own_run = settles_by_key(&fence.run, &live.run_epoch);
         match write {
             HeldWrite::Delete { record, release } => {
-                let gone = !live
-                    .zones
-                    .iter()
-                    .any(|zone| zone.id.to_string() == record.zone_id);
-                let deleted = if own_run {
-                    match keyed::send(&fence.run, || {
-                        api::zones::delete_zone(&record.zone_id, fence, key)
-                    })
-                    .await
-                    {
-                        Answer::Final {
-                            outcome: Ok(api::zones::ZoneOutcome::Applied(())),
-                            ..
-                        } => true,
-                        // Not applied now: a zone that is gone anyway was
-                        // deleted all the same (a key the daemon no longer
-                        // keeps runs afresh, and finds the scene moved on).
-                        Answer::Final { .. } => gone,
-                        Answer::OtherRun | Answer::Lost(_) => return None,
+                let told = told(item.scene_id, fence, live, || {
+                    api::zones::delete_zone(&record.zone_id, fence, key)
+                })
+                .await?;
+                let deleted = match told {
+                    Told::Answer(outcome) => {
+                        matches!(outcome, Ok(api::zones::ZoneOutcome::Applied(())))
                     }
-                } else {
-                    gone
+                    // A zone that is gone was deleted, by this delete or another.
+                    Told::Read(scene) => !scene
+                        .zones
+                        .iter()
+                        .any(|zone| zone.id.to_string() == record.zone_id),
                 };
                 Some(resolve_deletion(deleted, record, release))
             }
             HeldWrite::Members(request) => {
-                // A new run never saw the key, so it has no receipt to give:
-                // the request's own changes stand in for one. An undo of them
-                // reads each output where it sits now (see
-                // `prepare_members_replay`) rather than trusting these
-                // snapshots, so only an output that left the zone since can
-                // stop it, as with any undo.
-                if !own_run {
-                    if members_landed(&live, &request.changes) {
-                        return Some(Some(StudioEdit::Members(request.changes.clone())));
-                    }
-                    if request.changes.is_empty() {
-                        toasts::toast_info(
-                            "An assignment may have been saved before the daemon restarted. Check the scene; Undo cannot take it back.",
-                        );
-                    }
-                    return Some(None);
-                }
-                match keyed::send(&fence.run, || api::zones::edit_members(request, fence, key))
-                    .await
-                {
+                let told = told(item.scene_id, fence, live, || {
+                    api::zones::edit_members(request, fence, key)
+                })
+                .await?;
+                match told {
                     // The receipt, possibly a replay of the first answer:
                     // layout edits made since stand, so nothing is forgotten.
-                    Answer::Final {
-                        outcome: Ok(api::zones::ZoneOutcome::Applied(response)),
-                        ..
-                    } => {
+                    Told::Answer(Ok(api::zones::ZoneOutcome::Applied(response))) => {
                         let changes = response.changes;
                         self.adopt(response.document);
                         Some((!changes.is_empty()).then_some(StudioEdit::Members(changes)))
                     }
-                    Answer::Final { .. } => Some(None),
-                    Answer::OtherRun | Answer::Lost(_) => None,
+                    Told::Answer(_) => Some(None),
+                    // With no receipt to give, the request's own changes stand
+                    // in for one. An undo of them reads each output where it
+                    // sits now (see `prepare_members_replay`) rather than
+                    // trusting these snapshots, so only an output that left the
+                    // zone since can stop it, as with any undo.
+                    Told::Read(scene) => {
+                        if members_landed(&scene, &request.changes) {
+                            return Some(Some(StudioEdit::Members(request.changes.clone())));
+                        }
+                        if request.changes.is_empty() {
+                            toasts::toast_info(
+                                "An assignment may have been saved. Check the scene; Undo cannot take it back.",
+                            );
+                        }
+                        Some(None)
+                    }
                 }
             }
             HeldWrite::Create { name, color } => {
-                if !own_run {
-                    toasts::toast_info(&format!(
-                        "{name} may have been created before the daemon restarted. Check the scene; Undo cannot take it back."
-                    ));
-                    return Some(None);
-                }
-                match keyed::send(&fence.run, || {
+                let told = told(item.scene_id, fence, live, || {
                     api::zones::create_zone(name, color.as_deref(), fence, key)
                 })
-                .await
-                {
-                    Answer::Final {
-                        outcome: Ok(api::zones::ZoneOutcome::Applied(zone)),
-                        ..
-                    } => Some(Some(StudioEdit::ZoneCreated {
-                        zone_id: zone.id.to_string(),
-                        name: zone.name,
-                        color: zone.color,
-                        filled: Vec::new(),
-                    })),
-                    Answer::Final { .. } => Some(None),
-                    Answer::OtherRun | Answer::Lost(_) => None,
+                .await?;
+                match told {
+                    Told::Answer(Ok(api::zones::ZoneOutcome::Applied(zone))) => {
+                        Some(Some(StudioEdit::ZoneCreated {
+                            zone_id: zone.id.to_string(),
+                            name: zone.name,
+                            color: zone.color,
+                            filled: Vec::new(),
+                        }))
+                    }
+                    Told::Answer(_) => Some(None),
+                    // Zones may share a name, so no read can tell which one
+                    // this request made, if any.
+                    Told::Read(_) => {
+                        toasts::toast_info(&format!(
+                            "{name} may have been made. Check the scene; Undo cannot take it back."
+                        ));
+                        Some(None)
+                    }
                 }
             }
             HeldWrite::Patch {
@@ -324,34 +349,28 @@ impl StudioHistory {
                 before,
                 after,
             } => {
-                let patched = || StudioEdit::ZonePatched {
-                    zone_id: zone_id.clone(),
-                    before: before.clone(),
-                    after: after.clone(),
-                };
-                if !own_run {
-                    let landed = live
+                let told = told(item.scene_id, fence, live, || {
+                    api::zones::update_zone_keyed(zone_id, after, fence, key)
+                })
+                .await?;
+                let landed = match told {
+                    Told::Answer(outcome) => {
+                        matches!(outcome, Ok(api::zones::ZoneOutcome::Applied(_)))
+                    }
+                    Told::Read(scene) => scene
                         .zones
                         .iter()
                         .enumerate()
                         .find(|(_, zone)| zone.id.to_string() == *zone_id)
                         .is_some_and(|(index, zone)| {
                             zone_patch_before(zone, index, after) == *after
-                        });
-                    return Some(landed.then(patched));
-                }
-                match keyed::send(&fence.run, || {
-                    api::zones::update_zone_keyed(zone_id, after, fence, key)
-                })
-                .await
-                {
-                    Answer::Final {
-                        outcome: Ok(api::zones::ZoneOutcome::Applied(_)),
-                        ..
-                    } => Some(Some(patched())),
-                    Answer::Final { .. } => Some(None),
-                    Answer::OtherRun | Answer::Lost(_) => None,
-                }
+                        }),
+                };
+                Some(landed.then(|| StudioEdit::ZonePatched {
+                    zone_id: zone_id.clone(),
+                    before: before.clone(),
+                    after: after.clone(),
+                }))
             }
         }
     }

@@ -730,7 +730,7 @@ impl StudioHistory {
                 ..
             } => return TakeDown::Deleted,
             Answer::Final { outcome, .. } => Some(outcome),
-            Answer::OtherRun => None,
+            Answer::OtherRun | Answer::Forgotten => None,
             // No answer even under its key: the record waits, whole, until
             // the delete can go out again and say what it did.
             Answer::Lost(_) => {
@@ -752,7 +752,8 @@ impl StudioHistory {
         // A zone gone from the live scene was deleted, by this delete or
         // another, and its record can rebuild it. When the daemon restarted
         // while the delete was out, the run that ended commits nothing more,
-        // so this read is the whole story.
+        // and when it let the delete's answer go, the delete was done: either
+        // way this read is the whole story.
         if let Ok(live) = &live
             && !live.zones.iter().any(|zone| zone.id == zone_key)
         {
@@ -786,7 +787,7 @@ impl StudioHistory {
         }
         match outcome {
             Some(Err(error)) => toasts::toast_error(&format!("Zone delete failed: {error}")),
-            None => toasts::toast_error("Zone delete failed: the daemon restarted"),
+            None => toasts::toast_error("Zone delete did not go through"),
             Some(Ok(_)) => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
         }
         TakeDown::Kept
@@ -1230,7 +1231,7 @@ impl StudioHistory {
                             outcome: Err(error),
                             ..
                         } => Removal::Failed(error.to_string()),
-                        Answer::OtherRun | Answer::Lost(_) => Removal::Unknown,
+                        Answer::OtherRun | Answer::Forgotten | Answer::Lost(_) => Removal::Unknown,
                     }
                 }
             },

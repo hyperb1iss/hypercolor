@@ -66,6 +66,7 @@ pub async fn create_layer_keyed(
     let KeyedResponse {
         run,
         status,
+        replayed,
         outcome,
     } = client::send_json_keyed::<_, ZoneResource>(
         HttpMethod::Post,
@@ -82,6 +83,7 @@ pub async fn create_layer_keyed(
     KeyedResponse {
         run,
         status,
+        replayed,
         outcome,
     }
 }

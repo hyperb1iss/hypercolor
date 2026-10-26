@@ -1313,9 +1313,10 @@ fn newer(latest: &api::SceneDocument, scene: &api::SceneDocument, live_run: Opti
 pub(super) enum Written<T> {
     /// The daemon's final answer.
     Answered(api::ApiResult<api::zones::ZoneOutcome<T>>),
-    /// No answer, even under its key, or one from another daemon run: it
-    /// may have landed or not. The fence and key it went out under, to
-    /// settle it with once the connection is back.
+    /// No answer, even under its key, one from another daemon run, or one
+    /// from a daemon that no longer knows the key's first answer: it may
+    /// have landed or not. The fence and key it went out under, to settle
+    /// it with once the connection is back.
     Unknown(Fence, String),
 }
 
@@ -1328,7 +1329,9 @@ where
 {
     match keyed::send(&fence.run, attempt).await {
         keyed::Answer::Final { outcome, .. } => Written::Answered(outcome),
-        keyed::Answer::OtherRun | keyed::Answer::Lost(_) => Written::Unknown(fence.clone(), key),
+        keyed::Answer::OtherRun | keyed::Answer::Forgotten | keyed::Answer::Lost(_) => {
+            Written::Unknown(fence.clone(), key)
+        }
     }
 }
 

@@ -12,7 +12,9 @@ use std::{cell::RefCell, fmt, rc::Rc};
 use futures_util::future::{Either, select};
 
 use gloo_net::http::{Method, RequestBuilder};
-use hypercolor_types::api::envelope::{IDEMPOTENCY_KEY_HEADER, RUN_EPOCH_HEADER};
+use hypercolor_types::api::envelope::{
+    IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, RUN_EPOCH_HEADER,
+};
 use hypercolor_types::api::scene::SceneFence;
 use hypercolor_types::api::{ApiErrorBody, ApiResponse, ListResponse};
 #[cfg(any(test, all(debug_assertions, target_arch = "wasm32")))]
@@ -897,6 +899,10 @@ pub struct KeyedResponse<T> {
     pub run: Option<String>,
     /// The response's status; `None` when no response came back.
     pub status: Option<u16>,
+    /// The daemon served this answer from what it stored under the key
+    /// (`Idempotency-Replayed: true`): it is the first request's answer,
+    /// not one it gave this request on its own.
+    pub replayed: bool,
     pub outcome: ApiResult<MutationOutcome<T>>,
 }
 
@@ -906,6 +912,7 @@ impl<T> KeyedResponse<T> {
         KeyedResponse {
             run: self.run,
             status: self.status,
+            replayed: self.replayed,
             outcome: self.outcome.map(|outcome| outcome.map(transform)),
         }
     }
@@ -940,11 +947,13 @@ where
         Ok(resp) => KeyedResponse {
             run: response_run(&resp),
             status: Some(resp.status),
+            replayed: response_replayed(&resp),
             outcome: versioned_outcome(&resp),
         },
         Err(error) => KeyedResponse {
             run: None,
             status: None,
+            replayed: false,
             outcome: Err(error),
         },
     }
@@ -957,6 +966,16 @@ fn response_run(resp: &HttpResponse) -> Option<String> {
         .find(|header| header.name.eq_ignore_ascii_case(RUN_EPOCH_HEADER))
         .map(|header| header.value.trim().to_owned())
         .filter(|run| !run.is_empty())
+}
+
+/// Whether the daemon replayed a stored answer rather than run the request.
+fn response_replayed(resp: &HttpResponse) -> bool {
+    resp.headers.iter().any(|header| {
+        header
+            .name
+            .eq_ignore_ascii_case(IDEMPOTENCY_REPLAYED_HEADER)
+            && header.value.trim().eq_ignore_ascii_case("true")
+    })
 }
 
 /// Read the scene revision a successful mutation reported in `ETag`, the

@@ -265,6 +265,10 @@ fn a_keyed_write_goes_out_again_exactly_as_it_first_went() {
             name: "ETag".to_owned(),
             value: "\"8\"".to_owned(),
         },
+        HttpHeader {
+            name: "Idempotency-Replayed".to_owned(),
+            value: "true".to_owned(),
+        },
     ];
     let responses = Rc::new(RefCell::new(VecDeque::from([
         Err(HttpTransportError {
@@ -296,9 +300,14 @@ fn a_keyed_write_goes_out_again_exactly_as_it_first_went() {
     let lost = ready(send());
     assert_eq!(lost.run, None, "no response names no run");
     assert_eq!(lost.status, None);
+    assert!(!lost.replayed);
     let answer = ready(send());
     assert_eq!(answer.run.as_deref(), Some("run-a"));
     assert_eq!(answer.status, Some(200));
+    assert!(
+        answer.replayed,
+        "the retry got the answer stored under the key"
+    );
     assert!(matches!(
         answer.outcome,
         Ok(MutationOutcome::Applied((_, Some(8))))

@@ -35,7 +35,8 @@ use leptos::prelude::*;
 
 use super::keyed::{self, Answer, RETRY_DELAYS};
 use super::ledger::{
-    Admission, Cancelled, Cause, SceneLedgers, SceneRead, Ticket, Write, ZoneRead,
+    Admission, Cancelled, Cause, Lapse, Lapsed, SceneLedgers, SceneRead, Ticket, Write, ZoneLedger,
+    ZoneRead,
 };
 use crate::{api, toasts};
 
@@ -448,8 +449,9 @@ enum Turn {
     /// Read the scene: writes left open by a run that ended settle against
     /// it, and ledgers whose edits wait on a re-anchor take it.
     Read,
-    /// Send a write no answer came back for again, under its own key.
-    Retry(String, Write),
+    /// Send a write no answer came back for again, under its own key,
+    /// with how many of its attempts went unanswered.
+    Retry(String, Write, u32),
     Send(String, Write),
 }
 
@@ -463,7 +465,11 @@ fn next_turn() -> Option<(Ticket, Turn)> {
             return Some((ticket, Turn::Read));
         }
         if let Some((zone_id, write)) = writer.ledgers.next_retry() {
-            return Some((ticket, Turn::Retry(zone_id, write)));
+            let unanswered = writer
+                .ledgers
+                .zone(&zone_id)
+                .map_or(0, ZoneLedger::unanswered);
+            return Some((ticket, Turn::Retry(zone_id, write, unanswered)));
         }
         writer
             .ledgers
@@ -497,9 +503,10 @@ async fn run(first: Option<(WriterHooks, u64)>) -> Ended {
         turns += 1;
         let next = match turn {
             Turn::Read => read_and_settle(ticket, &mut streaks).await,
-            Turn::Retry(zone_id, write) | Turn::Send(zone_id, write) => {
-                send(ticket, &zone_id, write, &mut streaks).await
+            Turn::Retry(zone_id, write, unanswered) => {
+                send(ticket, &zone_id, write, unanswered, &mut streaks).await
             }
+            Turn::Send(zone_id, write) => send(ticket, &zone_id, write, 0, &mut streaks).await,
         };
         release(held);
         match next {
@@ -616,7 +623,7 @@ async fn read_and_settle(ticket: Ticket, streaks: &mut Streaks) -> Next {
         // turn starts from where they are now.
         Fresh::Moved => return Next::Go,
     };
-    let unconfirmed = with_writer(|writer| {
+    let lapsed: Vec<Lapsed> = with_writer(|writer| {
         let open: Vec<String> = writer
             .ledgers
             .zones()
@@ -632,22 +639,14 @@ async fn read_and_settle(ticket: Ticket, streaks: &mut Streaks) -> Next {
                     zone.shown.clone(),
                 )
             })
-            .filter(|unconfirmed| *unconfirmed)
-            .count()
+            .filter(|lapsed| lapsed.unconfirmed)
+            .collect()
     });
     // A write the read could not settle (its zone missing from a read
     // older than its ledger) would only ask for the same read again.
     let still_open = with_writer(|writer| writer.ledgers.wants_read());
     share(scene);
-    match unconfirmed {
-        0 => {}
-        1 => toasts::toast_error(
-            "A layout change may not have been saved: the daemon restarted while it was on its way. Check the canvas.",
-        ),
-        count => toasts::toast_error(&format!(
-            "{count} layout changes may not have been saved: the daemon restarted while they were on their way. Check the canvas."
-        )),
-    }
+    report_lapsed(&lapsed);
     if still_open {
         pause(
             ticket,
@@ -656,6 +655,40 @@ async fn read_and_settle(ticket: Ticket, streaks: &mut Streaks) -> Next {
         return Next::Stop(Ended::Paused);
     }
     Next::Go
+}
+
+/// Tell the user which lapsed writes the fresh read did not confirm, and
+/// why their keys could not settle them.
+fn report_lapsed(lapsed: &[Lapsed]) {
+    let count =
+        |lapse: Lapse| -> usize { lapsed.iter().filter(|ended| ended.lapse == lapse).count() };
+    match count(Lapse::Restart) {
+        0 => {}
+        1 => toasts::toast_error(
+            "A layout change may not have been saved: the daemon restarted while it was on its way. Check the canvas.",
+        ),
+        count => toasts::toast_error(&format!(
+            "{count} layout changes may not have been saved: the daemon restarted while they were on their way. Check the canvas."
+        )),
+    }
+    match count(Lapse::Forgotten) {
+        0 => {}
+        1 => toasts::toast_error(
+            "A layout change may not have been saved: its answer was lost, and the answer to its retry could not say whether it went through. Check the canvas.",
+        ),
+        count => toasts::toast_error(&format!(
+            "{count} layout changes may not have been saved: their answers were lost, and the answers to their retries could not say whether they went through. Check the canvas."
+        )),
+    }
+    match count(Lapse::Unreadable) {
+        0 => {}
+        1 => toasts::toast_error(
+            "A layout change was saved, but its reply could not be read and the scene shows something else now. Check the canvas.",
+        ),
+        count => toasts::toast_error(&format!(
+            "{count} layout changes were saved, but their replies could not be read and the scene shows something else now. Check the canvas."
+        )),
+    }
 }
 
 /// After a stale rejection: read the scene, settle what it satisfies, and
@@ -721,10 +754,17 @@ async fn after_stale(zone_id: &str, id: u64, streaks: &mut Streaks) -> Next {
     Next::Go
 }
 
-/// Send one write, or send it again under its own key, and take in what the
-/// daemon answers. The answer settles the write by its id, which is unique
-/// to the page, whatever the ledgers did while it was out.
-async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks) -> Next {
+/// Send one write, or send it again under its own key after `unanswered`
+/// attempts got no answer, and take in what the daemon answers. The answer
+/// settles the write by its id, which is unique to the page, whatever the
+/// ledgers did while it was out.
+async fn send(
+    ticket: Ticket,
+    zone_id: &str,
+    write: Write,
+    unanswered: u32,
+    streaks: &mut Streaks,
+) -> Next {
     // The layout route stores each member's placement and nothing else.
     let layout = SpatialLayout {
         id: zone_id.to_owned(),
@@ -743,7 +783,7 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
         run: write.run.clone(),
     };
     let response = api::zones::update_zone_layout(zone_id, &layout, &fence, &write.key).await;
-    let (status, outcome) = match keyed::classify(&write.run, response) {
+    let (status, outcome) = match keyed::classify(&write.run, unanswered, response) {
         Answer::Final { status, outcome } => (status, outcome),
         Answer::Lost(_) => {
             with_writer(|writer| {
@@ -765,11 +805,17 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
             return Next::Wait(wait);
         }
         // Whatever the first request did happened in a run that has ended
-        // (the daemon restarted), so a read of the new run settles it.
-        Answer::OtherRun => {
+        // (the daemon restarted), or the answer cannot say what it was: a
+        // fresh read settles it.
+        lapsed @ (Answer::OtherRun | Answer::Forgotten) => {
+            let lapse = if matches!(lapsed, Answer::OtherRun) {
+                Lapse::Restart
+            } else {
+                Lapse::Forgotten
+            };
             with_writer(|writer| {
                 if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
-                    ledger.stranded(write.id);
+                    ledger.stranded(write.id, lapse);
                 }
             });
             changed();
@@ -834,7 +880,7 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
                 200..=299 if unreadable => {
                     with_writer(|writer| {
                         if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
-                            ledger.stranded(write.id);
+                            ledger.stranded(write.id, Lapse::Unreadable);
                         }
                     });
                     Next::Go

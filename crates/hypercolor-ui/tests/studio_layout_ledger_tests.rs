@@ -7,7 +7,11 @@
 //! The daemon honors each write's idempotency key: a request may stall and
 //! commit late, after the client gave up waiting on it, and a retry under
 //! the same key gets the stored answer (waiting for a stalled original)
-//! rather than a second apply. Keys live for one daemon run. A restart
+//! rather than a second apply, marked as replayed. The daemon may let its
+//! stored answers go (after an hour, or past its bounds), never one still
+//! in flight: a retry then runs as a new request, its answer is stored in
+//! turn, and the client takes a stale answer as word on the first request
+//! only when [`tells`] says it is. Keys live for one daemon run. A restart
 //! starts a new run whose revisions start over, so its numbers say nothing
 //! about the old run's; it kills the requests still on their way and
 //! forgets every key, while the replies and reads the old run already sent
@@ -23,8 +27,8 @@
 //! loop: take a write and send it; on an answer from the write's own run
 //! call `applied`, or `stale` then `refetched`; while no answer comes, send
 //! it again under its key; and settle a write its key can no longer settle
-//! (answered by another run, or sent in one that ended) with
-//! `settle_ended` from a fresh read. Replies and refreshes reach the client
+//! (answered by another run, sent in one that ended, or a retry the daemon
+//! ran afresh and found stale) with `settle_ended` from a fresh read. Replies and refreshes reach the client
 //! in any order, and a refresh may be older than one already seen.
 //!
 //! After everything is delivered and a final refresh, these must hold:
@@ -41,7 +45,8 @@
 //!    is then sent again would break this; under its key it cannot.
 //! 5. The user's latest value for a field is what the daemon ends with,
 //!    unless a remote write to that field landed after ours did, or the
-//!    write carrying it died with a daemon run and the client said so.
+//!    write carrying it lapsed (died with a daemon run, or its answer was
+//!    let go) and the client said so.
 //!
 //! And at every step: within one daemon run the revision the client
 //! confirms never goes back, across sockets that open again too; the
@@ -52,9 +57,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
+use hypercolor_ui::components::layout_builder::keyed::tells;
 use hypercolor_ui::components::layout_builder::ledger::{
-    Admission, Cancelled, Cause, Field, Intent, SceneLedgers, SceneRead, Value, Write, ZoneLedger,
-    ZoneRead,
+    Admission, Cancelled, Cause, Field, Intent, Lapse, SceneLedgers, SceneRead, Value, Write,
+    ZoneLedger, ZoneRead,
 };
 
 const ZONE: &str = "main";
@@ -161,10 +167,13 @@ enum Message {
         revision: u64,
         outputs: Vec<Output>,
         run: u64,
+        /// Served from the answer stored under the key.
+        replayed: bool,
     },
     Stale {
         id: u64,
         run: u64,
+        replayed: bool,
     },
     /// No answer came back: the client knows only that the outcome is
     /// unknown.
@@ -179,6 +188,31 @@ enum Message {
     },
 }
 
+/// `answer` as the daemon serves it from what it stored under the key.
+fn replayed(answer: Message) -> Message {
+    match answer {
+        Message::Applied {
+            id,
+            revision,
+            outputs,
+            run,
+            ..
+        } => Message::Applied {
+            id,
+            revision,
+            outputs,
+            run,
+            replayed: true,
+        },
+        Message::Stale { id, run, .. } => Message::Stale {
+            id,
+            run,
+            replayed: true,
+        },
+        other => other,
+    }
+}
+
 /// A write on its way to the daemon. A retry sends the same one again.
 #[derive(Clone, Debug)]
 struct Outgoing {
@@ -189,6 +223,9 @@ struct Outgoing {
     carried: Vec<Key>,
     /// The step it was first sent at.
     sent_at: u64,
+    /// How many of its attempts went out before with no answer coming
+    /// back.
+    unanswered: u32,
 }
 
 struct Model {
@@ -431,6 +468,7 @@ impl Model {
             intended,
             carried,
             sent_at: self.step,
+            unanswered: 0,
         };
         self.in_flight = Some(outgoing.clone());
         self.to_server.push_back(outgoing);
@@ -443,13 +481,17 @@ impl Model {
         let id = outgoing.write.id;
         if let Some(answer) = self.answers.get(&outgoing.write.key).cloned() {
             self.log.push(format!("write #{id} replayed"));
-            return answer;
+            return replayed(answer);
         }
         // The fence holds only in its own run, whatever its number.
         if outgoing.write.run != run_name(self.run) || outgoing.write.fence != self.revision {
             self.reached.entry(id).or_insert(false);
             self.log.push(format!("write #{id} stale"));
-            let answer = Message::Stale { id, run: self.run };
+            let answer = Message::Stale {
+                id,
+                run: self.run,
+                replayed: false,
+            };
             self.answers
                 .insert(outgoing.write.key.clone(), answer.clone());
             return answer;
@@ -506,6 +548,7 @@ impl Model {
             revision: self.revision,
             outputs: self.server.clone(),
             run: self.run,
+            replayed: false,
         };
         self.answers
             .insert(outgoing.write.key.clone(), answer.clone());
@@ -526,7 +569,7 @@ impl Model {
         {
             let original = self.stalled.remove(index);
             self.log.push(format!("write #{id} waits for the original"));
-            self.process(&original)
+            replayed(self.process(&original))
         } else {
             self.process(&outgoing)
         };
@@ -588,8 +631,25 @@ impl Model {
         let write = self.ledger().retry().expect("a write to retry");
         assert_eq!(write, outgoing.write, "a retry is the same write");
         self.log.push(format!("retry #{} under its key", write.id));
+        let outgoing = Outgoing {
+            unanswered: self.ledger().unanswered(),
+            ..outgoing
+        };
         self.in_flight = Some(outgoing.clone());
         self.to_server.push_back(outgoing);
+        true
+    }
+
+    /// The daemon lets every answer it stored go, as it does after an hour
+    /// or past its bounds. A request still stalled keeps its key.
+    fn evict(&mut self) -> bool {
+        if self.answers.is_empty() {
+            return false;
+        }
+        self.tick();
+        self.answers.clear();
+        self.log
+            .push("daemon lets its stored answers go".to_owned());
         true
     }
 
@@ -674,9 +734,9 @@ impl Model {
         self.seen = revision;
     }
 
-    /// A write another run answered waits for a fresh read.
-    fn strand(&mut self, outgoing: Option<Outgoing>, id: u64) {
-        self.ledger_mut().stranded(id);
+    /// A write its key can no longer settle waits for a fresh read.
+    fn strand(&mut self, outgoing: Option<Outgoing>, id: u64, lapse: Lapse) {
+        self.ledger_mut().stranded(id, lapse);
         if !self.ledger().unsettled() {
             return;
         }
@@ -696,10 +756,14 @@ impl Model {
                 revision,
                 outputs,
                 run,
+                replayed,
             } => {
+                // Applied afresh on a retry, it landed now and only now: had
+                // the first request landed, the fence would refuse this one.
                 self.log.push(format!(
-                    "reply #{id} applied {revision} in {}",
-                    run_name(run)
+                    "reply #{id} applied {revision} in {}{}",
+                    run_name(run),
+                    if replayed { ", replayed" } else { "" }
                 ));
                 let outgoing = self.in_flight.take();
                 let own = outgoing
@@ -719,21 +783,32 @@ impl Model {
                         self.awaiting_settle = Some((carried.unwrap_or_default(), true));
                     }
                 } else {
-                    self.strand(outgoing, id);
+                    self.strand(outgoing, id, Lapse::Restart);
                 }
             }
-            Message::Stale { id, run } => {
-                self.log
-                    .push(format!("reply #{id} stale in {}", run_name(run)));
+            Message::Stale { id, run, replayed } => {
+                self.log.push(format!(
+                    "reply #{id} stale in {}{}",
+                    run_name(run),
+                    if replayed { ", replayed" } else { "" }
+                ));
                 let outgoing = self.in_flight.take();
                 let own = outgoing
                     .as_ref()
                     .is_some_and(|outgoing| outgoing.write.run == run_name(run));
-                if own {
+                let forgotten = outgoing
+                    .as_ref()
+                    .is_some_and(|outgoing| !tells(outgoing.unanswered, replayed, 412));
+                if !own {
+                    self.strand(outgoing, id, Lapse::Restart);
+                } else if forgotten {
+                    // Possibly a retry the daemon ran afresh, or a replay of
+                    // one: the first request may be what moved the scene
+                    // past the fence.
+                    self.strand(outgoing, id, Lapse::Forgotten);
+                } else {
                     self.ledger_mut().stale(id);
                     self.awaiting_refetch = true;
-                } else {
-                    self.strand(outgoing, id);
                 }
             }
             Message::Lost { id } => {
@@ -799,7 +874,8 @@ impl Model {
         let unconfirmed = self
             .ledger_mut()
             .settle_ended(revision, server.clone(), shown(&server))
-            .expect("a write left open");
+            .expect("a write left open")
+            .unconfirmed;
         self.log
             .push(format!("settled at {revision}: unconfirmed {unconfirmed}"));
         let still_pending: Vec<Key> = self
@@ -1091,6 +1167,96 @@ fn undo_makes_intents_the_same_way_and_lands() {
     assert_eq!(read(&model.server, "a", Field::X), 0.2);
 }
 
+#[test]
+fn a_retry_after_the_daemon_let_the_answer_go_never_overwrites_a_later_remote_write() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    // The daemon applies it, but the reply never comes back.
+    model.deliver_write(true);
+    while model.deliver(0) {}
+    model.remote("a", Field::X, 0.6);
+    while model.deliver(0) {}
+    // An hour later the daemon no longer holds the first answer, so the
+    // retry runs afresh and meets the remote write's revision.
+    assert!(model.evict());
+    assert!(model.retry());
+    assert!(model.deliver_write(false));
+    while model.deliver(0) {}
+    assert!(
+        !model.awaiting_refetch,
+        "a stale answer to a retry run afresh is no word on the first request\n{}",
+        model.trace()
+    );
+    assert!(model.ledgers.wants_read(), "a fresh read settles it");
+    assert!(model.settle_ended());
+    assert!(
+        !model.ledger().has_pending(),
+        "its intents retire rather than go out again"
+    );
+    model.settle();
+    model.check();
+    assert_eq!(
+        read(&model.server, "a", Field::X),
+        0.6,
+        "the later remote write stays"
+    );
+}
+
+#[test]
+fn a_replay_of_a_refusal_given_after_the_answer_was_let_go_settles_from_a_read() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    model.deliver_write(true);
+    while model.deliver(0) {}
+    model.remote("a", Field::X, 0.6);
+    while model.deliver(0) {}
+    assert!(model.evict());
+    // The retry runs afresh and is refused, and that refusal is lost too:
+    // the daemon stores it under the key in place of the first answer.
+    assert!(model.retry());
+    assert!(model.deliver_write(true));
+    while model.deliver(0) {}
+    assert!(model.retry());
+    assert!(model.deliver_write(false));
+    while model.deliver(0) {}
+    assert!(
+        !model.awaiting_refetch,
+        "a replayed refusal after two lost answers may be the retry's own\n{}",
+        model.trace()
+    );
+    model.settle();
+    model.check();
+    assert_eq!(
+        read(&model.server, "a", Field::X),
+        0.6,
+        "the later remote write stays"
+    );
+}
+
+#[test]
+fn a_replayed_stale_answer_is_the_first_request_s_own() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.remote("a", Field::Y, 0.6);
+    model.send();
+    // Refused for the remote revision, and the refusal is lost.
+    model.deliver_write(true);
+    while model.deliver(0) {}
+    assert!(model.retry());
+    assert!(model.deliver_write(false));
+    while model.deliver(0) {}
+    assert!(
+        model.awaiting_refetch,
+        "the replayed refusal is final, so the intents go out again\n{}",
+        model.trace()
+    );
+    model.settle();
+    model.check();
+    assert_eq!(read(&model.server, "a", Field::X), 0.4);
+}
+
 // ── Every ordering ───────────────────────────────────────────────────────
 
 /// A small xorshift generator, so every run explores the same cases.
@@ -1168,6 +1334,9 @@ fn explore(cases: u64, seed: u64) {
                     0 => model.restart(),
                     1..=3 => {
                         model.hello();
+                    }
+                    4 | 5 => {
+                        model.evict();
                     }
                     _ => {}
                 },

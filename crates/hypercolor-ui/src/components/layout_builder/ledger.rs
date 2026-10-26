@@ -37,7 +37,13 @@
 //!   most once and answers a repeat with its first answer, waiting for the
 //!   first request when that one is still under way, so a request that
 //!   commits late is never applied twice, and the answer that comes back
-//!   settles the write as above, whatever it is.
+//!   settles the write as above, whatever it is. The daemon keeps an
+//!   answer for a while only: a retry it no longer holds the answer for
+//!   runs as a new request, and when that one meets a scene that moved
+//!   past its fence, the first request may be what moved it (a later
+//!   retry may get that refusal back as a replay). The write then lapses
+//!   (see below) rather than settle as stale, since sending its intents
+//!   again could undo a remote write that landed after it.
 //!
 //! Between clients the daemon's order decides. A remote write that lands
 //! after ours wins; a local intent that reaches the daemon later wins.
@@ -48,13 +54,16 @@
 //! saw them. When the daemon starts a new run every zone re-anchors: a read
 //! from another run is never taken in, the first read of the new one
 //! becomes confirmed whatever its revision, intents stay, and nothing goes
-//! out fenced at a revision of the old run until that read comes. A write
-//! sent in the old run, or answered by another run than its own, can no
-//! longer be settled by its key. The old run cannot commit anything any
-//! more, so a fresh read of the new run settles it: it is taken as landed
-//! and its intents retire, since sending it again could undo a remote
-//! write that landed after it, and when the fresh zone does not hold what
-//! it carried the user is told.
+//! out fenced at a revision of the old run until that read comes.
+//!
+//! A write whose key can no longer settle it has lapsed ([`Lapse`]): one
+//! sent in a run that ended or answered by another run, one whose answer
+//! the daemon let go, one whose reply could not be read. Nothing it sent
+//! can still commit (the old run commits nothing more, and the daemon only
+//! lets an answer go once its request is done), so a fresh read settles
+//! it: it is taken as landed and its intents retire, since sending it
+//! again could undo a remote write that landed after it, and when the
+//! fresh zone does not hold what it carried the user is told.
 //!
 //! Confirmed holds the zone twice: `raw`, as the daemon stores it, which a
 //! write starts from; and `shown`, as the canvas draws it (sizes normalized
@@ -144,6 +153,29 @@ struct Confirmed {
     shown: Vec<Output>,
 }
 
+/// Why a write's key can no longer settle it, so a fresh read must.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lapse {
+    /// The daemon run it was sent in ended, or another run answered it.
+    Restart,
+    /// It was refused for a scene its first request may have changed: the
+    /// daemon may have let that request's answer go and run a retry of it
+    /// afresh (see [`super::keyed::tells`]).
+    Forgotten,
+    /// The daemon took it, but its reply could not be read.
+    Unreadable,
+}
+
+/// How a lapsed write settled against a fresh read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lapsed {
+    /// Why its key could not settle it.
+    pub lapse: Lapse,
+    /// The fresh zone does not hold what it carried, so the user should
+    /// check the canvas.
+    pub unconfirmed: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct Sent {
     write: Write,
@@ -151,9 +183,10 @@ struct Sent {
     through: u64,
     /// No answer has come back for it.
     unknown: bool,
-    /// Sent in a daemon run that has since ended, or answered by another
-    /// run than its own: its key settles nothing any more.
-    old_run: bool,
+    /// How many of its attempts went out with no answer coming back.
+    unanswered: u32,
+    /// Its key settles nothing any more, and why.
+    lapsed: Option<Lapse>,
 }
 
 /// A write to send: the zone's outputs to store, fenced at `fence`, a
@@ -253,7 +286,7 @@ impl ZoneLedger {
     pub fn reanchor(&mut self) {
         self.reanchor = true;
         if let Some(sent) = self.sent.as_mut() {
-            sent.old_run = true;
+            sent.lapsed.get_or_insert(Lapse::Restart);
         }
     }
 
@@ -270,7 +303,7 @@ impl ZoneLedger {
     pub fn wants_read(&self) -> bool {
         self.sent
             .as_ref()
-            .is_some_and(|sent| sent.unknown && sent.old_run)
+            .is_some_and(|sent| sent.unknown && sent.lapsed.is_some())
             || (self.reanchor && self.has_pending())
     }
 
@@ -409,9 +442,18 @@ impl ZoneLedger {
             write: write.clone(),
             through,
             unknown: false,
-            old_run: false,
+            unanswered: 0,
+            lapsed: None,
         });
         Some(write)
+    }
+
+    /// How many attempts of the write out went with no answer coming back,
+    /// which says how much an answer to the next one can tell (see
+    /// [`super::keyed::tells`]).
+    #[must_use]
+    pub fn unanswered(&self) -> u32 {
+        self.sent.as_ref().map_or(0, |sent| sent.unanswered)
     }
 
     /// The write no answer came back for, to send again under its own key:
@@ -422,7 +464,7 @@ impl ZoneLedger {
     pub fn retry(&self) -> Option<Write> {
         self.sent
             .as_ref()
-            .filter(|sent| sent.unknown && !sent.old_run)
+            .filter(|sent| sent.unknown && sent.lapsed.is_none())
             .map(|sent| sent.write.clone())
     }
 
@@ -449,7 +491,7 @@ impl ZoneLedger {
         shown: Vec<Output>,
     ) -> Option<Vec<String>> {
         let sent = self.sent.as_mut().filter(|sent| sent.write.id == id)?;
-        if sent.old_run {
+        if sent.lapsed.is_some() {
             sent.unknown = true;
             return None;
         }
@@ -486,34 +528,34 @@ impl ZoneLedger {
     pub fn lost(&mut self, id: u64) {
         if let Some(sent) = self.sent.as_mut().filter(|sent| sent.write.id == id) {
             sent.unknown = true;
+            sent.unanswered += 1;
         }
     }
 
-    /// Write `id` was answered by another daemon run than its own, which
-    /// knows nothing of its key: whether the first request landed in its
-    /// own run is unknown, and [`Self::settle_ended`] settles it from a
-    /// fresh read.
-    pub fn stranded(&mut self, id: u64) {
+    /// Write `id` lapsed for `lapse`: its key can no longer say whether it
+    /// landed, and [`Self::settle_ended`] settles it from a fresh read.
+    pub fn stranded(&mut self, id: u64, lapse: Lapse) {
         if let Some(sent) = self.sent.as_mut().filter(|sent| sent.write.id == id) {
             sent.unknown = true;
-            sent.old_run = true;
+            sent.lapsed.get_or_insert(lapse);
         }
     }
 
     /// Take in a fresh read of the current daemon run and settle the write
-    /// left open in a run that has ended. That run commits nothing any
-    /// more, so the read shows whatever the write did, but not whether a
-    /// remote write followed it: the write is taken as landed and its
-    /// intents retire. Returns whether the fresh zone does not hold what it
-    /// carried, so the user should check the canvas; `None` when no such
-    /// write was open.
+    /// that lapsed. Nothing it sent can commit any more, so the read shows
+    /// whatever the write did, but not whether a remote write followed it:
+    /// the write is taken as landed and its intents retire. `None` when no
+    /// such write was open.
     pub fn settle_ended(
         &mut self,
         revision: u64,
         raw: Vec<Output>,
         shown: Vec<Output>,
-    ) -> Option<bool> {
-        let sent = self.sent.take_if(|sent| sent.unknown && sent.old_run)?;
+    ) -> Option<Lapsed> {
+        let sent = self
+            .sent
+            .take_if(|sent| sent.unknown && sent.lapsed.is_some())?;
+        let lapse = sent.lapsed?;
         // Given up on: a field the write carried with no newer intent to
         // send after it, which the fresh zone does not hold (a zone without
         // the output at all holds nothing).
@@ -527,7 +569,7 @@ impl ZoneLedger {
         });
         self.pending.retain(|intent| intent.seq > sent.through);
         self.confirm(revision, raw, shown);
-        Some(unconfirmed)
+        Some(Lapsed { lapse, unconfirmed })
     }
 
     /// Take in the zone read afresh after a stale rejection, then drop the
