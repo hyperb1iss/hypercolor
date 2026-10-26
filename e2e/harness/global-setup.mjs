@@ -174,26 +174,7 @@ async function waitForHtml(url, label) {
 }
 
 export function buildConfigToml() {
-  return [
-    "schema_version = 5",
-    "",
-    "[discovery]",
-    "mdns_enabled = false",
-    "background_enabled = false",
-    "blocks_scan = false",
-    "",
-    ...["asus", "blocks", "corsair", "dygma", "govee", "hue", "lianli",
-      "nanoleaf", "nollie", "openrgb", "prismrgb", "push2", "qmk",
-      "razer", "smbus", "usb", "wled"].flatMap((driver) => [
-        `[drivers.${driver}]`, "enabled = false", "",
-      ]),
-    "",
-    "[mcp]",
-    "enabled = true",
-    "stateful_mode = false",
-    "json_response = true",
-    "",
-  ].join("\n");
+  return fs.readFileSync(new URL("./browser-config.toml", import.meta.url), "utf8");
 }
 
 async function readEnvelope(url, init) {
