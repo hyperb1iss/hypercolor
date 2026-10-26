@@ -1,8 +1,8 @@
 //! Contract tests for live layout reconciliation: a small model of the
-//! daemon, the network, and one client's zone ledger, driven through every
+//! daemon, the network, and one client's zone ledgers, driven through every
 //! ordering of edits, remote writes, sends, replies, refreshes, stale
-//! rejections, lost requests, lost replies, late commits, new daemon runs,
-//! and undo.
+//! rejections, lost requests, lost replies, late commits, sockets that
+//! drop and open again, new daemon runs, and undo.
 //!
 //! The model runs in two modes. Unkeyed is the daemon as it is: a request
 //! the client lost either never arrived or committed before its reply was
@@ -15,11 +15,20 @@
 //! The model has two outputs and two edited fields (x and y). The canvas
 //! draws widths normalized (half again the stored width), so the client's
 //! `shown` differs from what the daemon stores. The client runs the real
-//! [`ZoneLedger`] and follows the writer's loop: take a write, send it, and
-//! on its outcome call `applied`; or `stale` then `refetched`; or, when the
-//! reply is lost, `lost` then `settle_lost` from a fresh read. The daemon
-//! fences each write at its revision. Replies and refreshes reach the
-//! client in any order, and a refresh may be older than one already seen.
+//! [`SceneLedgers`] for one scene of one zone and follows the writer's
+//! loop: take a write, send it, and on its outcome call `applied`; or
+//! `stale` then `refetched`; or, when the reply is lost, `lost` then
+//! `settle_lost` from a fresh read. The daemon fences each write at its
+//! revision. Replies and refreshes reach the client in any order, and a
+//! refresh may be older than one already seen.
+//!
+//! The socket may open again, with a new daemon run behind it or (unkeyed)
+//! the same one. Each refresh carries the connection it was started on,
+//! and replies and refreshes from before still arrive afterwards. The
+//! writer reads the scene itself for a ledger that waits on the re-anchor.
+//! Keyed, the daemon names the run it serves, so a socket that opens again
+//! on the same run changes nothing the ledgers see; that case is modeled
+//! unkeyed only.
 //!
 //! After everything is delivered and a final refresh, these must hold:
 //!
@@ -37,18 +46,20 @@
 //!    write carrying it was lost on the way and the client said so.
 //!
 //! And at every step: within one daemon run the revision the client
-//! confirms never goes back, so the canvas never falls back to an older
-//! daemon state; and no write is ever applied under a fence from an
-//! earlier run.
+//! confirms never goes back, across sockets that open again too, so the
+//! canvas never falls back to an older daemon state; and no write is ever
+//! applied under a fence from an earlier run.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use hypercolor_ui::components::layout_builder::ledger::{
-    Cancelled, Field, Intent, SceneLedgers, SceneRead, Settled, Value, Write, ZoneLedger, ZoneRead,
+    Cancelled, Cause, Field, Intent, SceneLedgers, SceneRead, Settled, Value, Write, ZoneLedger,
+    ZoneRead,
 };
 
+const ZONE: &str = "main";
 const OUTPUTS: [&str; 2] = ["a", "b"];
 const FIELDS: [Field; 2] = [Field::X, Field::Y];
 const CHECKED: [Field; 3] = [Field::X, Field::Y, Field::Width];
@@ -92,6 +103,21 @@ fn shown(raw: &[Output]) -> Vec<Output> {
             output
         })
         .collect()
+}
+
+/// A read of the model's one zone, started on socket connection
+/// `connection`.
+fn zone_read(scene_id: SceneId, revision: u64, outputs: &[Output], connection: u64) -> SceneRead {
+    SceneRead {
+        scene_id,
+        revision,
+        connection,
+        zones: vec![ZoneRead {
+            zone_id: ZONE.to_owned(),
+            raw: outputs.to_vec(),
+            shown: shown(outputs),
+        }],
+    }
 }
 
 fn number(value: Value) -> f32 {
@@ -141,9 +167,12 @@ enum Message {
     Lost {
         id: u64,
     },
+    /// A read of the scene, started on client socket connection
+    /// `connection`.
     Refresh {
         revision: u64,
         outputs: Vec<Output>,
+        connection: u64,
     },
 }
 
@@ -178,7 +207,11 @@ struct Model {
     /// Server applies so far, in the daemon's order.
     applies: u64,
     step: u64,
-    ledger: ZoneLedger,
+    scene: SceneId,
+    ledgers: SceneLedgers,
+    /// The client's socket connection; it counts up each time the socket
+    /// opens again.
+    connection: u64,
     to_server: VecDeque<Outgoing>,
     to_client: Vec<Message>,
     awaiting_refetch: bool,
@@ -215,8 +248,12 @@ impl Model {
 
     fn with_keys(keyed: bool) -> Self {
         let server = vec![output("a", 0.2, 0.2), output("b", 0.2, 0.2)];
-        let mut ledger = ZoneLedger::default();
-        ledger.confirm(1, server.clone(), shown(&server));
+        let scene = SceneId::new();
+        let mut ledgers = SceneLedgers::new("page");
+        ledgers.connect(1);
+        ledgers
+            .observe(&zone_read(scene, 1, &server, 1), Some(ZONE))
+            .expect("the first read");
         Self {
             keyed,
             run: 1,
@@ -227,7 +264,9 @@ impl Model {
             server,
             applies: 0,
             step: 0,
-            ledger,
+            scene,
+            ledgers,
+            connection: 1,
             to_server: VecDeque::new(),
             to_client: Vec::new(),
             awaiting_refetch: false,
@@ -250,8 +289,30 @@ impl Model {
         self.log.join("\n")
     }
 
+    fn ledger(&self) -> &ZoneLedger {
+        self.ledgers.zone(ZONE).expect("the zone's ledger")
+    }
+
+    fn ledger_mut(&mut self) -> &mut ZoneLedger {
+        self.ledgers.ledger_mut(ZONE).expect("the zone's ledger")
+    }
+
+    /// The scene as the daemon holds it now, read on the current socket.
+    fn read_now(&self) -> SceneRead {
+        zone_read(self.scene, self.revision, &self.server, self.connection)
+    }
+
+    /// The writer's own read, under the ledgers' ticket of the moment.
+    fn writer_reads(&mut self) {
+        let read = self.read_now();
+        let ticket = self.ledgers.ticket().expect("a scene");
+        self.ledgers
+            .admit(ticket, &read)
+            .expect("the writer's own read is admitted");
+    }
+
     fn display(&self) -> Vec<Output> {
-        self.ledger.display().expect("confirmed")
+        self.ledger().display().expect("confirmed")
     }
 
     fn tick(&mut self) {
@@ -274,6 +335,7 @@ impl Model {
         self.to_client.push(Message::Refresh {
             revision: self.revision,
             outputs: self.server.clone(),
+            connection: self.connection,
         });
     }
 
@@ -295,7 +357,10 @@ impl Model {
             return false;
         }
         set(&mut edited, id, field, value);
-        assert!(self.ledger.edit(&edited), "a changed field makes an intent");
+        assert!(
+            self.ledger_mut().edit(&edited),
+            "a changed field makes an intent"
+        );
         self.undo.push((key(id, field), before));
         self.user_sets(id, field, value);
         self.log.push(format!("edit {id}.{field:?} = {value}"));
@@ -313,7 +378,7 @@ impl Model {
             return false;
         }
         set(&mut edited, id, field, value);
-        self.ledger.edit(&edited);
+        self.ledger_mut().edit(&edited);
         self.user_sets(id, field, value);
         self.log.push(format!("undo {id}.{field:?} = {value}"));
         true
@@ -337,13 +402,13 @@ impl Model {
         }
         self.tick();
         let carried: Vec<Key> = self
-            .ledger
+            .ledger()
             .pending()
             .iter()
             .map(|intent: &Intent| key(&intent.output_id, intent.field))
             .collect();
-        let confirmed = self.ledger.confirmed().expect("confirmed").to_vec();
-        let Some(write) = self.ledger.take_write(|write| format!("w{write}")) else {
+        let confirmed = self.ledger().confirmed().expect("confirmed").to_vec();
+        let Some(write) = self.ledgers.take_write(ZONE) else {
             return false;
         };
         // Invariant 3.
@@ -531,7 +596,7 @@ impl Model {
             return false;
         };
         self.tick();
-        let Some(write) = self.ledger.retry() else {
+        let Some(write) = self.ledger().retry() else {
             return false;
         };
         let intended = carried
@@ -551,35 +616,66 @@ impl Model {
         true
     }
 
-    /// The daemon starts a new run. Its requests and connections die with
-    /// it; unkeyed, its revisions start over. The client reconnects, which
-    /// re-anchors its ledger.
+    /// The daemon starts a new run. Requests still on their way or held
+    /// die with it; unkeyed, its revisions start over. Replies and reads it
+    /// already sent still arrive. The client's socket opens again.
     fn restart(&mut self) {
         self.tick();
         self.run += 1;
         self.revision = if self.keyed { self.revision + 1_000 } else { 1 };
-        self.to_server.clear();
-        self.stalled.clear();
-        self.answers.clear();
-        self.to_client.clear();
-        if let Some(outgoing) = self.in_flight.as_ref() {
+        for outgoing in self.to_server.drain(..) {
             self.to_client.push(Message::Lost {
                 id: outgoing.write.id,
             });
         }
+        self.stalled.clear();
+        self.answers.clear();
+        self.log
+            .push(format!("daemon restarts at {}", self.revision));
+        self.seen = 0;
+        self.reconnect();
+    }
+
+    /// The socket drops and opens again on the same daemon run; requests
+    /// and replies go on as they were.
+    fn blip(&mut self) -> bool {
+        if self.keyed {
+            return false;
+        }
+        self.tick();
+        self.reconnect();
+        true
+    }
+
+    /// The socket opens again: the ledgers re-anchor on the new connection,
+    /// and the shared scene read it starts is on its way.
+    fn reconnect(&mut self) {
+        self.connection += 1;
         if let Some((carried, id)) = self.awaiting_retry.take() {
-            // Its key means nothing to the new run: settle it from a read.
+            // Its key may mean nothing to the daemon now: a read settles it.
             let applied = self.reached.get(&id).copied().unwrap_or(false);
             self.awaiting_settle = Some((carried, applied));
         }
+        assert!(self.ledgers.connect(self.connection));
         self.log
-            .push(format!("daemon restarts at {}", self.revision));
-        self.ledger.reanchor();
-        self.seen = 0;
+            .push(format!("socket opens again ({})", self.connection));
         self.to_client.push(Message::Refresh {
             revision: self.revision,
             outputs: self.server.clone(),
+            connection: self.connection,
         });
+    }
+
+    /// The writer's own read for a ledger waiting on a re-anchor.
+    fn anchor(&mut self) -> bool {
+        if !self.ledger().reanchoring() {
+            return false;
+        }
+        self.tick();
+        self.log.push(format!("anchor read {}", self.revision));
+        self.writer_reads();
+        self.check_monotonic();
+        true
     }
 
     /// The request never reaches the daemon; the client hears nothing back.
@@ -596,10 +692,10 @@ impl Model {
 
     /// The confirmed revision only moves forward within a daemon run.
     fn check_monotonic(&mut self) {
-        if self.ledger.reanchoring() {
+        if self.ledger().reanchoring() {
             return;
         }
-        let revision = self.ledger.revision().expect("confirmed");
+        let revision = self.ledger().revision().expect("confirmed");
         assert!(
             revision >= self.seen,
             "confirmed went back from {} to {revision}\n{}",
@@ -621,14 +717,21 @@ impl Model {
                 outputs,
             } => {
                 self.log.push(format!("reply #{id} applied {revision}"));
-                self.in_flight = None;
-                self.ledger
-                    .applied(id, revision, outputs.clone(), shown(&outputs));
+                let outgoing = self.in_flight.take();
+                let taken =
+                    self.ledger_mut()
+                        .applied(id, revision, outputs.clone(), shown(&outputs));
+                if taken.is_none() && self.ledger().unsettled() {
+                    // Sent before the socket opened again: a read settles it.
+                    self.log.push(format!("#{id} left for a read to settle"));
+                    let carried = outgoing.map(|outgoing| outgoing.carried);
+                    self.awaiting_settle = Some((carried.unwrap_or_default(), true));
+                }
             }
             Message::Stale { id } => {
                 self.log.push(format!("reply #{id} stale"));
                 self.in_flight = None;
-                self.ledger.stale(id);
+                self.ledger_mut().stale(id);
                 self.awaiting_refetch = true;
             }
             Message::Lost { id } => {
@@ -639,17 +742,24 @@ impl Model {
                     .map(|outgoing| outgoing.carried)
                     .unwrap_or_default();
                 let applied = self.reached.get(&id).copied().unwrap_or(false);
-                self.ledger.lost(id);
-                if self.keyed && self.ledger.retry().is_some() {
+                self.ledger_mut().lost(id);
+                if self.keyed && self.ledger().retry().is_some() {
                     self.awaiting_retry = Some((carried, id));
                 } else {
                     self.awaiting_settle = Some((carried, applied));
                 }
             }
-            Message::Refresh { revision, outputs } => {
-                self.log.push(format!("refresh {revision}"));
-                self.ledger
-                    .confirm(revision, outputs.clone(), shown(&outputs));
+            Message::Refresh {
+                revision,
+                outputs,
+                connection,
+            } => {
+                let read = zone_read(self.scene, revision, &outputs, connection);
+                let taken = self.ledgers.observe(&read, Some(ZONE)).is_some();
+                self.log.push(format!(
+                    "refresh {revision} on socket {connection}{}",
+                    if taken { "" } else { ", refused" }
+                ));
             }
         }
         self.check_monotonic();
@@ -663,8 +773,10 @@ impl Model {
         self.tick();
         self.awaiting_refetch = false;
         self.log.push(format!("refetch {}", self.revision));
-        self.ledger
-            .refetched(self.revision, self.server.clone(), shown(&self.server));
+        self.writer_reads();
+        let (revision, server) = (self.revision, self.server.clone());
+        self.ledger_mut()
+            .refetched(revision, server.clone(), shown(&server));
         self.check_monotonic();
         true
     }
@@ -675,14 +787,16 @@ impl Model {
             return false;
         };
         self.tick();
-        let settled =
-            self.ledger
-                .settle_lost(self.revision, self.server.clone(), shown(&self.server));
+        self.writer_reads();
+        let (revision, server) = (self.revision, self.server.clone());
+        let settled = self
+            .ledger_mut()
+            .settle_lost(revision, server.clone(), shown(&server));
         self.log
             .push(format!("settle lost at {}: {settled:?}", self.revision));
         if let Some(Settled::Landed { unconfirmed }) = settled {
             let still_pending: Vec<Key> = self
-                .ledger
+                .ledger()
                 .pending()
                 .iter()
                 .map(|intent| key(&intent.output_id, intent.field))
@@ -722,6 +836,7 @@ impl Model {
             let moved = self.deliver(0)
                 || self.refetch()
                 || self.settle_lost()
+                || self.anchor()
                 || self.retry()
                 || self.deliver_write(false)
                 || self.commit_stalled()
@@ -730,22 +845,28 @@ impl Model {
                 break;
             }
         }
-        self.ledger
-            .confirm(self.revision, self.server.clone(), shown(&self.server));
+        let read = self.read_now();
+        self.ledgers
+            .observe(&read, Some(ZONE))
+            .expect("a read on the current socket");
         self.log.push(format!("final refresh {}", self.revision));
     }
 
     fn check(&self) {
         let trace = self.trace();
-        assert!(!self.ledger.has_pending(), "intents left over\n{trace}");
+        assert!(!self.ledger().has_pending(), "intents left over\n{trace}");
         assert!(
             self.stalled.is_empty(),
             "a stalled request left over\n{trace}"
         );
-        assert!(!self.ledger.in_flight(), "a write left out\n{trace}");
+        assert!(!self.ledger().in_flight(), "a write left out\n{trace}");
         assert!(
-            !self.ledger.unsettled(),
+            !self.ledger().unsettled(),
             "a lost write left unsettled\n{trace}"
+        );
+        assert!(
+            !self.ledger().reanchoring(),
+            "a ledger never re-anchored\n{trace}"
         );
         let display = self.display();
         let held = shown(&self.server);
@@ -919,7 +1040,7 @@ fn a_write_lost_before_the_daemon_goes_out_again_when_nothing_moved() {
     model.lose_request();
     while model.deliver(0) {}
     assert_eq!(
-        model.ledger.pending().len(),
+        model.ledger().pending().len(),
         1,
         "nothing landed, so it stays"
     );
@@ -990,7 +1111,7 @@ fn explore(keyed: bool, cases: u64, seed: u64) {
     for _ in 0..cases {
         let mut model = Model::with_keys(keyed);
         for _ in 0..STEPS {
-            match rng.below(15) {
+            match rng.below(16) {
                 0 | 1 => {
                     let id = rng.pick(&OUTPUTS);
                     let field = rng.pick(&FIELDS);
@@ -1035,10 +1156,15 @@ fn explore(keyed: bool, cases: u64, seed: u64) {
                 12 => {
                     model.commit_stalled();
                 }
-                13 => {
-                    if rng.below(8) == 0 {
-                        model.restart();
+                13 => match rng.below(16) {
+                    0 => model.restart(),
+                    1 | 2 => {
+                        model.blip();
                     }
+                    _ => {}
+                },
+                14 => {
+                    model.anchor();
                 }
                 _ => {
                     model.undo();
@@ -1107,12 +1233,26 @@ fn a_new_daemon_run_reanchors_and_never_writes_under_an_old_fence() {
         model.settle();
     }
     // The ledger stands well past revision 1.
-    assert!(model.ledger.revision().expect("confirmed") > 4);
+    let before = model.ledger().revision().expect("confirmed");
+    assert!(before > 4);
     model.edit("a", Field::Y, 0.6);
+    // Another client's write is read just before the daemon goes away; the
+    // read reaches the client only once the socket is open again.
+    model.remote("b", Field::X, 0.6);
     model.restart();
+    model.deliver(0);
+    assert!(
+        model.ledger().reanchoring(),
+        "a read from the old socket does not re-anchor"
+    );
+    assert_eq!(model.ledger().revision(), Some(before));
+    assert!(
+        model.ledgers.take_write(ZONE).is_none(),
+        "no old fence goes out"
+    );
     // The new run's first read is below confirmed, and is taken anyway.
     model.deliver(0);
-    assert_eq!(model.ledger.revision(), Some(1));
+    assert_eq!(model.ledger().revision(), Some(1));
     assert_eq!(
         read(&model.display(), "a", Field::Y),
         0.6,
@@ -1121,6 +1261,32 @@ fn a_new_daemon_run_reanchors_and_never_writes_under_an_old_fence() {
     model.settle();
     model.check();
     assert_eq!(read(&model.server, "a", Field::Y), 0.6);
+}
+
+#[test]
+fn a_reply_that_comes_after_the_socket_opened_again_settles_from_a_read() {
+    for restart in [false, true] {
+        let mut model = Model::new();
+        model.edit("a", Field::X, 0.4);
+        model.send();
+        model.deliver_write(false);
+        if restart {
+            model.restart();
+        } else {
+            model.blip();
+        }
+        // The reply the old socket's daemon sent comes in now, with the
+        // reads from either side of the reopen. It settles nothing by
+        // itself, and the zone does not wedge on it.
+        while model.deliver(0) {}
+        assert!(model.ledger().unsettled(), "a read settles it");
+        assert!(model.ledgers.wants_read());
+        model.edit("a", Field::Y, 0.6);
+        model.settle();
+        model.check();
+        assert_eq!(read(&model.server, "a", Field::X), 0.4);
+        assert_eq!(read(&model.server, "a", Field::Y), 0.6);
+    }
 }
 
 #[test]
@@ -1139,9 +1305,20 @@ fn a_write_left_open_by_a_new_daemon_run_is_settled_from_a_read() {
 // ── The active scene's ledgers ───────────────────────────────────────────
 
 fn scene_read(scene_id: SceneId, revision: u64, zones: &[(&str, f32)]) -> SceneRead {
+    scene_read_on(1, scene_id, revision, zones)
+}
+
+/// A read started on socket connection `connection`.
+fn scene_read_on(
+    connection: u64,
+    scene_id: SceneId,
+    revision: u64,
+    zones: &[(&str, f32)],
+) -> SceneRead {
     SceneRead {
         scene_id,
         revision,
+        connection,
         zones: zones
             .iter()
             .map(|(zone_id, x)| {
@@ -1156,6 +1333,13 @@ fn scene_read(scene_id: SceneId, revision: u64, zones: &[(&str, f32)]) -> SceneR
     }
 }
 
+/// Ledgers on socket connection 1.
+fn ledgers() -> SceneLedgers {
+    let mut ledgers = SceneLedgers::new("page");
+    ledgers.connect(1);
+    ledgers
+}
+
 fn moved(ledgers: &mut SceneLedgers, zone_id: &str, x: f32) {
     let mut edited = ledgers
         .zone(zone_id)
@@ -1168,7 +1352,7 @@ fn moved(ledgers: &mut SceneLedgers, zone_id: &str, x: f32) {
 #[test]
 fn a_delayed_read_for_another_scene_never_touches_the_active_ones() {
     let (desk, stage) = (SceneId::new(), SceneId::new());
-    let mut ledgers = SceneLedgers::new("page");
+    let mut ledgers = ledgers();
     ledgers.observe(&scene_read(desk, 3, &[("main", 0.2)]), Some("main"));
     let ticket = ledgers.ticket().expect("a scene");
     // The user moves to another scene and edits it while a read of the
@@ -1186,7 +1370,7 @@ fn a_delayed_read_for_another_scene_never_touches_the_active_ones() {
 #[test]
 fn switching_back_to_a_scene_does_not_admit_a_read_started_before_the_switch() {
     let (desk, stage) = (SceneId::new(), SceneId::new());
-    let mut ledgers = SceneLedgers::new("page");
+    let mut ledgers = ledgers();
     ledgers.observe(&scene_read(desk, 3, &[("main", 0.2)]), Some("main"));
     let ticket = ledgers.ticket().expect("a scene");
     ledgers.observe(&scene_read(stage, 7, &[("keys", 0.2)]), None);
@@ -1200,7 +1384,7 @@ fn switching_back_to_a_scene_does_not_admit_a_read_started_before_the_switch() {
 #[test]
 fn an_older_read_never_drops_a_zone_made_since() {
     let desk = SceneId::new();
-    let mut ledgers = SceneLedgers::new("page");
+    let mut ledgers = ledgers();
     ledgers.observe(
         &scene_read(desk, 9, &[("main", 0.2), ("fresh", 0.2)]),
         Some("fresh"),
@@ -1222,6 +1406,7 @@ fn an_older_read_never_drops_a_zone_made_since() {
         vec![Cancelled {
             zone_id: "fresh".to_owned(),
             output_ids: vec!["a".to_owned()],
+            cause: Cause::ZoneGone,
         }]
     );
     assert!(ledgers.zone("fresh").is_none());
@@ -1230,7 +1415,7 @@ fn an_older_read_never_drops_a_zone_made_since() {
 #[test]
 fn an_output_moved_away_elsewhere_reports_the_edit_it_cancels() {
     let desk = SceneId::new();
-    let mut ledgers = SceneLedgers::new("page");
+    let mut ledgers = ledgers();
     ledgers.observe(&scene_read(desk, 3, &[("main", 0.2)]), Some("main"));
     moved(&mut ledgers, "main", 0.4);
     let mut read = scene_read(desk, 4, &[("main", 0.2)]);
@@ -1239,51 +1424,132 @@ fn an_output_moved_away_elsewhere_reports_the_edit_it_cancels() {
     let cancelled = ledgers.observe(&read, Some("main"));
     assert_eq!(
         cancelled,
-        vec![Cancelled {
+        Some(vec![Cancelled {
             zone_id: "main".to_owned(),
             output_ids: vec!["a".to_owned()],
-        }]
+            cause: Cause::OutputLeft,
+        }])
     );
 }
 
 #[test]
 fn a_reanchor_refuses_reads_started_before_it_and_takes_the_next_one() {
     let desk = SceneId::new();
-    let mut ledgers = SceneLedgers::new("page");
+    let mut ledgers = ledgers();
     ledgers.observe(&scene_read(desk, 500, &[("main", 0.2)]), Some("main"));
     moved(&mut ledgers, "main", 0.4);
     let before = ledgers.ticket().expect("a scene");
-    ledgers.reanchor();
+    assert!(ledgers.connect(2));
+    assert!(!ledgers.connect(2), "the same connection opens once");
     assert!(
         ledgers.take_write("main").is_none(),
         "no old fence goes out"
     );
+    assert!(
+        ledgers.wants_read(),
+        "the writer reads for the waiting edit"
+    );
     assert_eq!(
-        ledgers.admit(before, &scene_read(desk, 501, &[("main", 0.2)])),
+        ledgers.admit(before, &scene_read_on(2, desk, 501, &[("main", 0.2)])),
         None
     );
     // The new run's first read, far below confirmed, re-anchors.
-    ledgers.observe(&scene_read(desk, 6, &[("main", 0.2)]), Some("main"));
+    ledgers.observe(&scene_read_on(2, desk, 6, &[("main", 0.2)]), Some("main"));
     let ledger = ledgers.zone("main").expect("kept");
     assert_eq!(ledger.revision(), Some(6));
     assert!(ledger.has_pending(), "the edit is kept");
     let write = ledgers.take_write("main").expect("the edit goes out");
     assert_eq!(write.fence, 6);
     assert!(
-        write.key.starts_with("page:main:"),
+        write.key.starts_with("page:"),
         "keys are unique to the page"
     );
 }
 
 #[test]
+fn a_document_from_before_the_socket_opened_never_reanchors_a_ledger() {
+    let desk = SceneId::new();
+    let mut ledgers = ledgers();
+    ledgers.observe(&scene_read(desk, 50, &[("main", 0.2)]), Some("main"));
+    moved(&mut ledgers, "main", 0.4);
+    ledgers.connect(2);
+    // The shared document still holds what the old socket read (here with
+    // another client's y), and Studio offers it again while its refetch is
+    // out.
+    let mut stale = scene_read_on(1, desk, 50, &[("main", 0.2)]);
+    set(&mut stale.zones[0].raw, "a", Field::Y, 0.9);
+    set(&mut stale.zones[0].shown, "a", Field::Y, 0.9);
+    assert_eq!(ledgers.observe(&stale, Some("main")), None);
+    let ledger = ledgers.zone("main").expect("kept");
+    assert!(ledger.reanchoring(), "still waiting on the new socket");
+    assert_eq!(read(&ledger.display().expect("drawn"), "a", Field::X), 0.4);
+    // The new run's read re-anchors, and the old document offered again
+    // afterwards, at a higher revision, is still refused.
+    ledgers.observe(&scene_read_on(2, desk, 1, &[("main", 0.2)]), Some("main"));
+    assert_eq!(ledgers.observe(&stale, Some("main")), None);
+    let ledger = ledgers.zone("main").expect("kept");
+    assert_eq!(ledger.revision(), Some(1));
+    assert_eq!(read(&ledger.display().expect("drawn"), "a", Field::X), 0.4);
+    let write = ledgers.take_write("main").expect("the edit goes out");
+    assert_eq!(write.fence, 1, "fenced in the new run");
+    assert_eq!(
+        read(&write.outputs, "a", Field::Y),
+        0.2,
+        "nothing of the old document goes out with it"
+    );
+}
+
+#[test]
+fn a_read_on_a_newer_socket_opens_it_before_it_is_taken() {
+    let desk = SceneId::new();
+    let mut ledgers = ledgers();
+    ledgers.observe(&scene_read(desk, 50, &[("main", 0.2)]), Some("main"));
+    moved(&mut ledgers, "main", 0.4);
+    let before = ledgers.ticket().expect("a scene");
+    ledgers.observe(&scene_read_on(2, desk, 1, &[("main", 0.2)]), Some("main"));
+    assert_eq!(ledgers.connection(), 2);
+    assert!(!ledgers.admits(before));
+    assert_eq!(ledgers.zone("main").and_then(ZoneLedger::revision), Some(1));
+}
+
+#[test]
+fn write_ids_and_keys_never_repeat_on_one_page() {
+    let (desk, stage) = (SceneId::new(), SceneId::new());
+    let mut ledgers = ledgers();
+    ledgers.observe(&scene_read(desk, 3, &[("main", 0.2)]), Some("main"));
+    moved(&mut ledgers, "main", 0.4);
+    let first = ledgers.take_write("main").expect("a write");
+    // Away to another scene and back: the zone's ledger starts over.
+    ledgers.observe(&scene_read(stage, 7, &[("keys", 0.2)]), None);
+    ledgers.observe(&scene_read(desk, 4, &[("main", 0.2)]), Some("main"));
+    moved(&mut ledgers, "main", 0.6);
+    let second = ledgers.take_write("main").expect("a write");
+    assert_ne!(first.id, second.id);
+    assert_ne!(first.key, second.key);
+    // A late reply to the first write settles nothing in the new ledger.
+    let outputs = vec![output("a", 0.4, 0.2)];
+    assert_eq!(
+        ledgers.ledger_mut("main").expect("a ledger").applied(
+            first.id,
+            5,
+            outputs.clone(),
+            shown(&outputs)
+        ),
+        None
+    );
+    assert!(ledgers.zone("main").is_some_and(ZoneLedger::in_flight));
+}
+
+#[test]
 fn switching_scenes_reports_the_edits_it_leaves_behind() {
     let (desk, stage) = (SceneId::new(), SceneId::new());
-    let mut ledgers = SceneLedgers::new("page");
+    let mut ledgers = ledgers();
     ledgers.observe(&scene_read(desk, 3, &[("main", 0.2)]), Some("main"));
     moved(&mut ledgers, "main", 0.4);
     let cancelled = ledgers.select(stage);
     assert_eq!(cancelled.len(), 1);
     assert_eq!(cancelled[0].zone_id, "main");
+    assert_eq!(cancelled[0].cause, Cause::SceneChanged);
 }
 
 #[test]
@@ -1292,18 +1558,14 @@ fn a_membership_move_of_ours_drops_the_leftover_placement_edit() {
     model.edit("a", Field::X, 0.4);
     model.send();
     model.edit("a", Field::Y, 0.6);
-    // A membership write of ours places "a" itself while the layout write
-    // is out: neither the carried nor the waiting edit may land over it.
-    model.ledger.forget(&["a".to_owned()]);
-    assert!(model.ledger.pending().is_empty());
-    assert!(model.ledger.in_flight(), "the write out still settles");
+    // A membership write of ours places "a" itself. Studio's history sends
+    // it only once the writer has nothing out, unless the writer is paused;
+    // the edit that waited behind it must not go out after it.
+    model.ledger_mut().forget(&["a".to_owned()]);
+    assert!(model.ledger().pending().is_empty());
+    assert!(model.ledger().in_flight(), "the write out still settles");
     model.deliver_write(false);
     while model.deliver(0) {}
-    assert!(!model.ledger.has_pending());
-    assert!(
-        model
-            .ledger
-            .take_write(|write| format!("w{write}"))
-            .is_none()
-    );
+    assert!(!model.ledger().has_pending());
+    assert!(model.ledgers.take_write(ZONE).is_none());
 }

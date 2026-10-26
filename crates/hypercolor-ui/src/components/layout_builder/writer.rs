@@ -5,9 +5,11 @@
 //! Studio closes still lands, and a Studio opened again reads the ledgers
 //! its predecessor left rather than starting a second, conflicting copy.
 //! What the writer has to tell the user goes out as a page toast, so it is
-//! heard whether Studio is open or not, and the socket opening again
-//! resumes a paused writer and re-anchors the ledgers for as long as the
-//! page lives.
+//! heard whether Studio is open or not. The socket watch lives for the page
+//! too: each time the socket opens again the ledgers re-anchor, a writer
+//! paused on a failure tries again, and the writer reads the scene itself
+//! for any edit that waits on the re-anchor, so nothing waits for a Studio
+//! to be opened.
 //!
 //! A mounted Studio lends the writer [`WriterHooks`]. Each write then takes
 //! its own turn with Studio's other scene operations, lands in Studio's
@@ -24,7 +26,7 @@ use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 use leptos::prelude::*;
 
-use super::ledger::{Cancelled, SceneLedgers, SceneRead, Settled, Ticket, Write, ZoneRead};
+use super::ledger::{Cancelled, Cause, SceneLedgers, SceneRead, Settled, Ticket, Write, ZoneRead};
 use crate::{api, toasts};
 
 /// How many stale rejections in a row the writer takes before it pauses.
@@ -45,10 +47,10 @@ pub(crate) struct WriterHooks {
     /// A write landed: the revision it was fenced at, the zone the daemon
     /// replied with, and the revision it landed at.
     pub landed: Callback<(u64, api::ZoneResource, u64)>,
-    /// The scene, read afresh to settle a write.
+    /// The scene, read afresh by the writer.
     pub refetched: Callback<api::SceneDocument>,
-    /// A zone's ledger changed, so its canvas may draw differently.
-    pub changed: Callback<String>,
+    /// The ledgers changed, so a canvas may draw differently.
+    pub changed: Callback<()>,
     /// The writer stopped and let the scene go: Studio's own queue can
     /// take it.
     pub idle: Callback<()>,
@@ -63,8 +65,8 @@ struct Writer {
     paused: bool,
     hooks: Option<(u64, WriterHooks)>,
     next_hooks: u64,
-    /// The owner of the socket watch, which lives as long as the page.
-    watch: Option<Owner>,
+    /// Whether the socket watch has started.
+    watching: bool,
 }
 
 impl Writer {
@@ -76,18 +78,14 @@ impl Writer {
             paused: false,
             hooks: None,
             next_hooks: 0,
-            watch: None,
+            watching: false,
         }
     }
 
-    /// Whether the writer has something to do now: a write to send, or a
-    /// lost one to settle.
+    /// Whether the writer has something to do now: a read to take, or a
+    /// write to send. A run takes a turn exactly when this holds.
     fn has_work(&self) -> bool {
-        !self.paused
-            && self.ledgers.zones().any(|(_, ledger)| {
-                ledger.unsettled()
-                    || (ledger.has_pending() && !ledger.in_flight() && !ledger.reanchoring())
-            })
+        !self.paused && (self.ledgers.wants_read() || self.ledgers.write_due())
     }
 }
 
@@ -117,11 +115,13 @@ pub(super) fn zone_outputs(
     (raw, shown)
 }
 
-/// A scene document as one read of every zone, drawn for `canvas`.
-fn scene_read(scene: &api::SceneDocument, canvas: (u32, u32)) -> SceneRead {
+/// A scene document as one read of every zone, started on socket
+/// connection `connection` and drawn for `canvas`.
+fn scene_read(scene: &api::SceneDocument, connection: u64, canvas: (u32, u32)) -> SceneRead {
     SceneRead {
         scene_id: scene.id,
         revision: scene.revision,
+        connection,
         zones: scene
             .zones
             .iter()
@@ -137,16 +137,40 @@ fn scene_read(scene: &api::SceneDocument, canvas: (u32, u32)) -> SceneRead {
     }
 }
 
-/// Tell the user which pending edits the daemon's state cancelled.
+/// Tell the user which pending edits were cancelled, and why.
 fn report(cancelled: &[Cancelled]) {
-    let count: usize = cancelled.iter().map(|entry| entry.output_ids.len()).sum();
-    match count {
+    let count = |cause: Cause| -> usize {
+        cancelled
+            .iter()
+            .filter(|entry| entry.cause == cause)
+            .map(|entry| entry.output_ids.len())
+            .sum()
+    };
+    match count(Cause::OutputLeft) {
         0 => {}
         1 => toasts::toast_info(
             "A layout change was dropped: its output left the zone before it was saved.",
         ),
         count => toasts::toast_info(&format!(
             "{count} layout changes were dropped: their outputs left the zone before they were saved."
+        )),
+    }
+    match count(Cause::ZoneGone) {
+        0 => {}
+        1 => toasts::toast_info(
+            "A layout change was dropped: its zone was removed before it was saved.",
+        ),
+        count => toasts::toast_info(&format!(
+            "{count} layout changes were dropped: their zone was removed before they were saved."
+        )),
+    }
+    match count(Cause::SceneChanged) {
+        0 => {}
+        1 => toasts::toast_info(
+            "Another scene became active before a layout change was confirmed. It may not have been saved.",
+        ),
+        count => toasts::toast_info(&format!(
+            "Another scene became active before {count} layout changes were confirmed. They may not have been saved."
         )),
     }
 }
@@ -170,41 +194,67 @@ pub(crate) fn detach(id: u64) {
     });
 }
 
-/// Watch the socket for as long as the page lives: each time it opens
-/// again the daemon may have started a new run, so the ledgers re-anchor,
-/// and a writer paused on a failure tries again. Watching starts once;
-/// later calls change nothing.
-pub(crate) fn watch_connection(opened: ReadSignal<u64>) {
-    if with_writer(|writer| writer.watch.is_some()) {
-        return;
+/// Run `f` under the page's root owner, which lives as long as the page,
+/// and leave the caller's owner current afterwards.
+fn in_page_owner<T>(f: impl FnOnce() -> T) -> T {
+    let mut root = Owner::current();
+    while let Some(parent) = root.as_ref().and_then(Owner::parent) {
+        root = Some(parent);
     }
-    let owner = Owner::new_root(None);
-    owner.with(|| {
-        Effect::new(move |previous: Option<u64>| {
-            let generation = opened.get();
-            if previous.is_some_and(|previous| previous != generation) {
-                with_writer(|writer| writer.ledgers.reanchor());
-                resume();
-            }
-            generation
-        });
-    });
-    with_writer(|writer| writer.watch = Some(owner));
+    match root {
+        Some(root) => root.with(f),
+        None => f(),
+    }
 }
 
-/// Take in the active scene as a read of it reported, drawn for `canvas`,
-/// making sure `wanted` has a ledger. Edits the read cancelled are reported.
-pub(crate) fn observe(scene: &api::SceneDocument, canvas: (u32, u32), wanted: Option<&str>) {
-    let read = scene_read(scene, canvas);
-    let cancelled = with_writer(|writer| {
+/// Watch socket connection `opened` for as long as the page lives: each
+/// time it opens again, the daemon may have started a new run, so the
+/// ledgers re-anchor and a writer paused on a failure tries again.
+/// Watching starts once; later calls change nothing.
+pub(crate) fn watch_connection(opened: ReadSignal<u64>) {
+    if with_writer(|writer| std::mem::replace(&mut writer.watching, true)) {
+        return;
+    }
+    in_page_owner(|| {
+        Effect::new(move |_| connected(opened.get()));
+    });
+}
+
+/// Socket connection `connection` opened: the ledgers re-anchor on it if
+/// it is new to them, and a paused writer tries again.
+fn connected(connection: u64) {
+    if with_writer(|writer| writer.ledgers.connect(connection)) {
+        resume();
+    }
+}
+
+/// Take in the active scene as a read of it reported, started on socket
+/// connection `connection` and drawn for `canvas`, making sure `wanted`
+/// has a ledger. A read started before the socket last opened is not
+/// taken in: it may come from a daemon run that has ended. Edits the read
+/// cancelled are reported.
+pub(crate) fn observe(
+    scene: &api::SceneDocument,
+    connection: u64,
+    canvas: (u32, u32),
+    wanted: Option<&str>,
+) {
+    let read = scene_read(scene, connection, canvas);
+    let taken = with_writer(|writer| {
         writer.canvas = Some(canvas);
+        let opened = read.connection > writer.ledgers.connection();
         let switching = writer.ledgers.scene_id() != Some(scene.id);
-        if switching {
+        let cancelled = writer.ledgers.observe(&read, wanted)?;
+        if switching || opened {
             writer.paused = false;
         }
-        writer.ledgers.observe(&read, wanted)
+        Some(cancelled)
     });
+    let Some(cancelled) = taken else {
+        return;
+    };
     report(&cancelled);
+    wake();
 }
 
 /// What the zone's canvas shows: confirmed with its intents applied.
@@ -274,11 +324,9 @@ pub(crate) fn resume() {
 /// How a run of the writer ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ended {
-    /// It took at least one turn and has nothing left to do for now; work
-    /// that arrived meanwhile starts it again.
+    /// It took at least one turn and has nothing left to do for now.
     Done,
-    /// It found nothing to do, or the ledgers moved on from what it was
-    /// doing; nothing starts it again but new work.
+    /// It found nothing to do; nothing starts it again but new work.
     Idle,
     /// Another operation holds the scene; it wakes the writer as it ends.
     Blocked,
@@ -321,9 +369,11 @@ pub(crate) fn wake() {
     leptos::task::spawn_local(async move {
         let ended = run(first).await;
         with_writer(|writer| writer.writing = false);
-        // Commits still go first: more work starts the writer again before
-        // the queue gets the scene.
-        if ended == Ended::Done {
+        // Work that came in while the run was out (an edit, a socket that
+        // opened again, a pause that no longer held because the ledgers
+        // moved on) starts the writer again, ahead of the queue. A run that
+        // found nothing to do, or could not claim the scene, does not.
+        if matches!(ended, Ended::Done | Ended::Paused) {
             wake();
         }
         if let Some(hooks) = hooks() {
@@ -332,9 +382,9 @@ pub(crate) fn wake() {
     });
 }
 
-fn changed(zone_id: &str) {
+fn changed() {
     if let Some(hooks) = hooks() {
-        let _ = hooks.changed.try_run(zone_id.to_owned());
+        let _ = hooks.changed.try_run(());
     }
 }
 
@@ -355,8 +405,9 @@ fn pause(ticket: Ticket, message: &str) {
 
 /// What one turn of the writer does, for the ledgers `ticket` names.
 enum Turn {
-    /// Read the scene to settle the zone's lost write.
-    Settle(String),
+    /// Read the scene: lost writes settle against it, and ledgers whose
+    /// edits wait on a re-anchor take it.
+    Read,
     Send(String, Write),
 }
 
@@ -366,18 +417,18 @@ fn next_turn() -> Option<(Ticket, Turn)> {
             return None;
         }
         let ticket = writer.ledgers.ticket()?;
-        if let Some((zone_id, _)) = writer
-            .ledgers
-            .zones()
-            .find(|(_, ledger)| ledger.unsettled())
-        {
-            return Some((ticket, Turn::Settle(zone_id.to_owned())));
+        if writer.ledgers.wants_read() {
+            return Some((ticket, Turn::Read));
         }
         writer
             .ledgers
             .next_write()
             .map(|(zone_id, write)| (ticket, Turn::Send(zone_id, write)))
     })
+}
+
+fn ticket_now() -> Option<Ticket> {
+    with_writer(|writer| writer.ledgers.ticket())
 }
 
 /// Failures in a row, so a writer that keeps failing stops and says so.
@@ -401,13 +452,12 @@ async fn run(first: Option<(WriterHooks, u64)>) -> Ended {
         };
         turns += 1;
         let next = match turn {
-            Turn::Settle(zone_id) => settle_lost(ticket, &zone_id, None, &mut streaks).await,
+            Turn::Read => read_and_settle(ticket, None, &mut streaks).await,
             Turn::Send(zone_id, write) => send(ticket, &zone_id, write, &mut streaks).await,
         };
         release(held);
-        match next {
-            Next::Go => {}
-            Next::Stop(ended) => return ended,
+        if let Next::Stop(ended) = next {
+            return ended;
         }
         let Some(claimed) = claim() else {
             return Ended::Blocked;
@@ -429,8 +479,9 @@ fn canvas() -> (u32, u32) {
 /// Read the scene afresh for the ledgers `ticket` names. `None` when the
 /// read failed; `Some(None)` when the ledgers moved on while it was out.
 async fn read_for(ticket: Ticket) -> Option<Option<(api::SceneDocument, SceneRead)>> {
+    let connection = with_writer(|writer| writer.ledgers.connection());
     let scene = api::fetch_active_scene().await.ok()?;
-    let read = scene_read(&scene, canvas());
+    let read = scene_read(&scene, connection, canvas());
     let admitted = with_writer(|writer| writer.ledgers.admit(ticket, &read));
     let Some(cancelled) = admitted else {
         return Some(None);
@@ -444,20 +495,21 @@ fn zone_in<'a>(read: &'a SceneRead, zone_id: &str) -> Option<&'a ZoneRead> {
 }
 
 /// Hand an admitted read to a mounted Studio.
-fn share(scene: api::SceneDocument, zone_id: &str) {
+fn share(scene: api::SceneDocument) {
     if let Some(hooks) = hooks() {
         let _ = hooks.refetched.try_run(scene);
     }
-    changed(zone_id);
+    changed();
 }
 
-/// Read the scene to learn whether a lost write landed. `answered` is the
-/// daemon's own error when it replied with one, which means a write the
-/// read finds not landed was refused.
-async fn settle_lost(
+/// Read the scene for the ledgers `ticket` names and take it in: ledgers
+/// waiting to re-anchor take it whatever its revision, and every write
+/// whose reply was lost settles against it. `answered` names a zone whose
+/// write the daemon answered with an error, and the error: such a write
+/// that the read finds not landed was refused.
+async fn read_and_settle(
     ticket: Ticket,
-    zone_id: &str,
-    answered: Option<&str>,
+    answered: Option<(&str, &str)>,
     streaks: &mut Streaks,
 ) -> Next {
     let Some(read) = read_for(ticket).await else {
@@ -467,60 +519,87 @@ async fn settle_lost(
         );
         return Next::Stop(Ended::Paused);
     };
+    // The ledgers moved on while the read was out; the next turn starts
+    // from where they are now.
     let Some((scene, read)) = read else {
-        return Next::Stop(Ended::Idle);
+        return Next::Go;
     };
-    let settled = with_writer(|writer| {
-        let zone = zone_in(&read, zone_id)?;
-        writer.ledgers.zone_mut(zone_id).settle_lost(
-            read.revision,
-            zone.raw.clone(),
-            zone.shown.clone(),
-        )
+    let settled: Vec<(String, Settled)> = with_writer(|writer| {
+        let open: Vec<String> = writer
+            .ledgers
+            .zones()
+            .filter(|(_, ledger)| ledger.unsettled())
+            .map(|(zone_id, _)| zone_id.to_owned())
+            .collect();
+        open.into_iter()
+            .filter_map(|zone_id| {
+                let zone = zone_in(&read, &zone_id)?;
+                let settled = writer.ledgers.ledger_mut(&zone_id)?.settle_lost(
+                    read.revision,
+                    zone.raw.clone(),
+                    zone.shown.clone(),
+                )?;
+                Some((zone_id, settled))
+            })
+            .collect()
     });
-    share(scene, zone_id);
-    match settled {
-        Some(Settled::Resend) => {
-            if let Some(error) = answered {
-                pause(
-                    ticket,
-                    &format!(
-                        "Layout change not saved: {error}. It goes out again with your next edit."
-                    ),
-                );
-                return Next::Stop(Ended::Paused);
+    // A write the read could not settle (its zone missing from a read
+    // older than its ledger) would only ask for the same read again.
+    let still_open = with_writer(|writer| writer.ledgers.zones().any(|(_, l)| l.unsettled()));
+    share(scene);
+    for (zone_id, settled) in settled {
+        match settled {
+            Settled::Resend => {
+                if let Some((_, error)) = answered.filter(|(zone, _)| *zone == zone_id) {
+                    pause(
+                        ticket,
+                        &format!(
+                            "Layout change not saved: {error}. It goes out again with your next edit."
+                        ),
+                    );
+                    return Next::Stop(Ended::Paused);
+                }
+                streaks.lost += 1;
+                if streaks.lost >= LOST_STREAK {
+                    pause(
+                        ticket,
+                        "Layout change not saved yet: replies keep getting lost. It goes out again when the connection is back or with your next edit.",
+                    );
+                    return Next::Stop(Ended::Paused);
+                }
             }
-            streaks.lost += 1;
-            if streaks.lost >= LOST_STREAK {
-                pause(
-                    ticket,
-                    "Layout change not saved yet: replies keep getting lost. It goes out again when the connection is back or with your next edit.",
-                );
-                return Next::Stop(Ended::Paused);
+            Settled::Landed { unconfirmed } => {
+                streaks.lost = 0;
+                if unconfirmed {
+                    toasts::toast_error(
+                        "A layout change may not have been saved, and the scene has changed since. Check the canvas.",
+                    );
+                }
             }
-            Next::Go
         }
-        Some(Settled::Landed { unconfirmed }) => {
-            streaks.lost = 0;
-            if unconfirmed {
-                toasts::toast_error(
-                    "A layout change may not have been saved, and the scene has changed since. Check the canvas.",
-                );
-            }
-            Next::Go
-        }
-        None => Next::Go,
     }
+    if still_open {
+        pause(
+            ticket,
+            "Layout change not confirmed: the scene read did not show its zone. It is checked again when the connection is back or with your next edit.",
+        );
+        return Next::Stop(Ended::Paused);
+    }
+    Next::Go
 }
 
 /// After a stale rejection: read the scene, settle what it satisfies, and
 /// go again, up to a streak.
-async fn after_stale(ticket: Ticket, zone_id: &str, id: u64, streaks: &mut Streaks) -> Next {
-    with_writer(|writer| {
-        if writer.ledgers.admits(ticket) {
-            writer.ledgers.zone_mut(zone_id).stale(id);
+async fn after_stale(zone_id: &str, id: u64, streaks: &mut Streaks) -> Next {
+    let ticket = with_writer(|writer| {
+        if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
+            ledger.stale(id);
         }
+        writer.ledgers.ticket()
     });
+    let Some(ticket) = ticket else {
+        return Next::Go;
+    };
     streaks.stale += 1;
     let Some(read) = read_for(ticket).await else {
         pause(
@@ -530,24 +609,24 @@ async fn after_stale(ticket: Ticket, zone_id: &str, id: u64, streaks: &mut Strea
         return Next::Stop(Ended::Paused);
     };
     let Some((scene, read)) = read else {
-        return Next::Stop(Ended::Idle);
+        return Next::Go;
     };
     let cancelled = with_writer(|writer| {
-        zone_in(&read, zone_id).map(|zone| {
-            writer.ledgers.zone_mut(zone_id).refetched(
-                read.revision,
-                zone.raw.clone(),
-                zone.shown.clone(),
-            )
-        })
+        let zone = zone_in(&read, zone_id)?;
+        Some(writer.ledgers.ledger_mut(zone_id)?.refetched(
+            read.revision,
+            zone.raw.clone(),
+            zone.shown.clone(),
+        ))
     });
     if let Some(output_ids) = cancelled {
         report(&[Cancelled {
             zone_id: zone_id.to_owned(),
             output_ids,
+            cause: Cause::OutputLeft,
         }]);
     }
-    share(scene, zone_id);
+    share(scene);
     if streaks.stale >= STALE_STREAK {
         pause(
             ticket,
@@ -558,7 +637,10 @@ async fn after_stale(ticket: Ticket, zone_id: &str, id: u64, streaks: &mut Strea
     Next::Go
 }
 
-/// Send one write and take in its outcome.
+/// Send one write and take in its outcome. The outcome settles the write
+/// by its id, which is unique to the page, whatever the ledgers did while
+/// it was out: a reply to a write sent before the socket opened again only
+/// leaves it for a fresh read to settle.
 async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks) -> Next {
     // The layout route stores each member's placement and nothing else.
     let layout = SpatialLayout {
@@ -575,18 +657,13 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
     let canvas = canvas();
     match api::zones::update_zone_layout(zone_id, &layout, write.fence).await {
         Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
-            streaks.stale = 0;
-            streaks.lost = 0;
             let revision = landed.unwrap_or_else(|| write.fence.saturating_add(1));
             let (raw, shown) = zone_outputs(&zone, canvas);
-            let cancelled = with_writer(|writer| {
-                if !writer.ledgers.admits(ticket) {
-                    return Vec::new();
-                }
+            let taken = with_writer(|writer| {
                 let cancelled = writer
                     .ledgers
-                    .zone_mut(zone_id)
-                    .applied(write.id, revision, raw, shown);
+                    .ledger_mut(zone_id)?
+                    .applied(write.id, revision, raw, shown)?;
                 // Only this write landed between its fence and its revision,
                 // so every other zone still stands as confirmed there.
                 if revision == write.fence.saturating_add(1) {
@@ -596,21 +673,25 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
                         }
                     }
                 }
-                cancelled
+                Some(cancelled)
             });
+            changed();
+            let Some(cancelled) = taken else {
+                return Next::Go;
+            };
+            streaks.stale = 0;
+            streaks.lost = 0;
             report(&[Cancelled {
                 zone_id: zone_id.to_owned(),
                 output_ids: cancelled,
+                cause: Cause::OutputLeft,
             }]);
             if let Some(hooks) = hooks() {
                 let _ = hooks.landed.try_run((write.fence, zone, revision));
             }
-            changed(zone_id);
             Next::Go
         }
-        Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-            after_stale(ticket, zone_id, write.id, streaks).await
-        }
+        Ok(api::zones::ZoneOutcome::Stale { .. }) => after_stale(zone_id, write.id, streaks).await,
         Err(error) => {
             let status = match &error {
                 api::ApiError::Http { status, .. } => Some(*status),
@@ -624,15 +705,15 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
             );
             match status {
                 // A commit race: another write won, as with a stale fence.
-                Some(409) if raced => after_stale(ticket, zone_id, write.id, streaks).await,
+                Some(409) if raced => after_stale(zone_id, write.id, streaks).await,
                 // A refusal is final: the write did not land.
                 Some(status) if (400..500).contains(&status) => {
                     with_writer(|writer| {
-                        if writer.ledgers.admits(ticket) {
-                            writer.ledgers.zone_mut(zone_id).failed(write.id);
+                        if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
+                            ledger.failed(write.id);
                         }
                     });
-                    changed(zone_id);
+                    changed();
                     pause(
                         ticket,
                         &format!(
@@ -647,12 +728,20 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
                 // out.
                 _ => {
                     with_writer(|writer| {
-                        if writer.ledgers.admits(ticket) {
-                            writer.ledgers.zone_mut(zone_id).lost(write.id);
+                        if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
+                            ledger.lost(write.id);
                         }
                     });
+                    let Some(ticket) = ticket_now() else {
+                        return Next::Go;
+                    };
                     let answered = status.is_some().then(|| error.to_string());
-                    settle_lost(ticket, zone_id, answered.as_deref(), streaks).await
+                    read_and_settle(
+                        ticket,
+                        answered.as_deref().map(|error| (zone_id, error)),
+                        streaks,
+                    )
+                    .await
                 }
             }
         }
@@ -700,13 +789,14 @@ mod tests {
                 let read = SceneRead {
                     scene_id,
                     revision: 1,
+                    connection: 0,
                     zones: vec![ZoneRead {
                         zone_id: "zone".to_owned(),
                         raw: vec![output(0.2)],
                         shown: vec![output(0.2)],
                     }],
                 };
-                writer.ledgers.observe(&read, Some("zone"));
+                assert!(writer.ledgers.observe(&read, Some("zone")).is_some());
                 assert!(writer.ledgers.zone_mut("zone").edit(&[output(0.4)]));
             });
             let asked = StoredValue::new(0_u32);
@@ -718,7 +808,7 @@ mod tests {
                 end: Callback::new(|_| {}),
                 landed: Callback::new(|_| {}),
                 refetched: Callback::new(|_| {}),
-                changed: Callback::new(|_| {}),
+                changed: Callback::new(|()| {}),
                 idle: Callback::new(|()| {}),
             });
             // Woken again and again while an operation holds the scene: each
@@ -732,5 +822,25 @@ mod tests {
             detach(lent);
         });
         owner.cleanup();
+    }
+
+    #[test]
+    fn the_page_owner_holds_the_watch_and_the_caller_keeps_its_own() {
+        let page = Owner::new();
+        page.with(|| {
+            let studio = Owner::new();
+            studio.with(|| {
+                provide_context(7_u32);
+                let inside = in_page_owner(|| Owner::current().map(|owner| owner.debug_id()));
+                assert_eq!(inside, Some(page.debug_id()), "the watch outlives Studio");
+                assert_eq!(
+                    Owner::current().map(|owner| owner.debug_id()),
+                    Some(studio.debug_id()),
+                    "the caller's owner is current again"
+                );
+                assert_eq!(use_context::<u32>(), Some(7), "and its context resolves");
+            });
+        });
+        page.cleanup();
     }
 }
