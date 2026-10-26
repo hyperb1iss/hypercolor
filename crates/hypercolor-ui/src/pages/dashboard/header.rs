@@ -2,9 +2,9 @@
 //!
 //! `● Running · up 11h 40m · 23 devices · 60 fps`. The dot is the only
 //! color and carries the daemon's health in status tokens; every value is
-//! secondary text. Devices, fps, and the pause state ride the WebSocket;
-//! the uptime is anchored to the shared status snapshot and advanced on
-//! each metrics message. The preview widget lives in the shared
+//! secondary text. Health, devices, and fps ride the WebSocket; the uptime
+//! is anchored to the shared status snapshot and advanced on each metrics
+//! message. The preview widget lives in the shared
 //! `components::preview_cabinet` module.
 
 use hypercolor_leptos_ext::prelude::now_ms;
@@ -23,7 +23,6 @@ pub enum DaemonHealth {
     Running,
     Paused,
     Connecting,
-    Stopped,
     Offline,
 }
 
@@ -42,7 +41,6 @@ impl DaemonHealth {
             Self::Running => "Running",
             Self::Paused => "Paused",
             Self::Connecting => "Connecting",
-            Self::Stopped => "Stopped",
             Self::Offline => "Offline",
         }
     }
@@ -52,25 +50,22 @@ impl DaemonHealth {
         match self {
             Self::Running => HealthTone::Success,
             Self::Paused | Self::Connecting => HealthTone::Warning,
-            Self::Stopped | Self::Offline => HealthTone::Error,
+            Self::Offline => HealthTone::Error,
         }
     }
 }
 
-/// Health from the socket, the render loop's state in the last status
-/// snapshot (`None` before one arrives), and the live output pause.
+/// Health from the two live signals the socket carries: its own state,
+/// and the output pause its events report. The daemon's render loop only
+/// stops on shutdown, which drops the socket, so a connected daemon is
+/// running or paused.
 #[must_use]
-pub const fn daemon_health(
-    connection: ConnectionState,
-    render_loop_running: Option<bool>,
-    output_paused: bool,
-) -> DaemonHealth {
-    match (connection, render_loop_running, output_paused) {
-        (ConnectionState::Connecting, _, _) => DaemonHealth::Connecting,
-        (ConnectionState::Disconnected | ConnectionState::Error, _, _) => DaemonHealth::Offline,
-        (ConnectionState::Connected, Some(false), _) => DaemonHealth::Stopped,
-        (ConnectionState::Connected, _, true) => DaemonHealth::Paused,
-        (ConnectionState::Connected, _, false) => DaemonHealth::Running,
+pub const fn daemon_health(connection: ConnectionState, output_paused: bool) -> DaemonHealth {
+    match (connection, output_paused) {
+        (ConnectionState::Connecting, _) => DaemonHealth::Connecting,
+        (ConnectionState::Disconnected | ConnectionState::Error, _) => DaemonHealth::Offline,
+        (ConnectionState::Connected, true) => DaemonHealth::Paused,
+        (ConnectionState::Connected, false) => DaemonHealth::Running,
     }
 }
 
@@ -117,13 +112,8 @@ pub(super) fn StatusLine() -> impl IntoView {
     let daemon_status = expect_context::<DaemonStatusContext>();
     let status = daemon_status.status;
 
-    let health = Memo::new(move |_| {
-        daemon_health(
-            ws.connection_state.get(),
-            status.with(|status| status.as_ref().map(|status| status.running)),
-            ws.output_paused.get(),
-        )
-    });
+    let health =
+        Memo::new(move |_| daemon_health(ws.connection_state.get(), ws.output_paused.get()));
     // The snapshot's uptime, advanced from when the snapshot landed.
     let uptime = Memo::new(move |_| {
         ws.metrics_tick.track();
