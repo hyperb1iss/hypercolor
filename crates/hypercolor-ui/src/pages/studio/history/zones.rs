@@ -227,8 +227,8 @@ impl StudioHistory {
 
     /// Move the selection to `next` when it is on `zone_id`, a zone
     /// history just removed, so nothing goes on reading a zone that is gone.
-    fn select_away(self, zone_id: &str, next: Option<String>) {
-        if self.selected.get_untracked().as_deref() == Some(zone_id) {
+    pub(super) fn select_away(self, zone_id: &str, next: Option<String>) {
+        if self.selected.try_get_untracked().flatten().as_deref() == Some(zone_id) {
             self.selected.set(next);
         }
     }
@@ -963,7 +963,11 @@ impl StudioHistory {
             }
         }
         // The devices are back where they came from; only the zone is left.
-        let removal = match live_scene(scene_id).await {
+        let live = live_scene(scene_id).await;
+        if !self.is_current(generation) {
+            return None;
+        }
+        let removal = match live {
             Err(reason) => Removal::Failed(reason.to_owned()),
             Ok(live) => match live
                 .zones
@@ -983,12 +987,15 @@ impl StudioHistory {
                 },
             },
         };
-        if self.is_current(generation) {
-            match (&home, &removal) {
-                (Some(home), _) => self.selected.set(Some(home.clone())),
-                (None, Removal::Removed) => self.select_away(&zone_id, neighbor),
-                (None, _) => {}
-            }
+        // Everything below reads Studio state, which a scene switch or an
+        // unmount during the delete has replaced or disposed.
+        if !self.is_current(generation) {
+            return None;
+        }
+        match (&home, &removal) {
+            (Some(home), _) => self.selected.set(Some(home.clone())),
+            (None, Removal::Removed) => self.select_away(&zone_id, neighbor),
+            (None, _) => {}
         }
         match removal {
             Removal::Removed => Some(StudioEdit::ZoneCreated {

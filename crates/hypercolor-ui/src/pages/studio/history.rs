@@ -347,16 +347,20 @@ impl StudioHistory {
         Signal::derive(move || scene.with(|scene| scene.as_ref().map(|scene| scene.id)))
     }
 
+    /// The newest scene document Studio knows. `None` once Studio is gone,
+    /// so a write finishing after it unmounts reads nothing instead of
+    /// panicking on its disposed signals.
     pub fn current_scene(self) -> Option<api::SceneDocument> {
-        let scene = self.scene.get_untracked()?;
+        let scene = self.scene.try_get_untracked().flatten()?;
         Some(
             self.latest
-                .with_untracked(|latest| {
+                .try_with_untracked(|latest| {
                     latest
                         .as_ref()
                         .filter(|s| s.id == scene.id && s.revision > scene.revision)
                         .cloned()
                 })
+                .flatten()
                 .unwrap_or(scene),
         )
     }
@@ -1479,6 +1483,31 @@ mod replay_tests {
             assert_eq!(heard.get_value(), vec![false]);
         });
         owner.cleanup();
+    }
+
+    #[test]
+    fn a_history_outliving_studio_reads_no_scene_instead_of_panicking() {
+        let owner = Owner::new();
+        let history = owner.with(|| {
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let scene: api::SceneDocument = serde_json::from_value(serde_json::json!({
+                "id": "33333333-3333-4333-8333-333333333333", "name": "Desk", "kind": "named",
+                "is_default": false, "revision": 4,
+                "zones": [{ "id": zone, "name": "Main", "role": "primary", "enabled": true,
+                    "brightness": 1, "members": [], "layers": [] }],
+            }))
+            .expect("valid scene fixture");
+            let history = history(Some(scene), false, None, zone);
+            assert!(history.current_scene().is_some());
+            history
+        });
+        // Studio unmounts while a write is still awaiting its reply.
+        owner.cleanup();
+        assert!(history.current_scene().is_none());
+        history.select_away("11111111-1111-4111-8111-111111111111", None);
+        history.prepare_words(&StudioEdit::Members(Vec::new()), false);
+        history.announce_replay();
+        assert!(!history.is_current(1));
     }
 
     #[test]
