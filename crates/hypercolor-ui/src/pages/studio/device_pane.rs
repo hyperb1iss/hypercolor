@@ -56,6 +56,16 @@ pub fn pane_zone_toggle_dom_id(zone_id: &str) -> String {
     format!("pane-zone-toggle-{zone_id}")
 }
 
+/// A row the user opened or closed is theirs: a new zone's automatic
+/// expansion no longer closes it.
+fn claim_pane_row(studio: StudioContext, zone_id: &str) {
+    studio.pane_auto_expanded.update(|auto| {
+        if let Some((_, rows)) = auto.as_mut() {
+            rows.remove(zone_id);
+        }
+    });
+}
+
 /// Element id of a compact device row in an Other zones row.
 #[must_use]
 pub fn compact_row_dom_id(zone_id: &str, device_id: &str) -> String {
@@ -67,6 +77,7 @@ pub fn reveal_pane_zone(studio: StudioContext, zone_id: &str) {
     studio.pane_expanded.update(|expanded| {
         expanded.insert(zone_id.to_owned());
     });
+    claim_pane_row(studio, zone_id);
     let dom_id = pane_zone_dom_id(zone_id);
     request_animation_frame(move || {
         if let Some(element) = document().get_element_by_id(&dom_id) {
@@ -478,6 +489,7 @@ fn OtherZoneRow(
                                 expanded.insert(id);
                             }
                         });
+                    claim_pane_row(studio, &zone_id.get_value());
                 }
             >
                 <Icon

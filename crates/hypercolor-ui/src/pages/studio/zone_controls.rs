@@ -8,6 +8,8 @@
 //! re-renders from the refreshed scene, so a rejected write leaves the
 //! strip exactly as it was.
 
+use std::collections::HashSet;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -27,7 +29,8 @@ fn scene_revision(studio: StudioContext) -> Option<u64> {
 
 /// Create a zone under a fresh default name, open its tab, and put its
 /// name into rename mode so the user can type over it. The pane opens
-/// every other zone so the next move, bringing devices in, is in view.
+/// every other zone so the next move, bringing devices in, is in view,
+/// until the new zone gets its first device or its tab is left.
 /// `pending` holds true while the request is in flight.
 pub fn create_zone(studio: StudioContext, pending: RwSignal<bool>) {
     let Some(scene) = studio.active_scene.get_untracked() else {
@@ -45,7 +48,15 @@ pub fn create_zone(studio: StudioContext, pending: RwSignal<bool>) {
         match outcome {
             Ok(ZoneOutcome::Applied(zone)) => {
                 let id = zone.id.to_string();
-                studio.pane_expanded.set(others);
+                // Open the rows that were closed, and remember them as
+                // opened for this zone alone.
+                let opened: HashSet<String> = studio
+                    .pane_expanded
+                    .with_untracked(|expanded| others.difference(expanded).cloned().collect());
+                studio
+                    .pane_expanded
+                    .update(|expanded| expanded.extend(opened.iter().cloned()));
+                studio.pane_auto_expanded.set(Some((id.clone(), opened)));
                 studio
                     .zone_rename_draft
                     .set(Some((id.clone(), zone.name.clone())));

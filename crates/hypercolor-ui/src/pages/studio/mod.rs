@@ -145,6 +145,10 @@ pub struct StudioContext {
     /// collapsed, a split device's hint opens its other zone, and a new
     /// zone opens every row so its first devices are in view.
     pub pane_expanded: RwSignal<HashSet<String>>,
+    /// The rows a new zone opened on its own, `(new zone id, row ids)`.
+    /// They close again once that zone gets its first device or its tab
+    /// is left; a row the user toggles since is theirs and stays.
+    pub pane_auto_expanded: RwSignal<Option<(String, HashSet<String>)>>,
     /// The offer to undo the last destructive zone action, if still open.
     pub undo_notice: RwSignal<Option<UndoNotice>>,
     /// Whether the narrow-viewport device drawer is open.
@@ -426,6 +430,29 @@ pub fn StudioPage() -> impl IntoView {
     });
     let rig_layout = Signal::derive(move || rig_layout_resource.get().flatten());
     let refresh_rig_layout = Callback::new(move |()| rig_layout_resource.refetch());
+    let pane_expanded = RwSignal::new(HashSet::<String>::new());
+    let pane_auto_expanded = RwSignal::new(None::<(String, HashSet<String>)>);
+    Effect::new(move |_| {
+        let Some((zone_id, rows)) = pane_auto_expanded.get() else {
+            return;
+        };
+        let open = selected_surface_id.get();
+        let members = active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .and_then(|scene| {
+                    scene
+                        .zones
+                        .iter()
+                        .find(|zone| zone.id.to_string() == zone_id)
+                })
+                .map_or(0, |zone| zone.members.len())
+        });
+        if pane_model::auto_expansion_ends(open.as_deref(), &zone_id, members) {
+            pane_expanded.update(|expanded| expanded.retain(|id| !rows.contains(id)));
+            pane_auto_expanded.set(None);
+        }
+    });
     let rail_disclosure = RwSignal::new(None::<String>);
     let zone_rename_draft = RwSignal::new(None::<(String, String)>);
     let pointer_output_id = RwSignal::new(None::<String>);
@@ -449,7 +476,8 @@ pub fn StudioPage() -> impl IntoView {
         render_canvas_size,
         rail_disclosure,
         zone_rename_draft,
-        pane_expanded: RwSignal::new(HashSet::new()),
+        pane_expanded,
+        pane_auto_expanded,
         undo_notice: RwSignal::new(None),
         pane_drawer: tree_drawer,
         pointer_output_id,

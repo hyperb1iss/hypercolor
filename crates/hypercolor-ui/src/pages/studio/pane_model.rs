@@ -216,6 +216,17 @@ pub fn elsewhere_label(outputs: usize, zone_name: &str) -> String {
     }
 }
 
+/// Whether the Other zones rows a new zone opened should close again: the
+/// new zone got its first device, or the user left its tab.
+#[must_use]
+pub fn auto_expansion_ends(
+    open_zone: Option<&str>,
+    new_zone: &str,
+    new_zone_members: usize,
+) -> bool {
+    open_zone != Some(new_zone) || new_zone_members > 0
+}
+
 /// A section header's count: the total, or "3 of 19" while searching.
 #[must_use]
 pub fn section_count(hits: usize, total: usize, searching: bool) -> String {

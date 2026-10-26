@@ -9,8 +9,8 @@ use hypercolor_types::spatial::{LedTopology, NormalizedPosition, StripDirection}
 use hypercolor_ui::api::ZoneResource;
 use hypercolor_ui::pages::studio::device_assignment::{DeviceMeta, ZoneDeviceRow};
 use hypercolor_ui::pages::studio::pane_model::{
-    ElsewhereHint, PaneInputs, PaneModel, build_pane, elsewhere_label, normalize_search,
-    parse_unassigned_policy, row_matches, section_count, shows_unassigned,
+    ElsewhereHint, PaneInputs, PaneModel, auto_expansion_ends, build_pane, elsewhere_label,
+    normalize_search, parse_unassigned_policy, row_matches, section_count, shows_unassigned,
     unassigned_policy_options, unassigned_policy_value,
 };
 
@@ -331,4 +331,18 @@ fn the_unassigned_policy_round_trips_through_the_select() {
             (format!("fallback:{zone_id}"), "Follow Main".to_owned()),
         ]
     );
+}
+
+#[test]
+fn a_new_zone_keeps_other_zones_open_only_while_it_is_open_and_empty() {
+    assert!(!auto_expansion_ends(Some("new"), "new", 0));
+    assert!(
+        auto_expansion_ends(Some("new"), "new", 1),
+        "its first device arrived"
+    );
+    assert!(
+        auto_expansion_ends(Some("main"), "new", 0),
+        "the user left its tab"
+    );
+    assert!(auto_expansion_ends(None, "new", 0));
 }
