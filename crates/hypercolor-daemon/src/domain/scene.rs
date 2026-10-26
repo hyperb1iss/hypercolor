@@ -2694,8 +2694,8 @@ pub struct SceneDeactivated {
 /// Create a scene, seeded with a primary zone holding the current
 /// device output roster.
 ///
-/// Every scene is born with that zone so the Studio scene selector
-/// always has one to select (Spec 65 §5.2); the user renames it freely.
+/// Every scene is born with that zone so Studio always has a zone to
+/// open (Spec 65 §5.2); the user renames it freely.
 ///
 /// # Errors
 ///

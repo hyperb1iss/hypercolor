@@ -101,8 +101,9 @@ pub fn normalize_search(raw: &str) -> String {
     raw.trim().to_lowercase()
 }
 
-/// Whether a row matches a normalized query by its device name, its id,
-/// or any of its extra `terms`. An empty query matches everything.
+/// Whether a row matches a normalized query by its device name or any of
+/// the extra `terms` listed for its device. An empty query matches
+/// everything.
 #[must_use]
 pub fn row_matches(row: &ZoneDeviceRow, query: &str, terms: &HashMap<String, Vec<String>>) -> bool {
     if query.is_empty() {

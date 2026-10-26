@@ -86,8 +86,8 @@ pub struct Elsewhere {
 
 /// One row in the per-channel breakdown beneath the card body.
 ///
-/// Captures the channel's identity — slot id, zone name, and display
-/// name — so the component-binding match helper can surface live
+/// Captures the channel's identity (slot id, zone name, and display
+/// name) so the component-binding match helper can surface live
 /// attachment data against the channel's aliases, plus the output id
 /// when the channel has an output in this zone so the row can be
 /// hidden individually.
@@ -96,10 +96,9 @@ struct ComponentRow {
     name: String,
     shape: TopologyShapeKind,
     led_count: usize,
-    /// `Output.id` (`Output.id`) when this channel has an output
-    /// in the current zone — `None` for an Unassigned card or a
-    /// channel with no placed output, in which case the row offers no
-    /// hide toggle.
+    /// `Output.id` when this channel has an output in the current zone;
+    /// `None` for an Unassigned card or a channel with no placed output,
+    /// in which case the row offers no hide toggle.
     output_id: Option<String>,
     slot_id: String,
     zone_name: Option<String>,
@@ -139,7 +138,7 @@ pub fn StudioDeviceCard(
     let (primary, secondary) = brand_colors(&brand);
     let vendor = brand_vendor(&brand);
     // A daemon-reported display topology hint is the authoritative
-    // "this is a screen" signal — and it carries the real resolution.
+    // "this is a screen" signal, and it carries the real resolution.
     let resolution = display_resolution(&device);
     let class_icon = if resolution.is_some() {
         LuMonitor
@@ -161,7 +160,7 @@ pub fn StudioDeviceCard(
     let transport = transport_label(&device.connection.transport);
     let device_name = device.name.clone();
     let name_title = device.name.clone();
-    // A screen has no addressable LED tally — its layout topology is a
+    // A screen has no addressable LED tally: its layout topology is a
     // pixel grid. Show the real resolution; LED devices show the count.
     let leds = match resolution {
         Some((width, height)) => format!("{width} \u{d7} {height}"),
@@ -313,8 +312,8 @@ pub fn StudioDeviceCard(
     let body_dom_id = device_card_dom_id(&zone_key, &device.layout_device_id);
     let body_focus = StoredValue::new(body_dom_id.clone());
 
-    // Live component bindings for this device — fetched once per card
-    // mount, shared via the Studio context cache so each row reads it
+    // Live component bindings for this device, fetched once per card
+    // mount and shared via the Studio context cache so each row reads it
     // reactively without re-fetching.
     let physical_id_for_fetch = device.id.clone();
     Effect::new(move |_| {
@@ -322,7 +321,7 @@ pub fn StudioDeviceCard(
     });
     let physical_id_for_rows = device.id.clone();
 
-    // A single smooth diagonal brand wash — the duotone left strip carries
+    // A single smooth diagonal brand wash; the duotone left strip carries
     // the hardware identity. Low-alpha radial gradients banded and
     // pixelated against the dark surface, so the card stays linear.
     let card_style = format!(
@@ -400,7 +399,7 @@ pub fn StudioDeviceCard(
             class="group/card relative w-full overflow-hidden rounded-lg transition-[border-color,box-shadow,outline-color] duration-150"
             style=card_outline_style
         >
-            // A flat low-alpha hover wash — clean and bandless, no scale,
+            // A flat low-alpha hover wash: clean and bandless, no scale,
             // no brightness pump. Replaces card-hover, which squished the
             // whole card on click and pumped a janky radial glow. The same
             // wash answers the canvas: pointing at a box lights its card.
@@ -939,9 +938,9 @@ fn component_row_view(
         fallback: None,
     });
 
-    // Bindings that target THIS channel, filtered through the alias
-    // helper the palette card uses so slot id, zone name, and display
-    // name are all accepted as matches.
+    // Bindings that target THIS channel, filtered through the shared
+    // alias helper so slot id, zone name, and display name are all
+    // accepted as matches.
     let binding_device = physical_device_id;
     let binding_slot_id = slot_id;
     let binding_zone_name = zone_name;
@@ -968,7 +967,7 @@ fn component_row_view(
     });
 
     // The eye toggle only renders when both the scene_key and the
-    // output id are known — i.e. the row sits in a real zone and the
+    // output id are known, so the row sits in a real zone and the
     // channel has a placed output to hide.
     let hide_pair: Option<(String, String)> = match (&scene_key, &output_id) {
         (Some(key), Some(id)) => Some((key.clone(), id.clone())),
