@@ -241,8 +241,11 @@ pub(crate) fn resume() {
 /// How a run of the writer ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ended {
-    /// Nothing left to do for now.
+    /// It took at least one turn and has nothing left to do for now; work
+    /// that arrived meanwhile starts it again.
     Done,
+    /// It found nothing to do at all, so nothing starts it again.
+    Idle,
     /// Another operation holds the scene; it wakes the writer as it ends.
     Blocked,
     /// A failure stopped it; a new edit or a reopened socket resumes it.
@@ -368,11 +371,13 @@ struct Streaks {
 async fn run(scene_id: SceneId, first: Option<(WriterHooks, u64)>) -> Ended {
     let mut streaks = Streaks::default();
     let mut held = first;
+    let mut turns = 0_u32;
     loop {
         let Some(turn) = next_turn(scene_id) else {
             release(held);
-            return Ended::Done;
+            return if turns == 0 { Ended::Idle } else { Ended::Done };
         };
+        turns += 1;
         let going = match turn {
             Turn::Settle(zone_id) => settle_lost(scene_id, &zone_id, None, &mut streaks).await,
             Turn::Send(zone_id, write) => send(scene_id, &zone_id, write, &mut streaks).await,
@@ -565,9 +570,15 @@ async fn send(scene_id: SceneId, zone_id: &str, write: Write, streaks: &mut Stre
                 api::ApiError::Http { status, .. } => Some(*status),
                 _ => None,
             };
+            let raced = matches!(
+                &error,
+                api::ApiError::Http { status: 409, details: Some(details), .. }
+                    if details.get("kind").and_then(serde_json::Value::as_str)
+                        == Some("scene_commit_superseded")
+            );
             match status {
                 // A commit race: another write won, as with a stale fence.
-                Some(409) => after_stale(scene_id, zone_id, write.id, streaks).await,
+                Some(409) if raced => after_stale(scene_id, zone_id, write.id, streaks).await,
                 // A refusal is final: the write did not land.
                 Some(status) if (400..500).contains(&status) => {
                     with_ledgers(|ledgers| {
