@@ -193,8 +193,8 @@ enum Wrote {
     Landed,
     /// The scene could not be read, so nothing went out.
     Unread(&'static str),
-    /// The daemon refused it.
-    Refused,
+    /// The daemon refused it, for this reason.
+    Refused(String),
     /// No answer said whether it landed: the fence and key it went out
     /// under, to settle it with.
     Unknown(Fence, String),
@@ -225,7 +225,10 @@ async fn restore_outputs(
     };
     match edit_members(&request, fence).await {
         Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => Wrote::Landed,
-        Written::Answered(_) => Wrote::Refused,
+        Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
+            Wrote::Refused("the scene changed elsewhere".to_owned())
+        }
+        Written::Answered(Err(error)) => Wrote::Refused(error.to_string()),
         Written::Unknown(fence, key) => Wrote::Unknown(fence, key),
     }
 }
@@ -238,7 +241,10 @@ async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRe
     };
     match update_zone(zone_id, request, &Fence::of(&live)).await {
         Written::Answered(Ok(api::zones::ZoneOutcome::Applied(_))) => Wrote::Landed,
-        Written::Answered(_) => Wrote::Refused,
+        Written::Answered(Ok(api::zones::ZoneOutcome::Stale { .. })) => {
+            Wrote::Refused("the scene changed elsewhere".to_owned())
+        }
+        Written::Answered(Err(error)) => Wrote::Refused(error.to_string()),
         Written::Unknown(fence, key) => Wrote::Unknown(fence, key),
     }
 }
@@ -426,6 +432,7 @@ impl StudioHistory {
                             write: HeldWrite::Create {
                                 name: name.clone(),
                                 color: color.clone(),
+                                before: scene.zones.iter().map(|zone| zone.id).collect(),
                             },
                         },
                     );
@@ -875,6 +882,7 @@ impl StudioHistory {
                         write: HeldWrite::Create {
                             name: record.name.clone(),
                             color: record.color.clone(),
+                            before: live.zones.iter().map(|zone| zone.id).collect(),
                         },
                     },
                     Then::Resume(Box::new(Resume::Rebuild {
@@ -937,7 +945,7 @@ impl StudioHistory {
                     }
                     Wrote::Landed => {}
                     Wrote::Unknown(..) => problems.push("its devices may not be back"),
-                    Wrote::Unread(_) | Wrote::Refused => {
+                    Wrote::Unread(_) | Wrote::Refused(_) => {
                         problems.push("its devices could not be put back");
                     }
                 }
@@ -1033,7 +1041,7 @@ impl StudioHistory {
                 Wrote::Unknown(..) => {
                     problems.push("it may have kept its new place at the end of the tabs")
                 }
-                Wrote::Unread(_) | Wrote::Refused => {
+                Wrote::Unread(_) | Wrote::Refused(_) => {
                     problems.push("it kept its new place at the end of the tabs");
                 }
             }
@@ -1194,8 +1202,8 @@ impl StudioHistory {
                     Wrote::Unread(reason) => {
                         toasts::toast_error(&format!("History could not be applied: {reason}"));
                     }
-                    Wrote::Refused => {
-                        toasts::toast_error("The zone changed elsewhere; history was not applied");
+                    Wrote::Refused(reason) => {
+                        toasts::toast_error(&format!("History could not be applied: {reason}"));
                     }
                     // Its place keeps the change until the patch settles.
                     Wrote::Unknown(fence, key) => {
@@ -1558,6 +1566,7 @@ impl StudioHistory {
                         write: HeldWrite::Create {
                             name: name.clone(),
                             color: color.clone(),
+                            before: live.zones.iter().map(|zone| zone.id).collect(),
                         },
                     },
                     Then::Resume(Box::new(Resume::Recreate {
@@ -1688,7 +1697,7 @@ impl StudioHistory {
             match *resume {
                 Resume::Rebuild { record, remove } => {
                     match live_zone(scene_id, made.as_deref()).await {
-                        Err(_) => self.hold_again(item),
+                        Err(_) => self.hold_again(item, did),
                         Ok(None) => {
                             toasts::toast_info(&format!(
                                 "{} was made again, but it is gone now.",
@@ -1748,7 +1757,7 @@ impl StudioHistory {
                     color,
                     filled,
                 } => match live_zone(scene_id, made.as_deref()).await {
-                    Err(_) => self.hold_again(item),
+                    Err(_) => self.hold_again(item, did),
                     Ok(None) => {
                         toasts::toast_info(&format!("{name} was made again, but it is gone now."));
                         self.journal.update(|journal| {

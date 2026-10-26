@@ -35,7 +35,7 @@ mod zones;
 
 pub use announce::{DeviceLookup, ZoneLookup, replay_announcement};
 
-pub use held::{members_landed, resolve_deletion, settles_by_key};
+pub use held::{Made, members_landed, resolve_deletion, settles_by_key, zone_it_made};
 pub use zones::{
     DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
 };
@@ -2081,6 +2081,7 @@ mod replay_tests {
                 name,
                 pending: item.pending.clone(),
                 then: held::Then::Record,
+                learned: None,
             };
             assert!(!history.settle_if_held(&switched, None));
         });
@@ -2112,6 +2113,7 @@ mod replay_tests {
                 },
             },
             then,
+            learned: None,
         }
     }
 

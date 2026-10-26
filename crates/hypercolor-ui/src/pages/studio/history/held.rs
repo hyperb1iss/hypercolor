@@ -19,7 +19,7 @@
 //! it can.
 
 use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, PatchZoneRequest};
-use hypercolor_types::scene::SceneId;
+use hypercolor_types::scene::{SceneId, ZoneId};
 use leptos::prelude::*;
 
 use super::super::placement::Footprint;
@@ -44,8 +44,13 @@ pub(super) enum HeldWrite {
         request: EditMembersRequest,
         through: u64,
     },
-    /// A zone create.
-    Create { name: String, color: Option<String> },
+    /// A zone create, with the zones the scene held as it went out, so a
+    /// read can tell the zone it made from the others of its name.
+    Create {
+        name: String,
+        color: Option<String>,
+        before: Vec<ZoneId>,
+    },
     /// A zone patch, with the fields it changed as they were before.
     Patch {
         zone_id: String,
@@ -166,6 +171,9 @@ pub(super) struct Unresolved {
     pub name: String,
     pub pending: Pending,
     pub then: Then,
+    /// What it did, once known, for an undo or redo whose rest has to wait
+    /// for the next settling: it is not asked again.
+    pub learned: Option<StudioEdit>,
 }
 
 /// The step an undo's landed write leaves on the redo side: a membership
@@ -242,6 +250,33 @@ where
     }
 }
 
+/// Which zone a create named `name` made, as a read of the scene tells.
+#[derive(Debug)]
+pub enum Made<'a> {
+    /// No zone of that name is new since the create went out.
+    None,
+    /// The one new zone of that name.
+    One(&'a api::ZoneResource),
+    /// More than one is, so the read cannot tell which.
+    Several,
+}
+
+/// The zone a create named `name` made, judged from `scene` and the zones
+/// the scene held as the create went out (`before`): the zone of that
+/// name that is new since.
+#[must_use]
+pub fn zone_it_made<'a>(scene: &'a api::SceneDocument, name: &str, before: &[ZoneId]) -> Made<'a> {
+    let mut new = scene
+        .zones
+        .iter()
+        .filter(|zone| zone.name == name && !before.contains(&zone.id));
+    match (new.next(), new.next()) {
+        (None, _) => Made::None,
+        (Some(zone), None) => Made::One(zone),
+        (Some(_), Some(_)) => Made::Several,
+    }
+}
+
 /// What a delete whose outcome was unknown turned out to be: a delete when
 /// it landed, so Undo rebuilds the zone from its record; the release of
 /// its devices when it did not, so Undo puts them back; nothing when
@@ -311,6 +346,7 @@ impl StudioHistory {
                 name,
                 pending,
                 then,
+                learned: None,
             });
         });
     }
@@ -358,16 +394,14 @@ impl StudioHistory {
     }
 
     /// Hold `item` again, its place still waiting, for the next settling
-    /// to take up.
-    pub(super) fn hold_again(self, item: Unresolved) {
-        let Unresolved {
-            scene_id,
-            entry,
-            name,
-            pending,
-            then,
-        } = item;
-        self.hold(scene_id, entry, name, pending, then);
+    /// to go on from what it already learned it `did`.
+    pub(super) fn hold_again(self, item: Unresolved, did: StudioEdit) {
+        self.unresolved.try_update_value(|unresolved| {
+            unresolved.push(Unresolved {
+                learned: Some(did),
+                ..item
+            });
+        });
     }
 
     /// Whether a held write waits to settle.
@@ -403,8 +437,12 @@ impl StudioHistory {
                 .try_with_value(Clone::clone)
                 .unwrap_or_default();
             for item in held {
-                if let Some(entry) = self.what_it_did(&item).await {
-                    self.settle_if_held(&item, entry);
+                let did = match &item.learned {
+                    Some(did) => Some(Some(did.clone())),
+                    None => self.what_it_did(&item).await,
+                };
+                if let Some(did) = did {
+                    self.settle_if_held(&item, did);
                 }
             }
             let again = self.settling.try_update_value(|settling| {
@@ -506,7 +544,11 @@ impl StudioHistory {
                     }
                 }
             }
-            HeldWrite::Create { name, color } => {
+            HeldWrite::Create {
+                name,
+                color,
+                before,
+            } => {
                 let told = told(item.scene_id, fence, live, || {
                     api::zones::create_zone(name, color.as_deref(), fence, key)
                 })
@@ -524,14 +566,26 @@ impl StudioHistory {
                         did_not_land(&item.name);
                         Some(None)
                     }
-                    // Zones may share a name, so no read can tell which one
-                    // this request made, if any.
-                    Told::Read(_) => {
-                        toasts::toast_info(&format!(
-                            "{name} may have been made. Check the scene; Undo cannot take it back."
-                        ));
-                        Some(None)
-                    }
+                    // Zones may share a name, so only a zone of that name the
+                    // scene did not hold as the create went out can be its.
+                    Told::Read(scene) => match zone_it_made(&scene, name, before) {
+                        Made::One(zone) => Some(Some(StudioEdit::ZoneCreated {
+                            zone_id: zone.id.to_string(),
+                            name: zone.name.clone(),
+                            color: zone.color.clone(),
+                            filled: Vec::new(),
+                        })),
+                        Made::None => {
+                            did_not_land(&item.name);
+                            Some(None)
+                        }
+                        Made::Several => {
+                            toasts::toast_info(&format!(
+                                "{name} may have been made, but more than one new zone has that name. Check the scene."
+                            ));
+                            Some(None)
+                        }
+                    },
                 }
             }
             HeldWrite::Patch {
