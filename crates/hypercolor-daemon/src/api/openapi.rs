@@ -398,6 +398,10 @@ fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Opera
     ] {
         builder = builder.response(status, with_replay_header(error_response(status), replayed));
     }
+    if replayed {
+        // Never recorded, so never replayed: no `Idempotency-Replayed`.
+        builder = builder.response("503", keyed_capacity_response());
+    }
 
     for name in path_parameter_names(path) {
         builder = builder.parameter(
@@ -511,6 +515,24 @@ fn error_response(status: &str) -> Response {
     };
     ResponseBuilder::new()
         .description(description)
+        .content(
+            "application/json",
+            Content::new(Some(Ref::from_schema_name("ApiErrorBody"))),
+        )
+        .build()
+}
+
+/// The refusal a keyed write gets when the daemon takes nothing on for it:
+/// too many keyed writes are in flight (`api::idempotency`), or the daemon
+/// is still starting. Nothing is recorded for its key either way.
+fn keyed_capacity_response() -> Response {
+    ResponseBuilder::new()
+        .description(
+            "`service_unavailable`: the daemon took nothing on for this request, because too \
+             many keyed writes are already in flight or it is still starting. Nothing was applied \
+             or recorded for this Idempotency-Key, so send the same request again with the same \
+             key.",
+        )
         .content(
             "application/json",
             Content::new(Some(Ref::from_schema_name("ApiErrorBody"))),
