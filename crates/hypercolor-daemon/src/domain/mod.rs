@@ -49,6 +49,7 @@ pub mod output;
 pub mod runtime_zone;
 pub mod scene;
 pub mod scene_activation;
+pub mod scene_run;
 pub mod scene_tree;
 pub mod spatial;
 pub mod zone;
@@ -247,8 +248,15 @@ pub enum DomainError {
         /// Seconds until the budget refills.
         retry_after_secs: u64,
     },
+    /// An `Idempotency-Key` already names a different request: another
+    /// method, path, `If-Match`, or body than the one it first arrived on.
+    #[error("this Idempotency-Key was already used for a different request")]
+    IdempotencyKeyMismatch,
     /// An If-Match / version precondition failed.
-    #[error("version mismatch: expected {expected}, current {current}")]
+    #[error(
+        "{}",
+        precondition_message(expected_epoch.as_deref(), *expected, current_epoch.as_deref(), *current)
+    )]
     PreconditionFailed {
         /// What kind of resource carries the version.
         resource: ResourceKind,
@@ -256,6 +264,11 @@ pub enum DomainError {
         expected: u64,
         /// The version the resource holds.
         current: u64,
+        /// The daemon run the caller's fence named, when it named one.
+        expected_epoch: Option<std::sync::Arc<str>>,
+        /// The daemon run the current version belongs to, for scene
+        /// revisions, so the refusal can name the fence to rebase onto.
+        current_epoch: Option<std::sync::Arc<str>>,
     },
     /// The device exists but cannot serve the request.
     #[error("device {device_id} unavailable: {reason}")]
@@ -277,6 +290,28 @@ pub enum DomainError {
     /// the full chain goes to tracing.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
+}
+
+/// `expected 4, current 7`, with each side epoch-qualified when it names a
+/// run, so a fence from another run reads as such even when the revision
+/// numbers agree.
+fn precondition_message(
+    expected_epoch: Option<&str>,
+    expected: u64,
+    current_epoch: Option<&str>,
+    current: u64,
+) -> String {
+    let fence = |epoch: Option<&str>, revision: u64| {
+        epoch.map_or_else(
+            || revision.to_string(),
+            |epoch| format!("{epoch}:{revision}"),
+        )
+    };
+    format!(
+        "version mismatch: expected {}, current {}",
+        fence(expected_epoch, expected),
+        fence(current_epoch, current)
+    )
 }
 
 fn payload_too_large_message(limit_bytes: Option<u64>) -> String {
@@ -433,6 +468,9 @@ impl DomainError {
             Self::PayloadTooLarge { .. } => "payload_too_large",
             Self::UnsupportedMediaType { .. } => "unsupported_media_type",
             Self::RateLimited { .. } => "rate_limited",
+            Self::IdempotencyKeyMismatch => {
+                hypercolor_types::api::envelope::IDEMPOTENCY_KEY_MISMATCH_CODE
+            }
             Self::PreconditionFailed { .. } => "precondition_failed",
             Self::DeviceUnavailable { .. } => "device_unavailable",
             Self::ServiceUnavailable { .. } => "service_unavailable",
@@ -463,6 +501,9 @@ pub enum DomainErrorDetails {
         expected_revision: u64,
         /// The revision the scene holds now.
         current_revision: u64,
+        /// The daemon run both revisions belong to, without which neither
+        /// revision is comparable.
+        run_epoch: std::sync::Arc<str>,
     },
     /// A persisted effect-id migration lost its race with newer state.
     EffectIdMigrationSuperseded {
@@ -470,6 +511,8 @@ pub enum DomainErrorDetails {
         expected_revision: u64,
         /// The revision the scene holds now.
         current_revision: u64,
+        /// The daemon run both revisions belong to.
+        run_epoch: std::sync::Arc<str>,
     },
     /// Work resolved against a catalog generation the registry left.
     EffectResolutionSuperseded {

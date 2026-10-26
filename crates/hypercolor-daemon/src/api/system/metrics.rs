@@ -13,6 +13,8 @@ pub(super) fn effect_health_status(effect_health: EffectHealthSummary) -> Effect
     let servo_health = health.servo;
     let pipeline_health = health.pipeline;
     EffectHealthStatus {
+        gpu_pass_timings: gpu_pass_timings_status(),
+        gpu_transfers: gpu_transfer_status(),
         errors_total: effect_health.errors_total,
         fallbacks_applied_total: effect_health.fallbacks_applied_total,
         producer_gpu_readback_failures_total: effect_health.producer_gpu_readback_failures_total,
@@ -114,6 +116,31 @@ pub(super) fn effect_health_status(effect_health: EffectHealthSummary) -> Effect
         servo_render_readback_max_ms: us_to_ms_f64(servo_health.render_readback_max_us),
         servo_render_frame_total_ms: us_to_ms_f64(servo_health.render_frame_total_us),
         servo_render_frame_max_ms: us_to_ms_f64(servo_health.render_frame_max_us),
+    }
+}
+
+fn gpu_pass_timings_status() -> hypercolor_types::api::system::GpuPassTimingsStatus {
+    #[cfg(feature = "wgpu")]
+    {
+        crate::render_thread::sparkleflinger::gpu::timing::gpu_pass_timings_snapshot()
+    }
+    #[cfg(not(feature = "wgpu"))]
+    {
+        hypercolor_types::api::system::GpuPassTimingsStatus {
+            unavailable_reason: Some("wgpu_feature_disabled".to_owned()),
+            ..Default::default()
+        }
+    }
+}
+
+fn gpu_transfer_status() -> hypercolor_types::api::system::GpuTransferStatus {
+    #[cfg(feature = "wgpu")]
+    {
+        crate::render_thread::sparkleflinger::gpu::gpu_transfer_telemetry_snapshot()
+    }
+    #[cfg(not(feature = "wgpu"))]
+    {
+        hypercolor_types::api::system::GpuTransferStatus::default()
     }
 }
 

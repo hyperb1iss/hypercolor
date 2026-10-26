@@ -50,7 +50,7 @@ where
 // Flat re-exports so existing `crate::api::FooBar` imports keep working.
 
 pub use assets::*;
-pub use client::{ApiError, ApiResult, MutationOutcome};
+pub use client::{ApiError, ApiResult, Fence, MutationOutcome};
 pub use config::*;
 pub use controls::*;
 pub use device_metrics::*;

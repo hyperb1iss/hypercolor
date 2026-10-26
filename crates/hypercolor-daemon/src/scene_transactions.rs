@@ -11,7 +11,7 @@ use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone};
 use hypercolor_types::spatial::SpatialLayout;
 
-use crate::domain::scene::SceneService;
+use crate::domain::scene::{LayoutSceneReceipt, SceneService};
 use crate::domain::scene_activation::LayoutSceneFence;
 use crate::domain::spatial::SpatialService;
 
@@ -180,19 +180,18 @@ impl PrepareLayoutTransaction {
 
         before_publication().await;
         let result = match publication_mode {
-            LayoutPublicationMode::AuthorityAndRenderer => {
-                scene_manager
-                    .publish_guarded_layout_activation(
-                        spatial_engine,
-                        candidate_spatial_engine,
-                        &expected_layout,
-                        expected_active_scene_id,
-                        expected_resolved_zones_revision,
-                        scene_fence.as_deref(),
-                        |_| Ok(()),
-                    )
-                    .await
-            }
+            LayoutPublicationMode::AuthorityAndRenderer => scene_manager
+                .publish_guarded_layout_activation(
+                    spatial_engine,
+                    candidate_spatial_engine,
+                    &expected_layout,
+                    expected_active_scene_id,
+                    expected_resolved_zones_revision,
+                    scene_fence.as_deref(),
+                    |_| Ok(()),
+                )
+                .await
+                .map(|receipt| activation.record_scene_commit(receipt)),
             LayoutPublicationMode::RendererOnly => {
                 scene_manager
                     .publish_renderer_only_layout_activation(
@@ -236,6 +235,9 @@ const ACTIVATION_ABORT: u8 = 2;
 struct LayoutActivationState {
     decision: AtomicU8,
     completion: StdMutex<Option<oneshot::Sender<Result<(), LayoutTransactionRejection>>>>,
+    /// What the publication committed to the scene, recorded before it
+    /// completes so the waiting caller can answer with its own result.
+    scene_commit: StdMutex<Option<LayoutSceneReceipt>>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +253,7 @@ impl LayoutActivationControl {
                 state: Arc::new(LayoutActivationState {
                     decision: AtomicU8::new(ACTIVATION_PENDING),
                     completion: StdMutex::new(Some(completion)),
+                    scene_commit: StdMutex::new(None),
                 }),
             },
             LayoutActivationReceipt(receipt),
@@ -281,6 +284,24 @@ impl LayoutActivationControl {
             Ordering::Release,
             Ordering::Relaxed,
         );
+    }
+
+    /// Record what the publication committed to the scene. Call it before
+    /// [`complete`](Self::complete).
+    pub(crate) fn record_scene_commit(&self, receipt: LayoutSceneReceipt) {
+        *self
+            .state
+            .scene_commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(receipt);
+    }
+
+    fn take_scene_commit(&self) -> Option<LayoutSceneReceipt> {
+        self.state
+            .scene_commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     pub(crate) fn complete(&self, result: Result<(), LayoutTransactionRejection>) {
@@ -402,6 +423,7 @@ impl LayoutTransactionAuthority {
             |_| async { LayoutPersistenceOutcome::Written },
         )
         .await
+        .map(|_| ())
     }
 
     pub(crate) async fn apply_renderer_only_under_guard(
@@ -417,14 +439,17 @@ impl LayoutTransactionAuthority {
             |_| async { LayoutPersistenceOutcome::Written },
         )
         .await
+        .map(|_| ())
     }
 
+    /// Publish `layout` with persistence, answering with what the
+    /// publication committed to the scene.
     pub(crate) async fn apply_under_guard_with_persistence<F, Fut>(
         &self,
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
         persist: F,
-    ) -> Result<(), LayoutUpdateError>
+    ) -> Result<Option<LayoutSceneReceipt>, LayoutUpdateError>
     where
         F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
         Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
@@ -458,6 +483,7 @@ impl LayoutTransactionAuthority {
             persist,
         )
         .await
+        .map(|_| ())
     }
 
     async fn apply_under_guard_with_mode<F, Fut>(
@@ -467,7 +493,7 @@ impl LayoutTransactionAuthority {
         publication_mode: LayoutPublicationMode,
         scene_fence: Option<Arc<LayoutSceneFence>>,
         mut persist: F,
-    ) -> Result<(), LayoutUpdateError>
+    ) -> Result<Option<LayoutSceneReceipt>, LayoutUpdateError>
     where
         F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
         Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
@@ -557,7 +583,7 @@ impl LayoutTransactionAuthority {
                 return Err(error.into());
             }
             drop(retained_guard);
-            Ok::<(), LayoutUpdateError>(())
+            Ok::<_, LayoutUpdateError>(submission.activation.take_scene_commit())
         })
         .await
         .map_err(|error| LayoutUpdateError::Coordinator(error.to_string()))?

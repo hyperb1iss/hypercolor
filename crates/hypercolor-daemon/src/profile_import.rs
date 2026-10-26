@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
+use hypercolor_core::scene::{DEFAULT_ZONE_DESCRIPTION, DEFAULT_ZONE_NAME};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
@@ -240,8 +241,8 @@ fn primary_zone(scene_id: SceneId, primary: LegacyProfilePrimary, layout: Spatia
     );
     Zone {
         id: zone_id,
-        name: "Default".to_owned(),
-        description: Some("Default zone.".to_owned()),
+        name: DEFAULT_ZONE_NAME.to_owned(),
+        description: Some(DEFAULT_ZONE_DESCRIPTION.to_owned()),
         layers: vec![layer],
         layout,
         brightness: 1.0,

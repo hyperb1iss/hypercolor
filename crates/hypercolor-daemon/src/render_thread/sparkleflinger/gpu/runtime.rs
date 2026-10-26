@@ -110,11 +110,14 @@ impl GpuSparkleFlinger {
         let max_buffer_size = device.limits().max_buffer_size;
         let max_storage_buffer_binding_size = device.limits().max_storage_buffer_binding_size;
 
-        let pipeline = GpuCompositorPipeline::new(&device, progress);
-        let spatial_sampler = GpuSpatialSampler::new(&device, progress);
+        let timings = super::timing::GpuTimings::new(&device, &queue);
+        let pipeline = GpuCompositorPipeline::new(&device, progress, timings.clone());
+        let spatial_sampler = GpuSpatialSampler::new(&device, progress, timings);
         let native_screen = startup_step(progress, "native screen bridge", || {
             super::native_screen::install(&device, &queue, probe.max_texture_dimension_2d)
         })?;
+
+        pipeline.timings.publish();
 
         Ok(Self {
             render_device,
@@ -131,6 +134,7 @@ impl GpuSparkleFlinger {
             compositor_surface_cache: HashMap::new(),
             display_finalize_surfaces: HashMap::new(),
             display_finalize_generation: 0,
+            admission_clock: super::admission::AdmissionClock::default(),
             preview_surfaces: None,
             media_texture_pools: HashMap::new(),
             media_texture_epoch: 0,
@@ -299,5 +303,21 @@ impl GpuSparkleFlinger {
     #[cfg(test)]
     pub(in crate::render_thread::sparkleflinger) fn backend_name(&self) -> &str {
         &self.probe.backend
+    }
+
+    /// Block until every submission has finished on the GPU, so the maps
+    /// it carried have completed and their callbacks are queued.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn wait_for_gpu_idle(&self) {
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    /// Lose this compositor's device the way a driver device loss does:
+    /// every buffer and texture it owns is destroyed, including readback
+    /// buffers whose map already completed.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn lose_device(&self) {
+        self.device.destroy();
+        let _ = self.device.poll(wgpu::PollType::Poll);
     }
 }

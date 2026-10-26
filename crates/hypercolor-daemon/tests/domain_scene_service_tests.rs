@@ -188,7 +188,7 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
         &state.domains.scene_tree,
         ClearScene {
             zone: Some(zone_id),
-            expected_revision: None,
+            fence: None,
         },
     )
     .await
@@ -229,7 +229,7 @@ async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
             layer_id: SceneLayerId::new(),
             values: HashMap::from([("speed".to_owned(), ControlValue::Float(1.0))]),
             clear_bindings: Vec::new(),
-            expected_revision: Some(stale.revision),
+            fence: Some(stale.revision.into()),
         },
         MutationContext::mcp(),
     )
@@ -462,7 +462,7 @@ async fn apply_command(state: &AppState, effect: &EffectMetadata) -> ApplyEffect
         controls: HashMap::new(),
         preset_id: None,
         target_zone: None,
-        expected_revision: None,
+        fence: None,
         transition: RequestedTransition::cut(),
         wake_output: true,
     }
@@ -1262,11 +1262,13 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
                 Some(DomainErrorDetails::SceneCommitSuperseded {
                     expected_revision,
                     current_revision,
+                    run_epoch,
                 }),
             ..
         } => {
             assert_eq!(expected_revision, commit.revision() - 1);
             assert_eq!(current_revision, commit.revision());
+            assert_eq!(&*run_epoch, state.scene_manager.run_epoch());
         }
         other => panic!("expected a superseded-commit Conflict, got {other:?}"),
     }

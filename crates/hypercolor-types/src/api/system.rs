@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod audit;
 pub mod conflicts;
+pub mod gpu_timing;
 pub mod openrgb;
 pub use audit::*;
 pub use conflicts::*;
+pub use gpu_timing::*;
 pub use openrgb::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -577,6 +579,10 @@ pub struct RenderSurfaceStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectHealthStatus {
+    #[serde(default)]
+    pub gpu_pass_timings: GpuPassTimingsStatus,
+    #[serde(default)]
+    pub gpu_transfers: GpuTransferStatus,
     pub errors_total: u64,
     pub fallbacks_applied_total: u64,
     pub producer_gpu_readback_failures_total: u64,

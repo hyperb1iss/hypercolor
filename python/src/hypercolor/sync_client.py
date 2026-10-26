@@ -203,7 +203,7 @@ class SyncHypercolorClient:
         transition: str | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
         zone: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ApplyEffectResponse:
         return self._run(
             self._client.apply_effect(
@@ -224,7 +224,7 @@ class SyncHypercolorClient:
         controls: Mapping[str, Any] | None = None,
         transition: str | Mapping[str, Any] | None = None,
         zone: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ApplyEffectResponse:
         return self._run(
             self._client.apply_effect_preset(
@@ -313,7 +313,7 @@ class SyncHypercolorClient:
         *,
         name: str | None = None,
         unassigned_behavior: str | Mapping[str, Any] | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         return self._run(
             self._client.patch_live_scene(
@@ -327,7 +327,7 @@ class SyncHypercolorClient:
         self,
         *,
         zone: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         return self._run(self._client.clear_scene(zone=zone, if_match=if_match))
 
@@ -358,7 +358,7 @@ class SyncHypercolorClient:
         scene_id: str,
         document: SceneDocument | ReplaceSceneRequest,
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         return self._run(
             self._client.update_scene(
@@ -386,7 +386,7 @@ class SyncHypercolorClient:
         *,
         role: str | None = None,
         color: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         return self._run(
             self._client.create_zone(
@@ -405,7 +405,7 @@ class SyncHypercolorClient:
         color: str | _Unset | None = _UNSET_SENTINEL,
         brightness: float | None = None,
         enabled: bool | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         return self._run(
             self._client.update_zone(
@@ -422,7 +422,7 @@ class SyncHypercolorClient:
         self,
         zone: str,
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         return self._run(self._client.delete_zone(zone, if_match=if_match))
 
@@ -432,7 +432,7 @@ class SyncHypercolorClient:
         device_id: str,
         *,
         segments: list[str] | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         return self._run(
             self._client.assign_members(
@@ -448,7 +448,7 @@ class SyncHypercolorClient:
         zone: str,
         member: str,
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         return self._run(self._client.unassign_member(zone, member, if_match=if_match))
 
@@ -457,7 +457,7 @@ class SyncHypercolorClient:
         zone: str,
         layout: Mapping[str, Any],
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         return self._run(self._client.set_zone_layout(zone, layout, if_match=if_match))
 
@@ -465,7 +465,7 @@ class SyncHypercolorClient:
         self,
         behavior: str | Mapping[str, Any],
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         return self._run(self._client.set_unassigned_behavior(behavior, if_match=if_match))
 

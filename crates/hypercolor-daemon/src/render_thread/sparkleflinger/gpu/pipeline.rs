@@ -1,4 +1,6 @@
-use wgpu::util::DeviceExt;
+use anyhow::Result;
+
+use super::super::gpu_buffer_init::create_buffer_with_contents;
 
 use crate::render_thread::sparkleflinger::compile_compute_pipeline;
 use crate::startup::StartupProgress;
@@ -24,7 +26,7 @@ const PREVIEW_SCALE_PARAM_RING_SLOTS: u64 = 16;
 /// where no unsubmitted encoder exists (see
 /// `GpuSparkleFlinger::release_retired_uniform_slots`). If allocating the
 /// next slot would clobber a write at or after the watermark, the ring falls
-/// back to the pre-ring staging path: a one-shot `create_buffer_init` buffer
+/// back to the pre-ring staging path: a one-shot initialized upload buffer
 /// copied into a dedicated overflow slot inside the current encoder. Those
 /// copies travel with their encoder, so each dispatch reads the value its own
 /// encoder wrote regardless of submission order.
@@ -37,6 +39,8 @@ pub(super) struct UniformParamsRing {
     overflow_offset: u32,
     cursor: u64,
     watermark: u64,
+    #[cfg(test)]
+    force_overflow_once: bool,
     #[cfg(test)]
     pub(super) ring_write_count: usize,
     #[cfg(test)]
@@ -74,6 +78,8 @@ impl UniformParamsRing {
             cursor: 0,
             watermark: 0,
             #[cfg(test)]
+            force_overflow_once: false,
+            #[cfg(test)]
             ring_write_count: 0,
             #[cfg(test)]
             fallback_write_count: 0,
@@ -91,6 +97,9 @@ impl UniformParamsRing {
         })
     }
 
+    /// Write `params` and return the dynamic offset to bind. Fails only when
+    /// the overflow path cannot create its upload buffer; nothing is encoded
+    /// then, and the caller must abandon the dispatch that needed it.
     pub(super) fn write(
         &mut self,
         device: &wgpu::Device,
@@ -98,17 +107,22 @@ impl UniformParamsRing {
         encoder: &mut wgpu::CommandEncoder,
         pending_upload_buffers: &mut PendingUploadBuffers,
         params: &[u8],
-    ) -> UniformParamsWrite {
+    ) -> Result<UniformParamsWrite> {
         debug_assert_eq!(params.len(), self.param_bytes as usize);
-        if self.cursor.saturating_sub(self.watermark) >= self.slot_count {
+        #[cfg(test)]
+        let forced_overflow = std::mem::take(&mut self.force_overflow_once);
+        #[cfg(not(test))]
+        let forced_overflow = false;
+        if forced_overflow || self.cursor.saturating_sub(self.watermark) >= self.slot_count {
             // Overflow: the next ring slot may still be referenced by an
             // unsubmitted encoder, so stage the write through an encoder
             // copy into the dedicated overflow slot instead.
-            let upload = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(self.label),
-                contents: params,
-                usage: wgpu::BufferUsages::COPY_SRC,
-            });
+            let upload = create_buffer_with_contents(
+                device,
+                self.label,
+                params,
+                wgpu::BufferUsages::COPY_SRC,
+            )?;
             encoder.copy_buffer_to_buffer(
                 &upload,
                 0,
@@ -121,10 +135,10 @@ impl UniformParamsRing {
             {
                 self.fallback_write_count = self.fallback_write_count.saturating_add(1);
             }
-            return UniformParamsWrite {
+            return Ok(UniformParamsWrite {
                 offset: self.overflow_offset,
                 reusable: false,
-            };
+            });
         }
         let offset = self.slot_offset(self.cursor);
         queue.write_buffer(&self.buffer, u64::from(offset), params);
@@ -133,10 +147,10 @@ impl UniformParamsRing {
         {
             self.ring_write_count = self.ring_write_count.saturating_add(1);
         }
-        UniformParamsWrite {
+        Ok(UniformParamsWrite {
             offset,
             reusable: true,
-        }
+        })
     }
 
     /// Pins the most recent ring write so its slot cannot be reused while a
@@ -160,6 +174,13 @@ impl UniformParamsRing {
             * self.slot_stride
     }
 
+    /// Send the next write down the overflow path, as if the ring were
+    /// saturated.
+    #[cfg(test)]
+    pub(super) fn force_next_overflow_for_test(&mut self) {
+        self.force_overflow_once = true;
+    }
+
     #[cfg(test)]
     pub(super) fn set_slot_count_for_test(&mut self, slot_count: u64) {
         assert!(slot_count >= 1 && slot_count <= self.slot_count);
@@ -168,6 +189,7 @@ impl UniformParamsRing {
 }
 
 pub(super) struct GpuCompositorPipeline {
+    pub(super) timings: super::timing::GpuTimings,
     pub(super) compose_bind_group_layout: wgpu::BindGroupLayout,
     pub(super) compose_pipeline: wgpu::ComputePipeline,
     pub(super) compose_params: UniformParamsRing,
@@ -184,7 +206,11 @@ pub(super) struct GpuCompositorPipeline {
 }
 
 impl GpuCompositorPipeline {
-    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        progress: Option<&StartupProgress>,
+        timings: super::timing::GpuTimings,
+    ) -> Self {
         let compose_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("SparkleFlinger GPU compose bind group layout"),
@@ -497,6 +523,7 @@ impl GpuCompositorPipeline {
         );
 
         Self {
+            timings,
             compose_bind_group_layout,
             compose_pipeline,
             compose_params,

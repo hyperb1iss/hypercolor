@@ -111,21 +111,12 @@ fn effect_picker_mode_tracks_surface_and_scope() {
         EffectPickerMode::Faces
     );
     assert_eq!(
-        effect_picker_mode(AddLayerScope::AllZones, Some(ZoneRole::Display)),
-        EffectPickerMode::Effects
-    );
-    assert_eq!(
-        effect_picker_mode(AddLayerScope::WholeScene, Some(ZoneRole::Display)),
-        EffectPickerMode::Mixed
-    );
-    assert_eq!(
         effect_picker_mode(AddLayerScope::ThisSurface, None),
         EffectPickerMode::Effects
     );
 
     assert_eq!(EffectPickerMode::Faces.tab_label(), "Face");
     assert_eq!(EffectPickerMode::Effects.tab_label(), "Effect");
-    assert_eq!(EffectPickerMode::Mixed.tab_label(), "Effect");
     assert_eq!(
         EffectPickerMode::Faces.search_placeholder(),
         "Search faces and effects..."
@@ -135,7 +126,7 @@ fn effect_picker_mode_tracks_surface_and_scope() {
         "Search effects..."
     );
     assert_eq!(
-        EffectPickerMode::Mixed.empty_detail(),
+        EffectPickerMode::Effects.empty_detail(),
         "No matching effects"
     );
     assert_eq!(
@@ -148,8 +139,6 @@ fn effect_picker_mode_tracks_surface_and_scope() {
     assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Ambient));
     assert!(EffectPickerMode::Effects.includes_category(EffectCategory::Source));
     assert!(!EffectPickerMode::Effects.includes_category(EffectCategory::Display));
-    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Display));
-    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Ambient));
     assert_eq!(
         EffectPickerMode::Faces.sort_bucket(EffectCategory::Display),
         0
@@ -459,37 +448,43 @@ fn zone_resource(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource
 }
 
 #[test]
-fn a_single_surface_offers_no_target_scope() {
-    let scopes = available_add_layer_scopes(&[zone_resource("Zone A", ZoneRole::Primary)]);
-    assert!(scopes.is_empty());
+fn an_led_zone_adds_to_itself_alone() {
+    let zones = [
+        zone_resource("Zone A", ZoneRole::Primary),
+        zone_resource("Zone B", ZoneRole::Custom),
+        zone_resource("AIO Screen", ZoneRole::Display),
+        zone_resource("Fan Screen", ZoneRole::Display),
+    ];
+    assert!(available_add_layer_scopes(&zones, Some(ZoneRole::Primary)).is_empty());
+    assert!(available_add_layer_scopes(&zones, Some(ZoneRole::Custom)).is_empty());
+    assert!(available_add_layer_scopes(&zones, None).is_empty());
 }
 
 #[test]
-fn a_light_and_screen_scene_offers_every_relevant_scope() {
+fn a_screen_can_add_to_every_screen() {
     let zones = [
         zone_resource("Zone A", ZoneRole::Primary),
         zone_resource("AIO Screen", ZoneRole::Display),
+        zone_resource("Fan Screen", ZoneRole::Display),
     ];
+    let scopes = available_add_layer_scopes(&zones, Some(ZoneRole::Display));
     assert_eq!(
-        available_add_layer_scopes(&zones),
-        [
-            AddLayerScope::ThisSurface,
-            AddLayerScope::AllZones,
-            AddLayerScope::AllScreens,
-            AddLayerScope::WholeScene,
-        ]
+        scopes,
+        [AddLayerScope::ThisSurface, AddLayerScope::AllScreens]
+    );
+    assert_eq!(
+        scopes.iter().map(|scope| scope.label()).collect::<Vec<_>>(),
+        ["This screen", "All screens"]
     );
 }
 
 #[test]
-fn all_screens_scope_is_dropped_when_no_screens_exist() {
+fn a_lone_screen_offers_no_choice() {
     let zones = [
         zone_resource("Zone A", ZoneRole::Primary),
-        zone_resource("Zone B", ZoneRole::Custom),
+        zone_resource("AIO Screen", ZoneRole::Display),
     ];
-    let scopes = available_add_layer_scopes(&zones);
-    assert!(!scopes.contains(&AddLayerScope::AllScreens));
-    assert!(scopes.contains(&AddLayerScope::AllZones));
+    assert!(available_add_layer_scopes(&zones, Some(ZoneRole::Display)).is_empty());
 }
 
 #[test]
@@ -506,15 +501,7 @@ fn scope_resolution_picks_the_right_surfaces() {
         vec![selected.clone()]
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::AllZones, &zones, &selected).len(),
-        2
-    );
-    assert_eq!(
         resolve_add_layer_targets(AddLayerScope::AllScreens, &zones, &selected),
         [zones[2].id.to_string()]
-    );
-    assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::WholeScene, &zones, &selected).len(),
-        3
     );
 }

@@ -27,8 +27,9 @@ use std::sync::{Arc, Mutex};
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_types::event::HypercolorEvent;
 
-/// Monotonic version of the daemon's live scene state. Bumped once per
-/// admitted commit, under the scene write lock.
+/// Monotonic version of the daemon's live scene state within one daemon
+/// run. Bumped once per admitted commit, under the scene write lock; the
+/// run it belongs to is named by [`SceneRun`](super::scene_run::SceneRun).
 pub type SceneRevision = u64;
 
 /// Where an admitted scene payload ended up.
@@ -152,6 +153,17 @@ impl SceneCommitSequencer {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A sequencer that continues a run's revision sequence at `start`.
+    pub(crate) fn resuming(start: SceneRevision) -> Self {
+        Self {
+            state: Mutex::new(SequencerState {
+                revision: start,
+                released_through: start,
+                parked: BTreeMap::new(),
+            }),
+        }
     }
 
     /// The current scene revision. Callers read this under a scene lock

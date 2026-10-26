@@ -17,7 +17,6 @@ use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api;
-use crate::apply_target::ApplyTarget;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::modal::Modal;
 use crate::components::shell::Shell;
@@ -38,6 +37,7 @@ use crate::preferences::PreferencesStore;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
+use crate::ws::messages::ConnectionState;
 use crate::ws::messages::scene_event_requires_effect_refresh;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
@@ -49,9 +49,8 @@ use crate::ws::{
 mod effect_state;
 
 use effect_state::{
-    apply_active_effect_snapshot, apply_active_scene_snapshot, apply_effect_to_current_led_zones,
-    capture_active_effect_state, clear_active_scene_state, effect_error_toast_message,
-    restore_active_effect_state,
+    apply_active_effect_snapshot, apply_active_scene_snapshot, capture_active_effect_state,
+    clear_active_scene_state, effect_error_toast_message, restore_active_effect_state,
 };
 
 /// Global WebSocket state provided via Leptos context.
@@ -114,6 +113,11 @@ pub struct WsContext {
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
     pub connection_generation: ReadSignal<u64>,
+    /// The daemon run the socket's last `hello` named; a new value means
+    /// the daemon restarted.
+    pub run_epoch: ReadSignal<Option<String>>,
+    /// Whether the daemon socket is open, opening, or down.
+    pub connection_state: ReadSignal<ConnectionState>,
     /// Per-layer runtime health, keyed by `scene/zone/layer`, fed by the
     /// daemon's `layer_health_changed` events. A layer with no entry is
     /// treated as healthy — including, until the daemon replays a snapshot
@@ -163,6 +167,19 @@ impl CapabilitiesContext {
     }
 }
 
+/// The daemon's status snapshot, read once per connection. Live values
+/// such as device counts, frame rates, and the pause state ride the
+/// WebSocket; this carries what only the snapshot knows, such as uptime
+/// and whether the render loop is running.
+#[derive(Clone, Copy)]
+pub struct DaemonStatusContext {
+    /// The latest snapshot, or `None` before the first one lands.
+    pub status: ReadSignal<Option<api::SystemStatus>>,
+    /// When the latest snapshot landed, on the `now_ms` clock, so values
+    /// it reports as of that moment (the uptime) can be advanced.
+    pub received_at_ms: ReadSignal<f64>,
+}
+
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
 #[derive(Clone, Copy)]
 pub struct EffectsContext {
@@ -200,10 +217,8 @@ pub struct EffectsContext {
     /// depend on the reactive owner being live.
     pub preferences: PreferencesStore,
     pub apply_generation: StoredValue<u64>,
-    /// The zone a quick-apply targets. Studio writes it from the selected
-    /// zone; every quick-apply surface reads it so applies land in the
-    /// zone the user is composing (Wave B3).
-    pub apply_target: RwSignal<ApplyTarget>,
+    /// The shared zone state. Effect applies land in its target zone.
+    pub zones: crate::zones::ZonesContext,
     /// Refresh hook for the shared active-scene resource (crate::zones).
     /// Apply paths run it after zone-targeted writes; the snapshot
     /// application happens in the app-root effect that watches the
@@ -213,8 +228,6 @@ pub struct EffectsContext {
     /// scene, in scene order. The multi-zone now-playing source of truth;
     /// the singular `active_*` signals above mirror the primary zone only.
     pub zone_effects: Memo<Vec<crate::zones::ZoneEffectState>>,
-    /// The focused zone's effect state (primary when nothing is focused).
-    pub focused_zone_effect: Memo<Option<crate::zones::ZoneEffectState>>,
 }
 
 /// Shared device + layout state — accessible from devices page and layout builder.
@@ -280,53 +293,47 @@ impl EffectsContext {
         }
     }
 
-    /// Apply an effect by ID — sets local state + calls API.
+    /// Apply an effect by ID to the target zone: sets local state and
+    /// calls the API.
     ///
     /// When remembered preferences exist for this effect, they're baked
     /// into the one `/apply` request, so the daemon admits the effect with
     /// the user's saved preset + controls in a single scene mutation
     /// instead of starting at defaults and being corrected afterwards.
     pub fn apply_effect(&self, id: String) {
-        self.apply_effect_to(id, self.apply_target.get_untracked());
+        let zone_id =
+            crate::zones::surface::apply_zone_id(self.zones.target_zone_untracked().as_ref());
+        self.apply_effect_to(id, zone_id);
     }
 
-    /// Apply an effect to one target rather than wherever quick-applies
-    /// go. A control tied to the zone a preview shows names that zone, so
-    /// it never lands on a zone focused on another page.
-    pub fn apply_effect_to(&self, id: String, apply_target: ApplyTarget) {
+    /// Apply an effect to one zone rather than the target zone; `None` is
+    /// the primary zone. A player tied to the zone a preview shows names
+    /// that zone, so it never lands on a zone focused on another page.
+    pub fn apply_effect_to(&self, id: String, zone_id: Option<String>) {
         let stored_prefs = self.preferences.get(&id);
-        if apply_target == ApplyTarget::AllZones {
-            let ctx = *self;
-            leptos::task::spawn_local(async move {
-                apply_effect_to_current_led_zones(&ctx, id).await;
-            });
-            return;
-        }
 
         // A body is sent when there are preferences to bake in, or when a
         // named zone has to be targeted.
-        let target_zone_id = apply_target.zone_id().map(ToOwned::to_owned);
-        let body =
-            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectRequest {
-                preset_id: stored_prefs
-                    .as_ref()
-                    .and_then(|prefs| prefs.preset_id.as_deref())
-                    .and_then(|preset_id| preset_id.parse().ok()),
-                controls: stored_prefs.as_ref().and_then(|prefs| {
-                    (!prefs.control_values.is_empty())
-                        .then(|| prefs.control_values.clone().into_iter().collect())
-                }),
-                zone: target_zone_id.as_deref().and_then(|zone_id| {
-                    uuid::Uuid::parse_str(zone_id)
-                        .ok()
-                        .map(hypercolor_types::scene::ZoneId)
-                }),
-                ..api::ApplyEffectRequest::default()
-            });
+        let body = (stored_prefs.is_some() || zone_id.is_some()).then(|| api::ApplyEffectRequest {
+            preset_id: stored_prefs
+                .as_ref()
+                .and_then(|prefs| prefs.preset_id.as_deref())
+                .and_then(|preset_id| preset_id.parse().ok()),
+            controls: stored_prefs.as_ref().and_then(|prefs| {
+                (!prefs.control_values.is_empty())
+                    .then(|| prefs.control_values.clone().into_iter().collect())
+            }),
+            zone: zone_id.as_deref().and_then(|zone_id| {
+                uuid::Uuid::parse_str(zone_id)
+                    .ok()
+                    .map(hypercolor_types::scene::ZoneId)
+            }),
+            ..api::ApplyEffectRequest::default()
+        });
 
         // A named-zone apply renders into that zone and leaves the default
         // effect untouched, so it skips the default-state optimism below.
-        if target_zone_id.is_some() {
+        if zone_id.is_some() {
             let ctx = *self;
             leptos::task::spawn_local(async move {
                 if api::apply_effect(&id, body.as_ref()).await.is_ok() {
@@ -571,6 +578,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         last_input_source_status_event: ws.last_input_source_status_event,
         last_service_identity_event: ws.last_service_identity_event,
         connection_generation: ws.connection_generation,
+        run_epoch: ws.run_epoch,
+        connection_state: ws.connection_state,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,
         send_zone_layout_preview: ws.send_zone_layout_preview,
@@ -617,9 +626,10 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         provide_context(remote_preview);
     }
 
-    // Daemon capability advertisement (§9.6). Fetched once — the set is
-    // fixed per daemon build — and exposed as a context so multi-zone
-    // Studio affordances can gate on it without each re-querying status.
+    // Daemon capability advertisement (§9.6) and the status snapshot.
+    // Fetched once per connection (the capability set is fixed per daemon
+    // build) and exposed as contexts so multi-zone Studio affordances and
+    // the dashboard read it without each re-querying status.
     let status_resource = api::daemon_resource(api::fetch_status);
     let capabilities = Memo::new(move |_| {
         status_resource
@@ -630,6 +640,20 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
     provide_context(CapabilitiesContext {
         capabilities: capabilities.into(),
+    });
+    // An Effect, not a Memo, stamps the arrival: a lazy Memo would stamp
+    // whenever a page first read it, long after the snapshot landed.
+    let (daemon_status, set_daemon_status) = signal(None::<api::SystemStatus>);
+    let (status_received_at_ms, set_status_received_at_ms) = signal(0.0_f64);
+    Effect::new(move |_| {
+        if let Some(Ok(status)) = status_resource.get() {
+            set_status_received_at_ms.set(now_ms());
+            set_daemon_status.set(Some(status));
+        }
+    });
+    provide_context(DaemonStatusContext {
+        status: daemon_status,
+        received_at_ms: status_received_at_ms,
     });
     crate::release_notifications::provide_release_notifications();
 
@@ -731,17 +755,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-    let focused_zone_effect = Memo::new(move |_| {
-        let focused = zones_ctx.focused_zone.get();
-        zone_effects.with(|zones| match focused.as_deref() {
-            Some(id) => zones.iter().find(|state| state.zone.id == id).cloned(),
-            None => zones
-                .iter()
-                .find(|state| state.zone.role == hypercolor_types::scene::ZoneRole::Primary)
-                .or_else(|| zones.first())
-                .cloned(),
-        })
-    });
 
     let active_resource = api::daemon_resource(api::fetch_primary_effect_view);
     let favorites_resource = api::daemon_resource(api::fetch_favorites);
@@ -801,10 +814,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         apply_generation: StoredValue::new(0),
-        apply_target: RwSignal::new(ApplyTarget::Primary),
+        zones: zones_ctx,
         scene_refresh: zones_ctx.refresh,
         zone_effects,
-        focused_zone_effect,
     };
     provide_context(effects_ctx);
 
@@ -1036,7 +1048,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
 
         <WelcomeOverlay />
 
-        <leptoaster::Toaster />
+        <div class="toast-host">
+            <leptoaster::Toaster />
+        </div>
     }
 }
 

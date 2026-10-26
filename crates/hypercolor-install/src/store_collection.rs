@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use hypercolor_platform_fs::PublicDirectoryAuthority;
 
-use super::super::model::{InstallDisposition, InstallJournalV1, UnitId};
+use super::super::model::{InstallDisposition, UnitId};
 use super::{INSTALL_JOURNAL_FILE, InstallLock, InstallStore, InstallStoreError, UNITS_DIRECTORY};
 
 /// Directory name prefixes of interrupted unit staging (payload, legacy
@@ -51,7 +51,7 @@ impl InstallStore {
         if let Some(journal) = self.load_journal(lock)?
             && journal.disposition != InstallDisposition::Committed
         {
-            for unit in journal_units(&journal) {
+            for unit in journal.named_units() {
                 if !referenced.contains(&unit) {
                     referenced.push(unit);
                 }
@@ -178,22 +178,4 @@ impl InstallStore {
             Err(error) => Err(InstallStoreError::OpenUnits(error)),
         }
     }
-}
-
-/// Every unit a journal names: both sides and every platform state.
-fn journal_units(journal: &InstallJournalV1) -> Vec<UnitId> {
-    let mut units = vec![journal.candidate_unit.clone()];
-    units.extend(journal.prior_active_unit.clone());
-    for state in [&journal.prior_platform, &journal.target_platform] {
-        units.extend(
-            [
-                state.layout_unit.clone(),
-                state.launcher_unit.clone(),
-                state.running_unit.clone(),
-            ]
-            .into_iter()
-            .flatten(),
-        );
-    }
-    units
 }

@@ -2506,7 +2506,7 @@ fn composed_frames_without_consumers_release_upload_staging() {
 fn static_base_with_animated_overlay_releases_upload_staging() {
     // The base canvas never changes, so its front upload is cached and
     // skipped; the overlay changes every frame and uploads through
-    // create_buffer_init, whose mapped-at-creation staging also waits in
+    // create_buffer_with_contents, whose mapped-at-creation staging waits in
     // the queue's pending writes. Compose params stay byte-identical, so
     // the uniform ring is not written either.
     let base = patterned_canvas(7);
@@ -3234,11 +3234,14 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
     );
 }
 
+mod device_loss;
 mod display_finalize;
 mod media_upload;
 mod preview;
+mod readback_telemetry;
 mod sampler;
 mod shaders;
 mod startup_progress;
 mod surface;
+mod upload_failure;
 mod warmup;

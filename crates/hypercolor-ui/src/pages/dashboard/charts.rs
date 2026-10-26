@@ -261,20 +261,8 @@ fn format_bytes_per_sec(bytes_per_sec: f64) -> String {
 #[component]
 pub(super) fn FavoritesPanel() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
-    let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
     let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
-
-    // Where a click on a favorite lands. Multi-zone scenes name the
-    // target zone so the otherwise-invisible apply target is visible;
-    // single-zone scenes show nothing (there is only one place to go).
-    let target_zone_name = Memo::new(move |_| {
-        zones_ctx
-            .multi_zone
-            .get()
-            .then(|| zones_ctx.target_zone().map(|zone| zone.name))
-            .flatten()
-    });
 
     let favorite_effects = Memo::new(move |_| {
         let fav_ids = fx.favorite_ids.get();
@@ -287,79 +275,15 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
     });
 
     view! {
-        <div
-            class="relative rounded-xl glass-subtle flex flex-col flex-1 min-h-0 overflow-hidden"
-            style="background: \
-                   linear-gradient(180deg, \
-                     rgba(255, 106, 193, 0.05) 0%, \
-                     rgba(225, 53, 255, 0.02) 45%, \
-                     transparent 100%), \
-                   var(--glass-bg); \
-                   border: 1px solid rgba(255, 106, 193, 0.16); \
-                   box-shadow: 0 0 32px rgba(255, 106, 193, 0.06), \
-                               inset 0 1px 0 rgba(255, 255, 255, 0.04)"
-        >
-            // Top-edge color strip: coral → purple → cyan.
-            <div
-                class="absolute top-0 left-0 right-0 h-[2px] pointer-events-none"
-                style="background: linear-gradient(90deg, \
-                         transparent 0%, \
-                         rgba(255, 106, 193, 0.9) 18%, \
-                         rgba(225, 53, 255, 0.95) 50%, \
-                         rgba(128, 255, 234, 0.9) 82%, \
-                         transparent 100%); \
-                       filter: drop-shadow(0 0 6px rgba(225, 53, 255, 0.35))"
-            />
-
-            // Header
-            <div class="shrink-0 px-4 pt-3 pb-2.5 flex items-center justify-between relative">
+        <div class="relative rounded-xl border border-edge-subtle bg-surface-overlay/40 flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div class="shrink-0 px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                    <div
-                        class="relative flex items-center justify-center w-6 h-6 rounded-lg"
-                        style="background: radial-gradient(circle at center, \
-                                 rgba(255, 106, 193, 0.22) 0%, transparent 70%)"
-                    >
-                        <Icon
-                            icon=LuHeart
-                            width="13px"
-                            height="13px"
-                            style="color: var(--color-coral); \
-                                   fill: currentColor; \
-                                   filter: drop-shadow(0 0 6px rgba(255, 106, 193, 0.7))"
-                        />
-                    </div>
-                    <h2
-                        class="text-[12px] font-semibold tracking-wide"
-                        style="background: linear-gradient(90deg, \
-                                 #ff6ac1 0%, #e135ff 45%, #80ffea 100%); \
-                               background-size: 200% 100%; \
-                               -webkit-background-clip: text; \
-                               background-clip: text; \
-                               -webkit-text-fill-color: transparent; \
-                               color: transparent"
-                    >
-                        "Favorites"
-                    </h2>
-                    {move || target_zone_name.get().map(|name| view! {
-                        <span
-                            class="text-[10px] font-mono rounded-full px-2 py-[3px] truncate max-w-[120px]"
-                            style="color: var(--color-accent); \
-                                   background: rgba(225, 53, 255, 0.08); \
-                                   border: 1px solid rgba(225, 53, 255, 0.22)"
-                            title="Effects apply to this zone"
-                        >
-                            {format!("→ {name}")}
-                        </span>
-                    })}
+                    <span class="flex text-accent">
+                        <Icon icon=LuHeart width="14px" height="14px" />
+                    </span>
+                    <h2 class="text-[13px] font-medium text-fg-secondary">"Favorites"</h2>
                 </div>
-                <div
-                    class="text-[10px] font-mono rounded-full px-2 py-[3px] tabular-nums"
-                    style="color: var(--color-coral); \
-                           background: rgba(255, 106, 193, 0.08); \
-                           border: 1px solid rgba(255, 106, 193, 0.22); \
-                           box-shadow: 0 0 8px rgba(255, 106, 193, 0.12), \
-                                       inset 0 1px 0 rgba(255, 255, 255, 0.04)"
-                >
+                <div class="text-[10px] font-mono text-fg-tertiary/70 tabular-nums">
                     {move || favorites_count.get().to_string()}
                 </div>
             </div>
@@ -392,20 +316,13 @@ fn FavoritesEmpty() -> impl IntoView {
         <div class="flex flex-col items-center justify-center h-full py-10 text-center px-4 gap-3 animate-enter-fade">
             <div class="relative w-16 h-16 flex items-center justify-center">
                 <div
-                    class="absolute inset-0 rounded-full animate-breathe"
-                    style="--glow-rgb: 255, 106, 193; \
-                           border: 1px dashed rgba(255, 106, 193, 0.4); \
-                           background: radial-gradient(circle at center, \
-                             rgba(255, 106, 193, 0.12) 0%, transparent 65%)"
+                    class="absolute inset-0 rounded-full border border-dashed border-accent/40 animate-breathe"
+                    style="background: radial-gradient(circle at center, \
+                             color-mix(in oklab, var(--accent) 12%, transparent) 0%, transparent 65%)"
                 />
-                <Icon
-                    icon=LuHeart
-                    width="22px"
-                    height="22px"
-                    style="color: var(--color-coral); \
-                           opacity: 0.78; \
-                           filter: drop-shadow(0 0 10px rgba(255, 106, 193, 0.55))"
-                />
+                <span class="flex text-accent opacity-80">
+                    <Icon icon=LuHeart width="22px" height="22px" />
+                </span>
             </div>
             <div class="space-y-1">
                 <p class="text-[12px] font-medium text-fg-secondary">"Nothing pinned yet"</p>

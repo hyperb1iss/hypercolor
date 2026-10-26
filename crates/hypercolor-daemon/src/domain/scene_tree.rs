@@ -11,7 +11,8 @@
 //!
 //! One wire version governs the tree: the commit generation
 //! ([`SceneCommit::revision`](super::commit::SceneCommit::revision)),
-//! served as `ETag` and checked by [`check_scene_revision`]. The
+//! served with its run as an epoch-qualified `ETag` ([`SceneFence`]) and
+//! checked by [`check_scene_fence`]. The
 //! per-subresource counters the engine keeps (`zones_revision`,
 //! `layers_version`, `controls_version`) stay internal bookkeeping and
 //! never reach this surface.
@@ -19,8 +20,8 @@
 use std::collections::HashMap;
 
 use hypercolor_types::api::scene::{
-    AssignMembersRequest, MemberPlacement, SceneDocument, ZoneLayoutResource, ZoneMember,
-    ZoneMemberId, ZoneResource,
+    AssignMembersRequest, MemberPlacement, SceneDocument, SceneFence, ZoneLayoutResource,
+    ZoneMember, ZoneMemberId, ZoneResource,
 };
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
@@ -36,7 +37,7 @@ use crate::domain::context::SceneContext;
 use crate::domain::effect::EffectContext;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
-use crate::domain::scene::SceneMutation;
+use crate::domain::scene::{LayoutSceneReceipt, SceneMutation};
 use crate::domain::{DomainError, DomainErrorDetails, MutationContext, ResourceKind};
 
 mod member_edits;
@@ -73,22 +74,28 @@ impl SceneTreeContext {
 ///
 /// An active scene always exists (Spec 78 §1.1), so the only failure
 /// this can report is an engine that lost its default scene, which the
-/// invariant forbids.
+/// invariant forbids. The document and its `revision` are projected
+/// under one scene read lock, so the revision always names the commit
+/// that produced exactly these contents.
 ///
 /// # Errors
 ///
 /// [`DomainError::NotFound`] when no scene is active, which the
 /// always-a-default invariant makes unreachable in practice.
 pub async fn read_document(ctx: &SceneTreeContext) -> Result<SceneDocument, DomainError> {
-    let manager = ctx.scene.snapshot().await;
-    let revision = ctx.scene.revision();
-    let scene = manager
-        .active_scene()
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
-    Ok(scene_document(scene, revision))
+    let run_epoch = ctx.scene.run_epoch();
+    ctx.scene
+        .read_with_revision(|manager, revision| {
+            manager
+                .active_scene()
+                .map(|scene| scene_document(scene, revision, run_epoch))
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))
+        })
+        .await
 }
 
-/// Read one zone of the live tree.
+/// Read one zone of the live tree with the revision it stands at, both
+/// taken under one scene read lock.
 ///
 /// # Errors
 ///
@@ -98,23 +105,25 @@ pub async fn read_zone(
     ctx: &SceneTreeContext,
     zone_id: ZoneId,
 ) -> Result<(ZoneResource, u64), DomainError> {
-    let manager = ctx.scene.snapshot().await;
-    let revision = ctx.scene.revision();
-    let scene = manager
-        .active_scene()
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
-    scene
-        .zones
-        .iter()
-        .find(|zone| zone.id == zone_id)
-        .map(|zone| (zone_resource(zone), revision))
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
+    ctx.scene
+        .read_with_revision(|manager, revision| {
+            let scene = manager
+                .active_scene()
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
+            scene
+                .zones
+                .iter()
+                .find(|zone| zone.id == zone_id)
+                .map(|zone| (zone_resource(zone), revision))
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
+        })
+        .await
 }
 
-/// Project a scene plus the current commit generation onto the wire
-/// document.
+/// Project a scene plus the commit generation it stands at, and the run
+/// that generation belongs to, onto the wire document.
 #[must_use]
-pub fn scene_document(scene: &Scene, revision: u64) -> SceneDocument {
+pub fn scene_document(scene: &Scene, revision: u64, run_epoch: &str) -> SceneDocument {
     SceneDocument {
         id: scene.id,
         name: scene.name.clone(),
@@ -130,6 +139,7 @@ pub fn scene_document(scene: &Scene, revision: u64) -> SceneDocument {
         metadata: scene.metadata.clone(),
         mutation_mode: scene.mutation_mode,
         revision,
+        run_epoch: run_epoch.to_owned(),
         zones: scene.zones.iter().map(zone_resource).collect(),
     }
 }
@@ -191,29 +201,39 @@ fn zone_layout_resource(zone: &Zone) -> Option<ZoneLayoutResource> {
 
 /// Refuse a mutation whose caller last saw a different tree.
 ///
-/// The token is the commit generation, so one number covers every
-/// structural write anywhere in the tree (Spec 78 §1.6). A control
-/// write passes `None`: value writes are unguarded by contract, fenced
-/// instead by layer identity.
+/// The fence is the commit generation qualified by the daemon run that
+/// minted it, so one value covers every structural write anywhere in
+/// the tree (Spec 78 §1.6) and a fence from another run is stale however
+/// its revision compares. A bare fence (no run) checks the revision
+/// alone. The check runs here, against the commit candidate, for every
+/// adapter alike. A control write passes `None`: value writes are
+/// unguarded by contract, fenced instead by layer identity.
 ///
 /// # Errors
 ///
-/// [`DomainError::PreconditionFailed`] carrying the current revision.
-pub fn check_scene_revision(
+/// [`DomainError::PreconditionFailed`] carrying the current fence.
+pub fn check_scene_fence(
     mutation: &SceneMutation,
-    expected: Option<u64>,
+    fence: Option<&SceneFence>,
 ) -> Result<(), DomainError> {
-    let Some(expected) = expected else {
+    let Some(fence) = fence else {
         return Ok(());
     };
     let current = mutation.base_revision();
-    if expected == current {
+    let run_epoch = mutation.run_epoch();
+    let same_run = fence
+        .run_epoch
+        .as_deref()
+        .is_none_or(|epoch| epoch == run_epoch);
+    if same_run && fence.revision == current {
         return Ok(());
     }
     Err(DomainError::PreconditionFailed {
         resource: ResourceKind::Scene,
-        expected,
+        expected: fence.revision,
         current,
+        expected_epoch: fence.run_epoch.as_deref().map(std::sync::Arc::from),
+        current_epoch: Some(std::sync::Arc::from(run_epoch)),
     })
 }
 
@@ -226,8 +246,8 @@ pub struct PatchScene {
     pub name: Option<String>,
     /// What unclaimed outputs should render.
     pub unassigned_behavior: Option<UnassignedBehavior>,
-    /// The `revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller last saw, when it sent one.
+    pub fence: Option<SceneFence>,
 }
 
 /// Empty layer stacks in one non-display zone or every non-display zone.
@@ -235,8 +255,8 @@ pub struct PatchScene {
 pub struct ClearScene {
     /// Which non-display zone to empty; `None` empties every non-display zone.
     pub zone: Option<ZoneId>,
-    /// The `revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller last saw, when it sent one.
+    pub fence: Option<SceneFence>,
 }
 
 /// Assign one device's segments to a zone (Spec 78 §1.2).
@@ -246,8 +266,8 @@ pub struct AssignMembers {
     pub zone_id: ZoneId,
     /// The device and segments to assign.
     pub request: AssignMembersRequest,
-    /// The `revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller last saw, when it sent one.
+    pub fence: Option<SceneFence>,
 }
 
 /// Replace one layer, minting a fresh identity (Spec 78 §1.4).
@@ -259,8 +279,8 @@ pub struct ReplaceLayer {
     pub layer_id: SceneLayerId,
     /// The replacement, already validated and carrying its new id.
     pub layer: SceneLayer,
-    /// The `revision` the caller last saw, when it sent one.
-    pub expected_revision: Option<u64>,
+    /// The scene fence the caller last saw, when it sent one.
+    pub fence: Option<SceneFence>,
 }
 
 /// Write control values and drop named bindings on one layer
@@ -275,8 +295,8 @@ pub struct PatchLayerControls {
     pub values: HashMap<String, ControlValue>,
     /// Bindings to remove in the same commit.
     pub clear_bindings: Vec<String>,
-    /// The revision an adapter resolved names against, when it did so.
-    pub expected_revision: Option<u64>,
+    /// The scene fence an adapter resolved names against, when it did so.
+    pub fence: Option<SceneFence>,
 }
 
 /// What a tree mutation reports back.
@@ -325,7 +345,7 @@ pub async fn patch_scene(
     }
 
     let mut mutation = ctx.scene.begin_mutation().await;
-    check_scene_revision(&mutation, command.expected_revision)?;
+    check_scene_fence(&mutation, command.fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("patching the scene")?;
 
     if let Some(name) = command.name {
@@ -346,10 +366,14 @@ pub async fn patch_scene(
             .map_err(|_| DomainError::not_found(ResourceKind::Scene, scene_id))?;
     }
 
+    // The commit installs exactly this candidate, so the reply is the
+    // state this write produced at the revision it produced, whatever
+    // commits after it.
+    let committed = active_scene(&mutation)?;
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
     Ok(TreeWritten {
-        document: read_document(ctx).await?,
+        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
         commit,
     })
 }
@@ -374,7 +398,7 @@ pub async fn clear_scene(
         HashMap::new()
     };
     let mut mutation = ctx.scene.begin_mutation().await;
-    check_scene_revision(&mutation, command.expected_revision)?;
+    check_scene_fence(&mutation, command.fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("clearing the scene")?;
 
     let targets: Vec<ZoneId> = match command.zone {
@@ -426,6 +450,7 @@ pub async fn clear_scene(
         );
     }
 
+    let committed = active_scene(&mutation)?;
     let commit = ctx.scene.commit(mutation).await?;
     if command.zone.is_none() {
         ctx.output.quiesce_after_effect_stop().await;
@@ -433,7 +458,7 @@ pub async fn clear_scene(
     ctx.scene.save_runtime_session().await;
 
     Ok(TreeWritten {
-        document: read_document(ctx).await?,
+        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
         commit,
     })
 }
@@ -459,7 +484,7 @@ pub async fn replace_layer(
         .await?;
     let media_admission = ctx.scene.media_admission_for_layer(&command.layer).await;
     let mut mutation = ctx.scene.begin_mutation().await;
-    check_scene_revision(&mutation, command.expected_revision)?;
+    check_scene_fence(&mutation, command.fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("replacing a layer")?;
     ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
 
@@ -514,7 +539,7 @@ pub async fn patch_layer_controls(
 
     loop {
         let mut mutation = ctx.scene.begin_mutation().await;
-        check_scene_revision(&mutation, command.expected_revision)?;
+        check_scene_fence(&mutation, command.fence.as_ref())?;
         let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
         ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
         let normalized = normalize_against_layer(
@@ -564,7 +589,7 @@ pub async fn assign_members(
     let minted = mint_missing_outputs(ctx, &command.request).await?;
 
     let mut mutation = ctx.scene.begin_mutation().await;
-    check_scene_revision(&mutation, command.expected_revision)?;
+    check_scene_fence(&mutation, command.fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning zone members")?;
     ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
@@ -601,10 +626,10 @@ pub async fn unassign_member(
     ctx: &SceneTreeContext,
     zone_id: ZoneId,
     member: &ZoneMemberId,
-    expected_revision: Option<u64>,
+    fence: Option<SceneFence>,
 ) -> Result<ZoneWritten, DomainError> {
     let mut mutation = ctx.scene.begin_mutation().await;
-    check_scene_revision(&mutation, expected_revision)?;
+    check_scene_fence(&mutation, fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("unassigning a zone member")?;
     ensure_live_zone_mutable(&mutation, zone_id)?;
 
@@ -650,13 +675,13 @@ pub async fn set_zone_layout(
     ctx: &SceneTreeContext,
     zone_id: ZoneId,
     placements: Vec<MemberPlacement>,
-    expected_revision: Option<u64>,
+    fence: Option<SceneFence>,
 ) -> Result<ZoneWritten, DomainError> {
     // The zone write and the active-layout write it may imply finish
     // together even when the caller goes away between them.
     let ctx = ctx.clone();
     crate::audit_log::spawn_attributed(async move {
-        set_zone_layout_workflow(&ctx, zone_id, placements, expected_revision).await
+        set_zone_layout_workflow(&ctx, zone_id, placements, fence).await
     })
     .await
     .map_err(|error| {
@@ -668,14 +693,14 @@ async fn set_zone_layout_workflow(
     ctx: &SceneTreeContext,
     zone_id: ZoneId,
     placements: Vec<MemberPlacement>,
-    expected_revision: Option<u64>,
+    fence: Option<SceneFence>,
 ) -> Result<ZoneWritten, DomainError> {
     // Taken before the zone is read, so the active layout a following
     // primary zone mirrors cannot be replaced between its read and its
     // republication.
     let layout_guard = ctx.layout.acquire_update_guard().await;
     let mut mutation = ctx.scene.begin_mutation().await;
-    check_scene_revision(&mutation, expected_revision)?;
+    check_scene_fence(&mutation, fence.as_ref())?;
     let scene_id = mutation.active_scene_for_runtime_mutation("laying out a zone")?;
     ensure_live_zone_mutable(&mutation, zone_id)?;
 
@@ -702,7 +727,7 @@ async fn set_zone_layout_workflow(
     };
 
     let runtime = ctx.scene.layout_runtime();
-    let published = match ctx
+    let mirrored = match ctx
         .layout
         .mirror_primary_zone_save_under_guard(
             &layout_guard,
@@ -712,7 +737,7 @@ async fn set_zone_layout_workflow(
         )
         .await
     {
-        Ok(published) => published,
+        Ok(mirrored) => mirrored,
         Err(refusal) => {
             let error = undo_zone_layout_save(
                 ctx,
@@ -726,20 +751,42 @@ async fn set_zone_layout_workflow(
             return Err(error);
         }
     };
-    if published {
-        // The publication admits a scene commit of its own. When it is the
-        // only one since the zone write, its revision is the one the
-        // caller's next guarded write must carry.
-        let revision = ctx.scene.revision();
-        if revision == written.revision.saturating_add(1) {
-            written.revision = revision;
-        }
+    if let Some((zone, revision)) = mirrored
+        .scene_commit
+        .as_ref()
+        .and_then(|receipt| synced_zone(receipt, scene_id, zone_id))
+    {
+        written.zone = zone;
+        written.revision = revision;
     }
     drop(layout_guard);
-    if published {
+    if mirrored.published {
         ctx.layout.converge_persisted_update(runtime).await;
     }
     Ok(written)
+}
+
+/// The followed primary zone as the layout publication's own scene commit
+/// left it, with that commit's revision, both read from the receipt the
+/// publication took under the write lock that admitted it.
+///
+/// The publication syncs the active layout back into the zone, so the
+/// Save's reply is the zone after that sync. Other commits may land
+/// between the zone write and the publication; the receipt is still the
+/// publication's own, never inferred from the live revision.
+fn synced_zone(
+    receipt: &LayoutSceneReceipt,
+    scene_id: SceneId,
+    zone_id: ZoneId,
+) -> Option<(ZoneResource, u64)> {
+    if receipt.scene_id != Some(scene_id) {
+        return None;
+    }
+    receipt
+        .followed_zones
+        .iter()
+        .find(|zone| zone.id == zone_id)
+        .map(|zone| (zone_resource(zone), receipt.revision))
 }
 
 /// Put back a zone's pre-save layout after the active layout refused the
@@ -901,10 +948,14 @@ pub(crate) fn layer_error(
         LayerMutationError::DuplicateLayer { layer_id } => {
             DomainError::validation(format!("Layer already exists: {layer_id}"))
         }
+        // The engine's per-zone layer counter, not a scene fence: labelled
+        // as the zone's so it never serves as the scene's `ETag`.
         LayerMutationError::Stale { expected, current } => DomainError::PreconditionFailed {
-            resource: ResourceKind::Scene,
+            resource: ResourceKind::Zone,
             expected,
             current,
+            expected_epoch: None,
+            current_epoch: None,
         },
         LayerMutationError::InvalidLayer { errors } => DomainError::validation_details(
             "Layer payload is invalid",

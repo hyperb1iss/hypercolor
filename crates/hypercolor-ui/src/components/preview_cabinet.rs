@@ -39,7 +39,7 @@ use crate::color;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::preset_panel::PresetToolbar;
 use crate::components::preview_box::PreviewFit;
-use crate::components::zone_now_playing::ZoneEffectChips;
+use crate::components::zone_tabs::CompactZoneTabs;
 use crate::icons::*;
 use crate::style_utils::category_accent_rgb;
 use crate::thumbnails::ThumbnailStore;
@@ -92,7 +92,7 @@ pub fn PreviewCabinet(
     }
 
     // A multi-zone preview shows one zone at a time, picked by the zone
-    // chips, so the accent and the preset strip follow that zone's effect.
+    // tabs, so the accent and the preset strip follow that zone's effect.
     // A single-zone scene shows its primary, which `fx.active_*` describes.
     let shown_zone_effect = Memo::new(move |_| {
         if !zones_ctx.multi_zone.get() {
@@ -348,13 +348,29 @@ pub fn PreviewCabinet(
                 />
 
                 // Info overlay — title + author, description, category + source/audio badges.
-                // A multi-zone scene swaps the singular metadata for per-zone
-                // chips: the preview shows one zone at a time, and the chips
-                // name every zone and pick which one is on screen.
+                // A multi-zone scene swaps the singular metadata for the zone
+                // tabs, which pick the one zone on screen, and a caption
+                // naming what that zone shows.
                 <div class="absolute left-0 right-0 bottom-0 px-4 pb-3 pt-10 pointer-events-none">
                     <Show when=move || zones_ctx.multi_zone.get()>
-                        <div class="mb-1">
-                            <ZoneEffectChips />
+                        <div class="mb-1 flex flex-col gap-1.5">
+                            <CompactZoneTabs />
+                            {move || shown_zone_effect.with(|state| {
+                                let state = state.as_ref()?;
+                                let label = state.stack_label()?;
+                                let title = state.stack_description().unwrap_or_else(|| label.clone());
+                                Some(view! {
+                                    <p
+                                        class="text-[13px] font-semibold line-clamp-1 leading-tight \
+                                               drop-shadow-[0_2px_8px_rgba(0,0,0,0.85)]"
+                                        class:animate-effect-swap=move || igniting.get()
+                                        style:color=move || format!("rgb({})", title_tint.get())
+                                        title=title
+                                    >
+                                        {label}
+                                    </p>
+                                })
+                            })}
                         </div>
                     </Show>
                     {move || {
@@ -476,9 +492,15 @@ pub fn PreviewCabinet(
             // layer over whatever sits below. `rounded-b-xl` clips the
             // gradient background to match the cabinet's bottom silhouette
             // without clipping descendant elements.
+            //
+            // The cabinet is black in both themes, so the strip takes the
+            // dark theme's tokens. Tailwind's color aliases resolve at the
+            // document root, so everything inside reads the semantic
+            // variables directly to pick up this scope.
             <div
                 node_ref=strip_ref
                 class="shrink-0 relative z-50 rounded-b-xl"
+                data-theme="dark"
                 style=move || {
                     let rgb = accent_rgb.get();
                     format!(
@@ -538,7 +560,7 @@ pub fn PreviewCabinet(
                             }.into_any()
                         } else {
                             view! {
-                                <div class="flex items-center h-[30px] text-[10px] font-mono uppercase tracking-[0.14em] text-fg-tertiary/60">
+                                <div class="flex items-center h-[30px] text-[10px] font-mono uppercase tracking-[0.14em] text-[var(--text-tertiary)]/60">
                                     "Pick an effect to load presets"
                                 </div>
                             }.into_any()

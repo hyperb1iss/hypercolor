@@ -29,7 +29,7 @@ use super::messages::{
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InitialSubscriptionAdmission,
     InputSourceStatusEventHint, OutputPowerReconciler, PerformanceMetrics, PreviewBinaryDecoder,
     PreviewBinaryMessage, PreviewFrameChannel, SceneEventHint, ScreenZonesFrame,
-    ServiceIdentityEventHint, handle_json_message, initial_subscription_admission,
+    ServiceIdentityEventHint, handle_json_message, hello_run_epoch, initial_subscription_admission,
     interactive_preview_supported, is_resync_required, reset_layer_health_cache,
 };
 use super::preview::{
@@ -254,6 +254,12 @@ pub struct WsManager {
     /// daemon state over REST should fold this into their fetcher epochs
     /// to heal after a reconnect gap.
     pub connection_generation: ReadSignal<u64>,
+    /// The daemon run the socket's last `hello` named. A new value means
+    /// the daemon restarted: scene revisions and idempotency keys from
+    /// before mean nothing to it.
+    pub run_epoch: ReadSignal<Option<String>>,
+    /// Whether the daemon socket is open, opening, or down.
+    pub connection_state: ReadSignal<ConnectionState>,
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
@@ -317,6 +323,7 @@ impl WsManager {
         let (display_preview_device, set_display_preview_device) = signal(None::<String>);
         let (connection_state, set_connection_state) = signal(ConnectionState::Disconnected);
         let (connection_generation, set_connection_generation) = signal(0_u64);
+        let (run_epoch, set_run_epoch) = signal(None::<String>);
         let (preview_fps, set_preview_fps) = signal(0.0_f32);
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
         let (sensors, set_sensors) = signal(None::<SystemSnapshot>);
@@ -695,6 +702,11 @@ impl WsManager {
                                 let _ = connection.close();
                             }
                             return;
+                        }
+                        if let Some(run) = hello_run_epoch(&msg)
+                            && run_epoch.get_untracked().as_deref() != Some(run.as_str())
+                        {
+                            set_run_epoch.set(Some(run));
                         }
                         if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
                             schedule_preview_expiry(
@@ -1195,6 +1207,8 @@ impl WsManager {
             last_input_source_status_event,
             last_service_identity_event,
             connection_generation,
+            run_epoch,
+            connection_state,
             layer_health,
             audio_level,
             preview_target_fps,

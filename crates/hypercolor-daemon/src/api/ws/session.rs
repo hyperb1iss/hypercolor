@@ -2192,14 +2192,19 @@ pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
             0.0
         };
 
-    let active_scene = {
-        let scene_manager = state.scene_manager.snapshot().await;
-        scene_manager.active_scene().map(|scene| SceneRef {
-            id: scene.id.to_string(),
-            name: scene.name.clone(),
-            snapshot_locked: scene.blocks_runtime_mutation(),
+    let run_epoch = state.scene_manager.run_epoch();
+    let active_scene = state
+        .scene_manager
+        .read_with_revision(|scene_manager, revision| {
+            scene_manager.active_scene().map(|scene| SceneRef {
+                id: scene.id.to_string(),
+                name: scene.name.clone(),
+                snapshot_locked: scene.blocks_runtime_mutation(),
+                revision,
+                run_epoch: run_epoch.to_owned(),
+            })
         })
-    };
+        .await;
 
     let devices = state.device_registry.list().await;
     let total_leds = devices.iter().fold(0_usize, |acc, tracked| {
@@ -2432,7 +2437,7 @@ mod zone_layout_preview_race_tests {
                 name: "temporary".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
-                expected_revision: None,
+                fence: None,
             },
         )
         .await
@@ -2461,7 +2466,7 @@ mod zone_layout_preview_race_tests {
                 &delete_state.domains.scene,
                 DeleteZone {
                     zone_id,
-                    expected_revision: None,
+                    fence: None,
                 },
             )
             .await

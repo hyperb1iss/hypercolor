@@ -90,6 +90,15 @@ pub(crate) struct LayoutDeviceBindingPublication {
     migrated: usize,
 }
 
+/// What mirroring a primary-zone Save into the active layout did.
+#[derive(Debug)]
+pub(crate) struct MirroredZoneSave {
+    /// Whether a layout was published.
+    pub(crate) published: bool,
+    /// What that publication committed to the scene, when it committed.
+    pub(crate) scene_commit: Option<crate::domain::scene::LayoutSceneReceipt>,
+}
+
 #[derive(Clone)]
 pub(crate) struct LayoutRuntime {
     discovery: DiscoveryRuntime,
@@ -716,12 +725,14 @@ impl LayoutContext {
         self.publication.acquire_update_guard().await
     }
 
+    /// Publish `layout` through the renderer, answering with what the
+    /// publication committed to the scene.
     pub(crate) async fn admit_persisted_update_under_guard(
         &self,
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
         runtime: &LayoutRuntime,
-    ) -> Result<(), LayoutUpdateError> {
+    ) -> Result<Option<crate::domain::scene::LayoutSceneReceipt>, LayoutUpdateError> {
         self.publication
             .admit_persisted_under_guard(guard, layout, runtime.driver_host())
             .await

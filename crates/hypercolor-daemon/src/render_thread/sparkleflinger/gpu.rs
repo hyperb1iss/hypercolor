@@ -21,6 +21,7 @@ use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, PublishedSurface, SurfaceStateCounts};
 use hypercolor_types::scene::ZoneId;
 
+mod admission;
 mod canvas;
 mod compositor;
 mod display_finalize;
@@ -39,6 +40,7 @@ mod snapshot;
 mod source;
 mod submission;
 mod telemetry;
+pub(crate) mod timing;
 mod zone_preview;
 
 #[cfg(test)]
@@ -53,6 +55,8 @@ use compositor::{
 };
 #[cfg(test)]
 use display_finalize::DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
+use display_finalize::DisplayFinalizeRoute;
+#[cfg(test)]
 use display_finalize::GpuDisplayFinalizeSurfaceSet;
 pub(crate) use display_finalize::{
     GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, PendingGpuDisplayFinalize,
@@ -77,6 +81,7 @@ use screen_upload::{
 };
 use source::{CachedSourceUpload, SourceCopyBindGroupCache};
 use submission::FrameInFlight;
+pub(crate) use telemetry::{GpuReadbackKind, gpu_transfer_telemetry_snapshot, record_gpu_readback};
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
 use zone_preview::GpuZonePreviewLane;
 
@@ -172,6 +177,8 @@ fn try_create_gpu_resources<T>(
     let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    #[cfg(test)]
+    inject_scoped_allocation_failure(device);
     let resources = create();
     let validation_error = pollster::block_on(validation_scope.pop());
     let internal_error = pollster::block_on(internal_scope.pop());
@@ -180,6 +187,53 @@ fn try_create_gpu_resources<T>(
         anyhow::bail!("{context}: {error}");
     }
     Ok(resources)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Scoped allocations on this thread still set to fail.
+    static FAILING_SCOPED_ALLOCATIONS: std::cell::Cell<u32> =
+        const { std::cell::Cell::new(0) };
+    /// Scoped allocations attempted on this thread.
+    static SCOPED_ALLOCATION_ATTEMPTS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Make the next scoped GPU allocation on this thread report an error, the
+/// way an allocation that ran out of memory does.
+#[cfg(test)]
+pub(super) fn fail_next_scoped_gpu_allocation_for_test() {
+    fail_scoped_gpu_allocations_for_test(1);
+}
+
+/// Make the next `count` scoped GPU allocations on this thread fail; zero
+/// lets them succeed again.
+#[cfg(test)]
+pub(super) fn fail_scoped_gpu_allocations_for_test(count: u32) {
+    FAILING_SCOPED_ALLOCATIONS.set(count);
+}
+
+/// Scoped GPU allocations attempted on this thread so far.
+#[cfg(test)]
+pub(super) fn scoped_gpu_allocation_attempts_for_test() -> u64 {
+    SCOPED_ALLOCATION_ATTEMPTS.get()
+}
+
+#[cfg(test)]
+fn inject_scoped_allocation_failure(device: &wgpu::Device) {
+    SCOPED_ALLOCATION_ATTEMPTS.set(SCOPED_ALLOCATION_ATTEMPTS.get().saturating_add(1));
+    let failing = FAILING_SCOPED_ALLOCATIONS.get();
+    if failing > 0 {
+        FAILING_SCOPED_ALLOCATIONS.set(failing - 1);
+        // A buffer with no usage raises a validation error inside the open
+        // scopes and leaves the device alive.
+        let _ = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger injected allocation failure"),
+            size: 4,
+            usage: wgpu::BufferUsages::empty(),
+            mapped_at_creation: false,
+        });
+    }
 }
 
 fn reject_injected_gpu_preparation(fail_after_prepare: bool, resource: &'static str) -> Result<()> {
@@ -206,8 +260,9 @@ pub(crate) struct GpuSparkleFlinger {
     opaque_black_texture: Option<GpuCompositorTexture>,
     surfaces: Option<GpuCompositorSurfaceSet>,
     compositor_surface_cache: HashMap<(u32, u32), Option<GpuCompositorSurfaceSet>>,
-    display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, GpuDisplayFinalizeSurfaceSet>,
+    display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, DisplayFinalizeRoute>,
     display_finalize_generation: u64,
+    admission_clock: admission::AdmissionClock,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
     media_texture_epoch: u64,
@@ -357,6 +412,7 @@ impl GpuSparkleFlinger {
     pub(crate) fn display_finalize_readback_slots_in_use(&self) -> usize {
         self.display_finalize_surfaces
             .values()
+            .filter_map(DisplayFinalizeRoute::surfaces)
             .map(GpuDisplayFinalizeSurfaceSet::readback_slots_in_use)
             .sum()
     }
@@ -367,7 +423,11 @@ impl GpuSparkleFlinger {
             GpuPreviewSurfaceSet::surface_pool_counts,
         );
         let mut compositor = self.sampling_latch.surface_pool_counts();
-        for surfaces in self.display_finalize_surfaces.values_mut() {
+        for surfaces in self
+            .display_finalize_surfaces
+            .values_mut()
+            .filter_map(DisplayFinalizeRoute::surfaces_mut)
+        {
             compositor = merge_surface_state_counts(compositor, surfaces.surface_pool_counts());
         }
         SparkleFlingerSurfacePoolCounts {
@@ -415,6 +475,17 @@ impl GpuCompositorSurfaceSet {
     fn discard_pending_uploads(&mut self) {
         self.pending_upload_buffers.clear();
         self.screen_upload_pool.discard_encoding();
+    }
+
+    /// Drop the uploads staged for a composition encoder that will never be
+    /// submitted, and forget what its textures were recorded to hold, so the
+    /// next composition uploads and composes again instead of trusting work
+    /// that never ran.
+    fn abandon_encoded_composition(&mut self) {
+        self.discard_pending_uploads();
+        self.cached_source_upload = None;
+        self.front_contents = None;
+        self.back_contents = None;
     }
 
     fn try_new(

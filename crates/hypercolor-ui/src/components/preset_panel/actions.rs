@@ -18,8 +18,8 @@ pub(super) fn PresetActionButtons(
         <div class="flex items-center gap-0.5 shrink-0">
             // Save (overwrite current preset)
             <button
-                class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                       hover:text-status-success hover:bg-status-success/10"
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                       hover:text-[var(--status-success)] hover:bg-[var(--status-success)]/10"
                 title="Save controls to preset"
                 aria-label="Save controls to preset"
                 disabled=move || !has_selection.get()
@@ -30,7 +30,7 @@ pub(super) fn PresetActionButtons(
 
             // New preset
             <button
-                class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
                        hover:text-cyan hover:bg-cyan/10"
                 title="Create new preset"
                 aria-label="Create new preset"
@@ -41,8 +41,8 @@ pub(super) fn PresetActionButtons(
 
             // Edit name
             <button
-                class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                       hover:text-accent hover:bg-accent/10"
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                       hover:text-[var(--accent)] hover:bg-[var(--accent)]/10"
                 title="Rename preset"
                 aria-label="Rename preset"
                 disabled=move || !has_selection.get()
@@ -53,8 +53,8 @@ pub(super) fn PresetActionButtons(
 
             // Delete
             <button
-                class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                       hover:text-status-error hover:bg-status-error/10"
+                class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                       hover:text-[var(--status-error)] hover:bg-[var(--status-error)]/10"
                 title="Delete preset"
                 aria-label="Delete preset"
                 disabled=move || !has_selection.get()
@@ -81,9 +81,9 @@ pub(super) fn InlineNameInput(
             <input
                 type="text"
                 placeholder=placeholder
-                class="flex-1 bg-surface-sunken/60 border border-accent-muted/60 rounded-lg px-2.5 py-1.5
-                       text-xs text-fg-primary placeholder-fg-tertiary/40
-                       focus:outline-none focus:border-accent glow-ring
+                class="flex-1 bg-[var(--surface-sunken)]/60 border border-[var(--accent-muted)]/60 rounded-lg px-2.5 py-1.5
+                       text-xs text-[var(--text-primary)] placeholder-[var(--text-tertiary)]/40
+                       focus:outline-none focus:border-[var(--accent)] glow-ring
                        transition-all duration-200"
                 prop:value=move || value.get()
                 on:input=move |ev| {
@@ -121,8 +121,8 @@ fn InlineNameButtons(
 ) -> impl IntoView {
     view! {
         <button
-            class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                   hover:text-status-success hover:bg-status-success/10"
+            class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                   hover:text-[var(--status-success)] hover:bg-[var(--status-success)]/10"
             title="Confirm"
             disabled=move || value.get().trim().is_empty()
             on:click=move |_| {
@@ -135,8 +135,8 @@ fn InlineNameButtons(
             <Icon icon=LuCheck width="14px" height="14px" />
         </button>
         <button
-            class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                   hover:text-status-error hover:bg-status-error/10"
+            class="p-1.5 rounded-lg text-[var(--text-tertiary)]/40 toolbar-action
+                   hover:text-[var(--status-error)] hover:bg-[var(--status-error)]/10"
             title="Cancel"
             on:click=move |_| on_cancel.run(())
         >

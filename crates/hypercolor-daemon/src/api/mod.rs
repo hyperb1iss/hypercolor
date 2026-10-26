@@ -21,6 +21,7 @@ mod error;
 pub mod extract;
 mod forwarded;
 mod host_names;
+pub(crate) mod idempotency;
 pub mod layouts;
 pub mod library;
 pub mod local;
@@ -28,6 +29,7 @@ pub mod media;
 pub mod openapi;
 pub mod output;
 mod routes;
+mod run_epoch;
 pub mod scene;
 pub mod scenes;
 pub mod security;
@@ -233,12 +235,27 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     // fallback first, so the SPA never sees an API path.
     let api = api.fallback(api_route_not_found);
     let (api, versioned_openapi) = api.split_for_parts();
+    // The operations that document `Idempotency-Key` are the ones that
+    // honor it, extension routes included.
+    let idempotency = idempotency::IdempotencyLayer {
+        store: state.idempotency.clone(),
+        routes: Arc::new(idempotency::IdempotentRoutes::from_openapi(
+            &versioned_openapi,
+        )),
+    };
     // The body ceiling is a daemon decision, pinned here rather than
     // inherited from Axum's default. A route-level limit (asset upload)
-    // still overrides it.
-    let api = api.method_not_allowed_fallback(api_route_not_found).layer(
-        axum::extract::DefaultBodyLimit::max(extract::API_BODY_LIMIT_BYTES),
-    );
+    // still overrides it. It wraps the idempotency guard, which buffers a
+    // keyed body under that same ceiling.
+    let api = api
+        .method_not_allowed_fallback(api_route_not_found)
+        .layer(axum::middleware::from_fn_with_state(
+            idempotency,
+            idempotency::guard,
+        ))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            extract::API_BODY_LIMIT_BYTES,
+        ));
     let root = documented_root_routes();
     let (root, root_openapi) = root.split_for_parts();
     let document = root_openapi.nest("/api/v1", versioned_openapi);
@@ -263,7 +280,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         static_assets = security::StaticAssetSurface::mounted(dynamic_route_prefixes(&mcp_config));
     }
 
-    router
+    let router = router
         .layer(axum::middleware::from_fn_with_state(
             security_state
                 .with_static_assets(static_assets)
@@ -287,8 +304,13 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                     header::AUTHORIZATION,
                     header::CONTENT_TYPE,
                     header::IF_MATCH,
+                    idempotency::IDEMPOTENCY_KEY,
                 ])
-                .expose_headers([header::ETAG]),
+                .expose_headers([
+                    header::ETAG,
+                    run_epoch::RUN_EPOCH,
+                    idempotency::IDEMPOTENCY_REPLAYED,
+                ]),
         )
         .layer(axum::middleware::from_fn_with_state(
             access_log::AccessLogState {
@@ -298,8 +320,20 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                     .then(|| crate::mcp::normalize_base_path(&mcp_config.base_path)),
             },
             access_log::log_access,
-        ))
-        .with_state(state)
+        ));
+    // Outermost, so every answer names the run, security refusals and
+    // routes merged beside the API included.
+    let router = match HeaderValue::from_str(state.scene_manager.run_epoch()) {
+        Ok(epoch) => router.layer(axum::middleware::from_fn_with_state(
+            epoch,
+            run_epoch::stamp,
+        )),
+        Err(error) => {
+            warn!(%error, "Scene run epoch is not a valid header value; responses will not name it");
+            router
+        }
+    };
+    router.with_state(state)
 }
 
 /// The prefixes this router answers from a handler that

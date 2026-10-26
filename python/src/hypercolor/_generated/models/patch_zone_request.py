@@ -20,12 +20,16 @@ class PatchZoneRequest:
         color (None | str | Unset): Tri-state: missing leaves the color, `null` clears it, a value
             sets it.
         enabled (bool | None | Unset):
+        index (int | None | Unset): Move the zone to this position in the scene's zone order, clamped
+            to the last slot. Zone order is Studio's tab order and the paint
+            order of the scene preview projection.
         name (None | str | Unset):
     """
 
     brightness: float | None | Unset = UNSET
     color: None | str | Unset = UNSET
     enabled: bool | None | Unset = UNSET
+    index: int | None | Unset = UNSET
     name: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,6 +51,12 @@ class PatchZoneRequest:
         else:
             enabled = self.enabled
 
+        index: int | None | Unset
+        if isinstance(self.index, Unset):
+            index = UNSET
+        else:
+            index = self.index
+
         name: None | str | Unset
         if isinstance(self.name, Unset):
             name = UNSET
@@ -62,6 +72,8 @@ class PatchZoneRequest:
             field_dict["color"] = color
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
+        if index is not UNSET:
+            field_dict["index"] = index
         if name is not UNSET:
             field_dict["name"] = name
 
@@ -98,6 +110,15 @@ class PatchZoneRequest:
 
         enabled = _parse_enabled(d.pop("enabled", UNSET))
 
+        def _parse_index(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        index = _parse_index(d.pop("index", UNSET))
+
         def _parse_name(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -111,6 +132,7 @@ class PatchZoneRequest:
             brightness=brightness,
             color=color,
             enabled=enabled,
+            index=index,
             name=name,
         )
 

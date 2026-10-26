@@ -176,7 +176,7 @@ async fn patch_speed(fixture: &Fixture, speed: f64) {
             layer_id: fixture.layer_id,
             values: HashMap::from([("speed".to_owned(), ControlValue::Float(speed))]),
             clear_bindings: Vec::new(),
-            expected_revision: None,
+            fence: None,
         },
         MutationContext::mcp(),
     )

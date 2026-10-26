@@ -264,7 +264,7 @@ impl LayoutPublication {
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
         driver_host: Arc<DaemonDriverHost>,
-    ) -> Result<(), LayoutUpdateError> {
+    ) -> Result<Option<crate::domain::scene::LayoutSceneReceipt>, LayoutUpdateError> {
         let mut layout = layout;
         self.render_canvas.stamp(&mut layout);
         let persistence = self.persistence_context(driver_host);

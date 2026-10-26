@@ -484,7 +484,7 @@ pub(crate) async fn activate_playlist_item(
             controls: requested_controls,
             preset_id,
             target_zone: None,
-            expected_revision: None,
+            fence: None,
             transition: crate::domain::effect::RequestedTransition::cut(),
             wake_output: false,
         },

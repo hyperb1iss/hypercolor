@@ -167,6 +167,39 @@ enum RequestLocality {
 #[derive(Debug, Clone, Copy)]
 struct TrustedLocalControl;
 
+/// The stable identity of the credential a request authenticated with,
+/// which per-client state such as `Idempotency-Key` records is scoped to.
+///
+/// Every credential source gets one, and none contains the secret:
+/// `environment:control` and `environment:read` for the two environment
+/// keys, `daemon-session` for the desktop app's session credential,
+/// `credential:<id>` for a credential authority grant, and `in-process`
+/// for trusted in-process calls. A request that presents no credential
+/// (security off, or a keyless loopback caller) carries none and shares
+/// the anonymous scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CredentialScope(Arc<str>);
+
+impl CredentialScope {
+    /// The scope's stable name.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn named(name: &'static str) -> Self {
+        Self(Arc::from(name))
+    }
+
+    fn grant(grant: &CredentialGrant) -> Self {
+        Self(Arc::from(format!("credential:{}", grant.credential_id())))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(name: &str) -> Self {
+        Self(Arc::from(name))
+    }
+}
+
 /// Marks a command replayed from a WebSocket session.
 ///
 /// The replay has no socket of its own, but its session's upgrade already
@@ -497,6 +530,7 @@ impl SecurityState {
             Some(ResolvedCredential {
                 context: RequestAuthContext::daemon_session(self.security_enabled()),
                 grant: None,
+                scope: Some(CredentialScope::named("daemon-session")),
             })
         } else {
             self.resolve_presented_token(token)
@@ -509,7 +543,7 @@ impl SecurityState {
     /// rejection takes does not report which source the caller came
     /// closest to matching.
     fn resolve_presented_token(&self, token: &str) -> Option<ResolvedCredential> {
-        let environment = resolve_token_tier(token, &self.auth);
+        let environment = resolve_environment_key(token, &self.auth);
         let grant = self.authority.as_ref().and_then(|authority| {
             authority
                 .authenticate(token)
@@ -518,12 +552,14 @@ impl SecurityState {
         });
 
         match (environment, grant) {
-            (Some(tier), _) => Some(ResolvedCredential {
+            (Some((tier, key)), _) => Some(ResolvedCredential {
                 context: RequestAuthContext::authenticated(tier),
                 grant: None,
+                scope: Some(CredentialScope::named(key)),
             }),
             (None, Some(grant)) => Some(ResolvedCredential {
                 context: RequestAuthContext::authority_grant(grant.tier()),
+                scope: Some(CredentialScope::grant(&grant)),
                 grant: Some(grant),
             }),
             (None, None) => None,
@@ -536,6 +572,7 @@ impl SecurityState {
 struct ResolvedCredential {
     context: RequestAuthContext,
     grant: Option<CredentialGrant>,
+    scope: Option<CredentialScope>,
 }
 
 impl ResolvedCredential {
@@ -545,6 +582,9 @@ impl ResolvedCredential {
             .insert(self.context.with_locality(locality));
         if let Some(grant) = self.grant {
             request.extensions_mut().insert(grant);
+        }
+        if let Some(scope) = self.scope {
+            request.extensions_mut().insert(scope);
         }
     }
 }
@@ -1252,6 +1292,9 @@ pub async fn enforce_security(
             RequestAuthContext::authenticated(AccessTier::Control)
                 .with_locality(RequestLocality::InProcess),
         );
+        request
+            .extensions_mut()
+            .insert(CredentialScope::named("in-process"));
         return next.run(request).await;
     }
 
@@ -1399,6 +1442,7 @@ pub async fn enforce_security(
         .map(|context| ResolvedCredential {
             context,
             grant: request.extensions().get::<CredentialGrant>().cloned(),
+            scope: request.extensions().get::<CredentialScope>().cloned(),
         });
 
     if method != Method::OPTIONS {
@@ -1607,6 +1651,18 @@ fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> 
         .get(header::ORIGIN)
         .is_some_and(is_trusted_tauri_origin)
         && extract_token(request).is_some_and(|token| state.is_session_credential(&token))
+}
+
+/// [`resolve_token_tier`], also naming which environment key matched, so
+/// the two keys keep separate scopes whatever tier they grant.
+fn resolve_environment_key(token: &str, auth: &AuthConfig) -> Option<(AccessTier, &'static str)> {
+    let tier = resolve_token_tier(token, auth)?;
+    let key = if secret_matches(auth.control_key.as_deref(), token) {
+        "environment:control"
+    } else {
+        "environment:read"
+    };
+    Some((tier, key))
 }
 
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
@@ -2532,6 +2588,58 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    struct OneGrant;
+
+    impl super::CredentialAuthority for OneGrant {
+        fn ceiling(&self) -> super::CredentialTier {
+            super::CredentialTier::Control
+        }
+
+        fn authenticate(&self, presented: &str) -> Option<super::CredentialGrant> {
+            (presented == "hc_grant_token").then(|| {
+                super::CredentialGrant::new(
+                    super::CredentialTier::Control,
+                    "studio-tablet",
+                    tokio_util::sync::CancellationToken::new(),
+                )
+            })
+        }
+    }
+
+    #[test]
+    fn every_credential_source_names_a_stable_scope_without_its_secret() {
+        let scope = |resolved: Option<super::ResolvedCredential>| {
+            resolved
+                .and_then(|resolved| resolved.scope)
+                .map(|scope| scope.as_str().to_owned())
+        };
+        let keys = SecurityState::with_keys(Some(CONTROL_KEY), Some(READ_KEY))
+            .with_credential_authority(std::sync::Arc::new(OneGrant));
+        assert_eq!(
+            scope(keys.resolve_presented_token(CONTROL_KEY)).as_deref(),
+            Some("environment:control")
+        );
+        assert_eq!(
+            scope(keys.resolve_presented_token(READ_KEY)).as_deref(),
+            Some("environment:read")
+        );
+        assert_eq!(
+            scope(keys.resolve_presented_token("hc_grant_token")).as_deref(),
+            Some("credential:studio-tablet")
+        );
+
+        let credential = ProtectedControlCredential::from_bytes([0x42; 32]);
+        let session = SecurityState::with_session_credential(credential.clone());
+        let session_scope = scope(session.resolve_loopback_token(credential.expose_secret()));
+        assert_eq!(session_scope.as_deref(), Some("daemon-session"));
+        assert!(
+            !session_scope
+                .as_deref()
+                .is_some_and(|name| name.contains(credential.expose_secret())),
+            "a scope never carries the secret"
+        );
     }
 
     #[tokio::test]

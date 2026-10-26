@@ -44,6 +44,10 @@ class ReplaceSceneRequest:
             revision (int | None | Unset): The scene `revision` this replacement was built from. When
                 present, a stale value is refused with `412 precondition_failed`,
                 exactly as a stale `If-Match` is.
+            run_epoch (None | str | Unset): Echo of the daemon run the read came from. Together with
+                `revision` it is the body's fence: a document read in another
+                daemon run is refused with `412 precondition_failed` whatever its
+                revision. Without `revision` it is not checked.
             unassigned_behavior (str | Unset):
             zones (list[ReplaceZoneRequest] | Unset):
     """
@@ -61,6 +65,7 @@ class ReplaceSceneRequest:
     metadata: ReplaceSceneRequestMetadata | Unset = UNSET
     mutation_mode: str | Unset = UNSET
     revision: int | None | Unset = UNSET
+    run_epoch: None | str | Unset = UNSET
     unassigned_behavior: str | Unset = UNSET
     zones: list[ReplaceZoneRequest] | Unset = UNSET
 
@@ -117,6 +122,12 @@ class ReplaceSceneRequest:
         else:
             revision = self.revision
 
+        run_epoch: None | str | Unset
+        if isinstance(self.run_epoch, Unset):
+            run_epoch = UNSET
+        else:
+            run_epoch = self.run_epoch
+
         unassigned_behavior = self.unassigned_behavior
 
         zones: list[dict[str, Any]] | Unset = UNSET
@@ -153,6 +164,8 @@ class ReplaceSceneRequest:
             field_dict["mutation_mode"] = mutation_mode
         if revision is not UNSET:
             field_dict["revision"] = revision
+        if run_epoch is not UNSET:
+            field_dict["run_epoch"] = run_epoch
         if unassigned_behavior is not UNSET:
             field_dict["unassigned_behavior"] = unassigned_behavior
         if zones is not UNSET:
@@ -246,6 +259,15 @@ class ReplaceSceneRequest:
 
         revision = _parse_revision(d.pop("revision", UNSET))
 
+        def _parse_run_epoch(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        run_epoch = _parse_run_epoch(d.pop("run_epoch", UNSET))
+
         unassigned_behavior = d.pop("unassigned_behavior", UNSET)
 
         _zones = d.pop("zones", UNSET)
@@ -271,6 +293,7 @@ class ReplaceSceneRequest:
             metadata=metadata,
             mutation_mode=mutation_mode,
             revision=revision,
+            run_epoch=run_epoch,
             unassigned_behavior=unassigned_behavior,
             zones=zones,
         )

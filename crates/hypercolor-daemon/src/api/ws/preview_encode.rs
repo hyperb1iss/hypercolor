@@ -136,7 +136,7 @@ impl PreviewJpegEncoder {
         brightness: f32,
         requested_width: u32,
         requested_height: u32,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<axum::body::Bytes> {
         let (target_width, target_height) = resolve_preview_dimensions(
             frame.width,
             frame.height,
@@ -157,7 +157,6 @@ impl PreviewJpegEncoder {
         }
         .try_encode()
         .context("failed to encode preview JPEG wire frame")
-        .map(|bytes| bytes.to_vec())
     }
 
     #[cfg(test)]
@@ -168,7 +167,6 @@ impl PreviewJpegEncoder {
         brightness: f32,
     ) -> Result<axum::body::Bytes> {
         self.encode_scaled_payload(frame, header, brightness, 0, 0)
-            .map(axum::body::Bytes::from)
     }
 
     pub(super) fn encode_scaled_body(
@@ -407,7 +405,7 @@ pub(super) fn encode_canvas_jpeg_payload_scaled_stateless(
     brightness: f32,
     requested_width: u32,
     requested_height: u32,
-) -> Result<Vec<u8>> {
+) -> Result<axum::body::Bytes> {
     let mut encoder = PreviewJpegEncoder::new()?;
     encoder.encode_scaled_payload(frame, header, brightness, requested_width, requested_height)
 }

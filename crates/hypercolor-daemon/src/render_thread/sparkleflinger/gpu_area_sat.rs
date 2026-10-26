@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 
 use super::compile_compute_pipeline;
+use super::gpu_buffer_init::create_buffer_with_contents;
 use super::gpu_sampling::{GpuSampleSource, GpuSamplingPreparationFailure};
 use crate::startup::StartupProgress;
 
@@ -10,6 +11,7 @@ const SAT_PARAM_BYTES: u64 = 16;
 const HIERARCHY_PARAM_BYTES: u64 = 16;
 
 pub(super) struct GpuAreaPipeline {
+    timings: super::gpu::timing::GpuTimings,
     bind_group_layout: wgpu::BindGroupLayout,
     hierarchy_bind_group_layout: wgpu::BindGroupLayout,
     horizontal_tiles: wgpu::ComputePipeline,
@@ -51,7 +53,11 @@ struct GpuAreaHierarchyLevel {
 }
 
 impl GpuAreaPipeline {
-    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        progress: Option<&StartupProgress>,
+        timings: super::gpu::timing::GpuTimings,
+    ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SparkleFlinger GPU area SAT bind group layout"),
             entries: &[
@@ -137,6 +143,7 @@ impl GpuAreaPipeline {
         };
 
         Self {
+            timings,
             bind_group_layout,
             hierarchy_bind_group_layout,
             horizontal_tiles: create_pipeline(
@@ -210,6 +217,13 @@ impl GpuAreaPipeline {
                 "GPU area resources failed device validation: {error}"
             )));
         }
+        // A lost device reports no scoped error, but its buffers still
+        // come back without a mapping.
+        let resources = resources.map_err(|error| {
+            GpuSamplingPreparationFailure::transient(format!(
+                "GPU area resource allocation failed: {error:#}"
+            ))
+        })?;
         #[cfg(test)]
         self.allocation_count
             .set(self.allocation_count.get().saturating_add(1));
@@ -238,6 +252,7 @@ impl GpuAreaPipeline {
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area horizontal tile scan",
             &self.horizontal_tiles,
             &bind_group,
@@ -246,12 +261,14 @@ impl GpuAreaPipeline {
         );
         encode_hierarchy(
             encoder,
+            &self.timings,
             &self.hierarchy_scan,
             &self.hierarchy_add,
             &resources.horizontal_sums,
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area horizontal block add",
             &self.horizontal_add,
             &bind_group,
@@ -260,6 +277,7 @@ impl GpuAreaPipeline {
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area vertical tile scan",
             &self.vertical_tiles,
             &bind_group,
@@ -268,12 +286,14 @@ impl GpuAreaPipeline {
         );
         encode_hierarchy(
             encoder,
+            &self.timings,
             &self.hierarchy_scan,
             &self.hierarchy_add,
             &resources.vertical_sums,
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area vertical block add",
             &self.vertical_add,
             &bind_group,
@@ -288,7 +308,7 @@ impl GpuAreaResources {
         device: &wgpu::Device,
         hierarchy_layout: &wgpu::BindGroupLayout,
         geometry: GpuAreaGeometry,
-    ) -> Self {
+    ) -> Result<Self> {
         let values = storage_buffer(
             device,
             "SparkleFlinger GPU area SAT values",
@@ -299,32 +319,26 @@ impl GpuAreaResources {
             hierarchy_layout,
             "SparkleFlinger GPU area horizontal block sums",
             geometry.horizontal_hierarchy,
-        );
+        )?;
         let vertical_sums = GpuAreaHierarchy::new(
             device,
             hierarchy_layout,
             "SparkleFlinger GPU area vertical block sums",
             geometry.vertical_hierarchy,
-        );
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU area SAT params"),
-            size: SAT_PARAM_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: true,
-        });
-        params
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("mapped-at-creation params buffer should map")
-            .copy_from_slice(&encode_params(
+        )?;
+        let params = create_buffer_with_contents(
+            device,
+            "SparkleFlinger GPU area SAT params",
+            &encode_params(
                 geometry.width,
                 geometry.height,
                 geometry.horizontal_block_count,
                 geometry.vertical_block_count,
-            ));
-        params.unmap();
+            ),
+            wgpu::BufferUsages::UNIFORM,
+        )?;
 
-        Self {
+        Ok(Self {
             width: geometry.width,
             height: geometry.height,
             horizontal_block_count: geometry.horizontal_block_count,
@@ -334,7 +348,7 @@ impl GpuAreaResources {
             vertical_sums,
             params,
             bind_groups: Vec::with_capacity(2),
-        }
+        })
     }
 
     pub(super) const fn matches(&self, width: u32, height: u32) -> bool {
@@ -392,41 +406,35 @@ impl GpuAreaHierarchy {
         layout: &wgpu::BindGroupLayout,
         label: &'static str,
         geometry: GpuAreaHierarchyGeometry,
-    ) -> Self {
+    ) -> Result<Self> {
         let buffer = storage_buffer(device, label, geometry.byte_len);
         let levels = geometry
             .levels
             .into_iter()
             .map(|level| {
-                let params = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("SparkleFlinger GPU area hierarchy params"),
-                    size: HIERARCHY_PARAM_BYTES,
-                    usage: wgpu::BufferUsages::UNIFORM,
-                    mapped_at_creation: true,
-                });
-                params
-                    .slice(..)
-                    .get_mapped_range_mut()
-                    .expect("mapped-at-creation params buffer should map")
-                    .copy_from_slice(&encode_hierarchy_params(level));
-                params.unmap();
+                let params = create_buffer_with_contents(
+                    device,
+                    "SparkleFlinger GPU area hierarchy params",
+                    &encode_hierarchy_params(level),
+                    wgpu::BufferUsages::UNIFORM,
+                )?;
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("SparkleFlinger GPU area hierarchy bind group"),
                     layout,
                     entries: &[buffer_entry(0, &buffer), buffer_entry(1, &params)],
                 });
-                GpuAreaHierarchyLevel {
+                Ok(GpuAreaHierarchyLevel {
                     block_count: level.block_count,
                     _params: params,
                     bind_group,
-                }
+                })
             })
-            .collect();
-        Self {
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
             buffer,
             segment_count: geometry.segment_count,
             levels,
-        }
+        })
     }
 }
 
@@ -675,23 +683,28 @@ fn encode_hierarchy_params(
 
 fn encode_pass(
     encoder: &mut wgpu::CommandEncoder,
+    timings: &super::gpu::timing::GpuTimings,
     label: &'static str,
     pipeline: &wgpu::ComputePipeline,
     bind_group: &wgpu::BindGroup,
     x: u32,
     y: u32,
 ) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: Some(label),
-        timestamp_writes: None,
-    });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, bind_group, &[]);
-    pass.dispatch_workgroups(x, y, 1);
+    timings.compute(
+        encoder,
+        super::gpu::timing::GpuStage::AreaTable,
+        label,
+        |pass| {
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups(x, y, 1);
+        },
+    );
 }
 
 fn encode_hierarchy(
     encoder: &mut wgpu::CommandEncoder,
+    timings: &super::gpu::timing::GpuTimings,
     scan_pipeline: &wgpu::ComputePipeline,
     add_pipeline: &wgpu::ComputePipeline,
     hierarchy: &GpuAreaHierarchy,
@@ -699,6 +712,7 @@ fn encode_hierarchy(
     for level in &hierarchy.levels {
         encode_pass(
             encoder,
+            timings,
             "SparkleFlinger GPU area hierarchy tile scan",
             scan_pipeline,
             &level.bind_group,
@@ -709,6 +723,7 @@ fn encode_hierarchy(
     for level in hierarchy.levels.iter().rev().skip(1) {
         encode_pass(
             encoder,
+            timings,
             "SparkleFlinger GPU area hierarchy offset add",
             add_pipeline,
             &level.bind_group,

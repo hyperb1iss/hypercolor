@@ -1,12 +1,12 @@
 +++
 title = "Now playing & transport"
-description = "The now-playing chip, per-zone sidebar rows with pause/resume, preview-cabinet chips, and overflow to Studio."
+description = "The now-playing chip, per-zone sidebar rows with pause and resume, the preview's zone tabs, and overflow to Studio."
 weight = 100
 +++
 
-The now-playing transport is the set of small surfaces that tell you what is rendering and let you steer it without opening Studio. It lives in three places: the **Now Playing panel** at the bottom of the sidebar, the **now-playing chip** in the Studio Stage header, and the **zone chips** in the preview cabinet. In a multi-zone scene, every one of them tells the truth per zone instead of mirroring a single effect everywhere.
+The now-playing transport is the set of small surfaces that tell you what is rendering and let you steer it. It lives in three places: the **Now Playing panel** at the bottom of the sidebar, the **now-playing chip** in the Studio Stage header, and the **zone tabs** on the Dashboard and Effects preview. In a multi-zone scene, every one of them tells the truth per zone instead of mirroring a single effect everywhere.
 
-{{< img path="img/ui/studio.webp" alt="Studio: the zone tree on the left, the live Stage in the center" />}}
+{{< img path="img/ui/studio.webp" alt="Studio with the sidebar Now Playing panel showing one row per zone and the now-playing chip on the Stage" />}}
 
 ## The sidebar Now Playing panel
 
@@ -44,7 +44,7 @@ When the active scene has more than one LED zone, the singular effect metadata i
 The "what it is showing" label resolves in order: the zone's directly-assigned effect name first, then the zone's top layer caption if the effect index does not know the name, then **No effect** if the zone is rendering nothing. A paused zone dims to make its state obvious at a glance.
 
 {% <callout type="tip"> %}
-The sidebar shows up to **three** zone rows. Any zones beyond that fold into a **"+N more zones"** link that opens Studio, where every zone is visible. The exact cap is `SIDEBAR_ZONE_ROW_CAP = 3`.
+The sidebar shows up to **three** zone rows. Any zones beyond that fold into a **"+N more zones"** link that opens Studio, where every zone has a tab. The exact cap is `SIDEBAR_ZONE_ROW_CAP = 3`.
 {% </callout> %}
 
 ### The row toggles are per-zone, and they say so
@@ -53,21 +53,23 @@ This is the important guarantee. In a multi-zone scene, pausing a zone never sil
 
 The center transport Pause / Resume button is the exception: it is global. It pauses or resumes every device's output at once, and its tooltip says so (**Pause all output** / **Resume all output**). Use the per-zone row toggles when you want to stop one zone and leave the rest rendering.
 
-Under the hood, a per-zone pause flips that zone's `enabled` flag through a guarded zone PATCH, not the global stop. If the scene changed underneath you between read and write, the toast reads **"Scene changed, try again"** and the panel reloads rather than clobbering someone else's edit. That optimistic-concurrency contract is shared across Studio; see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) for how the revision guard works.
+Under the hood, a per-zone pause flips that zone's `enabled` flag through a guarded zone PATCH, not the global stop. While Studio is open, the pause goes through Studio's history, so `Ctrl+Z` takes it back like a pause from the tab menu; on other pages it writes directly. If the scene changed underneath you between read and write, the toast reads **"Scene changed, try again"** and the panel reloads rather than clobbering someone else's edit. That optimistic-concurrency contract is shared across Studio; see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) for how the revision guard works.
 
 ## The Studio Stage now-playing chip
 
-The Stage header carries its own now-playing chip, and it does a different job from the sidebar's. It names the **top layer** of the selected surface (or **No layers** when the stack is empty), and clicking it toggles the composition slide-over. That slide-over is the only way layer editing is summoned in Studio's two-column workspace, so the chip is your handle on the layer stack.
+The Stage header carries its own now-playing chip, and it does a different job from the sidebar's. It names the **top layer** of the open zone or screen: the layer's own name, else the name of the effect it runs, else its source kind. It reads **No layers** when the stack is empty, and a screen showing its display's stored default face adds a **Default** badge. Clicking the chip toggles the composition slide-over, the way layer editing opens in Studio, so the chip is your handle on the layer stack.
 
-The chip is rendered for every surface, both Lights and Screens, because both carry a layer stack and both need a way to open the composition panel. For how the layer stack itself works, see [Layers](@/studio/layers.md).
+The chip appears for every LED zone and every screen, because both carry a layer stack and both need a way to open the composition panel. For how the layer stack itself works, see [Layers](@/studio/layers.md).
 
-{{< img path="img/ui/ui-studio-zones.webp" alt="Zones in the Hypercolor Studio workspace" />}}
+{{< img path="img/ui/ui-studio-zones.webp" alt="The Studio Stage header with the now-playing chip naming the open zone's top layer" />}}
 
-## Preview-cabinet zone chips
+## The preview's zone tabs
 
-The preview cabinet's info overlay shows one chip per LED zone: a color dot, the zone name, and what that zone is showing. These chips are display-only. They live inside the cabinet's non-interactive overlay, so they report state without offering controls. A paused zone's chip dims and its tooltip reads **Zone paused**.
+In a multi-zone scene, the preview on the Dashboard and the Effects page shows a row of compact zone tabs in its info overlay, one per LED zone: the zone's identity dot, its name, and one status glyph, the same ones the Studio tabs use (a warning for a failed layer or a zone with no devices, a pause glyph for a paused zone). Below the tabs, a caption names what the selected zone is showing. With a single zone the tabs are hidden and the preview shows the effect's own title instead.
 
-The chips and the sidebar rows read from the same per-zone source of truth, so a two-zone scene shows two chips that match the two sidebar rows. There is no separate state to drift out of sync.
+The tabs choose the app's **target zone**. Selecting one moves the preview, the controls, the presets, and the target for the next effect apply together, and Studio opens on that zone next time. The arrow keys move between the tabs and select as they go. Hovering a tab reads **Show and edit** and the zone's name.
+
+The tabs, the caption, and the sidebar rows read from the same per-zone source of truth, so a two-zone scene shows two tabs that match the two sidebar rows. There is no separate state to drift out of sync.
 
 ## Where the panel runs, and in what mode
 
@@ -81,7 +83,8 @@ This is why the sidebar glow, the palette strip, and the zone swatches all share
 graph TD
     Scene[Active scene] --> ZE[Per-zone effect state]
     ZE --> Rows[Sidebar zone rows]
-    ZE --> Chips[Preview-cabinet chips]
+    ZE --> Tabs[Preview zone tabs]
+    Tabs -->|select| Target[Target zone]
     Rows -->|pause / resume| PATCH[Guarded zone PATCH]
     PATCH -->|enabled flag| Scene
     Rows -->|overflow| Studio[Open Studio]
@@ -93,6 +96,6 @@ The transport surfaces are a thin, honest read-and-steer layer over the shared a
 ## Related pages
 
 - [Studio overview](@/studio/overview.md): the Scene, Zone, Layers, and Layout model.
-- [Zones](@/studio/zones.md): create, color, enable, and partition your rig.
+- [Zones](@/studio/zones.md): add, color, pause, and reorder the zones that partition your rig.
 - [Effects and controls](@/studio/effects-and-controls.md): applying effects to a zone and tuning them live.
-- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a second zone end to end.
+- [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a multi-zone scene step by step.

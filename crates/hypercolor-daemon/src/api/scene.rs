@@ -6,9 +6,10 @@
 //! transport adapter and nothing more — it parses, calls one service,
 //! and renders the canonical envelope.
 //!
-//! Concurrency is one token. `GET /scene` serves the commit generation
-//! as `ETag`; structural mutations honor an optional `If-Match` against
-//! it and answer 412 with the current revision. Control-value writes
+//! Concurrency is one token. `GET /scene` serves the commit generation,
+//! qualified by the daemon run, as `ETag` (`"<run_epoch>:<revision>"`);
+//! structural mutations honor an optional `If-Match` against it and
+//! answer 412 with the current fence. Control-value writes
 //! take no token at all: the layer-identity lifecycle (§1.4) already
 //! fences staleness, because a replaced layer answers 404 rather than
 //! absorbing a patch meant for the effect it replaced.
@@ -23,7 +24,7 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::envelope::ListResponse;
 use hypercolor_types::api::scene::{
     AssignMembersRequest, ClearSceneRequest, CreateLayerRequest, CreateZoneRequest,
-    PatchControlsRequest, PatchZoneRequest, ReorderLayersRequest, ReplaceLayerRequest,
+    PatchControlsRequest, PatchZoneRequest, ReorderLayersRequest, ReplaceLayerRequest, SceneFence,
     ScenePatchRequest, ZoneLayoutRequest, ZoneMemberId,
 };
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
@@ -45,7 +46,11 @@ pub async fn get_scene(State(state): State<Arc<AppState>>) -> Response {
     match scene_tree::read_document(&state.domains.scene_tree).await {
         Ok(document) => {
             let revision = document.revision;
-            with_revision(envelope::ok(document), revision)
+            with_revision(
+                state.scene_manager.run_epoch(),
+                envelope::ok(document),
+                revision,
+            )
         }
         Err(error) => error.into_response(),
     }
@@ -62,12 +67,13 @@ pub async fn patch_scene(
         Err(error) => return error.into_response(),
     };
     tree_response(
+        state.scene_manager.run_epoch(),
         scene_tree::patch_scene(
             &state.domains.scene_tree,
             PatchScene {
                 name: body.name,
                 unassigned_behavior: body.unassigned_behavior,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -94,11 +100,12 @@ pub async fn clear_scene(
     };
     let zone = body.and_then(|ApiJson(body)| body.zone);
     tree_response(
+        state.scene_manager.run_epoch(),
         scene_tree::clear_scene(
             &state.domains.scene_tree,
             ClearScene {
                 zone,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -143,7 +150,7 @@ pub async fn create_zone(
             name: body.name,
             color: body.color,
             fallback_canvas: canvas,
-            expected_revision: expected,
+            fence: expected,
         },
     )
     .await;
@@ -152,6 +159,7 @@ pub async fn create_zone(
         Ok(written) => {
             let revision = written.commit.revision();
             with_revision(
+                state.scene_manager.run_epoch(),
                 (
                     StatusCode::CREATED,
                     envelope::ok(scene_tree::zone_resource(&written.zone)),
@@ -174,7 +182,11 @@ pub async fn get_zone(
         Err(error) => return error.into_response(),
     };
     match scene_tree::read_zone(&state.domains.scene_tree, zone_id).await {
-        Ok((resource, revision)) => with_revision(envelope::ok(resource), revision),
+        Ok((resource, revision)) => with_revision(
+            state.scene_manager.run_epoch(),
+            envelope::ok(resource),
+            revision,
+        ),
         Err(error) => error.into_response(),
     }
 }
@@ -191,24 +203,31 @@ pub async fn patch_zone(
         Err(error) => return error.into_response(),
     };
 
-    zone_written_response(
-        crate::domain::zone::update_zone(
-            &state.domains.scene,
-            crate::domain::zone::UpdateZone {
-                zone_id,
-                patch: hypercolor_core::scene::ZoneMetaPatch {
-                    name: body.name,
-                    description: None,
-                    color: body.color,
-                    brightness: body.brightness,
-                    enabled: body.enabled,
-                    make_primary: None,
-                },
-                expected_revision: expected,
+    match crate::domain::zone::update_zone(
+        &state.domains.scene,
+        crate::domain::zone::UpdateZone {
+            zone_id,
+            patch: hypercolor_core::scene::ZoneMetaPatch {
+                name: body.name,
+                description: None,
+                color: body.color,
+                brightness: body.brightness,
+                enabled: body.enabled,
+                make_primary: None,
+                index: body.index,
             },
-        )
-        .await,
+            fence: expected,
+        },
     )
+    .await
+    {
+        Ok(updated) => with_revision(
+            state.scene_manager.run_epoch(),
+            envelope::ok(scene_tree::zone_resource(&updated.zone)),
+            updated.revision,
+        ),
+        Err(error) => error.into_response(),
+    }
 }
 
 /// `DELETE /api/v1/scene/zones/{zone}` — remove a zone.
@@ -222,18 +241,31 @@ pub async fn delete_zone(
         Err(error) => return error.into_response(),
     };
 
-    if let Err(error) = crate::domain::zone::delete_zone(
+    match crate::domain::zone::delete_zone(
         &state.domains.scene,
         crate::domain::zone::DeleteZone {
             zone_id,
-            expected_revision: expected,
+            fence: expected,
         },
     )
     .await
     {
-        return error.into_response();
+        // The scene this removal committed, at the revision it committed,
+        // never a later writer's state.
+        Ok(removed) => {
+            let revision = removed.commit.revision();
+            with_revision(
+                state.scene_manager.run_epoch(),
+                envelope::ok(scene_tree::scene_document(
+                    &removed.scene,
+                    revision,
+                    state.scene_manager.run_epoch(),
+                )),
+                revision,
+            )
+        }
+        Err(error) => error.into_response(),
     }
-    get_scene(State(state)).await
 }
 
 /// `PUT /api/v1/scene/zones/{zone}/layout` — reposition the members.
@@ -253,6 +285,7 @@ pub async fn put_zone_layout(
     };
 
     written_response(
+        state.scene_manager.run_epoch(),
         scene_tree::set_zone_layout(
             &state.domains.scene_tree,
             zone_id,
@@ -280,12 +313,13 @@ pub async fn assign_members(
     };
 
     written_response(
+        state.scene_manager.run_epoch(),
         scene_tree::assign_members(
             &state.domains.scene_tree,
             AssignMembers {
                 zone_id,
                 request: body,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -308,6 +342,7 @@ pub async fn unassign_member(
     };
 
     written_response(
+        state.scene_manager.run_epoch(),
         scene_tree::unassign_member(
             &state.domains.scene_tree,
             zone_id,
@@ -337,7 +372,11 @@ pub async fn edit_members(
     match scene_tree::edit_members(&state.domains.scene_tree, body, expected).await {
         Ok(outcome) => {
             let revision = outcome.document.revision;
-            with_revision(envelope::ok(outcome), revision)
+            with_revision(
+                state.scene_manager.run_epoch(),
+                envelope::ok(outcome),
+                revision,
+            )
         }
         Err(error) => error.into_response(),
     }
@@ -356,6 +395,7 @@ pub async fn list_layers(
         Ok((resource, revision)) => {
             let total = resource.layers.len() as u64;
             with_revision(
+                state.scene_manager.run_epoch(),
                 envelope::ok(ListResponse {
                     items: resource.layers,
                     total,
@@ -391,6 +431,7 @@ pub async fn create_layer(
         Ok(Ok(written)) => {
             let revision = written.commit.revision();
             with_revision(
+                state.scene_manager.run_epoch(),
                 (
                     StatusCode::CREATED,
                     envelope::ok(scene_tree::zone_resource(&written.zone)),
@@ -417,6 +458,7 @@ pub async fn reorder_layers(
     };
 
     layer_stack_response(
+        state.scene_manager.run_epoch(),
         crate::domain::layer::reorder_layers(&state.domains.scene, zone_id, body.order, expected)
             .await,
         zone_id,
@@ -450,13 +492,14 @@ pub async fn replace_layer(
         Err(error) => return error.into_response(),
     };
     written_response(
+        state.scene_manager.run_epoch(),
         scene_tree::replace_layer(
             &state.domains.scene_tree,
             ReplaceLayer {
                 zone_id,
                 layer_id,
                 layer: replacement,
-                expected_revision: expected,
+                fence: expected,
             },
         )
         .await,
@@ -479,6 +522,7 @@ pub async fn delete_layer(
     };
 
     layer_stack_response(
+        state.scene_manager.run_epoch(),
         crate::domain::layer::remove_layer(&state.domains.scene, zone_id, layer_id, expected).await,
         zone_id,
     )
@@ -502,6 +546,7 @@ pub async fn patch_layer_controls(
 
     let values = body.values.into_iter().collect::<HashMap<_, _>>();
     written_response(
+        state.scene_manager.run_epoch(),
         scene_tree::patch_layer_controls(
             &state.domains.scene_tree,
             PatchLayerControls {
@@ -509,7 +554,7 @@ pub async fn patch_layer_controls(
                 layer_id,
                 values,
                 clear_bindings: body.clear_bindings,
-                expected_revision: None,
+                fence: None,
             },
             MutationContext::api(),
         )
@@ -519,36 +564,25 @@ pub async fn patch_layer_controls(
 
 // ── Adapter plumbing ─────────────────────────────────────────────────────
 
-fn tree_response(result: Result<TreeWritten, DomainError>) -> Response {
+fn tree_response(run_epoch: &str, result: Result<TreeWritten, DomainError>) -> Response {
     match result {
         Ok(written) => {
             let revision = written.document.revision;
-            with_revision(envelope::ok(written.document), revision)
+            with_revision(run_epoch, envelope::ok(written.document), revision)
         }
         Err(error) => error.into_response(),
     }
 }
 
-fn written_response(result: Result<ZoneWritten, DomainError>) -> Response {
+fn written_response(run_epoch: &str, result: Result<ZoneWritten, DomainError>) -> Response {
     match result {
-        Ok(written) => with_revision(envelope::ok(written.zone), written.revision),
-        Err(error) => error.into_response(),
-    }
-}
-
-fn zone_written_response(
-    result: Result<crate::domain::zone::ZoneWritten, DomainError>,
-) -> Response {
-    match result {
-        Ok(written) => with_revision(
-            envelope::ok(scene_tree::zone_resource(&written.zone)),
-            written.commit.revision(),
-        ),
+        Ok(written) => with_revision(run_epoch, envelope::ok(written.zone), written.revision),
         Err(error) => error.into_response(),
     }
 }
 
 fn layer_stack_response(
+    run_epoch: &str,
     result: Result<crate::domain::layer::LayerResult, DomainError>,
     zone_id: ZoneId,
 ) -> Response {
@@ -556,6 +590,7 @@ fn layer_stack_response(
         Ok(Ok(written)) => {
             let revision = written.commit.revision();
             with_revision(
+                run_epoch,
                 envelope::ok(scene_tree::zone_resource(&written.zone)),
                 revision,
             )
@@ -565,11 +600,12 @@ fn layer_stack_response(
     }
 }
 
-/// Attach the one wire version so every answer tells the caller what to
-/// send back on its next guarded write.
-pub(crate) fn with_revision(response: Response, revision: u64) -> Response {
+/// Attach the one wire version, epoch-qualified, so every answer tells the
+/// caller exactly what to send back as `If-Match` on its next guarded
+/// write: `"<run_epoch>:<revision>"` ([`SceneFence`]).
+pub(crate) fn with_revision(run_epoch: &str, response: Response, revision: u64) -> Response {
     let mut response = response;
-    if let Ok(value) = HeaderValue::from_str(&format!("\"{revision}\"")) {
+    if let Ok(value) = HeaderValue::from_str(&SceneFence::new(run_epoch, revision).to_etag()) {
         response.headers_mut().insert(header::ETAG, value);
     }
     response
@@ -577,12 +613,25 @@ pub(crate) fn with_revision(response: Response, revision: u64) -> Response {
 
 /// Parse the optional structural precondition.
 ///
-/// `*` means "any current state", which is what a caller sends when it
-/// wants the write to land regardless, so it reads as no precondition.
-pub(crate) fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainError> {
-    let Some(value) = headers.get(header::IF_MATCH) else {
+/// The fence is `"<run_epoch>:<revision>"` as served in `ETag`, or a bare
+/// revision from an older client, which checks the revision alone. The
+/// domain checks both parts against the commit candidate, so a refusal
+/// the request would earn without the header (an unknown effect or
+/// scene) still wins over a stale fence. `*` means "any current state",
+/// which is what a caller sends when it wants the write to land
+/// regardless, so it reads as no precondition. A list, whether
+/// comma-joined or split over several `If-Match` lines, is malformed:
+/// the daemon serves one tag and checks one.
+pub(crate) fn parse_if_match(headers: &HeaderMap) -> Result<Option<SceneFence>, DomainError> {
+    let mut lines = headers.get_all(header::IF_MATCH).iter();
+    let Some(value) = lines.next() else {
         return Ok(None);
     };
+    if lines.next().is_some() {
+        return Err(DomainError::malformed(
+            "If-Match must be one scene fence, not a list",
+        ));
+    }
     let raw = value
         .to_str()
         .map_err(|_| DomainError::malformed("If-Match must be ASCII"))?
@@ -590,15 +639,19 @@ pub(crate) fn parse_if_match(headers: &HeaderMap) -> Result<Option<u64>, DomainE
     if raw == "*" {
         return Ok(None);
     }
-    raw.trim_matches('"')
-        .parse::<u64>()
-        .map(Some)
-        .map_err(|_| DomainError::malformed("If-Match must be the scene revision"))
+    SceneFence::parse(raw).map(Some).map_err(|_| {
+        DomainError::malformed(
+            "If-Match must be a scene fence: \"<run_epoch>:<revision>\" or a bare revision",
+        )
+    })
 }
 
 /// The two transport details every zone-scoped mutation parses before
 /// the domain resolves the active scene from its commit candidate.
-fn zone_request(zone: &str, headers: &HeaderMap) -> Result<(ZoneId, Option<u64>), DomainError> {
+fn zone_request(
+    zone: &str,
+    headers: &HeaderMap,
+) -> Result<(ZoneId, Option<SceneFence>), DomainError> {
     let zone_id = parse_zone_id(zone)?;
     let expected = parse_if_match(headers)?;
     Ok((zone_id, expected))

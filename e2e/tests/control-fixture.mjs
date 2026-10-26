@@ -1,5 +1,5 @@
 import { expect } from "@playwright/test";
-import { getStack } from "./helpers.mjs";
+import { daemonError, daemonHeaders, getStack, refuseFence, writeFence } from "./helpers.mjs";
 
 export const ZONE = "22222222-2222-4222-8222-222222222222";
 export const EFFECT = "44444444-4444-4444-8444-444444444444";
@@ -15,6 +15,7 @@ export async function openControls(page, { rejectControls = false, surface = "st
   const scene = {
     id: "33333333-3333-4333-8333-333333333333",
     name: "Layer controls fixture", kind: "named", is_default: false, revision: 42,
+    run_epoch: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
     zones: [
       zone("11111111-1111-4111-8111-111111111111", "Primary lights", "primary", [{
         id: "77777777-7777-4777-8777-777777777777", name: "Primary effect layer",
@@ -49,12 +50,12 @@ export async function openControls(page, { rejectControls = false, surface = "st
     if (["GET", "HEAD"].includes(request.method())) {
       reads.push(pathname);
       if (pathname === "/api/v1/scene") {
-        await route.fulfill({ json: envelope(scene) });
+        await route.fulfill({ json: envelope(scene), headers: daemonHeaders(scene, { fence: true }) });
         return;
       }
       if (pathname.startsWith("/api/v1/effects/") && !pathname.endsWith("/active")) {
         const id = pathname.split("/").at(-1);
-        await route.fulfill({ json: envelope({
+        await route.fulfill({ headers: daemonHeaders(scene), json: envelope({
           id, name: "Fixture effect", description: "Scrollable effect controls", author: "Hypercolor tests",
           category: "ambient", source: "native", runnable: true, tags: [], version: "1.0.0",
           audio_reactive: false,
@@ -69,28 +70,30 @@ export async function openControls(page, { rejectControls = false, surface = "st
     }
     const layerPath = `/api/v1/scene/zones/${ZONE}/layers/${scene.zones[1].layers[0].id}`;
     const body = request.postDataJSON();
-    writes.push({ method: request.method(), pathname, body, revision: request.headers()["if-match"] });
+    const ifMatch = request.headers()["if-match"];
+    writes.push({ method: request.method(), pathname, body, ...writeFence(ifMatch) });
     if (request.method() === "PATCH" && pathname === `${layerPath}/controls`) {
       if (rejectControls) {
-        await route.fulfill({ status: 400, json: { error: { code: "invalid_control", message: "Fixture rejects this value" } } });
+        await route.fulfill(daemonError(scene, 400, "invalid_control", "Fixture rejects this value"));
         return;
       }
       if (beforeControlReply) await beforeControlReply({ scene, body, sendEvent });
       Object.assign(scene.zones[1].layers[0].source.controls, body.values);
       scene.revision += 1;
-      await route.fulfill({ json: envelope(scene.zones[1]) });
+      await route.fulfill({ json: envelope(scene.zones[1]), headers: daemonHeaders(scene, { fence: true }) });
       sendEvent("zone_changed", { scene_id: scene.id, zone_id: ZONE, role: "custom", kind: "controls_patched" });
       for (const [id, value] of Object.entries(body.values)) controlEvent(id, value.value);
       return;
     }
     if (request.method() === "PUT" && pathname === layerPath) {
-      if (request.headers()["if-match"] !== String(scene.revision)) {
-        await route.fulfill({ status: 412, json: { error: { code: "stale_revision", message: "Stale revision" } } });
+      const refusal = refuseFence(scene, ifMatch);
+      if (refusal) {
+        await route.fulfill(refusal);
         return;
       }
       scene.revision += 1;
       scene.zones[1].layers[0] = { ...body, id: replacementId(scene.revision) };
-      await route.fulfill({ json: envelope(scene.zones[1]) });
+      await route.fulfill({ json: envelope(scene.zones[1]), headers: daemonHeaders(scene, { fence: true }) });
       sendEvent("zone_changed", { scene_id: scene.id, zone_id: ZONE, role: "custom", kind: "updated" });
       return;
     }
@@ -102,7 +105,7 @@ export async function openControls(page, { rejectControls = false, surface = "st
   let inspector;
   if (surface === "studio") {
     await page.getByTitle("Open the composition panel", { exact: true }).click();
-    await page.getByRole("button", { name: "Control lights 0 devices", exact: true }).click();
+    await page.getByRole("tab", { name: "Control lights", exact: true }).click();
     inspector = page.getByRole("complementary");
   } else {
     await page.getByRole("tab", { name: "Control lights", exact: true }).click();

@@ -837,6 +837,20 @@ pub(super) fn decode_screen_zones_frame(buffer: &js_sys::ArrayBuffer) -> Option<
     ScreenZonesFrame::decode_array_buffer(buffer).ok()
 }
 
+/// The daemon run a `hello` names: the run its scene revisions belong to.
+/// `None` for any other message, and from daemons that predate run epochs.
+#[must_use]
+pub fn hello_run_epoch(message: &serde_json::Value) -> Option<String> {
+    if message.get("type").and_then(serde_json::Value::as_str) != Some("hello") {
+        return None;
+    }
+    message
+        .pointer("/state/scene/run_epoch")
+        .and_then(serde_json::Value::as_str)
+        .filter(|run| !run.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 #[must_use]
 pub fn interactive_preview_supported(message: &serde_json::Value) -> bool {
     message.get("type").and_then(serde_json::Value::as_str) == Some("hello")

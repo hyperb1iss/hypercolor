@@ -25,6 +25,7 @@ use crate::software_conflicts::device_hints;
 use crate::storage;
 use crate::style_utils::filter_chips;
 use crate::toasts;
+use crate::zones::surface::zone_display_name;
 
 // ── LocalStorage keys + helpers ─────────────────────────────────────────────
 
@@ -122,11 +123,7 @@ pub fn DevicesPage() -> impl IntoView {
                 if zone.role == ZoneRole::Display {
                     continue;
                 }
-                let label = if zone.role == ZoneRole::Primary && zone.name == "Primary" {
-                    "Default zone".to_owned()
-                } else {
-                    zone.name.clone()
-                };
+                let label = zone_display_name(&zone.name, zone.role);
                 for member in &zone.members {
                     map.entry(member.device_id.clone())
                         .or_insert_with(|| label.clone());

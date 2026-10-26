@@ -7,7 +7,7 @@
 use std::f32::consts::{PI, TAU};
 
 use hypercolor_types::spatial::{
-    LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneShape,
+    LedTopology, NormalizedPosition, Output, SpatialLayout, StripDirection, ZoneShape,
 };
 
 #[path = "layout_geometry/compounds.rs"]
@@ -50,13 +50,8 @@ pub enum ResizeHandle {
 pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
     let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     for zone in &mut layout.zones {
-        zone.size = normalize_zone_size_for_editor(
-            zone.position,
-            zone.size,
-            &zone.topology,
-            zone.shape.as_ref(),
-            aspect,
-        );
+        zone.size =
+            normalize_zone_size_for_editor(zone.size, &zone.topology, zone.shape.as_ref(), aspect);
     }
     layout
 }
@@ -74,14 +69,17 @@ pub fn is_circular_zone(shape: Option<&ZoneShape>, topology: &LedTopology) -> bo
 }
 
 /// Pixel aspect (width / height) of a canvas extent.
-pub(crate) fn canvas_pixel_aspect(canvas_width: u32, canvas_height: u32) -> f32 {
+pub fn canvas_pixel_aspect(canvas_width: u32, canvas_height: u32) -> f32 {
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
     let ratio = canvas_width.max(1) as f32 / canvas_height.max(1) as f32;
     ratio.max(GRID_EPSILON)
 }
 
+/// The size a box keeps in the editor: circles square in pixels, strips
+/// thick enough to see. A box's size never depends on where it sits; a
+/// box near an edge stays on the canvas through its position, which
+/// [`drawn_extent`] measures as drawn, rotation included.
 pub fn normalize_zone_size_for_editor(
-    position: NormalizedPosition,
     size: NormalizedPosition,
     topology: &LedTopology,
     shape: Option<&ZoneShape>,
@@ -91,7 +89,7 @@ pub fn normalize_zone_size_for_editor(
         return pixel_square_size(size, canvas_aspect);
     }
     match topology {
-        LedTopology::Strip { direction, .. } => clamp_strip_size(position, size, *direction),
+        LedTopology::Strip { direction, .. } => clamp_strip_size(size, *direction),
         _ => size,
     }
 }
@@ -110,7 +108,104 @@ fn pixel_square_size(size: NormalizedPosition, canvas_aspect: f32) -> Normalized
     NormalizedPosition::new(width, height)
 }
 
-pub(crate) fn drag_zone_to_position(
+/// A box as the canvas draws it, in canvas pixel proportions (x spans the
+/// canvas aspect, y spans 1). Placement, picking, labels, and the edge
+/// clamps all measure boxes through this, so none of them can disagree
+/// with what the canvas shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawnBox {
+    pub center: (f32, f32),
+    /// Half the width and height in the box's own frame, scale included.
+    /// A circle draws square in pixels, sized by its width.
+    pub half: (f32, f32),
+    pub rotation: f32,
+    pub circular: bool,
+}
+
+impl DrawnBox {
+    #[must_use]
+    pub fn new(
+        position: NormalizedPosition,
+        size: NormalizedPosition,
+        rotation: f32,
+        scale: f32,
+        circular: bool,
+        aspect: f32,
+    ) -> Self {
+        let scale = scale.max(0.0);
+        let half_width = size.x * aspect * scale * 0.5;
+        let half_height = if circular {
+            half_width
+        } else {
+            size.y * scale * 0.5
+        };
+        Self {
+            center: (position.x * aspect, position.y),
+            half: (half_width, half_height),
+            rotation,
+            circular,
+        }
+    }
+
+    /// The box `output` draws on a canvas of pixel aspect `aspect`.
+    #[must_use]
+    pub fn of(output: &Output, aspect: f32) -> Self {
+        Self::new(
+            output.position,
+            output.size,
+            output.rotation,
+            output.scale,
+            is_circular_zone(output.shape.as_ref(), &output.topology),
+            aspect,
+        )
+    }
+
+    /// Half the width and height of the box's axis-aligned bounds. The box
+    /// turns in pixels, so on a canvas that is not square a quarter turn
+    /// trades its pixel width for its pixel height. A circle's bounds
+    /// ignore its turn.
+    #[must_use]
+    pub fn reach(self) -> (f32, f32) {
+        let (half_width, half_height) = self.half;
+        if self.circular {
+            return (half_width, half_width);
+        }
+        let (sin, cos) = self.rotation.sin_cos();
+        (
+            (half_width * cos).abs() + (half_height * sin).abs(),
+            (half_width * sin).abs() + (half_height * cos).abs(),
+        )
+    }
+}
+
+/// Half the width and height of the box `output` draws, in its own frame;
+/// see [`DrawnBox::half`].
+#[must_use]
+pub fn drawn_half_size(output: &Output, aspect: f32) -> (f32, f32) {
+    DrawnBox::of(output, aspect).half
+}
+
+/// Width and height of the axis-aligned bounds of the box `output` draws
+/// on a canvas of pixel aspect `aspect`, in normalized canvas units; see
+/// [`DrawnBox::reach`].
+#[must_use]
+pub fn drawn_extent(output: &Output, aspect: f32) -> NormalizedPosition {
+    let aspect = aspect.max(GRID_EPSILON);
+    let (reach_x, reach_y) = DrawnBox::of(output, aspect).reach();
+    NormalizedPosition::new(2.0 * reach_x / aspect, 2.0 * reach_y)
+}
+
+/// [`drawn_extent`] on `layout`'s canvas.
+pub(crate) fn layout_extent(layout: &SpatialLayout, output: &Output) -> NormalizedPosition {
+    drawn_extent(
+        output,
+        canvas_pixel_aspect(layout.canvas_width, layout.canvas_height),
+    )
+}
+
+/// Move one box's center toward `desired_position`, stopping where its
+/// drawn bounds meet the canvas edge. Reports whether it moved.
+pub fn drag_zone_to_position(
     layout: &mut SpatialLayout,
     zone_id: &str,
     desired_position: NormalizedPosition,
@@ -123,7 +218,8 @@ pub(crate) fn drag_zone_to_position(
         return false;
     };
 
-    let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
+    let extent = layout_extent(layout, &layout.zones[zone_index]);
+    let clamped = clamp_zone_center(desired_position, extent);
     if layout.zones[zone_index].position == clamped {
         return false;
     }
@@ -136,20 +232,7 @@ pub(crate) fn set_zone_position(
     zone_id: &str,
     desired_position: NormalizedPosition,
 ) -> bool {
-    let desired_position = NormalizedPosition::new(
-        desired_position.x.clamp(0.0, 1.0),
-        desired_position.y.clamp(0.0, 1.0),
-    );
-    let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
-        return false;
-    };
-
-    let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
-    if layout.zones[zone_index].position == clamped {
-        return false;
-    }
-    layout.zones[zone_index].position = clamped;
-    true
+    drag_zone_to_position(layout, zone_id, desired_position)
 }
 
 pub(crate) fn zone_transform_anchor(
@@ -178,72 +261,215 @@ pub fn set_zone_rotation(layout: &mut SpatialLayout, zone_id: &str, rotation: f3
     true
 }
 
-pub fn resize_zone_from_handle(
-    start_center: NormalizedPosition,
-    start_size: NormalizedPosition,
-    start_mouse: NormalizedPosition,
-    handle: ResizeHandle,
-    current_mouse: NormalizedPosition,
-    keep_aspect_ratio: bool,
-    rotation: f32,
-) -> (NormalizedPosition, NormalizedPosition) {
-    // Rotate mouse coordinates into zone-local (unrotated) space so that
-    // dragging along a rotated edge correctly maps to width/height changes.
-    let (local_start, local_current) =
-        rotate_mouse_to_local(start_mouse, current_mouse, start_center, rotation);
-
-    let (local_center, size) = if keep_aspect_ratio {
-        resize_zone_locked(start_center, start_size, handle, local_current)
-    } else {
-        resize_zone_unlocked(start_center, start_size, local_start, handle, local_current)
-    };
-    // The rect was solved in zone-local space, so its center is a local
-    // offset from the pivot; rotate that offset back out so the opposite
-    // corner stays anchored on screen instead of the box sliding sideways.
-    (rotate_about(local_center, start_center, rotation), size)
+/// A box as it stood when one of its resize handles was pressed, and
+/// where the press landed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResizeStart {
+    pub center: NormalizedPosition,
+    pub size: NormalizedPosition,
+    pub rotation: f32,
+    pub scale: f32,
+    pub mouse: NormalizedPosition,
+    pub handle: ResizeHandle,
 }
 
-fn rotate_about(
-    point: NormalizedPosition,
-    pivot: NormalizedPosition,
-    rotation: f32,
-) -> NormalizedPosition {
-    if rotation.abs() < GRID_EPSILON {
-        return point;
-    }
-    let (sin_r, cos_r) = rotation.sin_cos();
-    let dx = point.x - pivot.x;
-    let dy = point.y - pivot.y;
-    NormalizedPosition::new(
-        (pivot.x + dx * cos_r - dy * sin_r).clamp(0.0, 1.0),
-        (pivot.y + dx * sin_r + dy * cos_r).clamp(0.0, 1.0),
+/// The center and size a resize lands on once the pointer reaches
+/// `current_mouse`, on a canvas of pixel aspect `canvas_aspect`.
+///
+/// The solve runs on the box as drawn, in canvas pixel proportions: the
+/// pointer turns into the box's own frame, the corner opposite the handle
+/// stays put on screen, and the box grows only until its drawn corners
+/// meet the canvas edge. A box that already overhangs an edge can still
+/// shrink, but never grows further out.
+#[must_use]
+pub fn resize_zone_from_handle(
+    start: ResizeStart,
+    current_mouse: NormalizedPosition,
+    keep_aspect_ratio: bool,
+    canvas_aspect: f32,
+) -> (NormalizedPosition, NormalizedPosition) {
+    let aspect = canvas_aspect.max(GRID_EPSILON);
+    let scale = start.scale.max(GRID_EPSILON);
+    let to_drawn = NormalizedPosition::new(aspect * scale, scale);
+    let drawn_start = NormalizedPosition::new(start.size.x * to_drawn.x, start.size.y * to_drawn.y);
+    let (sin, cos) = start.rotation.sin_cos();
+    let turn = |local: (f32, f32)| (local.0 * cos - local.1 * sin, local.0 * sin + local.1 * cos);
+    let (sign_x, sign_y) = handle_signs(start.handle);
+
+    // The pointer's travel, turned into the box's own frame.
+    let travel = (
+        (current_mouse.x - start.mouse.x) * aspect,
+        current_mouse.y - start.mouse.y,
+    );
+    let local_travel = (
+        travel.0 * cos + travel.1 * sin,
+        -travel.0 * sin + travel.1 * cos,
+    );
+    let desired = (
+        drawn_start.x + sign_x * local_travel.0,
+        drawn_start.y + sign_y * local_travel.1,
+    );
+
+    let anchor_offset = turn((-sign_x * drawn_start.x * 0.5, -sign_y * drawn_start.y * 0.5));
+    let corners = DrawnCorners {
+        anchor: (
+            start.center.x * aspect + anchor_offset.0,
+            start.center.y + anchor_offset.1,
+        ),
+        along_width: turn((sign_x, 0.0)),
+        along_height: turn((0.0, sign_y)),
+        canvas: (aspect, 1.0),
+    };
+
+    let (width, height) = if keep_aspect_ratio {
+        let floor = locked_minimum_size(zone_aspect_ratio(start.size), RESIZE_MIN_SIZE);
+        let floor = NormalizedPosition::new(
+            floor.x.min(start.size.x) * to_drawn.x,
+            floor.y.min(start.size.y) * to_drawn.y,
+        );
+        resize_locked(drawn_start, desired, floor, &corners)
+    } else {
+        // A box already smaller than the resize floor (attachment seeds
+        // start at 2%) keeps its own size as the floor.
+        let floor = axis_minimums_for_aspect(zone_aspect_ratio(start.size), RESIZE_MIN_SIZE);
+        let floor = NormalizedPosition::new(
+            floor.x.min(start.size.x).max(GRID_EPSILON) * to_drawn.x,
+            floor.y.min(start.size.y).max(GRID_EPSILON) * to_drawn.y,
+        );
+        resize_unlocked(drawn_start, desired, floor, &corners)
+    };
+
+    let center = (
+        corners.anchor.0 + (corners.along_width.0 * width + corners.along_height.0 * height) * 0.5,
+        corners.anchor.1 + (corners.along_width.1 * width + corners.along_height.1 * height) * 0.5,
+    );
+    (
+        NormalizedPosition::new(
+            (center.0 / aspect).clamp(0.0, 1.0),
+            center.1.clamp(0.0, 1.0),
+        ),
+        NormalizedPosition::new(width / to_drawn.x, height / to_drawn.y),
     )
 }
 
-/// Rotate two mouse positions from viewport space into zone-local (unrotated)
-/// space, pivoting around the zone center.
-fn rotate_mouse_to_local(
-    start_mouse: NormalizedPosition,
-    current_mouse: NormalizedPosition,
-    center: NormalizedPosition,
-    rotation: f32,
-) -> (NormalizedPosition, NormalizedPosition) {
-    if rotation.abs() < GRID_EPSILON {
-        return (start_mouse, current_mouse);
+/// Which way a handle grows the box along its own width and height.
+fn handle_signs(handle: ResizeHandle) -> (f32, f32) {
+    match handle {
+        ResizeHandle::NorthWest => (-1.0, -1.0),
+        ResizeHandle::NorthEast => (1.0, -1.0),
+        ResizeHandle::SouthWest => (-1.0, 1.0),
+        ResizeHandle::SouthEast => (1.0, 1.0),
     }
-    let cos_r = (-rotation).cos();
-    let sin_r = (-rotation).sin();
+}
 
-    let rotate = |p: NormalizedPosition| {
-        let dx = p.x - center.x;
-        let dy = p.y - center.y;
-        NormalizedPosition::new(
-            center.x + dx * cos_r - dy * sin_r,
-            center.y + dx * sin_r + dy * cos_r,
-        )
-    };
+/// A box being resized, as drawn in canvas pixel proportions: the corner
+/// that stays put, and the screen directions its width and height grow
+/// in. Every corner is `anchor + w * along_width + h * along_height` with
+/// `w` either 0 or the width and `h` either 0 or the height.
+struct DrawnCorners {
+    anchor: (f32, f32),
+    along_width: (f32, f32),
+    along_height: (f32, f32),
+    canvas: (f32, f32),
+}
 
-    (rotate(start_mouse), rotate(current_mouse))
+impl DrawnCorners {
+    /// The largest `t` that keeps `base + t * direction` on the canvas for
+    /// every base. A direction that leaves a coordinate alone does not
+    /// bound it.
+    fn reach(&self, bases: &[(f32, f32)], direction: (f32, f32)) -> f32 {
+        let axis = |base: f32, step: f32, limit: f32| {
+            if step > GRID_EPSILON {
+                (limit - base) / step
+            } else if step < -GRID_EPSILON {
+                -base / step
+            } else {
+                f32::INFINITY
+            }
+        };
+        bases
+            .iter()
+            .map(|base| {
+                axis(base.0, direction.0, self.canvas.0).min(axis(
+                    base.1,
+                    direction.1,
+                    self.canvas.1,
+                ))
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    /// The widest the box can draw at `height` with every corner on the
+    /// canvas.
+    fn max_width(&self, height: f32) -> f32 {
+        let raised = (
+            self.anchor.0 + self.along_height.0 * height,
+            self.anchor.1 + self.along_height.1 * height,
+        );
+        self.reach(&[self.anchor, raised], self.along_width)
+    }
+
+    /// The tallest the box can draw at `width` with every corner on the
+    /// canvas.
+    fn max_height(&self, width: f32) -> f32 {
+        let widened = (
+            self.anchor.0 + self.along_width.0 * width,
+            self.anchor.1 + self.along_width.1 * width,
+        );
+        self.reach(&[self.anchor, widened], self.along_height)
+    }
+}
+
+/// Keep `desired` within `cap`, except that a box which already overhung
+/// the canvas may still shrink toward, but not past, where it started.
+fn within_canvas(desired: f32, cap: f32, start: f32) -> f32 {
+    desired.min(cap.max(desired.min(start)))
+}
+
+fn resize_unlocked(
+    start: NormalizedPosition,
+    desired: (f32, f32),
+    floor: NormalizedPosition,
+    corners: &DrawnCorners,
+) -> (f32, f32) {
+    // Every corner moves away from the anchor as the box grows, so the
+    // sizes that fit form a region closed toward the anchor: settle the
+    // width against the smaller height, then the height against that
+    // width, then the width once more against the final height.
+    let mut width = within_canvas(
+        desired.0,
+        corners.max_width(desired.1.min(start.y).max(0.0)),
+        start.x,
+    );
+    let height = within_canvas(desired.1, corners.max_height(width.max(0.0)), start.y);
+    width = within_canvas(width, corners.max_width(height.max(0.0)), start.x);
+    (width.max(floor.x), height.max(floor.y))
+}
+
+fn resize_locked(
+    start: NormalizedPosition,
+    desired: (f32, f32),
+    floor: NormalizedPosition,
+    corners: &DrawnCorners,
+) -> (f32, f32) {
+    let aspect = (start.x / start.y.max(GRID_EPSILON)).max(GRID_EPSILON);
+    // Project the pointer onto the aspect-preserving diagonal so resizing
+    // stays smooth instead of jumping between width-led and height-led.
+    let height = (desired.0 * aspect + desired.1) / (aspect * aspect + 1.0);
+    let widthwise = (
+        corners.along_width.0 * aspect,
+        corners.along_width.1 * aspect,
+    );
+    let diagonal = (
+        widthwise.0 + corners.along_height.0,
+        widthwise.1 + corners.along_height.1,
+    );
+    let reach = corners
+        .reach(&[corners.anchor], widthwise)
+        .min(corners.reach(&[corners.anchor], corners.along_height))
+        .min(corners.reach(&[corners.anchor], diagonal));
+    let height = within_canvas(height, reach, start.y).max(floor.y);
+    (height * aspect, height)
 }
 
 pub fn update_zone_size(
@@ -297,169 +523,6 @@ pub fn update_zone_size(
     )
 }
 
-fn resize_zone_unlocked(
-    start_center: NormalizedPosition,
-    start_size: NormalizedPosition,
-    start_mouse: NormalizedPosition,
-    handle: ResizeHandle,
-    current_mouse: NormalizedPosition,
-) -> (NormalizedPosition, NormalizedPosition) {
-    // A box already smaller than the resize floor (attachment seeds start at
-    // 2%) keeps its own size as the floor; otherwise a flush-edge box would
-    // hand `clamp` an inverted range and abort the whole UI.
-    let floor = axis_minimums_for_aspect(zone_aspect_ratio(start_size), RESIZE_MIN_SIZE);
-    let min_size = NormalizedPosition::new(
-        floor.x.min(start_size.x).max(GRID_EPSILON),
-        floor.y.min(start_size.y).max(GRID_EPSILON),
-    );
-    let start_left = start_center.x - start_size.x * 0.5;
-    let start_right = start_center.x + start_size.x * 0.5;
-    let start_top = start_center.y - start_size.y * 0.5;
-    let start_bottom = start_center.y + start_size.y * 0.5;
-
-    let dx = current_mouse.x - start_mouse.x;
-    let dy = current_mouse.y - start_mouse.y;
-
-    let (mut left, mut right, mut top, mut bottom) =
-        (start_left, start_right, start_top, start_bottom);
-
-    match handle {
-        ResizeHandle::NorthWest => {
-            left = (start_left + dx).clamp(0.0, start_right - min_size.x);
-            top = (start_top + dy).clamp(0.0, start_bottom - min_size.y);
-        }
-        ResizeHandle::NorthEast => {
-            right = (start_right + dx).clamp(start_left + min_size.x, 1.0);
-            top = (start_top + dy).clamp(0.0, start_bottom - min_size.y);
-        }
-        ResizeHandle::SouthWest => {
-            left = (start_left + dx).clamp(0.0, start_right - min_size.x);
-            bottom = (start_bottom + dy).clamp(start_top + min_size.y, 1.0);
-        }
-        ResizeHandle::SouthEast => {
-            right = (start_right + dx).clamp(start_left + min_size.x, 1.0);
-            bottom = (start_bottom + dy).clamp(start_top + min_size.y, 1.0);
-        }
-    }
-
-    rect_from_bounds(left, right, top, bottom, min_size)
-}
-
-fn resize_zone_locked(
-    start_center: NormalizedPosition,
-    start_size: NormalizedPosition,
-    handle: ResizeHandle,
-    current_mouse: NormalizedPosition,
-) -> (NormalizedPosition, NormalizedPosition) {
-    let start_left = start_center.x - start_size.x * 0.5;
-    let start_right = start_center.x + start_size.x * 0.5;
-    let start_top = start_center.y - start_size.y * 0.5;
-    let start_bottom = start_center.y + start_size.y * 0.5;
-
-    let aspect = (start_size.x / start_size.y.max(GRID_EPSILON)).max(GRID_EPSILON);
-
-    let (anchor_x, anchor_y, horizontal_sign, vertical_sign) = match handle {
-        ResizeHandle::NorthWest => (start_right, start_bottom, -1.0, -1.0),
-        ResizeHandle::NorthEast => (start_left, start_bottom, 1.0, -1.0),
-        ResizeHandle::SouthWest => (start_right, start_top, -1.0, 1.0),
-        ResizeHandle::SouthEast => (start_left, start_top, 1.0, 1.0),
-    };
-
-    let max_width = if horizontal_sign > 0.0 {
-        1.0 - anchor_x
-    } else {
-        anchor_x
-    }
-    .max(GRID_EPSILON);
-    let max_height = if vertical_sign > 0.0 {
-        1.0 - anchor_y
-    } else {
-        anchor_y
-    }
-    .max(GRID_EPSILON);
-
-    let max_preserved_width = max_width.min(max_height * aspect).max(GRID_EPSILON);
-    let max_preserved_height = (max_preserved_width / aspect).max(GRID_EPSILON);
-    let raw_min_preserved = locked_minimum_size(aspect, RESIZE_MIN_SIZE);
-    let min_scale = (max_preserved_width / raw_min_preserved.x.max(GRID_EPSILON))
-        .min(max_preserved_height / raw_min_preserved.y.max(GRID_EPSILON))
-        .min(1.0);
-    let min_preserved_size = NormalizedPosition::new(
-        raw_min_preserved.x * min_scale,
-        raw_min_preserved.y * min_scale,
-    );
-
-    // Project the mouse displacement onto the aspect-ratio diagonal for smooth,
-    // continuous resizing. This replaces the old two-candidate distance heuristic
-    // that caused discrete size jumps when crossing between width-driven and
-    // height-driven modes.
-    let signed_dx = (current_mouse.x - anchor_x) * horizontal_sign;
-    let signed_dy = (current_mouse.y - anchor_y) * vertical_sign;
-
-    // Diagonal direction is (aspect, 1) — the aspect-ratio preserving diagonal.
-    // t is the scalar projection onto this diagonal.
-    let t = (signed_dx * aspect + signed_dy) / (aspect * aspect + 1.0);
-
-    let width = (t * aspect).clamp(min_preserved_size.x, max_preserved_width);
-    let height = (width / aspect).clamp(min_preserved_size.y, max_preserved_height);
-
-    let left = if horizontal_sign > 0.0 {
-        anchor_x
-    } else {
-        anchor_x - width
-    };
-    let right = if horizontal_sign > 0.0 {
-        anchor_x + width
-    } else {
-        anchor_x
-    };
-    let top = if vertical_sign > 0.0 {
-        anchor_y
-    } else {
-        anchor_y - height
-    };
-    let bottom = if vertical_sign > 0.0 {
-        anchor_y + height
-    } else {
-        anchor_y
-    };
-
-    rect_from_bounds(left, right, top, bottom, min_preserved_size)
-}
-
-fn corner_from_anchor(
-    anchor_x: f32,
-    anchor_y: f32,
-    horizontal_sign: f32,
-    vertical_sign: f32,
-    width: f32,
-    height: f32,
-) -> NormalizedPosition {
-    NormalizedPosition::new(
-        anchor_x + width * horizontal_sign,
-        anchor_y + height * vertical_sign,
-    )
-}
-
-fn rect_from_bounds(
-    left: f32,
-    right: f32,
-    top: f32,
-    bottom: f32,
-    min_size: NormalizedPosition,
-) -> (NormalizedPosition, NormalizedPosition) {
-    (
-        NormalizedPosition::new(
-            ((left + right) * 0.5).clamp(0.0, 1.0),
-            ((top + bottom) * 0.5).clamp(0.0, 1.0),
-        ),
-        NormalizedPosition::new(
-            (right - left).max(min_size.x),
-            (bottom - top).max(min_size.y),
-        ),
-    )
-}
-
 fn zone_aspect_ratio(size: NormalizedPosition) -> f32 {
     (size.x / size.y.max(GRID_EPSILON)).max(GRID_EPSILON)
 }
@@ -493,35 +556,23 @@ fn locked_minimum_size(aspect: f32, base_min: f32) -> NormalizedPosition {
     }
 }
 
-fn clamp_strip_size(
-    position: NormalizedPosition,
-    size: NormalizedPosition,
-    direction: StripDirection,
-) -> NormalizedPosition {
-    let max_width = available_axis_span(position.x);
-    let max_height = available_axis_span(position.y);
-    let mut width = size.x.clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
-    let mut height = size.y.clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+fn clamp_strip_size(size: NormalizedPosition, direction: StripDirection) -> NormalizedPosition {
+    let mut width = size.x.clamp(GRID_EPSILON, 1.0);
+    let mut height = size.y.clamp(GRID_EPSILON, 1.0);
 
     match direction {
         StripDirection::LeftToRight | StripDirection::RightToLeft => {
-            let target_height = (width / EDITOR_STRIP_MAX_ASPECT).min(max_height);
-            height = height
-                .max(target_height)
-                .clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+            let target_height = (width / EDITOR_STRIP_MAX_ASPECT).min(1.0);
+            height = height.max(target_height).clamp(GRID_EPSILON, 1.0);
             if width / height.max(GRID_EPSILON) > EDITOR_STRIP_MAX_ASPECT {
-                width = (height * EDITOR_STRIP_MAX_ASPECT)
-                    .clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
+                width = (height * EDITOR_STRIP_MAX_ASPECT).clamp(GRID_EPSILON, 1.0);
             }
         }
         StripDirection::TopToBottom | StripDirection::BottomToTop => {
-            let target_width = (height / EDITOR_STRIP_MAX_ASPECT).min(max_width);
-            width = width
-                .max(target_width)
-                .clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
+            let target_width = (height / EDITOR_STRIP_MAX_ASPECT).min(1.0);
+            width = width.max(target_width).clamp(GRID_EPSILON, 1.0);
             if height / width.max(GRID_EPSILON) > EDITOR_STRIP_MAX_ASPECT {
-                height = (width * EDITOR_STRIP_MAX_ASPECT)
-                    .clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+                height = (width * EDITOR_STRIP_MAX_ASPECT).clamp(GRID_EPSILON, 1.0);
             }
         }
     }
@@ -529,9 +580,14 @@ fn clamp_strip_size(
     NormalizedPosition::new(width, height)
 }
 
-fn clamp_zone_center(position: NormalizedPosition, size: NormalizedPosition) -> NormalizedPosition {
-    let (min_x, max_x) = zone_center_range(size.x);
-    let (min_y, max_y) = zone_center_range(size.y);
+/// The nearest center to `position` that keeps a box whose drawn bounds
+/// span `extent` (see [`drawn_extent`]) on the canvas.
+fn clamp_zone_center(
+    position: NormalizedPosition,
+    extent: NormalizedPosition,
+) -> NormalizedPosition {
+    let (min_x, max_x) = zone_center_range(extent.x);
+    let (min_y, max_y) = zone_center_range(extent.y);
     NormalizedPosition::new(
         position.x.clamp(min_x, max_x),
         position.y.clamp(min_y, max_y),
@@ -548,10 +604,6 @@ pub(crate) fn zone_center_range(extent: f32) -> (f32, f32) {
     } else {
         (half, 1.0 - half)
     }
-}
-
-fn available_axis_span(center: f32) -> f32 {
-    (center.min(1.0 - center) * 2.0).clamp(GRID_EPSILON, 1.0)
 }
 
 fn distance_sq(left: NormalizedPosition, right: NormalizedPosition) -> f32 {

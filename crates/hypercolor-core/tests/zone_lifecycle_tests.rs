@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use hypercolor_core::scene::{
-    OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError, make_scene,
-    primary_zone_follows_active_layout,
+    OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError, default_primary_zone,
+    make_scene, primary_zone_follows_active_layout,
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -193,6 +193,197 @@ fn metadata_patch_can_promote_primary_atomically() {
         1
     );
     assert!(scene.zones_revision > before);
+}
+
+/// The default scene holding a primary zone and two custom zones, in
+/// that order.
+fn three_zone_manager() -> (SceneManager, [ZoneId; 3]) {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    let primary = manager
+        .upsert_primary_zone(
+            &sample_effect("Primary"),
+            HashMap::new(),
+            None,
+            sample_layout("primary-zone"),
+        )
+        .expect("primary should be created")
+        .id;
+    let desk = manager
+        .create_zone(&scene_id, "Desk".to_owned(), None, (320, 200))
+        .expect("desk zone should be created");
+    let shelf = manager
+        .create_zone(&scene_id, "Shelf".to_owned(), None, (320, 200))
+        .expect("shelf zone should be created");
+    (manager, [primary, desk, shelf])
+}
+
+fn zone_order(manager: &SceneManager) -> Vec<ZoneId> {
+    manager
+        .active_scene()
+        .expect("default scene should be active")
+        .zones
+        .iter()
+        .map(|zone| zone.id)
+        .collect()
+}
+
+fn resolved_order(manager: &SceneManager) -> Vec<ZoneId> {
+    manager
+        .resolved_zones()
+        .iter()
+        .map(|zone| zone.id)
+        .collect()
+}
+
+fn zones_revision(manager: &SceneManager) -> u64 {
+    manager
+        .active_scene()
+        .expect("default scene should be active")
+        .zones_revision
+}
+
+fn move_to(index: usize) -> ZoneMetaPatch {
+    ZoneMetaPatch {
+        index: Some(index),
+        ..ZoneMetaPatch::default()
+    }
+}
+
+#[test]
+fn a_zone_moves_forward_in_the_zone_order() {
+    let (mut manager, [primary, desk, shelf]) = three_zone_manager();
+    let before = zones_revision(&manager);
+
+    let moved = manager
+        .update_zone_meta(&SceneId::DEFAULT, primary, move_to(2))
+        .expect("the primary zone should move to the last slot");
+
+    assert_eq!(moved.id, primary);
+    assert_eq!(moved.role, ZoneRole::Primary, "a move never changes a role");
+    assert_eq!(zone_order(&manager), [desk, shelf, primary]);
+    assert_eq!(
+        resolved_order(&manager),
+        [desk, shelf, primary],
+        "the render zones follow the new order"
+    );
+    assert_eq!(zones_revision(&manager), before + 1);
+}
+
+#[test]
+fn a_zone_moves_backward_in_the_zone_order() {
+    let (mut manager, [primary, desk, shelf]) = three_zone_manager();
+    let before = zones_revision(&manager);
+
+    manager
+        .update_zone_meta(&SceneId::DEFAULT, shelf, move_to(0))
+        .expect("the shelf zone should move to the first slot");
+
+    assert_eq!(zone_order(&manager), [shelf, primary, desk]);
+    assert_eq!(resolved_order(&manager), [shelf, primary, desk]);
+    assert_eq!(zones_revision(&manager), before + 1);
+}
+
+#[test]
+fn a_move_past_the_end_clamps_to_the_last_slot() {
+    let (mut manager, [primary, desk, shelf]) = three_zone_manager();
+
+    let moved = manager
+        .update_zone_meta(&SceneId::DEFAULT, desk, move_to(99))
+        .expect("an index past the end should clamp");
+
+    assert_eq!(moved.id, desk);
+    assert_eq!(zone_order(&manager), [primary, shelf, desk]);
+}
+
+#[test]
+fn a_move_to_the_current_slot_leaves_every_revision_untouched() {
+    let (mut manager, [primary, desk, shelf]) = three_zone_manager();
+    let zones_before = zones_revision(&manager);
+    let resolved_before = manager.resolved_zones_revision();
+
+    for (zone_id, index) in [(desk, 1), (shelf, 2), (shelf, 7)] {
+        manager
+            .update_zone_meta(&SceneId::DEFAULT, zone_id, move_to(index))
+            .expect("a move to the current slot should succeed");
+    }
+
+    assert_eq!(zone_order(&manager), [primary, desk, shelf]);
+    assert_eq!(zones_revision(&manager), zones_before);
+    assert_eq!(manager.resolved_zones_revision(), resolved_before);
+}
+
+#[test]
+fn a_move_lands_with_the_other_fields_in_one_patch() {
+    let (mut manager, [primary, desk, shelf]) = three_zone_manager();
+    let before = zones_revision(&manager);
+
+    let updated = manager
+        .update_zone_meta(
+            &SceneId::DEFAULT,
+            shelf,
+            ZoneMetaPatch {
+                name: Some("Bookshelf".to_owned()),
+                brightness: Some(0.4),
+                enabled: Some(false),
+                index: Some(0),
+                ..ZoneMetaPatch::default()
+            },
+        )
+        .expect("a rename, dim, pause, and move should land together");
+
+    assert_eq!(updated.id, shelf);
+    assert_eq!(updated.name, "Bookshelf");
+    assert_eq!(updated.brightness, 0.4);
+    assert!(!updated.enabled);
+    let scene = manager
+        .active_scene()
+        .expect("default scene should stay active");
+    assert_eq!(
+        scene.zones[0], updated,
+        "the moved slot holds the patched zone"
+    );
+    assert_eq!(zone_order(&manager), [shelf, primary, desk]);
+    assert_eq!(
+        zones_revision(&manager),
+        before + 1,
+        "one patch is one structural change"
+    );
+}
+
+#[test]
+fn snapshot_scenes_refuse_a_real_move_and_keep_their_order() {
+    let mut manager = SceneManager::with_default();
+    let mut scene = make_scene("Locked");
+    scene.mutation_mode = SceneMutationMode::Snapshot;
+    let primary = default_primary_zone(sample_layout("primary-zone"));
+    let mut custom = default_primary_zone(sample_layout("custom-zone"));
+    custom.id = ZoneId::new();
+    custom.name = "Desk".to_owned();
+    custom.role = ZoneRole::Custom;
+    let (primary_id, custom_id) = (primary.id, custom.id);
+    scene.zones = vec![primary, custom];
+    let scene_id = scene.id;
+    manager
+        .create(scene)
+        .expect("snapshot scene should register");
+
+    let error = manager
+        .update_zone_meta(&scene_id, custom_id, move_to(0))
+        .expect_err("a snapshot scene should refuse a move");
+    assert_eq!(error, ZoneMutationError::SnapshotLocked);
+
+    manager
+        .update_zone_meta(&scene_id, custom_id, move_to(1))
+        .expect("a move to the current slot changes nothing to refuse");
+    let order = manager
+        .get(&scene_id)
+        .expect("snapshot scene should still exist")
+        .zones
+        .iter()
+        .map(|zone| zone.id)
+        .collect::<Vec<_>>();
+    assert_eq!(order, [primary_id, custom_id]);
 }
 
 #[test]

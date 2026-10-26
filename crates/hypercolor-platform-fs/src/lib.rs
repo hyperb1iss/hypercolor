@@ -24,7 +24,11 @@ pub use unix::{
     PrivateStagingDirectory, PublicDirectoryAuthority, ReadOnlyDirectoryAuthority,
 };
 #[cfg(target_os = "windows")]
-pub use windows::DestinationIdentity;
+pub use windows::{
+    DestinationIdentity, WindowsAce, WindowsAceKind, WindowsDirectory, WindowsDirectoryAccess,
+    WindowsEntryKind, WindowsEntryMetadata, WindowsFileLock, WindowsSecurity, WindowsSid,
+    windows_child_name_is_valid, windows_file_security,
+};
 
 /// Atomically replace `destination` with `source` and make the replacement
 /// durable.

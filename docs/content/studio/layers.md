@@ -1,25 +1,25 @@
 +++
 title = "Layers"
-description = "The per-zone layer stack: add effect/face/media layers, 11 blend modes, opacity, transform & color, reorder, and the health pill."
+description = "The per-zone layer stack: add effect, face, and media layers, 11 blend modes, opacity, transform and color, reorder, and the health pill."
 weight = 60
 template = "page.html"
 +++
 
 Layers are how a single zone shows more than one thing at once. Each zone owns a stack of layers, and the engine composites them bottom-to-top into the finished image that drives that zone's LEDs or screen. A pulsing effect on the bottom, a logo clip blended over it, a color wash on top: that is a layer stack.
 
-You edit the stack in the **Layer Stack** panel. It opens from the Stage by clicking the now-playing chip, which slides the composition panel over the canvas. Studio, the Media page, and any future surface all mount the exact same editor, so the controls never drift between places.
+You edit the stack in the **Layer Stack** panel. It opens from the Stage by clicking the now-playing chip, which slides the composition panel over the canvas. The panel always edits the stack of the tab you have open.
 
-{{< img path="img/ui/studio.webp" alt="Studio composition workspace with the layer stack panel" />}}
+{{< img path="img/ui/studio.webp" alt="The Studio composition panel open over the Stage, showing the open zone's layer stack" />}}
 
-This page covers adding layers, the 11 blend modes, opacity, the transform and color adjustments, reordering, the runtime health pill, and the add-to scopes that let one layer land on several zones at once.
+This page covers adding layers, the 11 blend modes, opacity, the transform and color adjustments, reordering, the runtime health pill, and sending one face layer to every screen at once.
 
 {% <callout type="info"> %}
-A **scene** is your whole-rig configuration and a **zone** is a flexible partition of that rig. The layer stack belongs to one zone. Switching zones in the left rail swaps which stack you are editing. See [Zones](@/studio/zones.md) for the zone model.
+A **scene** is your whole-rig configuration and a **zone** is a partition of that rig. The layer stack belongs to one zone. Opening another zone's tab swaps which stack you are editing. See [Zones](@/studio/zones.md) for the zone model.
 {% </callout> %}
 
 ## The layer stack at a glance
 
-The panel header names the surface you are editing (the selected zone). Below it sits the **Add layer** button, and under that the stack itself, listed from **Top** to **Bottom**.
+The panel header names the zone or screen you are editing. Below it sits the **Add layer** button, and under that the stack itself, listed from **Top** to **Bottom**.
 
 The list is drawn in reverse of how layers are authored: layers are stored bottom-to-top (the bottom layer renders first, everything else composites over it), but the panel shows the top layer first so it reads like a stack of cards from above. The **Top** and **Bottom** markers only appear once you have more than one layer; with a single layer there is no order to convey.
 
@@ -35,15 +35,15 @@ Each layer is a card. From top to bottom a card carries:
 
 ## Adding a layer
 
-Click **Add layer** to open the picker. It has two tabs, **Effect** and **Media**, plus an optional **Add to** scope selector.
+Click **Add layer** to open the picker. It has two tabs, **Effect** and **Media**. A new layer lands on the open tab's zone or screen.
 
-{{< img path="img/ui/effects.webp" alt="Studio effects gallery, the kind of catalog the Effect tab draws from" />}}
+{{< img path="img/ui/effects.webp" alt="The Effects page catalog, the same effects the Effect tab lists" />}}
 
 ### Effect and face layers
 
 The **Effect** tab lists every runnable effect from the catalog. Search filters by name or category. Picking one adds it as a layer named after the effect.
 
-When the selected surface is a **Screen** (a display-face zone), the tab relabels to **Face** and floats the display-category effects (the animated faces meant for screens rather than LED zones) to the top of the list, with the rest still available below. The picker reads the surface's role and reshapes which effects it offers, but either way you are adding an effect layer; "Face" is the screen-flavored framing of the same picker. Browse the full set on the [effect catalog](@/effects/catalog.md).
+When the open tab is the **Screens** tab, the tab relabels to **Face** and floats the display-category effects (the animated faces meant for screens rather than LED zones) to the top of the list, with the rest still available below. Either way you are adding an effect layer; "Face" is the screen-flavored framing of the same picker. Browse the full set on the [effect catalog](@/effects/catalog.md).
 
 ### Media layers
 
@@ -120,22 +120,18 @@ Each layer carries a small status pill next to its title that flags runtime trou
 
 If a layer is **Missing** or **Failed**, the Stage also raises a surface-level degraded banner so you notice without opening the stack.
 
-## Add-to scopes
+## Sending a face to every screen
 
-By default a new layer lands on the one zone you are editing. In a **multi-zone** scene, the picker grows an **Add to** row so you can drop the same layer onto several zones in one action:
+A new layer lands on the one zone or screen you are editing. The one exception is the Screens tab: when the scene drives more than one screen, the picker grows an **Add to** row with two choices:
 
-- **This surface**: the selected zone only. The default.
-- **All zones**: every LED zone in the scene.
-- **All screens**: every display-face zone.
-- **Whole scene**: every zone, lights and screens alike.
+- **This screen**: the selected screen only. The default.
+- **All screens**: every screen in the scene gets the layer.
 
-The scope selector only appears when there is genuinely more than one place to send a layer. In a single-zone scene it stays hidden, and a scope that would target nothing (for example **All screens** in a scene with no screens) is dropped from the list.
+LED zones have no such choice. Each zone is its own canvas, and the same effect added to several zones would run as separate, unsynchronized copies. To give several parts of your rig one look, put them in one zone.
 
 {% <callout type="info"> %}
-When you add a layer to multiple zones at once, the change is guarded against conflicts only for the zone currently on screen; the other zones receive the layer unconditionally. If a bulk add partially fails, the toast tells you how many zones got the layer and how many did not.
+When you add a layer to every screen at once, the screens are written in order, each against the scene revision the previous write returned. The first stale or failed write stops the run, and the toast tells you how many screens got the layer and how many did not.
 {% </callout> %}
-
-A **Selected surfaces** scope, adding to an arbitrary multi-select of zones, is planned but not yet shipped. It rides a surface multi-select that is still on the roadmap.
 
 ## How edits are saved
 

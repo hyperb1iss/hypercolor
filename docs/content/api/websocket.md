@@ -136,7 +136,13 @@ live.
     "paused": false,
     "brightness": 100,
     "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8 },
-    "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
+    "scene": {
+      "id": "late-night",
+      "name": "Late Night",
+      "snapshot_locked": false,
+      "revision": 1798012345678901,
+      "run_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
+    },
     "layout": null,
     "device_count": 3,
     "total_leds": 432
@@ -197,7 +203,18 @@ what is already live, only `events` by default.
 
 The `scene` and `layout` fields are nullable: each is `null` when nothing is
 active. The `scene` reference additionally carries
-`snapshot_locked`, which is true while a scene blocks runtime mutation.
+`snapshot_locked`, which is true while a scene blocks runtime mutation, and the
+scene `revision` and `run_epoch`, read together with the scene. The
+`run_epoch` is the same value the live scene document and the
+`hypercolor-run-epoch` response header carry: when a reconnect reports a
+different one, the daemon restarted, so re-read `/scene` before sending another
+revision fence. See
+[Revisions across daemon restarts](@/studio/zone-api-and-concurrency.md#revisions-across-daemon-restarts).
+
+`clock_epoch` and `run_epoch` both change on every daemon start but answer
+different questions. `clock_epoch` names the monotonic clock that `mono_us`
+stamps are read from; `run_epoch` names the sequence scene revisions are
+counted in. Compare each only with its own kind.
 
 ## Topics
 
@@ -410,7 +427,7 @@ control-tier key.
   "zone_id": "0197495b-3513-72f6-9c42-a278a8b6d90f",
   "layout": {
     "id": "default-zone-layout-preview",
-    "name": "Default zone",
+    "name": "Main",
     "canvas_width": 640,
     "canvas_height": 480,
     "zones": [],
@@ -568,6 +585,8 @@ Common event names include `effect_started`, `effect_stopped`,
 Zone-addressed events use `zone_id`. Lifecycle events also carry `zone_name`;
 `zone_changed` carries `scene_id`, `role`, and `kind`; and
 `scene_settings_changed` carries the live scene document's single `revision`.
+To fence a write from it, send `"<run_epoch>:<revision>"` with the `run_epoch`
+from `hello`, which holds for the life of the connection.
 Saved scenes on disk still
 store the concept as `groups`, while the public wire uses zone vocabulary.
 

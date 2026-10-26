@@ -736,8 +736,7 @@ fn encode_canvas_binary_with_header_and_brightness(
             brightness,
             output_size.width,
             output_size.height,
-        )
-        .map(Bytes::from);
+        );
     }
     if format == CanvasFormat::Rgba
         && brightness.clamp(0.0, 1.0) >= 0.999
@@ -807,9 +806,23 @@ fn build_canvas_rgba_payload_from_source(
         canvas,
         header,
         CanvasFormat::Rgba,
-        Bytes::copy_from_slice(canvas.rgba_bytes()),
+        shared_canvas_rgba(canvas),
         output_size,
     )
+}
+
+/// Retain the published surface until the wire encoder has consumed its pixels.
+/// The surface's shared ownership prevents the render pool from reusing it.
+fn shared_canvas_rgba(canvas: &hypercolor_core::bus::CanvasFrame) -> Bytes {
+    struct Pixels(hypercolor_types::canvas::PublishedSurface);
+
+    impl AsRef<[u8]> for Pixels {
+        fn as_ref(&self) -> &[u8] {
+            self.0.rgba_bytes()
+        }
+    }
+
+    Bytes::from_owner(Pixels(canvas.surface().clone()))
 }
 
 fn try_encode_cached_canvas_binary_from_body(
@@ -1400,3 +1413,7 @@ pub(super) fn resolve_canvas_output_size(
 fn sanitize_f32(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
 }
+
+#[cfg(test)]
+#[path = "cache_copy_tests.rs"]
+mod copy_tests;

@@ -7,7 +7,6 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
-use crate::apply_target::ApplyTarget;
 use crate::components::calibration_guide::CalibrationGuide;
 use crate::components::control_panel::capture_group::CaptureSharedControls;
 use crate::components::effect_card::EffectCard;
@@ -17,24 +16,24 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::page_search_bar::PageSearchBar;
 use crate::components::preview_cabinet::PreviewCabinet;
 use crate::components::resize_handle::ResizeHandle;
+use crate::components::scene_picker::ScenePicker;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
-use crate::components::silk_select::SilkSelect;
 use crate::components::status_banner::{StatusBanner, StatusBannerTone};
 use crate::control_session::{
     ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
 };
 use crate::icons::*;
 use crate::toasts;
-use crate::zones::{ZoneEffectState, ZonesContext};
+use crate::zones::{ScenesContext, ZoneEffectState, ZonesContext};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlDefinition, EffectCategory};
-use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 mod support;
 mod zone_controls;
 
 use support::{LoadingSkeleton, drag_callbacks, expand_control_updates, persist_to_storage};
-use zone_controls::{ZoneControlSchemaCache, ZoneScopedControls};
+use zone_controls::{ControlsZoneName, ZoneControlSchemaCache, ZoneScopedControls};
 
 use crate::style_utils::{category_accent_rgb, filter_chips};
 
@@ -64,81 +63,13 @@ const CATEGORY_CHIPS: &[(&str, &str)] = &[
     ("utility", "139, 133, 160"),
 ];
 
-/// The apply-target selector. Picks which zone a quick effect-apply
-/// lands in; reads and writes `EffectsContext::apply_target`. The empty value
-/// is the scene's default zone.
-#[component]
-fn ApplyTargetSelect(#[prop(into)] scene: Signal<Option<api::SceneDocument>>) -> impl IntoView {
-    let fx = expect_context::<EffectsContext>();
-    let zones_ctx = expect_context::<ZonesContext>();
-
-    let options = Signal::derive(move || {
-        let mut opts = vec![(String::new(), "Default zone".to_owned())];
-        let mut custom_count = 0_usize;
-        scene.with(|scene| {
-            let Some(scene) = scene else {
-                return;
-            };
-            for zone in &scene.zones {
-                match zone.role {
-                    ZoneRole::Display => {}
-                    // The Primary role is the empty-value default; a renamed
-                    // default zone relabels that option in place.
-                    ZoneRole::Primary => {
-                        if zone.name != "Primary"
-                            && let Some(first) = opts.first_mut()
-                        {
-                            first.1 = zone.name.clone();
-                        }
-                    }
-                    ZoneRole::Custom => {
-                        custom_count += 1;
-                        opts.push((zone.id.to_string(), zone.name.clone()));
-                    }
-                }
-            }
-        });
-        if custom_count > 0 {
-            opts.push((
-                crate::apply_target::ALL_ZONES_VALUE.to_owned(),
-                "All zones".to_owned(),
-            ));
-        }
-        opts
-    });
-    let value = Signal::derive(move || fx.apply_target.get().select_value());
-    let on_change = Callback::new(move |val: String| {
-        let target = ApplyTarget::from_select_value(val);
-        // Mirror the picked zone into the shared focused zone so the
-        // preset panel, sidebar player, and the controls panel below all
-        // follow the same visible choice (Primary/All zones = primary).
-        zones_ctx
-            .focused_zone
-            .set(target.zone_id().map(ToOwned::to_owned));
-        fx.apply_target.set(target);
-    });
-
-    view! {
-        <div class="flex shrink-0 items-center gap-1.5">
-            <span class=format!("max-md:hidden {}", label_class(LabelSize::Micro, LabelTone::Default))>"Apply to"</span>
-            <div class="min-w-[130px]">
-                <SilkSelect
-                    value=value
-                    options=options
-                    on_change=on_change
-                    class="border border-edge-subtle/70 bg-surface-overlay/40 px-2.5 py-1 text-[12px] text-fg-primary"
-                />
-            </div>
-        </div>
-    }
-}
-
 /// Effects browse page with compact grid, search, category filtering, and live preview.
 #[component]
 pub fn EffectsPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
     let zones_ctx = expect_context::<ZonesContext>();
+    let scenes_ctx = expect_context::<ScenesContext>();
 
     let preview_ref = NodeRef::<leptos::html::Div>::new();
     let preview_size = leptos_use::use_element_size(preview_ref);
@@ -385,7 +316,9 @@ pub fn EffectsPage() -> impl IntoView {
             },
         ))
     });
-    let (returning_to_default, set_returning_to_default) = signal(false);
+    // Deactivation reports itself as a switch to the empty scene id.
+    let returning_to_default =
+        Memo::new(move |_| scenes_ctx.switching.with(|id| id.as_deref() == Some("")));
 
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
@@ -436,13 +369,8 @@ pub fn EffectsPage() -> impl IntoView {
         })
     });
 
-    // Apply-target selector (§5.3). The active scene's LED zones drive an
-    // explicit target picker that appears only once a scene has more than
-    // one zone — a single-zone scene keeps the unchanged "apply effect"
-    // behavior with no extra control. The shared scene resource keeps the
-    // zone options fresh across external scene/zone changes.
-    let apply_target_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
-    // Apply effect handler — delegates to shared context
+    // An apply lands in the target zone, which the preview's zone tabs
+    // pick in a multi-zone scene.
     let on_apply = Callback::new(move |id: String| {
         let is_display_face = fx.effects_index.with(|effects| {
             effects
@@ -455,26 +383,6 @@ pub fn EffectsPage() -> impl IntoView {
             return;
         }
         fx.apply_effect(id);
-    });
-
-    let on_return_to_default = Callback::new(move |_| {
-        if returning_to_default.get_untracked() {
-            return;
-        }
-
-        set_returning_to_default.set(true);
-        let ctx = fx;
-        leptos::task::spawn_local(async move {
-            if api::deactivate_scene().await.is_ok() {
-                ctx.set_last_effect_error.set(None);
-                ctx.refresh_active_scene();
-                ctx.refresh_active_effect();
-                toasts::toast_success("Returned to Default scene.");
-            } else {
-                toasts::toast_error("Couldn't return to Default scene.");
-            }
-            set_returning_to_default.set(false);
-        });
     });
 
     // Toggle favorite handler
@@ -542,7 +450,7 @@ pub fn EffectsPage() -> impl IntoView {
                 accent=PageAccent::Purple
             >
                 <HeaderTrailing slot>
-                    <ApplyTargetSelect scene=apply_target_scene />
+                    <ScenePicker />
                     <span class="max-md:hidden shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
                         {move || {
                             let total = total_effects.get();
@@ -764,7 +672,7 @@ pub fn EffectsPage() -> impl IntoView {
                         <button
                             class="shrink-0 rounded-lg border border-status-warning/28 px-3 py-1.5 text-[11px] font-medium text-status-warning/92 transition-all duration-200 hover:bg-status-warning/8 disabled:cursor-wait disabled:opacity-60"
                             disabled=move || returning_to_default.get()
-                            on:click=move |_| on_return_to_default.run(())
+                            on:click=move |_| scenes_ctx.deactivate.run(())
                         >
                             {move || if returning_to_default.get() {
                                 "Returning..."
@@ -939,6 +847,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                         <h3 class=label_class(LabelSize::Small, LabelTone::Strong)>
                                                             "Controls"
                                                         </h3>
+                                                        <ControlsZoneName />
                                                         <div class="flex-1" />
                                                         <button
                                                             class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
@@ -1015,6 +924,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                             <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
                                                                 "Controls"
                                                             </h3>
+                                                            <ControlsZoneName />
                                                             <div class="flex-1" />
                                                             <button
                                                                 class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"

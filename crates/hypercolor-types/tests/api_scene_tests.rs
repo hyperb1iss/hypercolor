@@ -5,14 +5,18 @@
 //! transition vocabulary, and the document's decode of a
 //! representative daemon-shaped payload.
 
+use hypercolor_types::api::envelope::{
+    IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MISMATCH_CODE, IDEMPOTENCY_REPLAYED_HEADER,
+    RUN_EPOCH_HEADER,
+};
 use hypercolor_types::api::output::{OutputPatchRequest, OutputResource};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ApplyEffectResponse, AssignMembersRequest, ClearSceneRequest,
     CreateLayerRequest, CreateZoneRequest, PatchControlsRequest, PatchZoneRequest,
-    ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, SideEffectOutcome,
-    TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
+    ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, SceneFence, ScenePatchRequest,
+    SideEffectOutcome, TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
-use hypercolor_types::api::scenes::SnapshotSceneRequest;
+use hypercolor_types::api::scenes::{ReplaceSceneRequest, SnapshotSceneRequest};
 use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority};
 use serde_json::json;
 
@@ -70,6 +74,53 @@ fn the_document_decodes_a_daemon_shaped_payload() {
     let zone = &document.zones[0];
     assert_eq!(zone.members[0].segment.as_deref(), Some("ch1"));
     assert_eq!(zone.layers.len(), 1, "layers are the addressable unit");
+    assert_eq!(
+        document.run_epoch, "",
+        "a daemon that predates run epochs still decodes, with an empty epoch"
+    );
+}
+
+#[test]
+fn the_document_names_the_run_its_revision_belongs_to() {
+    let mut payload = representative_document();
+    payload["run_epoch"] = json!("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    let document: SceneDocument = serde_json::from_value(payload).expect("document decodes");
+    assert_eq!(document.run_epoch, "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+
+    let wire = serde_json::to_value(&document).expect("document encodes");
+    assert_eq!(wire["run_epoch"], "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    assert_eq!(wire["revision"], 41);
+}
+
+#[test]
+fn a_scene_read_is_still_its_own_replacement_body() {
+    let mut payload = representative_document();
+    payload["run_epoch"] = json!("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    let document: SceneDocument = serde_json::from_value(payload).expect("document decodes");
+
+    let echoed: ReplaceSceneRequest =
+        serde_json::from_value(serde_json::to_value(&document).expect("document encodes"))
+            .expect("a read written back as it arrived is a valid replacement");
+    assert_eq!(
+        echoed.run_epoch.as_deref(),
+        Some("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10")
+    );
+    assert_eq!(ReplaceSceneRequest::from(&document), echoed);
+}
+
+#[test]
+fn the_write_contract_headers_are_lowercase_wire_names() {
+    assert_eq!(RUN_EPOCH_HEADER, "hypercolor-run-epoch");
+    assert_eq!(IDEMPOTENCY_KEY_HEADER, "idempotency-key");
+    assert_eq!(IDEMPOTENCY_REPLAYED_HEADER, "idempotency-replayed");
+    for name in [
+        RUN_EPOCH_HEADER,
+        IDEMPOTENCY_KEY_HEADER,
+        IDEMPOTENCY_REPLAYED_HEADER,
+    ] {
+        assert_eq!(name, name.to_ascii_lowercase());
+    }
+    assert_eq!(IDEMPOTENCY_KEY_MISMATCH_CODE, "idempotency_key_mismatch");
 }
 
 #[test]
@@ -239,6 +290,17 @@ fn zone_color_patches_are_tri_state() {
 }
 
 #[test]
+fn zone_patches_carry_an_optional_move_index() {
+    let moved: PatchZoneRequest =
+        serde_json::from_value(json!({"index": 2})).expect("index decodes");
+    assert_eq!(moved.index, Some(2));
+    let leave: PatchZoneRequest = serde_json::from_value(json!({})).expect("absent decodes");
+    assert_eq!(leave.index, None, "missing leaves the order");
+    let encoded = serde_json::to_value(PatchZoneRequest::default()).expect("encodes");
+    assert_eq!(encoded, json!({}), "an unset index stays off the wire");
+}
+
+#[test]
 fn the_zone_layout_contract_speaks_placements_only() {
     let request: ZoneLayoutRequest = serde_json::from_value(json!({
         "placements": [{
@@ -299,4 +361,82 @@ fn membership_edit_contract_round_trips_offline_restore_receipts() {
     let mut unknown = request;
     unknown["replace_layers"] = json!(true);
     assert!(serde_json::from_value::<EditMembersRequest>(unknown).is_err());
+}
+
+#[test]
+fn a_scene_fence_round_trips_as_an_entity_tag() {
+    let fence = SceneFence::new(
+        "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
+        1_798_012_345_678_901,
+    );
+    let etag = fence.to_etag();
+    assert_eq!(
+        etag,
+        "\"0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901\""
+    );
+    assert_eq!(SceneFence::parse(&etag), Ok(fence.clone()));
+    assert_eq!(
+        SceneFence::parse("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"),
+        Ok(fence),
+        "unquoted is the same fence"
+    );
+}
+
+#[test]
+fn a_bare_revision_is_still_a_fence_without_a_run() {
+    assert_eq!(
+        SceneFence::parse("\"42\""),
+        Ok(SceneFence::revision_only(42))
+    );
+    assert_eq!(SceneFence::parse(" 42 "), Ok(SceneFence::revision_only(42)));
+    assert_eq!(SceneFence::parse("0"), Ok(SceneFence::revision_only(0)));
+    assert_eq!(SceneFence::revision_only(42).to_etag(), "\"42\"");
+    assert_eq!(SceneFence::from(42), SceneFence::revision_only(42));
+}
+
+#[test]
+fn a_run_epoch_is_the_uuid_the_daemon_serves() {
+    let run = "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10";
+    assert_eq!(
+        SceneFence::parse(&format!("\"{run}:7\"")),
+        Ok(SceneFence::new(run, 7))
+    );
+    for invalid in [
+        format!("\"{run}:1,{run}:2\""),
+        format!("{run}:1,{run}:2"),
+        format!("\"{}:7\"", run.to_ascii_uppercase()),
+        format!("\"{{{run}}}:7\""),
+        format!("\"{}:7\"", run.replace('-', "")),
+        format!("\"x{run}:7\""),
+        "\"run:7\"".to_owned(),
+        "\"host:run:7\"".to_owned(),
+    ] {
+        assert!(SceneFence::parse(&invalid).is_err(), "{invalid:?} parsed");
+    }
+}
+
+#[test]
+fn anything_else_is_not_a_scene_fence() {
+    for invalid in [
+        "",
+        "\"\"",
+        "*",
+        "W/\"42\"",
+        ":42",
+        "run:",
+        "run:abc",
+        "run epoch:42",
+        "-1",
+        "+42",
+        "042",
+        "run:042",
+        "run:+42",
+        "run:18446744073709551616",
+        "18446744073709551616",
+        "\"run\"x:42\"",
+        "\"run:42\", \"run:43\"",
+        "\"42",
+    ] {
+        assert!(SceneFence::parse(invalid).is_err(), "{invalid:?} parsed");
+    }
 }

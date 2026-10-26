@@ -5,8 +5,8 @@ use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_ui::ws::messages::{
     EFFECT_STARTED_EVENTS, EFFECT_STOPPED_EVENTS, InitialSubscriptionAdmission,
     OutputPowerReconciler, PerformanceMetrics, SCENE_EVENTS, extract_effect_error_hint,
-    extract_layer_health, extract_scene_event_hint, initial_subscription_admission,
-    is_resync_required, layer_health_key, reset_layer_health_cache,
+    extract_layer_health, extract_scene_event_hint, hello_run_epoch,
+    initial_subscription_admission, is_resync_required, layer_health_key, reset_layer_health_cache,
     scene_event_affects_active_effect, scene_event_requires_effect_refresh,
     sequence_scene_event_hint, zone_has_degraded_layer,
 };
@@ -754,4 +754,29 @@ fn zone_has_degraded_layer_ignores_stale_removed_layers() {
         "zone-a",
         &ids(&["layer-gone"]),
     ));
+}
+
+#[test]
+fn a_hello_names_the_daemon_run_its_scene_belongs_to() {
+    let hello = serde_json::json!({
+        "type": "hello",
+        "state": { "scene": { "id": "s", "revision": 7, "run_epoch": "run-a" } },
+    });
+    assert_eq!(hello_run_epoch(&hello), Some("run-a".to_owned()));
+    // Daemons that predate run epochs, and every other message, name none.
+    let older = serde_json::json!({
+        "type": "hello",
+        "state": { "scene": { "id": "s", "revision": 7 } },
+    });
+    assert_eq!(hello_run_epoch(&older), None);
+    let blank = serde_json::json!({
+        "type": "hello",
+        "state": { "scene": { "run_epoch": "" } },
+    });
+    assert_eq!(hello_run_epoch(&blank), None);
+    let event = serde_json::json!({
+        "type": "event",
+        "state": { "scene": { "run_epoch": "run-a" } },
+    });
+    assert_eq!(hello_run_epoch(&event), None);
 }

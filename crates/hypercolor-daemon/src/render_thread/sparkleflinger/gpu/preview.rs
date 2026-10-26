@@ -6,6 +6,7 @@ use super::{GpuSparkleFlinger, MAX_CACHED_PREVIEW_SURFACES, PREVIEW_SCALE_PARAM_
 
 mod preparation;
 mod readback_runtime;
+pub(super) use readback_runtime::PreviewStagingFailed;
 mod runtime;
 mod surfaces;
 

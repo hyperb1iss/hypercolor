@@ -2,7 +2,7 @@
 //!
 //! Every zone owns an ordered layer stack, and each of these four
 //! transactions moves it: insert, remove, reorder, and control patch.
-//! All of them are persisted scene content guarded by the scene revision,
+//! All of them are persisted scene content guarded by the scene fence,
 //! and all of them publish the same
 //! pair of events — the zone change the compositor reacts to, and the
 //! layer-stack change the Studio panel reacts to.
@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 
 use hypercolor_core::scene::LayerMutationError;
+use hypercolor_types::api::scene::SceneFence;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
@@ -51,7 +52,7 @@ pub async fn insert_layer(
     zone_id: ZoneId,
     mut layer: SceneLayer,
     index: Option<usize>,
-    expected_revision: Option<u64>,
+    fence: Option<SceneFence>,
 ) -> Result<LayerResult, DomainError> {
     let _effect_admission = effects
         .admit_layer_sources(std::iter::once(&mut layer.source))
@@ -60,7 +61,7 @@ pub async fn insert_layer(
     let media_admission = ctx.media_admission_for_layer(&layer).await;
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a layer")?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
     crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, None) {
         Ok(zone) => zone,
@@ -85,11 +86,11 @@ pub async fn remove_layer(
     ctx: &SceneContext,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
-    expected_revision: Option<u64>,
+    fence: Option<SceneFence>,
 ) -> Result<LayerResult, DomainError> {
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("deleting a layer")?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
     crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, None) {
         Ok(zone) => zone,
@@ -107,11 +108,11 @@ pub async fn reorder_layers(
     ctx: &SceneContext,
     zone_id: ZoneId,
     layer_ids: Vec<SceneLayerId>,
-    expected_revision: Option<u64>,
+    fence: Option<SceneFence>,
 ) -> Result<LayerResult, DomainError> {
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("reordering layers")?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
     crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, None) {
         Ok(zone) => zone,
@@ -142,11 +143,11 @@ pub async fn patch_layer_controls(
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     controls: HashMap<String, ControlValue>,
-    expected_revision: Option<u64>,
+    fence: Option<SceneFence>,
 ) -> Result<LayerResult, DomainError> {
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
-    crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
+    crate::domain::scene_tree::check_scene_fence(&mutation, fence.as_ref())?;
     crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.patch_layer_controls(scene_id, zone_id, layer_id, controls, None) {
         Ok(zone) => zone,
