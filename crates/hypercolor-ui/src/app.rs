@@ -113,6 +113,9 @@ pub struct WsContext {
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
     pub connection_generation: ReadSignal<u64>,
+    /// The daemon run the socket's last `hello` named; a new value means
+    /// the daemon restarted.
+    pub run_epoch: ReadSignal<Option<String>>,
     /// Whether the daemon socket is open, opening, or down.
     pub connection_state: ReadSignal<ConnectionState>,
     /// Per-layer runtime health, keyed by `scene/zone/layer`, fed by the
@@ -575,6 +578,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         last_input_source_status_event: ws.last_input_source_status_event,
         last_service_identity_event: ws.last_service_identity_event,
         connection_generation: ws.connection_generation,
+        run_epoch: ws.run_epoch,
         connection_state: ws.connection_state,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,
