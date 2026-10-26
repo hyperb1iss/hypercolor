@@ -62,6 +62,7 @@ fn meta(id: &str, name: &str, leds: u32) -> DeviceMeta {
         layout_device_id: id.to_owned(),
         name: name.to_owned(),
         total_leds: leds,
+        display_segments: Vec::new(),
     }
 }
 

@@ -178,6 +178,17 @@ pub fn DevicePane() -> impl IntoView {
             .get()
             .into_iter()
             .map(|device| DeviceMeta {
+                display_segments: device
+                    .segments
+                    .iter()
+                    .filter(|segment| {
+                        matches!(
+                            segment.topology_hint,
+                            Some(api::SegmentTopologySummary::Display { .. })
+                        )
+                    })
+                    .map(|segment| segment.name.clone())
+                    .collect(),
                 layout_device_id: device.layout_device_id,
                 name: device.name,
                 total_leds: device.total_leds,
@@ -627,7 +638,7 @@ fn CompactDeviceRow(
                 {label}
             </span>
             <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/60">
-                {row.led_count}
+                {(row.led_count > 0).then_some(row.led_count)}
             </span>
         </div>
     }

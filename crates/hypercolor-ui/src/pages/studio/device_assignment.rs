@@ -25,6 +25,9 @@ pub struct DeviceMeta {
     pub name: String,
     /// LED count across the whole device.
     pub total_leds: u32,
+    /// Segments that are screens rather than LEDs. Their members carry a
+    /// pixel grid, which is not an LED count.
+    pub display_segments: Vec<String>,
 }
 
 /// One physical device's presence within a single zone — the unit the
@@ -36,7 +39,8 @@ pub struct ZoneDeviceRow {
     /// Resolved display name, or the bare `device_id` when the device is
     /// not in the registry (offline or removed).
     pub name: String,
-    /// LEDs across this device's placed members within this zone.
+    /// LEDs across this device's placed members within this zone. A
+    /// screen member counts none.
     pub led_count: u32,
     /// Member count. A multi-segment controller contributes more than one.
     pub member_count: usize,
@@ -51,6 +55,13 @@ pub struct ZoneDeviceRow {
 pub fn device_rows_for_zone(zone: &ZoneResource, devices: &[DeviceMeta]) -> Vec<ZoneDeviceRow> {
     let mut rows: Vec<ZoneDeviceRow> = Vec::new();
     for member in &zone.members {
+        let screen = devices.iter().any(|device| {
+            device.layout_device_id == member.device_id
+                && member
+                    .segment
+                    .as_ref()
+                    .is_some_and(|segment| device.display_segments.contains(segment))
+        });
         let leds = zone
             .layout
             .as_ref()
@@ -60,6 +71,7 @@ pub fn device_rows_for_zone(zone: &ZoneResource, devices: &[DeviceMeta]) -> Vec<
                     .iter()
                     .find(|placement| placement.member == member.id)
             })
+            .filter(|_| !screen)
             .map_or(0, |placement| placement.topology.led_count());
         if let Some(row) = rows
             .iter_mut()

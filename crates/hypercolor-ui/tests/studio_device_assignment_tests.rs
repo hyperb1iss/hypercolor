@@ -62,6 +62,7 @@ fn meta(layout_device_id: &str, name: &str, total_leds: u32) -> DeviceMeta {
         layout_device_id: layout_device_id.to_owned(),
         name: name.to_owned(),
         total_leds,
+        display_segments: Vec::new(),
     }
 }
 
@@ -124,6 +125,23 @@ fn device_rows_collapse_outputs_of_one_device() {
     assert!(rows[0].resolved);
     assert_eq!(rows[1].device_id, "smbus:dram");
     assert_eq!(rows[1].member_count, 1);
+}
+
+#[test]
+fn a_screen_member_counts_no_leds() {
+    let mut screen = output("push", Some("Display"), 0);
+    screen.topology = LedTopology::Matrix {
+        width: 960,
+        height: 160,
+        serpentine: false,
+        start_corner: hypercolor_types::spatial::Corner::TopLeft,
+    };
+    let zone = zone_resource_with_outputs(vec![screen, output("push", Some("White Buttons"), 37)]);
+    let mut push = meta("push", "Ableton Push 2", 160);
+    push.display_segments = vec!["Display".to_owned()];
+    let rows = device_rows_for_zone(&zone, &[push]);
+    assert_eq!(rows[0].led_count, 37);
+    assert_eq!(rows[0].member_count, 2);
 }
 
 #[test]
