@@ -160,12 +160,39 @@ class _Unset:
 _UNSET_SENTINEL = _Unset()
 
 
-def _with_if_match(kwargs: dict[str, Any], revision: int | None) -> dict[str, Any]:
-    if revision is None:
+def scene_fence(document: SceneDocument) -> str:
+    """Return the ``If-Match`` value that fences a write on ``document``.
+
+    The fence is ``"<run_epoch>:<revision>"``, the value the daemon serves as
+    ``ETag``. It passes only while both the daemon run and the revision are
+    current, so a document read before a daemon restart can never fence a
+    write after it. A document without a run epoch yields the bare
+    ``"<revision>"``, which checks the revision alone.
+    """
+    run_epoch = document.run_epoch
+    if isinstance(run_epoch, str) and run_epoch:
+        return f'"{run_epoch}:{document.revision}"'
+    return f'"{document.revision}"'
+
+
+def _with_if_match(kwargs: dict[str, Any], fence: int | str | None) -> dict[str, Any]:
+    """Attach a scene fence as ``If-Match``.
+
+    ``fence`` is a full fence (an ``ETag``, :func:`scene_fence`, or
+    :attr:`HypercolorPreconditionError.current_fence`), sent as given and
+    quoted when it is not already, or a bare revision ``int``, which checks
+    the revision alone.
+    """
+    if fence is None:
         return kwargs
+    if isinstance(fence, str):
+        tag = fence.strip()
+        value = tag if tag.startswith(('"', "W/")) else f'"{tag}"'
+    else:
+        value = f'"{fence}"'
     kwargs["headers"] = {
         **dict(kwargs.get("headers") or {}),
-        "If-Match": f'"{revision}"',
+        "If-Match": value,
     }
     return kwargs
 
@@ -478,7 +505,7 @@ class HypercolorClient:
         transition: str | Mapping[str, Any] | None = None,
         preset_id: str | None = None,
         zone: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ApplyEffectResponse:
         """Apply an effect with optional control overrides.
 
@@ -517,7 +544,7 @@ class HypercolorClient:
         controls: Mapping[str, Any] | None = None,
         transition: str | Mapping[str, Any] | None = None,
         zone: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ApplyEffectResponse:
         """Apply a bundled or saved preset to an effect and optional zone."""
         data = _drop_none(
@@ -727,7 +754,7 @@ class HypercolorClient:
         *,
         name: str | None = None,
         unassigned_behavior: str | Mapping[str, Any] | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         """Patch scene-level fields on the live tree."""
         behavior = (
@@ -754,7 +781,7 @@ class HypercolorClient:
         self,
         *,
         zone: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         """Clear one zone's layer stack, or every non-display zone."""
         data = _drop_none({"zone": zone})
@@ -819,7 +846,7 @@ class HypercolorClient:
         scene_id: str,
         document: SceneDocument | ReplaceSceneRequest,
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         """Replace a complete stored scene document."""
         replacement = (
@@ -855,7 +882,7 @@ class HypercolorClient:
         *,
         role: str | None = None,
         color: str | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         """Create a zone in the live scene tree."""
         body = _drop_none({"name": name, "role": role, "color": color})
@@ -875,7 +902,7 @@ class HypercolorClient:
         color: str | _Unset | None = _UNSET_SENTINEL,
         brightness: float | None = None,
         enabled: bool | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         """Patch one live zone; an explicit ``None`` clears its color."""
         body: dict[str, Any] = _drop_none(
@@ -902,7 +929,7 @@ class HypercolorClient:
         self,
         zone: str,
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         """Delete one zone from the live scene tree."""
         return await self._generated_contract(
@@ -916,7 +943,7 @@ class HypercolorClient:
         device_id: str,
         *,
         segments: list[str] | None = None,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         """Assign a device and selected segments to one live zone."""
         body = AssignMembersRequest.from_dict({"device_id": device_id, "segments": segments or []})
@@ -933,7 +960,7 @@ class HypercolorClient:
         zone: str,
         member: str,
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         """Remove one membership from a live zone."""
         return await self._generated_contract(
@@ -949,7 +976,7 @@ class HypercolorClient:
         zone: str,
         layout: Mapping[str, Any],
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> ZoneResource:
         """Replace a live zone's compact member-placement layout."""
         body = ZoneLayoutRequest.from_dict({str(key): value for key, value in layout.items()})
@@ -965,7 +992,7 @@ class HypercolorClient:
         self,
         behavior: str | Mapping[str, Any],
         *,
-        if_match: int | None = None,
+        if_match: int | str | None = None,
     ) -> SceneDocument:
         """Set the unassigned-output policy on the live scene."""
         return await self.patch_live_scene(
@@ -1371,11 +1398,17 @@ class HypercolorClient:
         if response.status_code == 412:
             error = _decode_error_details(response.content)
             message = error.message if error else "Hypercolor precondition failed"
+            current_revision = _etag_revision(response)
+            if current_revision is None and error is not None and error.details:
+                current = error.details.get("current")
+                if isinstance(current, int) and not isinstance(current, bool):
+                    current_revision = current
             return HypercolorPreconditionError(
                 message,
                 error=error,
                 status_code=response.status_code,
-                current_revision=_etag_revision(response),
+                current_revision=current_revision,
+                current_fence=response.headers.get("etag"),
             )
         return HypercolorClient._map_response_error(response.status_code, response.content)
 
