@@ -884,6 +884,12 @@ impl SceneContext {
         self.scenes.read_with_revision(read).await
     }
 
+    /// The opaque identity of the daemon run the scene revisions belong to.
+    #[must_use]
+    pub fn run_epoch(&self) -> &str {
+        self.scenes.run_epoch()
+    }
+
     /// Current scene commit generation for optimistic concurrency.
     ///
     /// Read alone, this can already be ahead of a snapshot taken a moment

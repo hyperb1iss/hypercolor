@@ -146,6 +146,12 @@ pub struct ReplaceSceneRequest {
     /// exactly as a stale `If-Match` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
+    /// Echo of the daemon run the read came from, accepted so a read can
+    /// be written back as it arrived. Never checked: revisions never
+    /// repeat across runs, so a `revision` from an earlier run is already
+    /// refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_epoch: Option<String>,
     #[serde(default)]
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub unassigned_behavior: UnassignedBehavior,
@@ -227,6 +233,7 @@ impl From<&SceneDocument> for ReplaceSceneRequest {
             kind: document.kind,
             is_default: Some(document.is_default),
             revision: Some(document.revision),
+            run_epoch: (!document.run_epoch.is_empty()).then(|| document.run_epoch.clone()),
             unassigned_behavior: document.unassigned_behavior.clone(),
             layout_id: document.layout_id.clone(),
             activation_brightness: document.activation_brightness,

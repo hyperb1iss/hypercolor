@@ -9,7 +9,8 @@
 //! minted at creation, replacement mints a fresh id, and only control
 //! patches and reorders mutate in place. The document carries one wire
 //! version — `revision`, the commit generation — served as `ETag` and
-//! honored via optional `If-Match` on structural mutations (§1.6).
+//! honored via optional `If-Match` on structural mutations (§1.6), beside
+//! the `run_epoch` that names the daemon run the revision belongs to.
 //!
 //! OpenAPI derives are available behind the crate's `schema` feature. The
 //! daemon enables that feature and registers these types through its
@@ -72,8 +73,17 @@ pub struct SceneDocument {
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub mutation_mode: SceneMutationMode,
     /// The commit generation. Served as `ETag`; the one wire version
-    /// token (Spec 78 §1.6).
+    /// token (Spec 78 §1.6). Strictly increasing within a daemon run and
+    /// never repeated across runs, so a fence kept from an earlier run
+    /// can never pass.
     pub revision: u64,
+    /// Opaque identity of the daemon run `revision` belongs to, also
+    /// served on every response as the `hypercolor-run-epoch` header.
+    /// Compare by equality only: a change means the daemon restarted, and
+    /// a client re-anchors on a fresh read before fencing again. Empty
+    /// from daemons that predate it.
+    #[serde(default)]
+    pub run_epoch: String,
     /// Every authored zone with its full stack, declaration order.
     pub zones: Vec<ZoneResource>,
 }

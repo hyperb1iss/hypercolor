@@ -5,6 +5,7 @@
 //! transition vocabulary, and the document's decode of a
 //! representative daemon-shaped payload.
 
+use hypercolor_types::api::envelope::RUN_EPOCH_HEADER;
 use hypercolor_types::api::output::{OutputPatchRequest, OutputResource};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ApplyEffectResponse, AssignMembersRequest, ClearSceneRequest,
@@ -12,7 +13,7 @@ use hypercolor_types::api::scene::{
     ReorderLayersRequest, ReplaceLayerRequest, SceneDocument, ScenePatchRequest, SideEffectOutcome,
     TransitionType, ZoneLayoutRequest, ZoneMember, ZoneMemberId,
 };
-use hypercolor_types::api::scenes::SnapshotSceneRequest;
+use hypercolor_types::api::scenes::{ReplaceSceneRequest, SnapshotSceneRequest};
 use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority};
 use serde_json::json;
 
@@ -70,6 +71,44 @@ fn the_document_decodes_a_daemon_shaped_payload() {
     let zone = &document.zones[0];
     assert_eq!(zone.members[0].segment.as_deref(), Some("ch1"));
     assert_eq!(zone.layers.len(), 1, "layers are the addressable unit");
+    assert_eq!(
+        document.run_epoch, "",
+        "a daemon that predates run epochs still decodes, with an empty epoch"
+    );
+}
+
+#[test]
+fn the_document_names_the_run_its_revision_belongs_to() {
+    let mut payload = representative_document();
+    payload["run_epoch"] = json!("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    let document: SceneDocument = serde_json::from_value(payload).expect("document decodes");
+    assert_eq!(document.run_epoch, "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+
+    let wire = serde_json::to_value(&document).expect("document encodes");
+    assert_eq!(wire["run_epoch"], "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    assert_eq!(wire["revision"], 41);
+}
+
+#[test]
+fn a_scene_read_is_still_its_own_replacement_body() {
+    let mut payload = representative_document();
+    payload["run_epoch"] = json!("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10");
+    let document: SceneDocument = serde_json::from_value(payload).expect("document decodes");
+
+    let echoed: ReplaceSceneRequest =
+        serde_json::from_value(serde_json::to_value(&document).expect("document encodes"))
+            .expect("a read written back as it arrived is a valid replacement");
+    assert_eq!(
+        echoed.run_epoch.as_deref(),
+        Some("0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10")
+    );
+    assert_eq!(ReplaceSceneRequest::from(&document), echoed);
+}
+
+#[test]
+fn the_run_epoch_header_is_a_lowercase_wire_name() {
+    assert_eq!(RUN_EPOCH_HEADER, "hypercolor-run-epoch");
+    assert_eq!(RUN_EPOCH_HEADER, RUN_EPOCH_HEADER.to_ascii_lowercase());
 }
 
 #[test]

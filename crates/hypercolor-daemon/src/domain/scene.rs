@@ -60,6 +60,7 @@ use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
+use crate::domain::scene_run::SceneRun;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
 use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
@@ -154,6 +155,8 @@ struct SceneServiceInner {
     snapshot_save_gate: Arc<RwLock<()>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     commits: Arc<SceneCommitSequencer>,
+    /// The opaque identity of the run this service's revisions belong to.
+    run_epoch: Arc<str>,
     event_bus: Arc<HypercolorBus>,
     plan: ArcSwap<ScenePlanSnapshot>,
     #[cfg(all(test, feature = "persistence-test-hooks"))]
@@ -259,7 +262,8 @@ impl SceneService {
         Ok(manager)
     }
 
-    /// Own a non-durable scene manager for isolated consumers.
+    /// Own a non-durable scene manager for isolated consumers. Its
+    /// revisions start at zero under a fresh epoch and persist nothing.
     #[must_use]
     pub fn in_memory(manager: SceneManager, event_bus: Arc<HypercolorBus>) -> Self {
         Self::build(
@@ -268,6 +272,7 @@ impl SceneService {
             None,
             None,
             Arc::new(ZoneLayoutPreviewStore::default()),
+            SceneRun::ephemeral(),
         )
     }
 
@@ -288,18 +293,28 @@ impl SceneService {
             Some(store),
             Some(root),
             Arc::new(ZoneLayoutPreviewStore::default()),
+            SceneRun::ephemeral(),
         ))
     }
 
-    /// Own a scene manager together with its durable and transient stores.
+    /// Own a scene manager together with its durable and transient stores,
+    /// continuing the revision sequence `run` resumed.
     #[must_use]
     pub(crate) fn new(
         manager: SceneManager,
         event_bus: Arc<HypercolorBus>,
         store: SceneStore,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
+        run: SceneRun,
     ) -> Self {
-        Self::build(manager, event_bus, Some(store), None, zone_layout_previews)
+        Self::build(
+            manager,
+            event_bus,
+            Some(store),
+            None,
+            zone_layout_previews,
+            run,
+        )
     }
 
     fn build(
@@ -308,8 +323,10 @@ impl SceneService {
         store: Option<SceneStore>,
         temporary_store_root: Option<tempfile::TempDir>,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
+        run: SceneRun,
     ) -> Self {
-        let commits = Arc::new(SceneCommitSequencer::new());
+        let (run_epoch, start, ledger) = run.into_parts();
+        let commits = Arc::new(SceneCommitSequencer::resuming(start, ledger));
         let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
         let store_writer = store.as_ref().map(SceneStore::file_writer);
         Self(Arc::new(SceneServiceInner {
@@ -321,6 +338,7 @@ impl SceneService {
             snapshot_save_gate: Arc::new(RwLock::new(())),
             zone_layout_previews,
             commits,
+            run_epoch,
             event_bus,
             plan,
             #[cfg(all(test, feature = "persistence-test-hooks"))]
@@ -365,6 +383,13 @@ impl SceneService {
     #[must_use]
     pub fn revision(&self) -> SceneRevision {
         self.0.commits.revision()
+    }
+
+    /// The opaque identity of the daemon run these revisions belong to.
+    /// A revision means nothing beside a different epoch.
+    #[must_use]
+    pub fn run_epoch(&self) -> &str {
+        &self.0.run_epoch
     }
 
     /// Create a lock-free reader for the render thread.

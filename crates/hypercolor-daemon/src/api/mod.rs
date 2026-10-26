@@ -28,6 +28,7 @@ pub mod media;
 pub mod openapi;
 pub mod output;
 mod routes;
+mod run_epoch;
 pub mod scene;
 pub mod scenes;
 pub mod security;
@@ -239,6 +240,16 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let api = api.method_not_allowed_fallback(api_route_not_found).layer(
         axum::extract::DefaultBodyLimit::max(extract::API_BODY_LIMIT_BYTES),
     );
+    let api = match HeaderValue::from_str(state.scene_manager.run_epoch()) {
+        Ok(epoch) => api.layer(axum::middleware::from_fn_with_state(
+            epoch,
+            run_epoch::stamp,
+        )),
+        Err(error) => {
+            warn!(%error, "Scene run epoch is not a valid header value; responses will not name it");
+            api
+        }
+    };
     let root = documented_root_routes();
     let (root, root_openapi) = root.split_for_parts();
     let document = root_openapi.nest("/api/v1", versioned_openapi);
@@ -288,7 +299,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                     header::CONTENT_TYPE,
                     header::IF_MATCH,
                 ])
-                .expose_headers([header::ETAG]),
+                .expose_headers([header::ETAG, run_epoch::RUN_EPOCH]),
         )
         .layer(axum::middleware::from_fn_with_state(
             access_log::AccessLogState {

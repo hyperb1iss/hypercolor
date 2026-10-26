@@ -53,7 +53,7 @@ pub async fn edit_members(
         request.changes = assignment_changes(&previous, &assignment, minted)?;
         if request.changes.is_empty() {
             return Ok(EditMembersResponse {
-                document: scene_document(&previous, expected_revision),
+                document: scene_document(&previous, expected_revision, ctx.scene.run_epoch()),
                 changes: Vec::new(),
             });
         }
@@ -197,7 +197,7 @@ pub async fn edit_members(
         .await;
     reconcile_member_exclusions(ctx, scene_id, &previous.zones).await;
     Ok(EditMembersResponse {
-        document: scene_document(&committed, commit.revision()),
+        document: scene_document(&committed, commit.revision(), ctx.scene.run_epoch()),
         changes,
     })
 }

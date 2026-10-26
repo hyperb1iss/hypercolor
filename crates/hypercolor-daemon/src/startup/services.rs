@@ -459,13 +459,23 @@ impl DaemonState {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
+        // Resumed before the first commit can hand out a revision, so no
+        // fence a client kept from an earlier run can ever pass again.
+        let scene_run = crate::domain::scene_run::SceneRun::resume(&state_dir);
+        let scene_revision_start = scene_run.start_revision();
         let scene_manager = crate::domain::scene::SceneService::new(
             scene_manager_inner,
             Arc::clone(&event_bus),
             scene_store_inner,
             Arc::clone(&zone_layout_previews),
+            scene_run,
         );
-        info!(path = %scenes_path.display(), "Scene manager created");
+        info!(
+            path = %scenes_path.display(),
+            run_epoch = scene_manager.run_epoch(),
+            revision = scene_revision_start,
+            "Scene manager created"
+        );
 
         // ── Render Loop ─────────────────────────────────────────────────
         let render_loop = RenderLoop::new(config.daemon.target_fps);

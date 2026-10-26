@@ -64,7 +64,11 @@ pub async fn get_scene(
     };
 
     crate::api::scene::with_revision(
-        envelope::ok(crate::domain::scene_tree::scene_document(scene, revision)),
+        envelope::ok(crate::domain::scene_tree::scene_document(
+            scene,
+            revision,
+            state.scene_manager.run_epoch(),
+        )),
         revision,
     )
 }
@@ -157,6 +161,7 @@ pub async fn update_scene(
         envelope::ok(crate::domain::scene_tree::scene_document(
             &updated.scene,
             revision,
+            state.scene_manager.run_epoch(),
         )),
         revision,
     )

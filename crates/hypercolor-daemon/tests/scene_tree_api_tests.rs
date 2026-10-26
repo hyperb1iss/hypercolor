@@ -289,11 +289,26 @@ async fn the_scene_document_always_answers_and_carries_one_revision() {
         StatusCode::OK,
         "an active scene always exists (Spec 78 §1.1)"
     );
-    assert_eq!(response_etag(&response), "\"0\"");
+    let etag = response_etag(&response);
+    let run_epoch = response
+        .headers()
+        .get(hypercolor_types::api::envelope::RUN_EPOCH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .expect("every response names the daemon run")
+        .to_owned();
     let document = body_json(response).await;
 
     assert_eq!(document["data"]["is_default"], true);
-    assert_eq!(document["data"]["revision"], 0);
+    let revision = document["data"]["revision"]
+        .as_u64()
+        .expect("the document carries its revision");
+    assert_eq!(etag, format!("\"{revision}\""));
+    assert_eq!(
+        revision,
+        state.scene_manager.revision(),
+        "a fresh run starts at the revision it resumed, before any commit"
+    );
+    assert_eq!(document["data"]["run_epoch"], run_epoch.as_str());
     for absent in ["groups_revision", "layers_version", "controls_version"] {
         assert!(
             document["data"].get(absent).is_none(),
@@ -357,6 +372,7 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
         })
         .await;
     let app = api::build_router(Arc::clone(&state), None);
+    let before = state.scene_manager.revision();
 
     let response = send(
         &app,
@@ -368,7 +384,7 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response_etag(&response), "\"1\"");
+    assert_eq!(response_etag(&response), format!("\"{}\"", before + 1));
     let applied = body_json(response).await;
     let zone_id = applied["data"]["zone"]["id"].as_str().expect("zone id");
     let layer_id = applied["data"]["zone"]["layers"][0]["id"]

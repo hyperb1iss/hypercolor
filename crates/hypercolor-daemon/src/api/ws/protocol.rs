@@ -1104,11 +1104,18 @@ pub(super) struct NameRef {
     pub(super) name: String,
 }
 
+/// The active scene as the handshake saw it.
+///
+/// `revision` and `run_epoch` are read together with the scene, so a
+/// client that reconnects learns which daemon run it is talking to before
+/// it sends a fence from a run that has ended.
 #[derive(Debug, Serialize)]
 pub(super) struct SceneRef {
     pub(super) id: String,
     pub(super) name: String,
     pub(super) snapshot_locked: bool,
+    pub(super) revision: u64,
+    pub(super) run_epoch: String,
 }
 
 #[derive(Debug, Serialize)]

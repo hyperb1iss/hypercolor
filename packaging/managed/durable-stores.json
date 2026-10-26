@@ -137,6 +137,14 @@
       "migration_mode": "backward_compatible"
     },
     {
+      "name": "scene-revisions",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
       "name": "device-aliases",
       "storage_format": "json",
       "readable_schema_min": 2,

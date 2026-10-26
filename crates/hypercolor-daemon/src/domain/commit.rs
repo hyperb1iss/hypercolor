@@ -27,8 +27,11 @@ use std::sync::{Arc, Mutex};
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_types::event::HypercolorEvent;
 
+use super::scene_run::RevisionLedger;
+
 /// Monotonic version of the daemon's live scene state. Bumped once per
-/// admitted commit, under the scene write lock.
+/// admitted commit, under the scene write lock, and never repeated across
+/// daemon runs (see [`SceneRun`](super::scene_run::SceneRun)).
 pub type SceneRevision = u64;
 
 /// Where an admitted scene payload ended up.
@@ -145,6 +148,9 @@ struct SequencerState {
     released_through: u64,
     /// Completed commits waiting on an older generation's slot.
     parked: BTreeMap<u64, Vec<HypercolorEvent>>,
+    /// The persisted reservation every handed-out revision stays under,
+    /// for a run resumed across daemon restarts.
+    ledger: Option<RevisionLedger>,
 }
 
 impl SceneCommitSequencer {
@@ -152,6 +158,19 @@ impl SceneCommitSequencer {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A sequencer that continues a run's revision sequence at `start`,
+    /// handing out revisions only under `ledger`'s persisted reservation.
+    pub(crate) fn resuming(start: SceneRevision, ledger: Option<RevisionLedger>) -> Self {
+        Self {
+            state: Mutex::new(SequencerState {
+                revision: start,
+                released_through: start,
+                parked: BTreeMap::new(),
+                ledger,
+            }),
+        }
     }
 
     /// The current scene revision. Callers read this under a scene lock
@@ -168,11 +187,15 @@ impl SceneCommitSequencer {
     pub(crate) fn admit(self: &Arc<Self>, bus: Arc<HypercolorBus>) -> CommitTicket {
         let generation = {
             let mut state = self.locked();
-            state.revision = state
+            let next = state
                 .revision
                 .checked_add(1)
                 .expect("scene commit generation must not exhaust u64");
-            state.revision
+            if let Some(ledger) = state.ledger.as_mut() {
+                ledger.cover(next);
+            }
+            state.revision = next;
+            next
         };
         CommitTicket {
             sequencer: Arc::clone(self),

@@ -180,6 +180,22 @@ async fn hello_reports_a_destructive_stop_as_not_running_and_paused() {
     assert!(!hello.running);
     assert!(hello.paused);
 }
+
+#[tokio::test]
+async fn hello_names_the_run_and_revision_of_the_scene_it_reports() {
+    let state = AppState::new();
+    let (_, revision) = state.scene_manager.snapshot_with_revision().await;
+
+    let hello = build_hello_state(&state).await;
+    let scene = hello.scene.expect("an active scene always exists");
+    assert_eq!(scene.revision, revision);
+    assert_eq!(scene.run_epoch, state.scene_manager.run_epoch());
+    assert!(!scene.run_epoch.is_empty());
+
+    let wire = serde_json::to_value(&scene).expect("scene ref serializes");
+    assert_eq!(wire["revision"], revision);
+    assert_eq!(wire["run_epoch"], state.scene_manager.run_epoch());
+}
 use crate::api::security::{RequestAuthContext, SecurityState};
 use crate::app_state::AppState;
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};

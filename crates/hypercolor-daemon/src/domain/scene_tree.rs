@@ -82,11 +82,12 @@ impl SceneTreeContext {
 /// [`DomainError::NotFound`] when no scene is active, which the
 /// always-a-default invariant makes unreachable in practice.
 pub async fn read_document(ctx: &SceneTreeContext) -> Result<SceneDocument, DomainError> {
+    let run_epoch = ctx.scene.run_epoch();
     ctx.scene
         .read_with_revision(|manager, revision| {
             manager
                 .active_scene()
-                .map(|scene| scene_document(scene, revision))
+                .map(|scene| scene_document(scene, revision, run_epoch))
                 .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))
         })
         .await
@@ -118,10 +119,10 @@ pub async fn read_zone(
         .await
 }
 
-/// Project a scene plus the current commit generation onto the wire
-/// document.
+/// Project a scene plus the commit generation it stands at, and the run
+/// that generation belongs to, onto the wire document.
 #[must_use]
-pub fn scene_document(scene: &Scene, revision: u64) -> SceneDocument {
+pub fn scene_document(scene: &Scene, revision: u64, run_epoch: &str) -> SceneDocument {
     SceneDocument {
         id: scene.id,
         name: scene.name.clone(),
@@ -137,6 +138,7 @@ pub fn scene_document(scene: &Scene, revision: u64) -> SceneDocument {
         metadata: scene.metadata.clone(),
         mutation_mode: scene.mutation_mode,
         revision,
+        run_epoch: run_epoch.to_owned(),
         zones: scene.zones.iter().map(zone_resource).collect(),
     }
 }

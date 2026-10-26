@@ -49,6 +49,7 @@ pub mod output;
 pub mod runtime_zone;
 pub mod scene;
 pub mod scene_activation;
+pub mod scene_run;
 pub mod scene_tree;
 pub mod spatial;
 pub mod zone;

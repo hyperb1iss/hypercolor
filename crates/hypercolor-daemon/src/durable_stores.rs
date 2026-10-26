@@ -326,6 +326,15 @@ pub const DURABLE_STORES: &[DurableStore] = &[
             StoreLocation::File("runtime-state.json"),
         )
     },
+    // The scene revision reservation: a ceiling every revision a run hands
+    // out stays below (domain/scene_run.rs).
+    unversioned(
+        "scene-revisions",
+        "json",
+        StoreOwner::Daemon,
+        StoreRoot::State,
+        StoreLocation::File(crate::domain::scene_run::SCENE_REVISIONS_FILE),
+    ),
     // A missing version is schema 2; every other version is refused.
     DurableStore {
         name: "device-aliases",

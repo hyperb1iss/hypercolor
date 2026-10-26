@@ -6,6 +6,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Response header naming the daemon run that answered, on every
+/// `/api/v1` response: the same opaque value as
+/// [`SceneDocument::run_epoch`](crate::api::scene::SceneDocument::run_epoch).
+///
+/// Scene revisions are comparable only within one run. A client that
+/// sees this change re-reads before it sends another revision fence.
+/// Spelled lowercase, the form HTTP/2 puts on the wire; HTTP/1.1 header
+/// names compare case-insensitively.
+pub const RUN_EPOCH_HEADER: &str = "hypercolor-run-epoch";
+
 /// Response metadata included in every envelope.
 ///
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
