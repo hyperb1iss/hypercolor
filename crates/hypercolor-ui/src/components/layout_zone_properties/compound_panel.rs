@@ -4,7 +4,6 @@ use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use crate::components::device_brightness_slider::DeviceBrightnessSlider;
 use crate::components::layout_builder::LayoutWriteHandle;
 use crate::compound_selection::CompoundDepth;
 use crate::icons::*;
@@ -19,9 +18,6 @@ pub(super) fn CompoundZoneProperties(
     ids: HashSet<String>,
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
     #[prop(into)] canvas_dims: Signal<(f32, f32)>,
-    #[prop(into)] brightness_value: Signal<(u8, bool)>,
-    brightness_rgb: String,
-    on_brightness_change: Callback<u8>,
     set_layout: LayoutWriteHandle,
     set_is_dirty: WriteSignal<bool>,
     #[prop(into)] compound_depth: Signal<CompoundDepth>,
@@ -92,11 +88,6 @@ pub(super) fn CompoundZoneProperties(
                     <OutputMoveButton output_ids=move_ids />
                 </div>
                 <div class="flex-1" />
-                <DeviceBrightnessSlider
-                    value=brightness_value
-                    on_change=on_brightness_change
-                    rgb=brightness_rgb
-                />
             </div>
 
             <div class="flex flex-wrap items-center gap-1.5">
