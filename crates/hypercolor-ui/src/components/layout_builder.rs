@@ -825,6 +825,7 @@ pub(crate) fn ZoneLayoutProvider(
             let revision = scene.revision;
             match api::zones::update_zone_layout(&zone_id, &layout, revision).await {
                 Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
+                    commit_queue.update_value(|queue| queue.landed(&pending));
                     if studio_history.is_current(generation) {
                         let landed = landed.unwrap_or_else(|| revision.saturating_add(1));
                         acknowledge(&scene, &zone_id, zone, landed);

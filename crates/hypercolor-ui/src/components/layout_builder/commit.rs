@@ -47,6 +47,29 @@ impl CommitQueue {
         }
     }
 
+    /// Carry a write that just landed into the edits still waiting for its
+    /// zone. Their baseline was the zone before that write; it becomes the
+    /// zone after it, so a wait that undoes the write (an output moved and
+    /// moved back) still differs from it and is written.
+    pub fn landed(&mut self, written: &PendingCommit) {
+        for waiting in self
+            .pending
+            .iter_mut()
+            .filter(|waiting| waiting.zone_id == written.zone_id)
+        {
+            for output in &mut waiting.baseline {
+                if let Some(before) = written
+                    .baseline
+                    .iter()
+                    .find(|before| before.id == output.id)
+                    && let Some(after) = written.edited.iter().find(|after| after.id == output.id)
+                {
+                    apply_edit(output, before, after);
+                }
+            }
+        }
+    }
+
     /// Take the next zone to write.
     pub fn pop(&mut self) -> Option<PendingCommit> {
         (!self.pending.is_empty()).then(|| self.pending.remove(0))

@@ -68,6 +68,49 @@ fn a_commit_never_adds_drops_or_rebinds_a_member() {
 }
 
 #[test]
+fn an_edit_queued_behind_a_landing_write_keeps_its_return_to_the_old_value() {
+    let saved = vec![output("a", "one", 0.2)];
+    let mut queue = CommitQueue::default();
+    queue.push(
+        "main".to_owned(),
+        saved.clone(),
+        vec![output("a", "one", 0.4)],
+    );
+    let written = queue.pop().expect("first write");
+    // Moved back to 0.2 while the first write was in flight, against the
+    // same saved baseline.
+    queue.push("main".to_owned(), saved, vec![output("a", "one", 0.2)]);
+    queue.landed(&written);
+    let waiting = queue.pop().expect("second write");
+    let live = [output("a", "one", 0.4)];
+    let rewritten = commit_placements(&live, &waiting.baseline, &waiting.edited)
+        .expect("the return to 0.2 is a change from what landed");
+    assert_eq!(rewritten[0].position.x, 0.2);
+}
+
+#[test]
+fn a_landed_write_leaves_other_zones_and_untouched_fields_waiting_as_they_were() {
+    let mut queue = CommitQueue::default();
+    let saved = vec![output("a", "one", 0.2), output("b", "two", 0.5)];
+    queue.push(
+        "main".to_owned(),
+        saved.clone(),
+        vec![output("a", "one", 0.4), output("b", "two", 0.5)],
+    );
+    let written = queue.pop().expect("first write");
+    queue.push("keyboard".to_owned(), saved.clone(), saved.clone());
+    let mut resized = saved.clone();
+    resized[1].size.x = 0.3;
+    queue.push("main".to_owned(), saved.clone(), resized);
+    queue.landed(&written);
+    let keyboard = queue.pop().expect("keyboard waits first");
+    assert_eq!(keyboard.baseline, saved, "another zone keeps its baseline");
+    let main = queue.pop().expect("main");
+    assert_eq!(main.baseline[0].position.x, 0.4);
+    assert_eq!(main.baseline[1], saved[1], "b was not written, so it stays");
+}
+
+#[test]
 fn a_commit_keeps_what_changed_elsewhere_since_the_editor_loaded() {
     let baseline = [output("a", "one", 0.1), output("b", "two", 0.2)];
     // Another client resized "a" and moved "b" since.
