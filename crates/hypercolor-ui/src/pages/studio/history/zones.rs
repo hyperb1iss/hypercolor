@@ -622,8 +622,16 @@ impl StudioHistory {
         if matches!(outcome, Ok(api::zones::ZoneOutcome::Applied(()))) {
             return TakeDown::Deleted;
         }
+        let live = live_scene(scene_id).await;
+        // A delete whose reply was lost may still have landed. A zone gone
+        // from the live scene was deleted, and its record can rebuild it.
+        if let Ok(live) = &live
+            && !live.zones.iter().any(|zone| zone.id == zone_key)
+        {
+            return TakeDown::Deleted;
+        }
         let put_back = record.outputs.is_empty()
-            || match live_scene(scene_id).await {
+            || match live {
                 Ok(live) => restore_outputs(live.id, zone_key, &record.outputs, live.revision)
                     .await
                     .is_ok(),
