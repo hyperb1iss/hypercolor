@@ -606,6 +606,7 @@ pub(crate) fn ZoneLayoutProvider(
         // keeps its press-time snapshot so its release still records and
         // commits.
         let gesture = set_layout.interaction_start.get_untracked();
+        let previous_saved = saved_layout.get_untracked();
         // Capture the outgoing editor before changing the selected surface.
         if let (Some(key), Some(baseline), Some(snapshot)) = (
             loaded_key.get_value(),
@@ -660,8 +661,15 @@ pub(crate) fn ZoneLayoutProvider(
             set_selected_zone_ids.set(std::collections::HashSet::new());
             set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
         }
-        if loaded_key.get_value().as_ref() == Some(&key) && gesture.is_some() {
-            set_layout.interaction_start.set(gesture);
+        if loaded_key.get_value().as_ref() == Some(&key)
+            && let Some(mut gesture) = gesture
+        {
+            // What changed elsewhere joins the press-time snapshot too, so
+            // undoing the gesture takes back the gesture alone.
+            if let Some(previous) = previous_saved.as_ref() {
+                commit::rebase_onto(&mut gesture.zones, &previous.zones, &canonical.zones);
+            }
+            set_layout.interaction_start.set(Some(gesture));
         }
         loaded_key.set_value(Some(key));
         let applied_replay = replay.filter(|replay| replay.zone_id == zone_id);

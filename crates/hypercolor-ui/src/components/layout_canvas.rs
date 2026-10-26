@@ -533,8 +533,19 @@ pub fn LayoutCanvas() -> impl IntoView {
                 aspect,
             );
         }
-        let final_zones = std::mem::take(&mut runtime.current_zones);
-        let committed = set_layout.commit_zones(final_zones);
+        // Only what the gesture changed lands, over the editor as it is now:
+        // another client's move that arrived mid-drag is not put back.
+        let gestured = std::mem::take(&mut runtime.current_zones);
+        let merged = layout.with_untracked(|current| {
+            current.as_ref().map(|current| {
+                crate::components::layout_builder::commit::merge_gesture(
+                    &current.zones,
+                    &runtime.base_zones,
+                    &gestured,
+                )
+            })
+        });
+        let committed = merged.is_some_and(|merged| set_layout.commit_zones(merged));
         set_layout.finish_interaction();
         swallow_next_click.set_value(true);
         if committed {

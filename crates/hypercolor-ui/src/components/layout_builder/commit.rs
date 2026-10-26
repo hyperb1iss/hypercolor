@@ -57,16 +57,7 @@ impl CommitQueue {
             .iter_mut()
             .filter(|waiting| waiting.zone_id == written.zone_id)
         {
-            for output in &mut waiting.baseline {
-                if let Some(before) = written
-                    .baseline
-                    .iter()
-                    .find(|before| before.id == output.id)
-                    && let Some(after) = written.edited.iter().find(|after| after.id == output.id)
-                {
-                    apply_edit(output, before, after);
-                }
-            }
+            rebase_onto(&mut waiting.baseline, &written.baseline, &written.edited);
         }
     }
 
@@ -113,6 +104,40 @@ fn apply_edit(target: &mut Output, baseline: &Output, edited: &Output) {
     if edited.orientation != baseline.orientation {
         target.orientation = edited.orientation;
     }
+}
+
+/// Carry the placement fields that changed from `before` to `after` onto
+/// `outputs`, matched by id: a snapshot taken before that change then
+/// reads as if it had come after it.
+pub fn rebase_onto(outputs: &mut [Output], before: &[Output], after: &[Output]) {
+    for output in outputs {
+        if let Some(from) = before.iter().find(|from| from.id == output.id)
+            && let Some(to) = after.iter().find(|to| to.id == output.id)
+        {
+            apply_edit(output, from, to);
+        }
+    }
+}
+
+/// The editor's outputs once a canvas gesture ends: `current` as the
+/// editor holds them now, each carrying only the placement fields the
+/// gesture changed from `base`, the outputs at its press. A change that
+/// reached the editor from elsewhere while the gesture ran stays, so a
+/// release never puts back another client's move.
+#[must_use]
+pub fn merge_gesture(current: &[Output], base: &[Output], gestured: &[Output]) -> Vec<Output> {
+    current
+        .iter()
+        .map(|output| {
+            let mut merged = output.clone();
+            if let Some(before) = base.iter().find(|before| before.id == output.id)
+                && let Some(after) = gestured.iter().find(|after| after.id == output.id)
+            {
+                apply_edit(&mut merged, before, after);
+            }
+            merged
+        })
+        .collect()
 }
 
 /// The outputs a zone commit writes: the zone's current `members`, in

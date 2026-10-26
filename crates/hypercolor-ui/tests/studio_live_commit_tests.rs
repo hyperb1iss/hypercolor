@@ -3,7 +3,7 @@
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use hypercolor_ui::components::layout_builder::commit::{
-    CommitQueue, PendingCommit, commit_placements,
+    CommitQueue, PendingCommit, commit_placements, merge_gesture, rebase_onto,
 };
 
 fn output(id: &str, device: &str, x: f32) -> Output {
@@ -189,4 +189,37 @@ fn queued_edits_keep_the_newest_state_and_the_oldest_baseline() {
     );
     assert_eq!(queue.pop(), None);
     assert!(queue.is_empty());
+}
+
+#[test]
+fn a_release_lands_only_the_gesture_over_a_move_that_arrived_mid_drag() {
+    let pressed = [output("a", "one", 0.2), output("b", "two", 0.5)];
+    // The gesture dragged "a"; its runtime still holds "b" from the press.
+    let mut gestured = pressed.clone();
+    gestured[0].position.x = 0.7;
+    gestured[0].position.y = 0.3;
+    // Another client moved "b" while the drag ran.
+    let mut current = pressed.clone();
+    current[1].position.x = 0.9;
+    let merged = merge_gesture(&current, &pressed, &gestured);
+    assert_eq!(merged[0].position.x, 0.7);
+    assert_eq!(merged[0].position.y, 0.3);
+    assert_eq!(
+        merged[1].position.x, 0.9,
+        "the remote move survives the release"
+    );
+}
+
+#[test]
+fn a_press_snapshot_takes_in_a_move_that_arrived_mid_drag() {
+    let loaded = [output("a", "one", 0.2), output("b", "two", 0.5)];
+    let mut pressed = loaded.clone();
+    let mut landed = loaded.clone();
+    landed[1].position.x = 0.9;
+    rebase_onto(&mut pressed, &loaded, &landed);
+    assert_eq!(pressed[0], loaded[0]);
+    assert_eq!(
+        pressed[1].position.x, 0.9,
+        "undoing the drag leaves b where it went"
+    );
 }
