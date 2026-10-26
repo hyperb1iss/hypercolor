@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-import { getStack } from "./helpers.mjs";
+import { getStack, parseFence } from "./helpers.mjs";
 
 const OUTPUT_COUNT = 80;
 const FIRST_ZONE = "11111111-1111-4111-8111-111111111111";
@@ -342,5 +342,7 @@ test("Studio preserves the inspector during control events and refreshes values 
     element.value = "0.5";
     element.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  expect((await pendingWrite).headers()["if-match"]).toBe("43");
+  // This fixture is a daemon that names no runs (its scene carries no
+  // run_epoch), the legacy case: the fence is the bare revision.
+  expect(parseFence((await pendingWrite).headers()["if-match"])).toEqual({ epoch: null, revision: "43" });
 });

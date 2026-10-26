@@ -52,6 +52,7 @@ test("Studio layer edits retain current controls and use each replacement's revi
   await expect.poll(() => fixture.writes.length).toBe(1);
   await settle(page);
   expect(fixture.writes[0].revision).toBe("47");
+  expect(fixture.writes[0].epoch).toBe(fixture.scene.run_epoch);
   expect(fixture.writes[0].body.source.controls.lower.value).toBeCloseTo(0.81, 6);
   await expect(opacity).toHaveValue("0.5");
   expect(await scrollState(fixture.control("lower"))).toEqual(beforeScroll);
@@ -63,6 +64,7 @@ test("Studio layer edits retain current controls and use each replacement's revi
   await expect.poll(() => fixture.writes.length).toBe(2);
   await settle(page);
   expect(fixture.writes[1].revision).toBe("48");
+  expect(fixture.writes[1].epoch).toBe(fixture.scene.run_epoch);
   expect(fixture.writes[1].pathname).toContain(replacementId(48));
   expect(fixture.writes[1].body.opacity).toBe(0.5);
   expect(fixture.writes[1].body.source.controls.lower.value).toBeCloseTo(0.81, 6);
@@ -128,6 +130,7 @@ test("Studio advanced layer edits keep the disclosure open and preserve scrollin
   await expect.poll(() => fixture.writes.length).toBe(1);
   await settle(page);
   expect(fixture.writes[0].revision).toBe("42");
+  expect(fixture.writes[0].epoch).toBe(fixture.scene.run_epoch);
   expect(fixture.writes[0].body.transform.scale).toEqual([1, 1.5]);
   expect(fixture.scene.zones[1].layers[0].id).toBe(replacementId(43));
   await expect(disclosure).toHaveAttribute("open", "");

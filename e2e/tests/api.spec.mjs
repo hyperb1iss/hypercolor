@@ -144,7 +144,11 @@ test.describe("REST API", () => {
       const activeScene = await readEnvelope(await api.get("/api/v1/scene"));
       expect(activeScene.id).toBe(sceneId);
 
-      const storedScene = await readEnvelope(await api.get(`/api/v1/scenes/${sceneId}`));
+      const storedRead = await api.get(`/api/v1/scenes/${sceneId}`);
+      const storedScene = await readEnvelope(storedRead);
+      // The read's ETag is its fence, epoch-qualified, sent back verbatim.
+      const fence = storedRead.headers().etag;
+      expect(fence).toBe(`"${storedScene.run_epoch}:${storedScene.revision}"`);
       const replacement = { ...storedScene };
       delete replacement.is_default;
       delete replacement.revision;
@@ -153,7 +157,7 @@ test.describe("REST API", () => {
 
       const updatedScene = await readEnvelope(
         await api.put(`/api/v1/scenes/${sceneId}`, {
-          headers: { "If-Match": `"${storedScene.revision}"` },
+          headers: { "If-Match": fence },
           data: replacement,
         }),
       );

@@ -1,5 +1,5 @@
 import { expect } from "@playwright/test";
-import { getStack } from "./helpers.mjs";
+import { daemonError, daemonHeaders, getStack, parseFence, refuseFence, staleFence, writeFence } from "./helpers.mjs";
 
 export const FIRST = "11111111-1111-4111-8111-111111111111";
 export const SECOND = "22222222-2222-4222-8222-222222222222";
@@ -36,6 +36,7 @@ export async function openHistory(page, { placedStand = false, offline = false, 
   const scene = {
     id: "33333333-3333-4333-8333-333333333333", name: "History fixture",
     kind: "named", is_default: false, revision: 42,
+    run_epoch: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
     zones: [zone(FIRST, "Desk lights", "primary", [anchor, ...(placedStand ? [stand] : [])]),
       zone(SECOND, "Accent lights", "custom", [])],
   };
@@ -54,24 +55,34 @@ export async function openHistory(page, { placedStand = false, offline = false, 
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (["GET", "HEAD"].includes(request.method())) {
-      if (path === "/api/v1/scene") return route.fulfill({ json: envelope(scene) });
+      if (path === "/api/v1/scene") {
+        return route.fulfill({ json: envelope(scene), headers: daemonHeaders(scene, { fence: true }) });
+      }
       if (path === "/api/v1/devices") {
         const items = [device(ANCHOR, "Anchor light"), ...(!offline ? [device(STAND, "Laptop stand")] : [])];
-        return route.fulfill({ json: envelope({ items, total: items.length }) });
+        return route.fulfill({ json: envelope({ items, total: items.length }), headers: daemonHeaders(scene) });
       }
       // Avoid allowing unrelated persisted layouts to contribute offline cards.
-      if (path === "/api/v1/layouts") return route.fulfill({ json: envelope({ items: [], total: 0 }) });
+      if (path === "/api/v1/layouts") {
+        return route.fulfill({ json: envelope({ items: [], total: 0 }), headers: daemonHeaders(scene) });
+      }
       return route.continue();
     }
     const body = request.postDataJSON();
-    const write = { path, method: request.method(), body, revision: request.headers()["if-match"] };
+    const ifMatch = request.headers()["if-match"];
+    const write = { path, method: request.method(), body, ...writeFence(ifMatch) };
     writes.push(write);
     if (path === "/api/v1/scene/members/edit" && request.method() === "POST") {
       if (beforeMemberReply) await beforeMemberReply(write);
-      if (body.scene_id !== scene.id || write.revision !== String(scene.revision) || rejectNext) {
+      // In the daemon's order: the fence, then the scene it names. A forced
+      // rejection stands in for a commit elsewhere that the fence missed.
+      const refusal = refuseFence(scene, ifMatch, { required: true })
+        ?? (rejectNext ? staleFence(scene, parseFence(ifMatch)) : null)
+        ?? (body.scene_id !== scene.id ? daemonError(scene, 409, "conflict", "the active scene changed") : null);
+      if (refusal) {
         rejectNext = false;
         rejected.push(write);
-        return route.fulfill({ status: 412, json: envelope(scene), headers: { etag: String(scene.revision) } });
+        return route.fulfill(refusal);
       }
       let changes = structuredClone(body.changes);
       if (body.assignment) {
@@ -113,18 +124,19 @@ export async function openHistory(page, { placedStand = false, offline = false, 
         target.layout.placements.splice(change.after.index, 0, placement(next));
       }
       scene.revision += 1;
-      await route.fulfill({ json: envelope({ document: scene, changes }) });
+      await route.fulfill({ json: envelope({ document: scene, changes }), headers: daemonHeaders(scene, { fence: true }) });
       notify();
       return;
     }
     const layoutMatch = path.match(/^\/api\/v1\/scene\/zones\/([^/]+)\/layout$/);
     if (layoutMatch && request.method() === "PUT") {
-      expect(write.revision).toBe(String(scene.revision));
+      // Layout writes in these specs are always current, run and revision.
+      expect(refuseFence(scene, ifMatch), `layout write fenced at ${ifMatch}`).toBeNull();
       const zone = scene.zones.find((zone) => zone.id === layoutMatch[1]);
       zone.layout = body;
       for (const p of body.placements) Object.assign(outputs.get(p.member), p);
       scene.revision += 1;
-      await route.fulfill({ json: envelope(zone) });
+      await route.fulfill({ json: envelope(zone), headers: daemonHeaders(scene, { fence: true }) });
       notify();
       return;
     }
