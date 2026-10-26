@@ -236,12 +236,18 @@ pub(super) async fn handle_list_effects_with_state(
     let start = min(offset, total);
     let end = min(start.saturating_add(limit), total);
 
-    let effects = filtered[start..end]
-        .iter()
-        .map(|metadata| EffectCatalogItem {
-            summary: effect_summary_with_details(metadata),
-        })
-        .collect::<Vec<_>>();
+    let page = filtered[start..end].to_vec();
+    // Naming covers may read cover files after a change; keep it off the
+    // async workers.
+    let effects = tokio::task::spawn_blocking(move || {
+        page.iter()
+            .map(|metadata| EffectCatalogItem {
+                summary: effect_summary_with_details(metadata),
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
 
     serialize_result(EffectCatalogResult {
         effects,

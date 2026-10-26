@@ -35,6 +35,10 @@ use crate::ws::{
 use crate::zones::ZoneEffectState;
 use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 
+use super::preview_box::{
+    CONTAIN_HOST_CLASS, CONTAIN_HOST_STYLE, PreviewFit, preview_box_style, preview_source_label,
+    preview_source_size,
+};
 use super::preview_runtime::{
     PresentedHook, PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError,
 };
@@ -340,7 +344,14 @@ pub fn CanvasPreview(
     #[prop(into)] fps_target: Signal<u32>,
     #[prop(default = "100%".to_string())] max_width: String,
     #[prop(default = "pixelated".to_string())] image_rendering: String,
-    #[prop(into, optional)] aspect_ratio: MaybeProp<String>,
+    /// CSS aspect (`"W / H"`) for a surface whose coordinate space is not
+    /// the frame's own, such as the Studio stage or a display face. The main
+    /// preview never sets it: its shape always comes from the source.
+    #[prop(into, optional)]
+    coordinate_aspect: MaybeProp<String>,
+    /// How the box sits in its host; see [`PreviewFit`].
+    #[prop(default = PreviewFit::FillWidth)]
+    fit: PreviewFit,
     #[prop(default = "Live effect canvas preview".to_string())] aria_label: String,
     #[prop(default = true)] register_main_preview_consumer: bool,
     #[prop(default = false)] report_presenter_telemetry: bool,
@@ -367,7 +378,8 @@ pub fn CanvasPreview(
             <RemoteVideoPreview
                 context=remote
                 max_width=max_width
-                aspect_ratio=aspect_ratio
+                coordinate_aspect=coordinate_aspect
+                fit=fit
                 aria_label=aria_label
                 show_fps=show_fps
                 fps_label=fps_label
@@ -1038,10 +1050,10 @@ pub fn CanvasPreview(
         }
     });
 
-    let canvas_style = format!("max-width: {max_width}; image-rendering: {image_rendering};");
+    let canvas_style = format!("image-rendering: {image_rendering}; object-fit: contain;");
     // Staged: the dimension memo tracks the (up to 60 Hz) frame stream but
-    // dedupes to actual size changes, so the string memo below only
-    // re-formats when the canvas is genuinely resized.
+    // dedupes to actual size changes, so the style memo below only
+    // re-formats when the source is genuinely resized.
     let frame_dimensions = Memo::new(move |_| {
         frame.with(|frame| {
             frame
@@ -1049,34 +1061,30 @@ pub fn CanvasPreview(
                 .map(|frame| (frame.width.max(1), frame.height.max(1)))
         })
     });
-    let resolved_aspect_ratio = Memo::new(move |_| {
-        aspect_ratio.get().unwrap_or_else(|| {
-            frame_dimensions
-                .get()
-                .map(|(width, height)| format!("{width} / {height}"))
-                .unwrap_or_else(|| {
-                    crate::render_canvas::aspect_ratio_css(
-                        crate::render_canvas::DEFAULT_RENDER_CANVAS,
-                    )
-                })
-        })
+    // Before the first frame the box takes the render canvas's shape, which
+    // every LED zone shares, so the picture does not jump when it arrives.
+    let expected_source = crate::render_canvas::use_render_canvas_size();
+    let source_size =
+        Memo::new(move |_| preview_source_size(frame_dimensions.get(), expected_source.get()));
+    let box_style = Memo::new(move |_| {
+        let aspect = coordinate_aspect
+            .get()
+            .unwrap_or_else(|| crate::render_canvas::aspect_ratio_css(source_size.get()));
+        preview_box_style(fit, &aspect, &max_width)
     });
-    // `aspect-ratio` plus `width: 100%` lets the wrapper grow to fill the
-    // parent's content box while preserving the canvas's true aspect ratio.
-    // When the parent is bounded vertically (e.g., the dashboard hero row),
-    // `max-height: 100%` forces the browser to shrink the width too so the
-    // wrapper letterboxes/pillarboxes correctly. Centering happens at the
-    // host (PreviewCabinet adds `flex items-center justify-center`).
-    let wrapper_style = Signal::derive(move || {
-        let ratio = resolved_aspect_ratio.get();
-        format!("max-width: {max_width}; width: 100%; max-height: 100%; aspect-ratio: {ratio};")
-    });
+    let (host_class, host_style) = match fit {
+        PreviewFit::Contain => (CONTAIN_HOST_CLASS, CONTAIN_HOST_STYLE),
+        PreviewFit::FillWidth => ("contents", ""),
+    };
 
     view! {
+        <div class=host_class style=host_style>
         <div
             class="relative bg-black"
-            style=move || wrapper_style.get()
+            style=move || box_style.get()
             data-preview-runtime=move || runtime_mode.get().unwrap_or("pending")
+            data-preview-fit=fit.as_str()
+            data-preview-source=move || preview_source_label(source_size.get())
         >
             <canvas
                 node_ref=canvas_ref
@@ -1319,6 +1327,7 @@ pub fn CanvasPreview(
             } else {
                 None
             }}
+        </div>
         </div>
     }
     .into_any()

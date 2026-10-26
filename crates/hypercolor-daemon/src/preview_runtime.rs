@@ -144,6 +144,44 @@ pub struct PreviewDemandSummary {
     pub any_jpeg: bool,
 }
 
+/// Size a published preview surface for a `canvas_width` x `canvas_height`
+/// source so every demand gets at least the pixels it asked for while the
+/// surface keeps the source's aspect.
+///
+/// Demands merge one axis at a time (`max_width`, `max_height`), so a
+/// width-only subscriber and a width-plus-height one can together name an
+/// extent of a different shape than the source. Scaling both axes by the
+/// larger of the two per-axis ratios serves both without distorting either.
+/// Never scales up, and never returns a zero side for a non-empty source.
+#[must_use]
+pub(crate) fn uniform_preview_extent(
+    canvas_width: u32,
+    canvas_height: u32,
+    max_width: u32,
+    max_height: u32,
+) -> (u32, u32) {
+    if canvas_width == 0 || canvas_height == 0 {
+        return (canvas_width, canvas_height);
+    }
+    let width_ratio = f64::from(max_width) / f64::from(canvas_width);
+    let height_ratio = f64::from(max_height) / f64::from(canvas_height);
+    let scale = width_ratio.max(height_ratio).min(1.0);
+    if scale >= 1.0 {
+        return (canvas_width, canvas_height);
+    }
+    let side = |extent: u32| {
+        let scaled = (f64::from(extent) * scale).round();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "scale is in (0, 1), so the product fits the source extent"
+        )]
+        let scaled = scaled as u32;
+        scaled.clamp(1, extent)
+    };
+    (side(canvas_width), side(canvas_height))
+}
+
 /// Which scene zones a zone-preview subscriber wants delivered.
 ///
 /// Subscribers name zones on the wire (`zones` on `zone_preview`), and the

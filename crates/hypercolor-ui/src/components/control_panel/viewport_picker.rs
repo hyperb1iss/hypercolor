@@ -358,7 +358,7 @@ pub(super) fn ViewportPicker(
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
                 image_rendering=preview_image_rendering.clone()
-                aspect_ratio=aspect_ratio
+                coordinate_aspect=aspect_ratio
                 consumer_count=consumer_count
             />
         }
@@ -371,7 +371,7 @@ pub(super) fn ViewportPicker(
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
                 image_rendering=preview_image_rendering.clone()
-                aspect_ratio=aspect_ratio
+                coordinate_aspect=aspect_ratio
             />
         }
         .into_any(),

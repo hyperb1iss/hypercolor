@@ -60,7 +60,7 @@ fn disconnected_menu_contains_app_actions() {
     assert_item(
         &entries,
         "status_disconnected",
-        "Daemon not reachable",
+        "Hypercolor isn't responding",
         false,
     );
     assert_item(&entries, ids::SHOW_WINDOW, "Show Window", true);
@@ -290,7 +290,7 @@ fn a_failed_supervisor_offers_retry_whether_or_not_a_daemon_answers() {
 
     for state in [AppState::disconnected(), connected_state()] {
         let entries = menu_model_with_supervisor(&state, true);
-        assert_item(&entries, ids::RETRY_DAEMON, "Retry Daemon", true);
+        assert_item(&entries, ids::RETRY_DAEMON, "Restart Hypercolor", true);
         assert_item(&entries, ids::QUIT, "Quit", true);
     }
 }
@@ -303,10 +303,10 @@ fn the_tooltip_names_the_phase_a_failed_startup_reached() {
     };
     let tooltip = tooltip_text(&connected_state(), Some(&failure));
     assert!(
-        tooltip.contains("last phase: starting render thread"),
+        tooltip.contains("stopped at: starting render thread"),
         "{tooltip}"
     );
-    assert!(tooltip.contains("Retry Daemon"), "{tooltip}");
+    assert!(tooltip.contains("Restart Hypercolor"), "{tooltip}");
     // Windows truncates tray tooltips past 127 UTF-16 units.
     assert!(tooltip.encode_utf16().count() <= 127, "{tooltip}");
 
@@ -317,7 +317,7 @@ fn the_tooltip_names_the_phase_a_failed_startup_reached() {
             startup_phase: None,
         }),
     );
-    assert!(phaseless.contains("Retry Daemon"), "{phaseless}");
+    assert!(phaseless.contains("Restart Hypercolor"), "{phaseless}");
     assert!(phaseless.encode_utf16().count() <= 127, "{phaseless}");
 
     assert_eq!(

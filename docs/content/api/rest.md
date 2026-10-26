@@ -497,7 +497,17 @@ were evicted before the read.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/effects/{id}/cover"> %}
-Cover image for one effect.
+Cover image for one effect: curated art when present, else the image the
+effect ships in `<meta cover>`, else a frame the daemon captured once the
+effect had the canvas to itself for a few seconds. Effects with none of
+these advertise no `cover_image_url`.
+
+Covers are named by the SHA-256 of their bytes. `cover_image_url` carries it
+as `?v=<sha256>`, and the `ETag` is `"sha256-<sha256>"`. A request whose `v`
+names the cover served gets `Cache-Control: public, max-age=31536000,
+immutable`; any other request gets `no-cache`. `If-None-Match` with the
+current `ETag` answers `304 Not Modified`. A cache can check what it holds
+by hashing it.
 {% </api_endpoint> %}
 
 Live effect state belongs to `GET /scene`. Patch controls through the real

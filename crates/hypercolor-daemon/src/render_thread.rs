@@ -637,6 +637,10 @@ fn millis_u64(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
+fn micros_u64(d: Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
 /// Saturating conversion from `u64` to `u32`.
 fn u64_to_u32(v: u64) -> u32 {
     u32::try_from(v).unwrap_or(u32::MAX)

@@ -470,6 +470,7 @@ mod tests {
         FrameSceneSnapshot {
             frame_token: 42,
             elapsed_ms: 1_234,
+            elapsed_us: 1_234_000,
             budget_us: 16_666,
             output_power: OutputPowerState::default(),
             effect_demand: EffectDemand {

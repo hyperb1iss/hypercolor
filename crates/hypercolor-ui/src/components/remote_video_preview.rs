@@ -21,6 +21,10 @@ use wasm_bindgen::{JsCast, JsValue};
 
 use crate::app::EffectsContext;
 use crate::color::{CanvasFrameAnalysis, analyze_rgba_samples};
+use crate::components::preview_box::{
+    CONTAIN_HOST_CLASS, CONTAIN_HOST_STYLE, PreviewFit, preview_box_style, preview_source_label,
+    preview_source_size,
+};
 use crate::media::{MediaUse, use_media_source};
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::remote_bridge::PreviewState;
@@ -46,7 +50,11 @@ pub const fn preview_note(state: PreviewState, presenting: bool) -> Option<&'sta
 pub fn RemoteVideoPreview(
     context: RemotePreviewContext,
     #[prop(default = "100%".to_string())] max_width: String,
-    #[prop(into, optional)] aspect_ratio: MaybeProp<String>,
+    /// CSS aspect (`"W / H"`) for a surface whose coordinate space is not
+    /// the video's own; see `CanvasPreview`.
+    #[prop(into, optional)]
+    coordinate_aspect: MaybeProp<String>,
+    #[prop(default = PreviewFit::FillWidth)] fit: PreviewFit,
     #[prop(default = "Live effect canvas preview".to_string())] aria_label: String,
     #[prop(default = false)] show_fps: bool,
     #[prop(default = "Preview".to_string())] fps_label: String,
@@ -122,6 +130,13 @@ pub fn RemoteVideoPreview(
             if !presenting.get_untracked() {
                 presenting.set(true);
             }
+            // A mid-stream resize (a zone retarget, a new encoder cap) shows
+            // on the next presented frame, ahead of the element's `resize`.
+            let size = (video.video_width(), video.video_height());
+            let presented = (size.0 > 0 && size.1 > 0).then_some(size);
+            if presented.is_some() && video_size.get_untracked() != presented {
+                video_size.set(presented);
+            }
             if measure_fps {
                 let fps = smoothed_fps(
                     presented_fps.get_untracked(),
@@ -186,23 +201,20 @@ pub fn RemoteVideoPreview(
     let still = use_media_source(still_route, MediaUse::Artwork);
 
     // ── Layout ─────────────────────────────────────────────────────────
-    let resolved_aspect_ratio = Memo::new(move |_| {
-        aspect_ratio.get().unwrap_or_else(|| {
-            video_size
-                .get()
-                .map(|(width, height)| format!("{width} / {height}"))
-                .unwrap_or_else(|| {
-                    crate::render_canvas::aspect_ratio_css(
-                        crate::render_canvas::DEFAULT_RENDER_CANVAS,
-                    )
-                })
-        })
+    // The box takes the video's own shape; before metadata arrives it takes
+    // the render canvas's, which the streamed zone shares.
+    let expected_source = crate::render_canvas::use_render_canvas_size();
+    let source_size =
+        Memo::new(move |_| preview_source_size(video_size.get(), expected_source.get()));
+    let box_style = Memo::new(move |_| {
+        let aspect = coordinate_aspect
+            .get()
+            .unwrap_or_else(|| crate::render_canvas::aspect_ratio_css(source_size.get()));
+        preview_box_style(fit, &aspect, &max_width)
     });
-    let wrapper_style = move || {
-        format!(
-            "max-width: {max_width}; width: 100%; max-height: 100%; aspect-ratio: {};",
-            resolved_aspect_ratio.get()
-        )
+    let (host_class, host_style) = match fit {
+        PreviewFit::Contain => (CONTAIN_HOST_CLASS, CONTAIN_HOST_STYLE),
+        PreviewFit::FillWidth => ("contents", ""),
     };
     let record_size = move || {
         if let Some(video) = video_ref.get_untracked() {
@@ -216,12 +228,15 @@ pub fn RemoteVideoPreview(
     let live = move || state.get() == PreviewState::Live && presenting.get();
 
     view! {
+        <div class=host_class style=host_style>
         <div
             node_ref=wrapper_ref
             class="relative overflow-hidden bg-black"
-            style=wrapper_style
+            style=move || box_style.get()
             data-preview-runtime=move || if live() { "video" } else { "still" }
             data-remote-preview-state=move || state.get().as_str()
+            data-preview-fit=fit.as_str()
+            data-preview-source=move || preview_source_label(source_size.get())
         >
             {move || still.get().url().map(|url| view! {
                 <img
@@ -234,7 +249,7 @@ pub fn RemoteVideoPreview(
             })}
             <video
                 node_ref=video_ref
-                class="absolute inset-0 block h-full w-full object-fill transition-opacity duration-300"
+                class="absolute inset-0 block h-full w-full object-contain transition-opacity duration-300"
                 class:opacity-0=move || !presenting.get()
                 role="img"
                 aria-label=aria_label
@@ -261,6 +276,7 @@ pub fn RemoteVideoPreview(
                     {move || format!("{fps_label} {:.0} fps [video]", presented_fps.get())}
                 </div>
             })}
+        </div>
         </div>
     }
 }

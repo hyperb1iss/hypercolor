@@ -118,6 +118,8 @@ pub(crate) struct OperationDoc {
     summary: &'static str,
     success_status: &'static str,
     alternate_success_status: Option<&'static str>,
+    /// Answers `304 Not Modified` with no body to a matching validator.
+    not_modified: bool,
     success: ResponseShape,
     request: Option<(SchemaName, bool)>,
     request_media_type: &'static str,
@@ -204,6 +206,7 @@ impl OperationDoc {
             summary,
             success_status: "200",
             alternate_success_status: None,
+            not_modified: false,
             success: ResponseShape::Enveloped(schema_name::<T>),
             request: None,
             request_media_type: "application/json",
@@ -240,6 +243,12 @@ impl OperationDoc {
 
     pub(crate) fn also_status(mut self, status: &'static str) -> Self {
         self.alternate_success_status = Some(status);
+        self
+    }
+
+    /// Document the bodiless `304` a conditional `GET` can get.
+    pub(crate) fn not_modified(mut self) -> Self {
+        self.not_modified = true;
         self
     }
 
@@ -321,6 +330,14 @@ fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Opera
         );
     if let Some(status) = document.alternate_success_status {
         builder = builder.response(status, success_response(document.summary, document.success));
+    }
+    if document.not_modified {
+        builder = builder.response(
+            "304",
+            ResponseBuilder::new()
+                .description("Not modified: the copy the client holds is current")
+                .build(),
+        );
     }
 
     for status in [

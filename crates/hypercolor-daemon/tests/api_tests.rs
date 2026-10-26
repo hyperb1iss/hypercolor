@@ -6307,8 +6307,151 @@ async fn get_effect_cover_returns_webp_image() {
         .expect("failed to read response body");
 
     assert_eq!(content_type, "image/webp");
-    assert_eq!(cache_control, "public, max-age=86400");
+    assert_eq!(cache_control, "no-cache");
     assert!(bytes.starts_with(b"RIFF"));
+}
+
+/// SHA-256 of the curated cover fixture's bytes (`RIFFTESTWEBP`).
+fn cover_fixture_sha256() -> String {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(64);
+    for byte in sha2::Sha256::digest(b"RIFFTESTWEBP") {
+        write!(&mut hex, "{byte:02x}").expect("writing into a String cannot fail");
+    }
+    hex
+}
+
+async fn get_cover(
+    app: axum::Router,
+    uri: &str,
+    if_none_match: Option<&str>,
+) -> axum::response::Response {
+    let mut request = Request::builder().uri(uri);
+    if let Some(etag) = if_none_match {
+        request = request.header(http::header::IF_NONE_MATCH, etag);
+    }
+    app.oneshot(
+        request
+            .body(Body::empty())
+            .expect("failed to build request"),
+    )
+    .await
+    .expect("failed to execute request")
+}
+
+fn header_text(response: &axum::response::Response, name: http::header::HeaderName) -> String {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn effect_cover_urls_name_the_cover_digest() {
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("rainbow");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/rainbow")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("detail should be JSON");
+    let url = json["data"]["cover_image_url"]
+        .as_str()
+        .expect("a curated cover should be advertised");
+    assert!(url.ends_with(&format!("/cover?v={}", cover_fixture_sha256())));
+}
+
+#[tokio::test]
+async fn a_cover_requested_by_its_digest_is_immutable_and_revalidates_to_304() {
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("rainbow");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let digest = cover_fixture_sha256();
+    let versioned = format!("/api/v1/effects/rainbow/cover?v={digest}");
+
+    let response = get_cover(app.clone(), &versioned, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = header_text(&response, http::header::ETAG);
+    assert_eq!(etag, format!("\"sha256-{digest}\""));
+    assert_eq!(
+        header_text(&response, http::header::CACHE_CONTROL),
+        "public, max-age=31536000, immutable"
+    );
+
+    let revalidated = get_cover(app.clone(), &versioned, Some(&etag)).await;
+    assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(header_text(&revalidated, http::header::ETAG), etag);
+    let body = axum::body::to_bytes(revalidated.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+    assert!(body.is_empty(), "a 304 carries no image");
+
+    let weak = get_cover(
+        app.clone(),
+        &versioned,
+        Some(&format!("\"other\", W/{etag}")),
+    )
+    .await;
+    assert_eq!(
+        weak.status(),
+        StatusCode::NOT_MODIFIED,
+        "a GET compares validators weakly"
+    );
+
+    let stale = get_cover(
+        app,
+        &format!("/api/v1/effects/rainbow/cover?v={}", "0".repeat(64)),
+        None,
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::OK);
+    assert_eq!(
+        header_text(&stale, http::header::CACHE_CONTROL),
+        "no-cache",
+        "a URL naming another digest must not be cached as this image"
+    );
+}
+
+#[tokio::test]
+async fn an_effect_without_cover_art_advertises_no_cover() {
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("some-other-effect");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/rainbow")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("detail should be JSON");
+    assert!(json["data"]["cover_image_url"].is_null());
 }
 
 #[tokio::test]

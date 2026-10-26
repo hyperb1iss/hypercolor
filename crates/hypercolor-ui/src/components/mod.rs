@@ -32,6 +32,7 @@ pub mod page_header;
 pub mod page_search_bar;
 pub mod perf_charts;
 pub mod preset_panel;
+pub mod preview_box;
 pub mod preview_cabinet;
 pub mod preview_runtime;
 pub mod release_notifications;

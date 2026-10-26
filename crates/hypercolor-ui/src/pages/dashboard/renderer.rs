@@ -155,7 +155,7 @@ pub(super) fn RendererHardwarePanel(
             // RAM, GPU VRAM) can never be misread as hypercolor's own usage.
             <div class="flex flex-col divide-y divide-edge-subtle/55 lg:flex-row lg:divide-x lg:divide-y-0">
                 <div class="min-w-0 lg:flex-[4]">
-                    <VitalGroupLabel label="Host" hint="this machine" />
+                    <VitalGroupLabel label="Host" hint="this computer" />
                     <div class="grid grid-cols-2 gap-px bg-edge-subtle/40 sm:grid-cols-4">
                         <VitalTile
                             label="CPU"
@@ -718,7 +718,7 @@ fn HealthPill(label: &'static str, #[prop(into)] badge: Signal<DiagnosticBadge>)
 }
 
 /// Small two-part header that frames a vitals cluster — a strong label
-/// plus a faint scope hint ("this machine" vs "this app") so the host
+/// plus a faint scope hint ("this computer" vs "this app") so the host
 /// readings can't be mistaken for hypercolor's own footprint.
 #[component]
 fn VitalGroupLabel(label: &'static str, hint: &'static str) -> impl IntoView {

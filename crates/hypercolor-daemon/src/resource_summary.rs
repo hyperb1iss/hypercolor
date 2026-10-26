@@ -89,11 +89,15 @@ pub(crate) fn scene_summary(scene: &Scene) -> SceneSummary {
     }
 }
 
+/// The cover URL, named by the cover's digest (`?v=<sha256>`), or `None`
+/// when the effect has no cover to serve. A changed cover gets a new URL, so
+/// the image behind any one URL never changes.
 pub(crate) fn effect_cover_image_url(metadata: &EffectMetadata) -> Option<String> {
-    if effect_cover_image_path(metadata).is_none() && html_effect_source_path(metadata).is_none() {
-        return None;
-    }
-    Some(format!("/api/v1/effects/{}/cover", metadata.id))
+    let identity = crate::effect_covers::cover_identity(metadata)?;
+    Some(format!(
+        "/api/v1/effects/{}/cover?v={}",
+        metadata.id, identity.sha256
+    ))
 }
 
 pub(crate) fn html_effect_source_path(metadata: &EffectMetadata) -> Option<&PathBuf> {

@@ -1,6 +1,6 @@
 from http import HTTPStatus
 from io import BytesIO
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
@@ -8,18 +8,27 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...types import File, Response
+from ...types import UNSET, File, Response, Unset
 
 
 def _get_kwargs(
     id: str,
+    *,
+    v: str | Unset = UNSET,
 ) -> dict[str, Any]:
+
+    params: dict[str, Any] = {}
+
+    params["v"] = v
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "get",
         "url": "/api/v1/effects/{id}/cover".format(
             id=quote(str(id), safe=""),
         ),
+        "params": params,
     }
 
     return _kwargs
@@ -27,11 +36,15 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorBody | File | None:
+) -> Any | ApiErrorBody | File | None:
     if response.status_code == 200:
         response_200 = File(payload=BytesIO(response.content))
 
         return response_200
+
+    if response.status_code == 304:
+        response_304 = cast(Any, None)
+        return response_304
 
     if response.status_code == 400:
         response_400 = ApiErrorBody.from_dict(response.json())
@@ -86,7 +99,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorBody | File]:
+) -> Response[Any | ApiErrorBody | File]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -99,22 +112,25 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorBody | File]:
+    v: str | Unset = UNSET,
+) -> Response[Any | ApiErrorBody | File]:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | File]
+        Response[Any | ApiErrorBody | File]
     """
 
     kwargs = _get_kwargs(
         id=id,
+        v=v,
     )
 
     response = client.get_httpx_client().request(
@@ -128,23 +144,26 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorBody | File | None:
+    v: str | Unset = UNSET,
+) -> Any | ApiErrorBody | File | None:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | File
+        Any | ApiErrorBody | File
     """
 
     return sync_detailed(
         id=id,
         client=client,
+        v=v,
     ).parsed
 
 
@@ -152,22 +171,25 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[ApiErrorBody | File]:
+    v: str | Unset = UNSET,
+) -> Response[Any | ApiErrorBody | File]:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | File]
+        Response[Any | ApiErrorBody | File]
     """
 
     kwargs = _get_kwargs(
         id=id,
+        v=v,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -179,23 +201,26 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> ApiErrorBody | File | None:
+    v: str | Unset = UNSET,
+) -> Any | ApiErrorBody | File | None:
     """Get effect cover image
 
     Args:
         id (str):
+        v (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | File
+        Any | ApiErrorBody | File
     """
 
     return (
         await asyncio_detailed(
             id=id,
             client=client,
+            v=v,
         )
     ).parsed

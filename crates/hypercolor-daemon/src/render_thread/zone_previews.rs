@@ -17,7 +17,7 @@ use super::RenderThreadState;
 use super::pipeline_runtime::PublicationCadenceState;
 use super::producer_queue::ProducerFrame;
 use super::sparkleflinger::SparkleFlinger;
-use crate::preview_runtime::{PreviewDemandSummary, ZonePreviewSelection};
+use crate::preview_runtime::{PreviewDemandSummary, ZonePreviewSelection, uniform_preview_extent};
 
 /// This frame's zone-preview demand, read once so staging and collection
 /// agree with frame publication's own cadence gate.
@@ -36,14 +36,12 @@ impl ZonePreviewDemand {
         state: &RenderThreadState,
         cadence: &PublicationCadenceState,
         scene_id: Option<SceneId>,
-        elapsed_ms: u64,
     ) -> Self {
         let receivers = state.event_bus.zone_preview_receiver_count();
         let tracked_receivers = state.preview_runtime.zone_preview_receiver_count();
         let demand = state.preview_runtime.zone_preview_demand();
         let active = scene_id.is_some() && receivers > 0;
-        let due = active
-            && cadence.zone_preview_due(elapsed_ms, receivers, tracked_receivers, demand.max_fps);
+        let due = active && cadence.zone_preview_due(receivers, tracked_receivers, demand.max_fps);
         Self::from_summary(active, due, receivers > tracked_receivers, demand)
             .with_selection(zone_preview_selection(state))
     }
@@ -79,15 +77,13 @@ impl ZonePreviewDemand {
 
     /// The preview extent for a `width` x `height` zone frame, sized the way
     /// the scene preview sizes its surface: full size on a full-resolution
-    /// ask, otherwise the demanded size clamped per axis to the zone's.
+    /// ask, otherwise one uniform scale that covers every demand, so the
+    /// preview keeps the zone's aspect.
     pub(crate) fn extent(&self, width: u32, height: u32) -> (u32, u32) {
         if self.full_resolution || width == 0 || height == 0 {
             return (width, height);
         }
-        (
-            self.max_width.clamp(1, width),
-            self.max_height.clamp(1, height),
-        )
+        uniform_preview_extent(width, height, self.max_width, self.max_height)
     }
 }
 
@@ -262,11 +258,27 @@ mod tests {
     }
 
     #[test]
-    fn sized_demand_clamps_each_axis_to_the_zone() {
-        let demand = ZonePreviewDemand::from_summary(true, true, false, sized_demand(320, 900));
+    fn sized_demand_scales_the_zone_uniformly() {
+        let demand = ZonePreviewDemand::from_summary(true, true, false, sized_demand(320, 315));
 
-        assert_eq!(demand.extent(640, 630), (320, 630));
+        assert_eq!(demand.extent(640, 630), (320, 315));
         assert_eq!(demand.extent(160, 100), (160, 100));
+    }
+
+    #[test]
+    fn mixed_demands_keep_the_zone_aspect() {
+        // A width-only dashboard demand merged with a Remote width-plus-height
+        // demand names 704 x 472, which is not the zone's shape.
+        let square = ZonePreviewDemand::from_summary(true, true, false, sized_demand(704, 472));
+        assert_eq!(square.extent(640, 630), (640, 630));
+
+        // A 6:1 strip keeps 6:1 at whatever scale covers both demands.
+        let strip = ZonePreviewDemand::from_summary(true, true, false, sized_demand(480, 40));
+        assert_eq!(strip.extent(960, 160), (480, 80));
+
+        // A demand taller than its width share never squashes the zone.
+        let tall = ZonePreviewDemand::from_summary(true, true, false, sized_demand(320, 900));
+        assert_eq!(tall.extent(640, 630), (640, 630));
     }
 
     #[test]

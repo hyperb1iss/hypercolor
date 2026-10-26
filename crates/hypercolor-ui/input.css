@@ -1399,3 +1399,16 @@ body.resizing * {
         transition: none !important;
     }
 }
+
+/* Phones stack the dashboard hero at full width, so its height follows the
+   preview source's aspect (H / W, set inline) plus the cabinet chrome. The
+   picture then fills the cabinet with no bars. Unlayered, so it outranks the
+   `h-full` utility it replaces below `md`; fullscreen's `!important` wins. */
+@media (width < 48rem) {
+    .dashboard-hero-preview {
+        height: calc(
+            (100vw - 2rem - var(--hero-chrome-x, 2px)) * (var(--hero-source-ratio, 3 / 4)) +
+                var(--hero-chrome, 49px)
+        );
+    }
+}

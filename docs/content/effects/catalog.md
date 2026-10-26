@@ -76,7 +76,7 @@ Each entry in `items` is an effect summary with this shape:
     "screen_reactive": false,
     "input_reactive": false
   },
-  "cover_image_url": "/api/v1/effects/borealis/cover"
+  "cover_image_url": "/api/v1/effects/borealis/cover?v=<sha256 of the cover>"
 }
 ```
 
