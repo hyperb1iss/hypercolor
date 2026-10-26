@@ -1694,6 +1694,9 @@ impl StudioHistory {
             match *resume {
                 Resume::Rebuild { record, remove } => {
                     match live_zone(scene_id, made.as_deref()).await {
+                        // The journal this resumes in is gone: a scene switch came
+                        // while the scene was read.
+                        _ if !self.is_current(generation) => {}
                         Err(_) => self.hold_again(item, did),
                         Ok(None) => {
                             toasts::toast_info(&format!(
@@ -1754,6 +1757,9 @@ impl StudioHistory {
                     color,
                     filled,
                 } => match live_zone(scene_id, made.as_deref()).await {
+                    // The journal this resumes in is gone: a scene switch came
+                    // while the scene was read.
+                    _ if !self.is_current(generation) => {}
                     Err(_) => self.hold_again(item, did),
                     Ok(None) => {
                         toasts::toast_info(&format!("{name} was made again, but it is gone now."));
