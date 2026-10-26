@@ -32,39 +32,39 @@
 //!   fresh value already equals its latest intent drops its intents (that
 //!   is how an edit that depended on a write the daemon already holds
 //!   settles), and what remains goes out again.
-//! - **Unknown** (the reply was lost). Where the daemon honors the write's
-//!   key, the same write goes out again under the same key until an answer
-//!   comes back, and the daemon applies it at most once. Where it does
-//!   not, the zone is read afresh first: at the write's own fence nothing
-//!   has landed yet, so it goes out again; past it, the write may have
-//!   landed and been followed by others, so it is taken as landed and its
-//!   intents retire, since sending it again could undo a later remote
-//!   write. When the fresh zone does not hold what it carried, the user is
-//!   told.
+//! - **Unknown** (no answer came back). The same write goes out again under
+//!   the same key until the daemon answers. The daemon applies a key at
+//!   most once and answers a repeat with its first answer, waiting for the
+//!   first request when that one is still under way, so a request that
+//!   commits late is never applied twice, and the answer that comes back
+//!   settles the write as above, whatever it is.
 //!
 //! Between clients the daemon's order decides. A remote write that lands
 //! after ours wins; a local intent that reaches the daemon later wins.
 //! Undo and redo are edits like any other and make intents the same way.
 //!
-//! Revisions only compare within one daemon run, and a new run starts them
-//! over. Each new connection to the daemon may lead to a new run, so when
-//! one opens every zone re-anchors: a read started on an earlier connection
-//! is never taken in again, the next read started on the new one becomes
-//! confirmed whatever its revision, intents stay, and nothing goes out
-//! fenced at a revision of the old run until that read comes. A write sent
-//! before the connection opened is not settled by its reply, whose zone
-//! may belong to the run that ended: it settles from a fresh read, as a
-//! write whose reply was lost does.
+//! Every read and reply names the daemon run it came from. Revisions only
+//! compare within one run, and keys only mean something to the run that
+//! saw them. When the daemon starts a new run every zone re-anchors: a read
+//! from another run is never taken in, the first read of the new one
+//! becomes confirmed whatever its revision, intents stay, and nothing goes
+//! out fenced at a revision of the old run until that read comes. A write
+//! sent in the old run, or answered by another run than its own, can no
+//! longer be settled by its key. The old run cannot commit anything any
+//! more, so a fresh read of the new run settles it: it is taken as landed
+//! and its intents retire, since sending it again could undo a remote
+//! write that landed after it, and when the fresh zone does not hold what
+//! it carried the user is told.
 //!
 //! Confirmed holds the zone twice: `raw`, as the daemon stores it, which a
 //! write starts from; and `shown`, as the canvas draws it (sizes normalized
 //! for the canvas), which edits and the fresh-read checks compare against.
 //!
 //! [`SceneLedgers`] keeps the ledgers of the active scene. A read the
-//! writer started before the ledgers last changed scene or connection is
-//! never admitted; one that shows another scene, at least as new as what
-//! the ledgers hold, switches them to it. A read drops a zone's ledger
-//! only when it is at least as new as that ledger. Write ids and keys are
+//! writer started before the ledgers last changed scene or run is never
+//! admitted; one that shows another scene, at least as new as what the
+//! ledgers hold, switches them to it. A read drops a zone's ledger only
+//! when it is at least as new as that ledger. Write ids and keys are
 //! unique to the page, so a reply can only ever settle the write it
 //! answers.
 
@@ -149,32 +149,23 @@ struct Sent {
     write: Write,
     /// The newest intent the write carried.
     through: u64,
-    /// The reply was lost.
+    /// No answer has come back for it.
     unknown: bool,
-    /// Sent before a new connection opened, so possibly to a daemon run
-    /// that has since ended: its fence means nothing to a new run, and
-    /// neither does its key.
+    /// Sent in a daemon run that has since ended, or answered by another
+    /// run than its own: its key settles nothing any more.
     old_run: bool,
 }
 
-/// A write to send: the zone's outputs to store, fenced at `fence`, under
-/// `key`, which every retry of this write reuses.
+/// A write to send: the zone's outputs to store, fenced at `fence`, a
+/// revision of daemon run `run`, under `key`, which every retry of this
+/// write reuses.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Write {
     pub id: u64,
     pub key: String,
     pub fence: u64,
+    pub run: String,
     pub outputs: Vec<Output>,
-}
-
-/// How a fresh read settled a write whose reply was lost.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Settled {
-    /// Nothing had landed: its intents go out again.
-    Resend,
-    /// Taken as landed. `unconfirmed` when the fresh zone does not hold
-    /// what it carried, so the user should check the canvas.
-    Landed { unconfirmed: bool },
 }
 
 /// One zone's confirmed layout and its pending intents.
@@ -183,7 +174,7 @@ pub struct ZoneLedger {
     confirmed: Option<Confirmed>,
     pending: Vec<Intent>,
     sent: Option<Sent>,
-    /// A new connection opened: the next read is taken whatever its
+    /// The daemon started a new run: the next read is taken whatever its
     /// revision, and nothing goes out until it comes.
     reanchor: bool,
     next_seq: u64,
@@ -232,10 +223,10 @@ impl ZoneLedger {
     /// as new as confirmed or newer replaces it (the same revision redraws
     /// it, after a canvas resize or over a reply's account of that
     /// revision); an older one changes nothing, unless the ledger waits to
-    /// re-anchor on a new connection. Returns the ids of outputs whose
+    /// re-anchor in a new daemon run. Returns the ids of outputs whose
     /// intents it cancelled because the zone no longer holds them.
     ///
-    /// The caller passes only reads of the ledger's own connection:
+    /// The caller passes only reads of the ledger's own run:
     /// [`SceneLedgers`] refuses the others.
     pub fn confirm(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) -> Vec<String> {
         if self.reanchor {
@@ -254,10 +245,11 @@ impl ZoneLedger {
         self.adopt(revision, raw, shown)
     }
 
-    /// A new connection opened, so the daemon may have started a new run
-    /// whose revisions start over. The next read is confirmed whatever its
-    /// revision, pending intents stay, and no write goes out until that
-    /// read comes, so none is fenced at a revision of the old run.
+    /// The daemon started a new run, whose revisions say nothing about the
+    /// old one's. The next read is confirmed whatever its revision, pending
+    /// intents stay, and no write goes out until that read comes, so none
+    /// is fenced at a revision of the old run. A write still out can no
+    /// longer be settled by its key.
     pub fn reanchor(&mut self) {
         self.reanchor = true;
         if let Some(sent) = self.sent.as_mut() {
@@ -265,17 +257,28 @@ impl ZoneLedger {
         }
     }
 
-    /// Whether the ledger waits for its first read on a new connection.
+    /// Whether the ledger waits for its first read of a new daemon run.
     #[must_use]
     pub fn reanchoring(&self) -> bool {
         self.reanchor
     }
 
     /// Whether a fresh read is needed before anything else can go out: a
-    /// lost write to settle, or intents waiting on a re-anchor.
+    /// write its key can no longer settle, or intents waiting on a
+    /// re-anchor.
     #[must_use]
     pub fn wants_read(&self) -> bool {
-        self.unsettled() || (self.reanchor && self.has_pending())
+        self.sent
+            .as_ref()
+            .is_some_and(|sent| sent.unknown && sent.old_run)
+            || (self.reanchor && self.has_pending())
+    }
+
+    /// Whether the write out has had no answer yet and can go out again
+    /// under its key.
+    #[must_use]
+    pub fn wants_retry(&self) -> bool {
+        self.retry().is_some()
     }
 
     /// Whether [`Self::take_write`] has a write to hand out now.
@@ -301,7 +304,7 @@ impl ZoneLedger {
     /// Move confirmed from revision `from` to `to` without changing it,
     /// when the only change between them is known to be elsewhere (another
     /// zone's write that landed at `to`, fenced at `from`). A ledger
-    /// waiting to re-anchor holds a revision of another connection, so it
+    /// waiting to re-anchor holds a revision of another run, so it
     /// stays as it is.
     pub fn advance(&mut self, from: u64, to: u64) {
         if !self.reanchor
@@ -369,7 +372,8 @@ impl ZoneLedger {
         self.sent.as_ref().is_some_and(|sent| !sent.unknown)
     }
 
-    /// Whether a write's reply was lost and its outcome is still open.
+    /// Whether no answer has come back for the write out, so its outcome
+    /// is still open.
     #[must_use]
     pub fn unsettled(&self) -> bool {
         self.sent.as_ref().is_some_and(|sent| sent.unknown)
@@ -383,9 +387,9 @@ impl ZoneLedger {
 
     /// The next write when one is due (see [`Self::write_due`]): confirmed's
     /// stored outputs with each intent's field at its latest value, fenced
-    /// at confirmed's revision, under the id and key `next` hands out, which
-    /// must never repeat.
-    pub fn take_write(&mut self, next: impl FnOnce() -> (u64, String)) -> Option<Write> {
+    /// at confirmed's revision, a revision of daemon run `run`, under the id
+    /// and key `next` hands out, which must never repeat.
+    pub fn take_write(&mut self, run: &str, next: impl FnOnce() -> (u64, String)) -> Option<Write> {
         if !self.write_due() {
             return None;
         }
@@ -398,6 +402,7 @@ impl ZoneLedger {
             id,
             key,
             fence: confirmed.revision,
+            run: run.to_owned(),
             outputs,
         };
         self.sent = Some(Sent {
@@ -409,10 +414,9 @@ impl ZoneLedger {
         Some(write)
     }
 
-    /// The write whose reply was lost, to send again under its own key,
-    /// where the daemon honors keys and applies a write at most once. None
-    /// for a write sent before a new connection opened, whose key a new run
-    /// does not know: [`Self::settle_lost`] settles that one from a fresh
+    /// The write no answer came back for, to send again under its own key:
+    /// the daemon applies it at most once. None for a write its key can no
+    /// longer settle, which [`Self::settle_ended`] settles from a fresh
     /// read.
     #[must_use]
     pub fn retry(&self) -> Option<Write> {
@@ -431,10 +435,10 @@ impl ZoneLedger {
     /// outputs whose intents that cancelled.
     ///
     /// `None` when the reply settles nothing: it answers no write still
-    /// out, or a write sent before a new connection opened. That one landed
-    /// in a run that may have ended, so its reply's zone and revision are
-    /// not taken; it stays open, and [`Self::settle_lost`] settles it from
-    /// a fresh read.
+    /// out, or a write sent in a run that has since ended. That one landed
+    /// in the old run, whose revisions mean nothing now, so its reply's
+    /// zone is not taken; it stays open, and [`Self::settle_ended`] settles
+    /// it from a fresh read.
     pub fn applied(
         &mut self,
         id: u64,
@@ -471,34 +475,40 @@ impl ZoneLedger {
         self.settle(id);
     }
 
-    /// Write `id`'s reply was lost, so whether it landed is unknown. No new
-    /// write goes out until its outcome is known: from the daemon's answer
-    /// to [`Self::retry`], or from a fresh read through
-    /// [`Self::settle_lost`].
+    /// No answer came back for write `id`, so whether it landed is
+    /// unknown. No new write goes out until the daemon answers
+    /// [`Self::retry`].
     pub fn lost(&mut self, id: u64) {
         if let Some(sent) = self.sent.as_mut().filter(|sent| sent.write.id == id) {
             sent.unknown = true;
         }
     }
 
-    /// Take in a fresh read after a lost reply, where the daemon does not
-    /// honor keys (or the write was sent before a new connection opened),
-    /// and settle the write it left open: at the write's fence nothing
-    /// landed yet, so its intents stay to go out again; past it, or for a
-    /// write sent before the connection opened, whose fence a new run's
-    /// revisions say nothing about, the write is taken as landed and its
-    /// intents retire. `None` when no write was open.
-    pub fn settle_lost(
+    /// Write `id` was answered by another daemon run than its own, which
+    /// knows nothing of its key: whether the first request landed in its
+    /// own run is unknown, and [`Self::settle_ended`] settles it from a
+    /// fresh read.
+    pub fn stranded(&mut self, id: u64) {
+        if let Some(sent) = self.sent.as_mut().filter(|sent| sent.write.id == id) {
+            sent.unknown = true;
+            sent.old_run = true;
+        }
+    }
+
+    /// Take in a fresh read of the current daemon run and settle the write
+    /// left open in a run that has ended. That run commits nothing any
+    /// more, so the read shows whatever the write did, but not whether a
+    /// remote write followed it: the write is taken as landed and its
+    /// intents retire. Returns whether the fresh zone does not hold what it
+    /// carried, so the user should check the canvas; `None` when no such
+    /// write was open.
+    pub fn settle_ended(
         &mut self,
         revision: u64,
         raw: Vec<Output>,
         shown: Vec<Output>,
-    ) -> Option<Settled> {
-        let sent = self.sent.take_if(|sent| sent.unknown)?;
-        if !sent.old_run && revision <= sent.write.fence {
-            self.confirm(revision, raw, shown);
-            return Some(Settled::Resend);
-        }
+    ) -> Option<bool> {
+        let sent = self.sent.take_if(|sent| sent.unknown && sent.old_run)?;
         // Given up on: a field the write carried with no newer intent to
         // send after it, which the fresh zone does not hold (a zone without
         // the output at all holds nothing).
@@ -512,7 +522,7 @@ impl ZoneLedger {
         });
         self.pending.retain(|intent| intent.seq > sent.through);
         self.confirm(revision, raw, shown);
-        Some(Settled::Landed { unconfirmed })
+        Some(unconfirmed)
     }
 
     /// Take in the zone read afresh after a stale rejection, then drop the
@@ -564,14 +574,14 @@ pub struct ZoneRead {
 pub struct SceneRead {
     pub scene_id: SceneId,
     pub revision: u64,
-    /// The connection to the daemon the read was started on (see
-    /// [`SceneLedgers::connect`]).
-    pub connection: u64,
+    /// The daemon run `revision` belongs to; empty from a daemon that
+    /// names no runs.
+    pub run: String,
     pub zones: Vec<ZoneRead>,
 }
 
 /// Which ledgers a read was started for, so a read that comes back after
-/// they changed scene or connection is not admitted.
+/// they changed scene or run is not admitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ticket {
     scene_id: SceneId,
@@ -603,7 +613,11 @@ pub enum Admission {
     /// ledgers hold, so it says nothing about which scene is active now
     /// (the daemon went there and back while it was out). Read again.
     Behind,
-    /// The ledgers changed scene or connection while it was out.
+    /// It came from another daemon run than the ledgers': the daemon
+    /// restarted, and the run that answered becomes theirs once the socket
+    /// names it (see [`SceneLedgers::enter`]).
+    OtherRun,
+    /// The ledgers changed scene or run while it was out.
     Refused,
 }
 
@@ -619,9 +633,9 @@ pub struct Cancelled {
 #[derive(Clone, Debug, Default)]
 pub struct SceneLedgers {
     scene_id: Option<SceneId>,
-    /// The newest connection to the daemon the ledgers know of.
-    connection: u64,
-    /// Moves on every change of scene and every new connection.
+    /// The daemon run the ledgers belong to; empty until one is known.
+    run: String,
+    /// Moves on every change of scene and of run.
     generation: u64,
     /// Zone ledgers, in the order their zones were first seen.
     zones: Vec<(String, ZoneLedger)>,
@@ -647,20 +661,21 @@ impl SceneLedgers {
         self.scene_id
     }
 
-    /// The newest connection to the daemon the ledgers know of.
+    /// The daemon run the ledgers belong to; empty until one is known.
     #[must_use]
-    pub fn connection(&self) -> u64 {
-        self.connection
+    pub fn run(&self) -> &str {
+        &self.run
     }
 
-    /// Connection `connection` to the daemon opened. Each new one may lead
-    /// to a new daemon run, so every ledger re-anchors, and reads started
-    /// before it are refused from now on. Returns whether it was new.
-    pub fn connect(&mut self, connection: u64) -> bool {
-        if connection <= self.connection {
+    /// The daemon runs as run `run` now, as the socket's handshake names
+    /// it. A run other than theirs means the daemon restarted, so every
+    /// ledger re-anchors, and reads and replies of the old run are refused
+    /// from now on. Returns whether the run changed.
+    pub fn enter(&mut self, run: &str) -> bool {
+        if run.is_empty() || run == self.run {
             return false;
         }
-        self.connection = connection;
+        run.clone_into(&mut self.run);
         self.generation += 1;
         for (_, ledger) in &mut self.zones {
             ledger.reanchor();
@@ -745,14 +760,12 @@ impl SceneLedgers {
     /// The active scene as a read of it reported: it becomes the active
     /// scene, `wanted` gets a ledger if it has none, and every ledger takes
     /// the read in. Returns the edits it cancelled, or `None` when the read
-    /// was started on a connection older than the newest one, so it is not
-    /// taken in at all. A read started on a newer one opens that connection
-    /// first.
+    /// comes from another daemon run than the ledgers', so it is not taken
+    /// in at all. Until a run is known, the first read's run becomes it.
     pub fn observe(&mut self, read: &SceneRead, wanted: Option<&str>) -> Option<Vec<Cancelled>> {
-        if read.connection < self.connection {
+        if !self.of_run(read) {
             return None;
         }
-        self.connect(read.connection);
         let mut cancelled = self.select(read.scene_id);
         if let Some(zone_id) = wanted
             && read.zones.iter().any(|zone| zone.zone_id == zone_id)
@@ -771,8 +784,11 @@ impl SceneLedgers {
     /// hold, means the active scene changed: they switch to it, as
     /// [`Self::observe`] would.
     pub fn admit(&mut self, ticket: Ticket, read: &SceneRead) -> Admission {
-        if !self.admits(ticket) || read.connection != self.connection {
+        if !self.admits(ticket) {
             return Admission::Refused;
+        }
+        if !self.of_run(read) {
+            return Admission::OtherRun;
         }
         if read.scene_id != ticket.scene_id {
             if self
@@ -786,7 +802,17 @@ impl SceneLedgers {
         Admission::Taken(self.take_in(read))
     }
 
-    /// The newest revision a ledger holds on the current connection.
+    /// Whether `read` belongs to the ledgers' daemon run. Until one is
+    /// known, the read's run becomes theirs.
+    fn of_run(&mut self, read: &SceneRead) -> bool {
+        if self.run.is_empty() {
+            self.enter(&read.run);
+            return true;
+        }
+        read.run == self.run
+    }
+
+    /// The newest revision a ledger holds in the current run.
     fn newest_revision(&self) -> Option<u64> {
         self.zones
             .iter()
@@ -801,10 +827,25 @@ impl SceneLedgers {
         self.zones.iter().any(|(_, ledger)| ledger.wants_read())
     }
 
+    /// Whether some ledger has a write to send again under its key.
+    #[must_use]
+    pub fn wants_retry(&self) -> bool {
+        self.zones.iter().any(|(_, ledger)| ledger.wants_retry())
+    }
+
     /// Whether some ledger has a write to send now.
     #[must_use]
     pub fn write_due(&self) -> bool {
         self.zones.iter().any(|(_, ledger)| ledger.write_due())
+    }
+
+    /// The first zone with a write to send again under its key, and that
+    /// write.
+    #[must_use]
+    pub fn next_retry(&self) -> Option<(String, Write)> {
+        self.zones
+            .iter()
+            .find_map(|(zone_id, ledger)| ledger.retry().map(|write| (zone_id.clone(), write)))
     }
 
     /// Every ledger takes in its zone from `read`. A ledger whose zone the
@@ -853,10 +894,11 @@ impl SceneLedgers {
             zones,
             last_write,
             key_prefix,
+            run,
             ..
         } = self;
         let (_, ledger) = zones.iter_mut().find(|(id, _)| id == zone_id)?;
-        ledger.take_write(|| {
+        ledger.take_write(run, || {
             *last_write += 1;
             (*last_write, format!("{key_prefix}:{last_write}"))
         })

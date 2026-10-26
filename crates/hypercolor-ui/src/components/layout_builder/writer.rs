@@ -6,37 +6,41 @@
 //! its predecessor left rather than starting a second, conflicting copy.
 //! What the writer has to tell the user goes out as a page toast, so it is
 //! heard whether Studio is open or not. The socket watch lives for the page
-//! too: each time the socket opens again the ledgers re-anchor, a writer
-//! paused on a failure tries again, and the writer reads the scene itself
-//! for any edit that waits on the re-anchor, so nothing waits for a Studio
-//! to be opened.
+//! too: each time the socket opens again a writer paused on a failure
+//! tries again, and when its handshake names a new daemon run the ledgers
+//! re-anchor and the writer reads the scene itself for any edit that waits
+//! on that, so nothing waits for a Studio to be opened.
+//!
+//! Each write goes out under an idempotency key of its own (see
+//! [`super::keyed`]), and a write no answer came back for goes out again
+//! under the same key, after a short wait each time and without holding the
+//! scene meanwhile, until the daemon answers it.
 //!
 //! A mounted Studio lends the writer [`WriterHooks`]. Each write then takes
 //! its own turn with Studio's other scene operations, lands in Studio's
 //! history, and redraws its canvas. With no Studio mounted the writer goes
 //! on without them.
 //!
-//! When a write fails, or the scene cannot be read to settle one, the
-//! writer pauses rather than retrying in a loop, and says so. A new edit or
-//! a socket that opens again resumes it.
+//! When a write fails, keeps getting no answer, or the scene cannot be read
+//! to settle one, the writer pauses rather than retrying in a loop, and
+//! says so; the edits stay pending on the canvas. A new edit or a socket
+//! that opens again resumes it.
 
 use std::cell::RefCell;
+use std::time::Duration;
 
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 use leptos::prelude::*;
 
+use super::keyed::{self, Answer, RETRY_DELAYS};
 use super::ledger::{
-    Admission, Cancelled, Cause, SceneLedgers, SceneRead, Settled, Ticket, Write, ZoneRead,
+    Admission, Cancelled, Cause, SceneLedgers, SceneRead, Ticket, Write, ZoneRead,
 };
 use crate::{api, toasts};
 
 /// How many stale rejections in a row the writer takes before it pauses.
 const STALE_STREAK: u32 = 3;
-
-/// How many lost replies in a row the writer settles and resends before
-/// it pauses.
-const LOST_STREAK: u32 = 3;
 
 /// How many reads in a row may fall behind what the ledgers hold before
 /// the writer pauses.
@@ -92,9 +96,11 @@ impl Writer {
     }
 
     /// Whether the writer has something to do now: a read to take, or a
-    /// write to send. A run takes a turn exactly when this holds.
+    /// write to send or send again. A run takes a turn exactly when this
+    /// holds.
     fn has_work(&self) -> bool {
-        !self.paused && (self.ledgers.wants_read() || self.ledgers.write_due())
+        !self.paused
+            && (self.ledgers.wants_read() || self.ledgers.wants_retry() || self.ledgers.write_due())
     }
 }
 
@@ -124,13 +130,12 @@ pub(super) fn zone_outputs(
     (raw, shown)
 }
 
-/// A scene document as one read of every zone, started on socket
-/// connection `connection` and drawn for `canvas`.
-fn scene_read(scene: &api::SceneDocument, connection: u64, canvas: (u32, u32)) -> SceneRead {
+/// A scene document as one read of every zone, drawn for `canvas`.
+fn scene_read(scene: &api::SceneDocument, canvas: (u32, u32)) -> SceneRead {
     SceneRead {
         scene_id: scene.id,
         revision: scene.revision,
-        connection,
+        run: scene.run_epoch.clone(),
         zones: scene
             .zones
             .iter()
@@ -216,45 +221,41 @@ fn in_page_owner<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-/// Watch socket connection `opened` for as long as the page lives: each
-/// time it opens again, the daemon may have started a new run, so the
-/// ledgers re-anchor and a writer paused on a failure tries again.
-/// Watching starts once; later calls change nothing.
-pub(crate) fn watch_connection(opened: ReadSignal<u64>) {
+/// Watch the socket for as long as the page lives: `opened` counts its
+/// openings, and `run` is the daemon run its last handshake named. Each
+/// opening lets a paused writer try again, and a new run re-anchors the
+/// ledgers first. Watching starts once; later calls change nothing.
+pub(crate) fn watch_connection(opened: ReadSignal<u64>, run: ReadSignal<Option<String>>) {
     if with_writer(|writer| std::mem::replace(&mut writer.watching, true)) {
         return;
     }
     in_page_owner(|| {
-        Effect::new(move |_| connected(opened.get()));
+        Effect::new(move |_| {
+            opened.track();
+            connected(run.get().as_deref());
+        });
     });
 }
 
-/// Socket connection `connection` opened: the ledgers re-anchor on it if
-/// it is new to them, and a paused writer tries again.
-fn connected(connection: u64) {
-    if with_writer(|writer| writer.ledgers.connect(connection)) {
-        resume();
+/// The socket opened, its handshake naming daemon run `run`: the ledgers
+/// enter that run, and a paused writer tries again.
+fn connected(run: Option<&str>) {
+    if let Some(run) = run {
+        with_writer(|writer| writer.ledgers.enter(run));
     }
+    resume();
 }
 
-/// Take in the active scene as a read of it reported, started on socket
-/// connection `connection` and drawn for `canvas`, making sure `wanted`
-/// has a ledger. A read started before the socket last opened is not
-/// taken in: it may come from a daemon run that has ended. Edits the read
-/// cancelled are reported.
-pub(crate) fn observe(
-    scene: &api::SceneDocument,
-    connection: u64,
-    canvas: (u32, u32),
-    wanted: Option<&str>,
-) {
-    let read = scene_read(scene, connection, canvas);
+/// Take in the active scene as a read of it reported, drawn for `canvas`,
+/// making sure `wanted` has a ledger. A read from another daemon run than
+/// the ledgers' is not taken in. Edits the read cancelled are reported.
+pub(crate) fn observe(scene: &api::SceneDocument, canvas: (u32, u32), wanted: Option<&str>) {
+    let read = scene_read(scene, canvas);
     let taken = with_writer(|writer| {
         writer.canvas = Some(canvas);
-        let opened = read.connection > writer.ledgers.connection();
         let switching = writer.ledgers.scene_id() != Some(scene.id);
         let cancelled = writer.ledgers.observe(&read, wanted)?;
-        if switching || opened {
+        if switching {
             writer.paused = false;
         }
         Some(cancelled)
@@ -412,11 +413,23 @@ fn pause(ticket: Ticket, message: &str) {
     }
 }
 
+/// Stop until the socket names the daemon run a read came from, without a
+/// word: the run is the daemon's own news, and nothing failed.
+fn hold(ticket: Ticket) {
+    with_writer(|writer| {
+        if writer.ledgers.admits(ticket) {
+            writer.paused = true;
+        }
+    });
+}
+
 /// What one turn of the writer does, for the ledgers `ticket` names.
 enum Turn {
-    /// Read the scene: lost writes settle against it, and ledgers whose
-    /// edits wait on a re-anchor take it.
+    /// Read the scene: writes left open by a run that ended settle against
+    /// it, and ledgers whose edits wait on a re-anchor take it.
     Read,
+    /// Send a write no answer came back for again, under its own key.
+    Retry(String, Write),
     Send(String, Write),
 }
 
@@ -429,6 +442,9 @@ fn next_turn() -> Option<(Ticket, Turn)> {
         if writer.ledgers.wants_read() {
             return Some((ticket, Turn::Read));
         }
+        if let Some((zone_id, write)) = writer.ledgers.next_retry() {
+            return Some((ticket, Turn::Retry(zone_id, write)));
+        }
         writer
             .ledgers
             .next_write()
@@ -436,21 +452,19 @@ fn next_turn() -> Option<(Ticket, Turn)> {
     })
 }
 
-fn ticket_now() -> Option<Ticket> {
-    with_writer(|writer| writer.ledgers.ticket())
-}
-
 /// Failures in a row, so a writer that keeps failing stops and says so.
 #[derive(Default)]
 struct Streaks {
     stale: u32,
+    /// Sends no answer came back for.
     lost: u32,
     behind: u32,
 }
 
 /// Write until no zone has anything to send or settle. With a Studio
 /// mounted, every turn holds a claim on the scene of its own and releases
-/// it after; a claim refused ends the run.
+/// it after; a claim refused ends the run. A wait before a retry holds no
+/// claim.
 async fn run(first: Option<(WriterHooks, u64)>) -> Ended {
     let mut streaks = Streaks::default();
     let mut held = first;
@@ -462,12 +476,16 @@ async fn run(first: Option<(WriterHooks, u64)>) -> Ended {
         };
         turns += 1;
         let next = match turn {
-            Turn::Read => read_and_settle(ticket, None, &mut streaks).await,
-            Turn::Send(zone_id, write) => send(ticket, &zone_id, write, &mut streaks).await,
+            Turn::Read => read_and_settle(ticket, &mut streaks).await,
+            Turn::Retry(zone_id, write) | Turn::Send(zone_id, write) => {
+                send(ticket, &zone_id, write, &mut streaks).await
+            }
         };
         release(held);
-        if let Next::Stop(ended) = next {
-            return ended;
+        match next {
+            Next::Stop(ended) => return ended,
+            Next::Wait(delay) => keyed::sleep(delay).await,
+            Next::Go => {}
         }
         let Some(claimed) = claim() else {
             return Ended::Blocked;
@@ -479,6 +497,8 @@ async fn run(first: Option<(WriterHooks, u64)>) -> Ended {
 /// What the writer does after a turn.
 enum Next {
     Go,
+    /// Wait this long, holding nothing, then go on.
+    Wait(Duration),
     Stop(Ended),
 }
 
@@ -492,6 +512,8 @@ enum Fresh {
     Failed,
     /// Reads keep coming back older than what the ledgers hold.
     Behind,
+    /// It came from another daemon run than the ledgers'.
+    OtherRun,
     /// Taken in: the document and its read.
     Taken(Box<(api::SceneDocument, SceneRead)>),
     /// The ledgers are no longer the ones it was started for: they changed
@@ -503,11 +525,10 @@ enum Fresh {
 /// Read the scene afresh for the ledgers `ticket` names. A read that
 /// falls behind what the ledgers hold is read again, up to a streak.
 async fn read_for(ticket: Ticket, streaks: &mut Streaks) -> Fresh {
-    let connection = with_writer(|writer| writer.ledgers.connection());
     let Ok(scene) = api::fetch_active_scene().await else {
         return Fresh::Failed;
     };
-    let read = scene_read(&scene, connection, canvas());
+    let read = scene_read(&scene, canvas());
     let admission = with_writer(|writer| {
         let admission = writer.ledgers.admit(ticket, &read);
         if matches!(admission, Admission::Switched(_)) {
@@ -533,6 +554,7 @@ async fn read_for(ticket: Ticket, streaks: &mut Streaks) -> Fresh {
             }
             Fresh::Moved
         }
+        Admission::OtherRun => Fresh::OtherRun,
         Admission::Refused => Fresh::Moved,
     }
 }
@@ -550,15 +572,9 @@ fn share(scene: api::SceneDocument) {
 }
 
 /// Read the scene for the ledgers `ticket` names and take it in: ledgers
-/// waiting to re-anchor take it whatever its revision, and every write
-/// whose reply was lost settles against it. `answered` names a zone whose
-/// write the daemon answered with an error, and the error: such a write
-/// that the read finds not landed was refused.
-async fn read_and_settle(
-    ticket: Ticket,
-    answered: Option<(&str, &str)>,
-    streaks: &mut Streaks,
-) -> Next {
+/// waiting to re-anchor take it whatever its revision, and every write a
+/// run that ended left open settles against it.
+async fn read_and_settle(ticket: Ticket, streaks: &mut Streaks) -> Next {
     let (scene, read) = match read_for(ticket, streaks).await {
         Fresh::Taken(taken) => *taken,
         Fresh::Failed => {
@@ -572,70 +588,51 @@ async fn read_and_settle(
             pause(ticket, BEHIND);
             return Next::Stop(Ended::Paused);
         }
+        Fresh::OtherRun => {
+            hold(ticket);
+            return Next::Stop(Ended::Paused);
+        }
         // The ledgers are not the ones the read was for any more; the next
         // turn starts from where they are now.
         Fresh::Moved => return Next::Go,
     };
-    let settled: Vec<(String, Settled)> = with_writer(|writer| {
+    let unconfirmed = with_writer(|writer| {
         let open: Vec<String> = writer
             .ledgers
             .zones()
-            .filter(|(_, ledger)| ledger.unsettled())
+            .filter(|(_, ledger)| ledger.wants_read() && ledger.unsettled())
             .map(|(zone_id, _)| zone_id.to_owned())
             .collect();
         open.into_iter()
             .filter_map(|zone_id| {
                 let zone = zone_in(&read, &zone_id)?;
-                let settled = writer.ledgers.ledger_mut(&zone_id)?.settle_lost(
+                writer.ledgers.ledger_mut(&zone_id)?.settle_ended(
                     read.revision,
                     zone.raw.clone(),
                     zone.shown.clone(),
-                )?;
-                Some((zone_id, settled))
+                )
             })
-            .collect()
+            .filter(|unconfirmed| *unconfirmed)
+            .count()
     });
     // A write the read could not settle (its zone missing from a read
     // older than its ledger) would only ask for the same read again.
-    let still_open = with_writer(|writer| writer.ledgers.zones().any(|(_, l)| l.unsettled()));
+    let still_open = with_writer(|writer| writer.ledgers.wants_read());
     share(scene);
-    // Every settled write is heard before the writer stops for any of them.
-    let mut stop: Option<String> = None;
-    for (zone_id, settled) in settled {
-        match settled {
-            Settled::Resend => {
-                if let Some((_, error)) = answered.filter(|(zone, _)| *zone == zone_id) {
-                    stop.get_or_insert_with(|| {
-                        format!(
-                            "Layout change not saved: {error}. It goes out again with your next edit."
-                        )
-                    });
-                    continue;
-                }
-                streaks.lost += 1;
-                if streaks.lost >= LOST_STREAK {
-                    stop.get_or_insert_with(|| {
-                        "Layout change not saved yet: replies keep getting lost. It goes out again when the connection is back or with your next edit.".to_owned()
-                    });
-                }
-            }
-            Settled::Landed { unconfirmed } => {
-                streaks.lost = 0;
-                if unconfirmed {
-                    toasts::toast_error(
-                        "A layout change may not have been saved, and the scene has changed since. Check the canvas.",
-                    );
-                }
-            }
-        }
+    match unconfirmed {
+        0 => {}
+        1 => toasts::toast_error(
+            "A layout change may not have been saved: the daemon restarted while it was on its way. Check the canvas.",
+        ),
+        count => toasts::toast_error(&format!(
+            "{count} layout changes may not have been saved: the daemon restarted while they were on their way. Check the canvas."
+        )),
     }
     if still_open {
-        stop.get_or_insert_with(|| {
-            "Layout change not confirmed: the scene read did not show its zone. It is checked again when the connection is back or with your next edit.".to_owned()
-        });
-    }
-    if let Some(message) = stop {
-        pause(ticket, &message);
+        pause(
+            ticket,
+            "Layout change not confirmed: the scene read did not show its zone. It is checked again when the connection is back or with your next edit.",
+        );
         return Next::Stop(Ended::Paused);
     }
     Next::Go
@@ -667,26 +664,30 @@ async fn after_stale(zone_id: &str, id: u64, streaks: &mut Streaks) -> Next {
             pause(ticket, BEHIND);
             return Next::Stop(Ended::Paused);
         }
-        Fresh::Taken(..) | Fresh::Moved => {}
-    }
-    if let Fresh::Taken(taken) = fresh {
-        let (scene, read) = *taken;
-        let cancelled = with_writer(|writer| {
-            let zone = zone_in(&read, zone_id)?;
-            Some(writer.ledgers.ledger_mut(zone_id)?.refetched(
-                read.revision,
-                zone.raw.clone(),
-                zone.shown.clone(),
-            ))
-        });
-        if let Some(output_ids) = cancelled {
-            report(&[Cancelled {
-                zone_id: zone_id.to_owned(),
-                output_ids,
-                cause: Cause::OutputLeft,
-            }]);
+        Fresh::OtherRun => {
+            hold(ticket);
+            return Next::Stop(Ended::Paused);
         }
-        share(scene);
+        Fresh::Taken(taken) => {
+            let (scene, read) = *taken;
+            let cancelled = with_writer(|writer| {
+                let zone = zone_in(&read, zone_id)?;
+                Some(writer.ledgers.ledger_mut(zone_id)?.refetched(
+                    read.revision,
+                    zone.raw.clone(),
+                    zone.shown.clone(),
+                ))
+            });
+            if let Some(output_ids) = cancelled {
+                report(&[Cancelled {
+                    zone_id: zone_id.to_owned(),
+                    output_ids,
+                    cause: Cause::OutputLeft,
+                }]);
+            }
+            share(scene);
+        }
+        Fresh::Moved => {}
     }
     // Checked whatever became of the read, so stale rejections can never
     // go on without end.
@@ -700,10 +701,9 @@ async fn after_stale(zone_id: &str, id: u64, streaks: &mut Streaks) -> Next {
     Next::Go
 }
 
-/// Send one write and take in its outcome. The outcome settles the write
-/// by its id, which is unique to the page, whatever the ledgers did while
-/// it was out: a reply to a write sent before the socket opened again only
-/// leaves it for a fresh read to settle.
+/// Send one write, or send it again under its own key, and take in what the
+/// daemon answers. The answer settles the write by its id, which is unique
+/// to the page, whatever the ledgers did while it was out.
 async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks) -> Next {
     // The layout route stores each member's placement and nothing else.
     let layout = SpatialLayout {
@@ -718,7 +718,42 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
         version: 1,
     };
     let canvas = canvas();
-    match api::zones::update_zone_layout(zone_id, &layout, write.fence).await {
+    let response = api::zones::update_zone_layout(zone_id, &layout, write.fence, &write.key).await;
+    let (status, outcome) = match keyed::classify(&write.run, response) {
+        Answer::Final { status, outcome } => (status, outcome),
+        Answer::Lost(_) => {
+            with_writer(|writer| {
+                if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
+                    ledger.lost(write.id);
+                }
+            });
+            let wait = usize::try_from(streaks.lost)
+                .ok()
+                .and_then(|lost| RETRY_DELAYS.get(lost).copied());
+            streaks.lost += 1;
+            let Some(wait) = wait else {
+                pause(
+                    ticket,
+                    "Layout change not confirmed yet: no answer from the daemon. It goes out again when the connection is back or with your next edit.",
+                );
+                return Next::Stop(Ended::Paused);
+            };
+            return Next::Wait(wait);
+        }
+        // Whatever the first request did happened in a run that has ended
+        // (the daemon restarted), so a read of the new run settles it.
+        Answer::OtherRun => {
+            with_writer(|writer| {
+                if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
+                    ledger.stranded(write.id);
+                }
+            });
+            changed();
+            return Next::Go;
+        }
+    };
+    streaks.lost = 0;
+    match outcome {
         Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
             let revision = landed.unwrap_or_else(|| write.fence.saturating_add(1));
             let (raw, shown) = zone_outputs(&zone, canvas);
@@ -743,7 +778,6 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
                 return Next::Go;
             };
             streaks.stale = 0;
-            streaks.lost = 0;
             report(&[Cancelled {
                 zone_id: zone_id.to_owned(),
                 output_ids: cancelled,
@@ -756,21 +790,29 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
         }
         Ok(api::zones::ZoneOutcome::Stale { .. }) => after_stale(zone_id, write.id, streaks).await,
         Err(error) => {
-            let status = match &error {
-                api::ApiError::Http { status, .. } => Some(*status),
-                _ => None,
-            };
             let raced = matches!(
                 &error,
                 api::ApiError::Http { status: 409, details: Some(details), .. }
                     if details.get("kind").and_then(serde_json::Value::as_str)
                         == Some("scene_commit_superseded")
             );
+            let unreadable = matches!(error, api::ApiError::Parse(_));
             match status {
                 // A commit race: another write won, as with a stale fence.
-                Some(409) if raced => after_stale(zone_id, write.id, streaks).await,
-                // A refusal is final: the write did not land.
-                Some(status) if (400..500).contains(&status) => {
+                409 if raced => after_stale(zone_id, write.id, streaks).await,
+                412 if unreadable => after_stale(zone_id, write.id, streaks).await,
+                // It landed, but the reply cannot be read, and a retry would
+                // only replay it: a fresh read settles it as landed.
+                200..=299 if unreadable => {
+                    with_writer(|writer| {
+                        if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
+                            ledger.stranded(write.id);
+                        }
+                    });
+                    Next::Go
+                }
+                // Any other answer is final, and the write did not land.
+                _ => {
                     with_writer(|writer| {
                         if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
                             ledger.failed(write.id);
@@ -784,27 +826,6 @@ async fn send(ticket: Ticket, zone_id: &str, write: Write, streaks: &mut Streaks
                         ),
                     );
                     Next::Stop(Ended::Paused)
-                }
-                // Lost, unreadable, or failed after the daemon may have
-                // committed it. The daemon does not yet honor the write's
-                // key, so a fresh read settles it before anything else goes
-                // out.
-                _ => {
-                    with_writer(|writer| {
-                        if let Some(ledger) = writer.ledgers.ledger_mut(zone_id) {
-                            ledger.lost(write.id);
-                        }
-                    });
-                    let Some(ticket) = ticket_now() else {
-                        return Next::Go;
-                    };
-                    let answered = status.is_some().then(|| error.to_string());
-                    read_and_settle(
-                        ticket,
-                        answered.as_deref().map(|error| (zone_id, error)),
-                        streaks,
-                    )
-                    .await
                 }
             }
         }
@@ -852,7 +873,7 @@ mod tests {
                 let read = SceneRead {
                     scene_id,
                     revision: 1,
-                    connection: 0,
+                    run: "run".to_owned(),
                     zones: vec![ZoneRead {
                         zone_id: "zone".to_owned(),
                         raw: vec![output(0.2)],

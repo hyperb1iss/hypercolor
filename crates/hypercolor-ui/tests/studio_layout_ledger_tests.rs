@@ -1,34 +1,28 @@
 //! Contract tests for live layout reconciliation: a small model of the
 //! daemon, the network, and one client's zone ledgers, driven through every
-//! ordering of edits, remote writes, sends, replies, refreshes, stale
-//! rejections, lost requests, lost replies, late commits, sockets that
-//! drop and open again, new daemon runs, and undo.
+//! ordering of edits, remote writes, sends, retries, replies, refreshes,
+//! stale rejections, lost requests and replies, requests that commit late,
+//! sockets that drop and open again, daemon restarts, and undo.
 //!
-//! The model runs in two modes. Unkeyed is the daemon as it is: a request
-//! the client lost either never arrived or committed before its reply was
-//! lost, and a new daemon run starts its revisions over. Keyed is the
-//! daemon that honors each write's key: a request may stall and commit
-//! late, after the client has already given up waiting on it, a retry
-//! under the same key gets the stored answer rather than a second apply,
-//! and revisions never repeat across runs.
+//! The daemon honors each write's idempotency key: a request may stall and
+//! commit late, after the client gave up waiting on it, and a retry under
+//! the same key gets the stored answer (waiting for a stalled original)
+//! rather than a second apply. Keys live for one daemon run. A restart
+//! starts a new run whose revisions never repeat an old one's, kills the
+//! requests still on their way, and forgets every key, while the replies
+//! and reads the old run already sent still arrive. Every reply and read
+//! names its run, and the socket's handshake names the run it reaches.
 //!
 //! The model has two outputs and two edited fields (x and y). The canvas
 //! draws widths normalized (half again the stored width), so the client's
 //! `shown` differs from what the daemon stores. The client runs the real
 //! [`SceneLedgers`] for one scene of one zone and follows the writer's
-//! loop: take a write, send it, and on its outcome call `applied`; or
-//! `stale` then `refetched`; or, when the reply is lost, `lost` then
-//! `settle_lost` from a fresh read. The daemon fences each write at its
-//! revision. Replies and refreshes reach the client in any order, and a
-//! refresh may be older than one already seen.
-//!
-//! The socket may open again, with a new daemon run behind it or (unkeyed)
-//! the same one. Each refresh carries the connection it was started on,
-//! and replies and refreshes from before still arrive afterwards. The
-//! writer reads the scene itself for a ledger that waits on the re-anchor.
-//! Keyed, the daemon names the run it serves, so a socket that opens again
-//! on the same run changes nothing the ledgers see; that case is modeled
-//! unkeyed only.
+//! loop: take a write and send it; on an answer from the write's own run
+//! call `applied`, or `stale` then `refetched`; while no answer comes, send
+//! it again under its key; and settle a write its key can no longer settle
+//! (answered by another run, or sent in one that ended) with
+//! `settle_ended` from a fresh read. Replies and refreshes reach the client
+//! in any order, and a refresh may be older than one already seen.
 //!
 //! After everything is delivered and a final refresh, these must hold:
 //!
@@ -40,23 +34,24 @@
 //!    holds intents for.
 //! 4. A write changes a field only if the user edited it after the last of
 //!    our writes to that field landed (judged from the daemon's own order,
-//!    not the ledger's bookkeeping).
+//!    not the ledger's bookkeeping). A lost request that commits late and
+//!    is then sent again would break this; under its key it cannot.
 //! 5. The user's latest value for a field is what the daemon ends with,
 //!    unless a remote write to that field landed after ours did, or the
-//!    write carrying it was lost on the way and the client said so.
+//!    write carrying it died with a daemon run and the client said so.
 //!
 //! And at every step: within one daemon run the revision the client
-//! confirms never goes back, across sockets that open again too, so the
-//! canvas never falls back to an older daemon state; and no write is ever
-//! applied under a fence from an earlier run.
+//! confirms never goes back, across sockets that open again too; the
+//! daemon applies a key at most once; and no write is ever applied under a
+//! fence from an earlier run.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use hypercolor_ui::components::layout_builder::ledger::{
-    Admission, Cancelled, Cause, Field, Intent, SceneLedgers, SceneRead, Settled, Value, Write,
-    ZoneLedger, ZoneRead,
+    Admission, Cancelled, Cause, Field, Intent, SceneLedgers, SceneRead, Value, Write, ZoneLedger,
+    ZoneRead,
 };
 
 const ZONE: &str = "main";
@@ -66,6 +61,8 @@ const CHECKED: [Field; 3] = [Field::X, Field::Y, Field::Width];
 const VALUES: [f32; 5] = [0.1, 0.2, 0.4, 0.6, 0.8];
 /// How much wider the canvas draws an output than the daemon stores it.
 const DRAWN: f32 = 1.5;
+/// How far a new daemon run's revisions start past the old run's.
+const RUN_GAP: u64 = 1_000;
 
 fn output(id: &str, x: f32, y: f32) -> Output {
     Output {
@@ -105,13 +102,17 @@ fn shown(raw: &[Output]) -> Vec<Output> {
         .collect()
 }
 
-/// A read of the model's one zone, started on socket connection
-/// `connection`.
-fn zone_read(scene_id: SceneId, revision: u64, outputs: &[Output], connection: u64) -> SceneRead {
+/// The name daemon run `run` goes by.
+fn run_name(run: u64) -> String {
+    format!("run-{run}")
+}
+
+/// A read of the model's one zone, from daemon run `run`.
+fn zone_read(scene_id: SceneId, revision: u64, outputs: &[Output], run: u64) -> SceneRead {
     SceneRead {
         scene_id,
         revision,
-        connection,
+        run: run_name(run),
         zones: vec![ZoneRead {
             zone_id: ZONE.to_owned(),
             raw: outputs.to_vec(),
@@ -158,25 +159,26 @@ enum Message {
         id: u64,
         revision: u64,
         outputs: Vec<Output>,
+        run: u64,
     },
     Stale {
         id: u64,
+        run: u64,
     },
-    /// The reply never came: the client knows only that the outcome is
+    /// No answer came back: the client knows only that the outcome is
     /// unknown.
     Lost {
         id: u64,
     },
-    /// A read of the scene, started on client socket connection
-    /// `connection`.
+    /// A read of the scene, from daemon run `run`.
     Refresh {
         revision: u64,
         outputs: Vec<Output>,
-        connection: u64,
+        run: u64,
     },
 }
 
-/// A write on its way to the daemon.
+/// A write on its way to the daemon. A retry sends the same one again.
 #[derive(Clone, Debug)]
 struct Outgoing {
     write: Write,
@@ -184,24 +186,21 @@ struct Outgoing {
     intended: HashMap<Key, f32>,
     /// The fields it holds intents for.
     carried: Vec<Key>,
-    /// The step it was sent at.
+    /// The step it was first sent at.
     sent_at: u64,
-    /// The daemon run it was sent in.
-    run: u64,
 }
 
 struct Model {
-    /// Whether the daemon honors write keys.
-    keyed: bool,
-    /// The daemon's run; a new run starts its revisions over unless keyed.
+    /// The daemon's run.
     run: u64,
     /// Answers the daemon stored by write key, within one run.
     answers: HashMap<String, Message>,
     /// Requests the daemon holds but has not committed yet.
     stalled: Vec<Outgoing>,
-    /// A lost write the client will send again under its key: what it
-    /// carried, and its id.
-    awaiting_retry: Option<(Vec<Key>, u64)>,
+    /// Keys the daemon applied, by run, to catch a second apply.
+    applied_keys: HashSet<(u64, String)>,
+    /// A write no answer came back for, to send again under its key.
+    awaiting_retry: Option<Outgoing>,
     revision: u64,
     server: Vec<Output>,
     /// Server applies so far, in the daemon's order.
@@ -209,14 +208,13 @@ struct Model {
     step: u64,
     scene: SceneId,
     ledgers: SceneLedgers,
-    /// The client's socket connection; it counts up each time the socket
-    /// opens again.
-    connection: u64,
+    /// The daemon run the client's socket last named.
+    socket_run: u64,
     to_server: VecDeque<Outgoing>,
     to_client: Vec<Message>,
     awaiting_refetch: bool,
-    /// A lost write waiting for a fresh read: what it carried, and whether
-    /// the daemon really applied it.
+    /// A write its key can no longer settle, waiting for a fresh read:
+    /// what it carried, and whether the daemon really applied it.
     awaiting_settle: Option<(Vec<Key>, bool)>,
     /// Writes the daemon has seen, by id, and whether each applied.
     reached: HashMap<u64, bool>,
@@ -230,7 +228,7 @@ struct Model {
     local_landed: HashMap<Key, u64>,
     /// When a remote write last landed per field.
     remote_landed: HashMap<Key, u64>,
-    /// Fields whose latest value was lost with its write, and the user told.
+    /// Fields whose latest value died with a daemon run, the user told.
     excused: HashSet<Key>,
     undo: Vec<(Key, f32)>,
     seen: u64,
@@ -239,26 +237,18 @@ struct Model {
 
 impl Model {
     fn new() -> Self {
-        Self::with_keys(false)
-    }
-
-    fn keyed() -> Self {
-        Self::with_keys(true)
-    }
-
-    fn with_keys(keyed: bool) -> Self {
         let server = vec![output("a", 0.2, 0.2), output("b", 0.2, 0.2)];
         let scene = SceneId::new();
         let mut ledgers = SceneLedgers::new("page");
-        ledgers.connect(1);
+        ledgers.enter(&run_name(1));
         ledgers
             .observe(&zone_read(scene, 1, &server, 1), Some(ZONE))
             .expect("the first read");
         Self {
-            keyed,
             run: 1,
             answers: HashMap::new(),
             stalled: Vec::new(),
+            applied_keys: HashSet::new(),
             awaiting_retry: None,
             revision: 1,
             server,
@@ -266,7 +256,7 @@ impl Model {
             step: 0,
             scene,
             ledgers,
-            connection: 1,
+            socket_run: 1,
             to_server: VecDeque::new(),
             to_client: Vec::new(),
             awaiting_refetch: false,
@@ -285,10 +275,6 @@ impl Model {
         }
     }
 
-    fn trace(&self) -> String {
-        self.log.join("\n")
-    }
-
     fn ledger(&self) -> &ZoneLedger {
         self.ledgers.zone(ZONE).expect("the zone's ledger")
     }
@@ -297,19 +283,26 @@ impl Model {
         self.ledgers.ledger_mut(ZONE).expect("the zone's ledger")
     }
 
-    /// The scene as the daemon holds it now, read on the current socket.
+    /// The scene as the daemon holds it now.
     fn read_now(&self) -> SceneRead {
-        zone_read(self.scene, self.revision, &self.server, self.connection)
+        zone_read(self.scene, self.revision, &self.server, self.run)
     }
 
     /// The writer's own read, under the ledgers' ticket of the moment.
-    fn writer_reads(&mut self) {
+    /// Whether the ledgers took it: a read of a run the socket has not
+    /// named yet waits for the socket.
+    fn writer_reads(&mut self) -> bool {
         let read = self.read_now();
         let ticket = self.ledgers.ticket().expect("a scene");
-        assert!(
-            matches!(self.ledgers.admit(ticket, &read), Admission::Taken(_)),
-            "the writer's own read is admitted"
-        );
+        match self.ledgers.admit(ticket, &read) {
+            Admission::Taken(_) => true,
+            Admission::OtherRun => false,
+            other => panic!("one scene's own read came to {other:?}\n{}", self.trace()),
+        }
+    }
+
+    fn trace(&self) -> String {
+        self.log.join("\n")
     }
 
     fn display(&self) -> Vec<Output> {
@@ -336,7 +329,7 @@ impl Model {
         self.to_client.push(Message::Refresh {
             revision: self.revision,
             outputs: self.server.clone(),
-            connection: self.connection,
+            run: self.run,
         });
     }
 
@@ -428,14 +421,15 @@ impl Model {
             .iter()
             .filter_map(|key| self.latest_local.get(key).map(|value| (*key, *value)))
             .collect();
-        self.log
-            .push(format!("send #{} fence {}", write.id, write.fence));
+        self.log.push(format!(
+            "send #{} fence {} in {}",
+            write.id, write.fence, write.run
+        ));
         let outgoing = Outgoing {
             write,
             intended,
             carried,
             sent_at: self.step,
-            run: self.run,
         };
         self.in_flight = Some(outgoing.clone());
         self.to_server.push_back(outgoing);
@@ -443,32 +437,31 @@ impl Model {
     }
 
     /// The daemon commits a write or finds it stale, and keeps the answer
-    /// under its key when it honors keys.
+    /// under its key.
     fn process(&mut self, outgoing: &Outgoing) -> Message {
         let id = outgoing.write.id;
-        // A key the daemon has answered is never applied again.
-        if let Some(answer) = self
-            .keyed
-            .then(|| self.answers.get(&outgoing.write.key).cloned())
-            .flatten()
-        {
+        if let Some(answer) = self.answers.get(&outgoing.write.key).cloned() {
             self.log.push(format!("write #{id} replayed"));
             return answer;
         }
         if outgoing.write.fence != self.revision {
-            self.reached.insert(id, false);
+            self.reached.entry(id).or_insert(false);
             self.log.push(format!("write #{id} stale"));
-            let answer = Message::Stale { id };
-            if self.keyed {
-                self.answers
-                    .insert(outgoing.write.key.clone(), answer.clone());
-            }
+            let answer = Message::Stale { id, run: self.run };
+            self.answers
+                .insert(outgoing.write.key.clone(), answer.clone());
             return answer;
         }
         assert_eq!(
-            outgoing.run,
-            self.run,
+            outgoing.write.run,
+            run_name(self.run),
             "write #{id} passed under a fence from an earlier daemon run\n{}",
+            self.trace()
+        );
+        assert!(
+            self.applied_keys
+                .insert((self.run, outgoing.write.key.clone())),
+            "write #{id} applied twice under one key\n{}",
             self.trace()
         );
         for id in OUTPUTS {
@@ -516,18 +509,16 @@ impl Model {
             id,
             revision: self.revision,
             outputs: self.server.clone(),
+            run: self.run,
         };
-        if self.keyed {
-            self.answers
-                .insert(outgoing.write.key.clone(), answer.clone());
-        }
+        self.answers
+            .insert(outgoing.write.key.clone(), answer.clone());
         answer
     }
 
-    /// The daemon takes the write in. `lose_reply` drops its reply. A
-    /// daemon that honors keys answers a key it has seen with the answer it
-    /// stored, waiting for the original if that is still stalled, rather
-    /// than applying the write twice.
+    /// The daemon takes the write in. `lose_reply` drops its reply. A key
+    /// the daemon has seen gets the answer it stored, the original first
+    /// when that is still stalled, rather than a second apply.
     fn deliver_write(&mut self, lose_reply: bool) -> bool {
         let Some(outgoing) = self.to_server.pop_front() else {
             return false;
@@ -535,19 +526,10 @@ impl Model {
         self.tick();
         let id = outgoing.write.id;
         let key = outgoing.write.key.clone();
-        let answer = if let Some(answer) = self
-            .keyed
-            .then(|| self.answers.get(&key).cloned())
-            .flatten()
-        {
-            self.log.push(format!("write #{id} replayed"));
-            answer
-        } else if let Some(index) = self
-            .keyed
-            .then(|| self.stalled.iter().position(|held| held.write.key == key))
-            .flatten()
+        let answer = if let Some(index) = self.stalled.iter().position(|held| held.write.key == key)
         {
             let original = self.stalled.remove(index);
+            self.log.push(format!("write #{id} waits for the original"));
             self.process(&original)
         } else {
             self.process(&outgoing)
@@ -561,12 +543,9 @@ impl Model {
         true
     }
 
-    /// The request reaches a daemon that honors keys and stalls there; the
-    /// client hears nothing back, and the daemon may commit it later.
+    /// The request reaches the daemon and stalls there; the client hears
+    /// nothing back, and the daemon may commit it later.
     fn stall_request(&mut self) -> bool {
-        if !self.keyed {
-            return false;
-        }
         let Some(outgoing) = self.to_server.pop_front() else {
             return false;
         };
@@ -591,94 +570,6 @@ impl Model {
         true
     }
 
-    /// The client sends a lost write again under its own key.
-    fn retry(&mut self) -> bool {
-        let Some((carried, _)) = self.awaiting_retry.take() else {
-            return false;
-        };
-        self.tick();
-        let Some(write) = self.ledger().retry() else {
-            return false;
-        };
-        let intended = carried
-            .iter()
-            .filter_map(|key| self.latest_local.get(key).map(|value| (*key, *value)))
-            .collect();
-        self.log.push(format!("retry #{} under its key", write.id));
-        let outgoing = Outgoing {
-            write,
-            intended,
-            carried,
-            sent_at: self.step,
-            run: self.run,
-        };
-        self.in_flight = Some(outgoing.clone());
-        self.to_server.push_back(outgoing);
-        true
-    }
-
-    /// The daemon starts a new run. Requests still on their way or held
-    /// die with it; unkeyed, its revisions start over. Replies and reads it
-    /// already sent still arrive. The client's socket opens again.
-    fn restart(&mut self) {
-        self.tick();
-        self.run += 1;
-        self.revision = if self.keyed { self.revision + 1_000 } else { 1 };
-        for outgoing in self.to_server.drain(..) {
-            self.to_client.push(Message::Lost {
-                id: outgoing.write.id,
-            });
-        }
-        self.stalled.clear();
-        self.answers.clear();
-        self.log
-            .push(format!("daemon restarts at {}", self.revision));
-        self.seen = 0;
-        self.reconnect();
-    }
-
-    /// The socket drops and opens again on the same daemon run; requests
-    /// and replies go on as they were.
-    fn blip(&mut self) -> bool {
-        if self.keyed {
-            return false;
-        }
-        self.tick();
-        self.reconnect();
-        true
-    }
-
-    /// The socket opens again: the ledgers re-anchor on the new connection,
-    /// and the shared scene read it starts is on its way.
-    fn reconnect(&mut self) {
-        self.connection += 1;
-        if let Some((carried, id)) = self.awaiting_retry.take() {
-            // Its key may mean nothing to the daemon now: a read settles it.
-            let applied = self.reached.get(&id).copied().unwrap_or(false);
-            self.awaiting_settle = Some((carried, applied));
-        }
-        assert!(self.ledgers.connect(self.connection));
-        self.log
-            .push(format!("socket opens again ({})", self.connection));
-        self.to_client.push(Message::Refresh {
-            revision: self.revision,
-            outputs: self.server.clone(),
-            connection: self.connection,
-        });
-    }
-
-    /// The writer's own read for a ledger waiting on a re-anchor.
-    fn anchor(&mut self) -> bool {
-        if !self.ledger().reanchoring() {
-            return false;
-        }
-        self.tick();
-        self.log.push(format!("anchor read {}", self.revision));
-        self.writer_reads();
-        self.check_monotonic();
-        true
-    }
-
     /// The request never reaches the daemon; the client hears nothing back.
     fn lose_request(&mut self) -> bool {
         let Some(outgoing) = self.to_server.pop_front() else {
@@ -688,6 +579,87 @@ impl Model {
         let id = outgoing.write.id;
         self.log.push(format!("write #{id} lost on the way"));
         self.to_client.push(Message::Lost { id });
+        true
+    }
+
+    /// The client sends a write no answer came back for again, under its
+    /// own key.
+    fn retry(&mut self) -> bool {
+        let Some(outgoing) = self.awaiting_retry.take() else {
+            return false;
+        };
+        self.tick();
+        let write = self.ledger().retry().expect("a write to retry");
+        assert_eq!(write, outgoing.write, "a retry is the same write");
+        self.log.push(format!("retry #{} under its key", write.id));
+        self.in_flight = Some(outgoing.clone());
+        self.to_server.push_back(outgoing);
+        true
+    }
+
+    /// The daemon starts a new run. Requests still on their way or held
+    /// die with it, it forgets every key, and its revisions start well
+    /// past the old run's. Replies and reads it already sent still arrive.
+    /// The client learns of it once its socket opens again.
+    fn restart(&mut self) {
+        self.tick();
+        self.run += 1;
+        self.revision += RUN_GAP;
+        for outgoing in self.to_server.drain(..) {
+            self.to_client.push(Message::Lost {
+                id: outgoing.write.id,
+            });
+        }
+        self.stalled.clear();
+        self.answers.clear();
+        self.log
+            .push(format!("daemon restarts as {}", run_name(self.run)));
+    }
+
+    /// The socket opens again and its handshake names the daemon's run:
+    /// a new run re-anchors the ledgers. Either way, the shared scene read
+    /// the opening starts is on its way.
+    fn hello(&mut self) -> bool {
+        self.tick();
+        if self.socket_run != self.run {
+            self.socket_run = self.run;
+            assert!(self.ledgers.enter(&run_name(self.run)));
+            self.seen = 0;
+            if let Some(outgoing) = self.awaiting_retry.take() {
+                // Its key means nothing to the new run: a read settles it.
+                let applied = self
+                    .reached
+                    .get(&outgoing.write.id)
+                    .copied()
+                    .unwrap_or(false);
+                self.awaiting_settle = Some((outgoing.carried, applied));
+            }
+            self.log
+                .push(format!("socket names {}", run_name(self.run)));
+        } else {
+            assert!(!self.ledgers.enter(&run_name(self.run)));
+            self.log
+                .push("socket opens again on the same run".to_owned());
+        }
+        self.to_client.push(Message::Refresh {
+            revision: self.revision,
+            outputs: self.server.clone(),
+            run: self.run,
+        });
+        true
+    }
+
+    /// The writer's own read for a ledger waiting on a re-anchor.
+    fn anchor(&mut self) -> bool {
+        if !self.ledger().reanchoring() {
+            return false;
+        }
+        self.tick();
+        if !self.writer_reads() {
+            return false;
+        }
+        self.log.push(format!("anchor read {}", self.revision));
+        self.check_monotonic();
         true
     }
 
@@ -706,6 +678,17 @@ impl Model {
         self.seen = revision;
     }
 
+    /// A write another run answered waits for a fresh read.
+    fn strand(&mut self, outgoing: Option<Outgoing>, id: u64) {
+        self.ledger_mut().stranded(id);
+        if !self.ledger().unsettled() {
+            return;
+        }
+        let applied = self.reached.get(&id).copied().unwrap_or(false);
+        let carried = outgoing.map(|outgoing| outgoing.carried);
+        self.awaiting_settle = Some((carried.unwrap_or_default(), applied));
+    }
+
     fn deliver(&mut self, index: usize) -> bool {
         if index >= self.to_client.len() {
             return false;
@@ -716,49 +699,66 @@ impl Model {
                 id,
                 revision,
                 outputs,
+                run,
             } => {
-                self.log.push(format!("reply #{id} applied {revision}"));
+                self.log.push(format!(
+                    "reply #{id} applied {revision} in {}",
+                    run_name(run)
+                ));
                 let outgoing = self.in_flight.take();
-                let taken =
-                    self.ledger_mut()
-                        .applied(id, revision, outputs.clone(), shown(&outputs));
-                if taken.is_none() && self.ledger().unsettled() {
-                    // Sent before the socket opened again: a read settles it.
-                    self.log.push(format!("#{id} left for a read to settle"));
-                    let carried = outgoing.map(|outgoing| outgoing.carried);
-                    self.awaiting_settle = Some((carried.unwrap_or_default(), true));
+                let own = outgoing
+                    .as_ref()
+                    .is_some_and(|outgoing| outgoing.write.run == run_name(run));
+                if own {
+                    let taken =
+                        self.ledger_mut()
+                            .applied(id, revision, outputs.clone(), shown(&outputs));
+                    if taken.is_none() && self.ledger().unsettled() {
+                        // Sent in a run that has since ended: a read settles it.
+                        self.log.push(format!("#{id} left for a read to settle"));
+                        let carried = outgoing.map(|outgoing| outgoing.carried);
+                        self.awaiting_settle = Some((carried.unwrap_or_default(), true));
+                    }
+                } else {
+                    self.strand(outgoing, id);
                 }
             }
-            Message::Stale { id } => {
-                self.log.push(format!("reply #{id} stale"));
-                self.in_flight = None;
-                self.ledger_mut().stale(id);
-                self.awaiting_refetch = true;
+            Message::Stale { id, run } => {
+                self.log
+                    .push(format!("reply #{id} stale in {}", run_name(run)));
+                let outgoing = self.in_flight.take();
+                let own = outgoing
+                    .as_ref()
+                    .is_some_and(|outgoing| outgoing.write.run == run_name(run));
+                if own {
+                    self.ledger_mut().stale(id);
+                    self.awaiting_refetch = true;
+                } else {
+                    self.strand(outgoing, id);
+                }
             }
             Message::Lost { id } => {
-                self.log.push(format!("reply #{id} never came"));
-                let carried = self
-                    .in_flight
-                    .take()
-                    .map(|outgoing| outgoing.carried)
-                    .unwrap_or_default();
-                let applied = self.reached.get(&id).copied().unwrap_or(false);
+                self.log.push(format!("no answer for #{id}"));
+                let outgoing = self.in_flight.take();
                 self.ledger_mut().lost(id);
-                if self.keyed && self.ledger().retry().is_some() {
-                    self.awaiting_retry = Some((carried, id));
+                if self.ledger().retry().is_some() {
+                    self.awaiting_retry = outgoing;
                 } else {
-                    self.awaiting_settle = Some((carried, applied));
+                    let applied = self.reached.get(&id).copied().unwrap_or(false);
+                    let carried = outgoing.map(|outgoing| outgoing.carried);
+                    self.awaiting_settle = Some((carried.unwrap_or_default(), applied));
                 }
             }
             Message::Refresh {
                 revision,
                 outputs,
-                connection,
+                run,
             } => {
-                let read = zone_read(self.scene, revision, &outputs, connection);
+                let read = zone_read(self.scene, revision, &outputs, run);
                 let taken = self.ledgers.observe(&read, Some(ZONE)).is_some();
                 self.log.push(format!(
-                    "refresh {revision} on socket {connection}{}",
+                    "refresh {revision} in {}{}",
+                    run_name(run),
                     if taken { "" } else { ", refused" }
                 ));
             }
@@ -772,9 +772,11 @@ impl Model {
             return false;
         }
         self.tick();
+        if !self.writer_reads() {
+            return false;
+        }
         self.awaiting_refetch = false;
         self.log.push(format!("refetch {}", self.revision));
-        self.writer_reads();
         let (revision, server) = (self.revision, self.server.clone());
         self.ledger_mut()
             .refetched(revision, server.clone(), shown(&server));
@@ -782,48 +784,52 @@ impl Model {
         true
     }
 
-    /// The writer's fresh read after a lost reply.
-    fn settle_lost(&mut self) -> bool {
+    /// The writer's fresh read for a write its key can no longer settle.
+    fn settle_ended(&mut self) -> bool {
+        if self.awaiting_settle.is_none() {
+            return false;
+        }
+        self.tick();
+        if !self.writer_reads() {
+            return false;
+        }
         let Some((carried, applied)) = self.awaiting_settle.take() else {
             return false;
         };
-        self.tick();
-        self.writer_reads();
         let (revision, server) = (self.revision, self.server.clone());
-        let settled = self
+        let unconfirmed = self
             .ledger_mut()
-            .settle_lost(revision, server.clone(), shown(&server));
+            .settle_ended(revision, server.clone(), shown(&server))
+            .expect("a write left open");
         self.log
-            .push(format!("settle lost at {}: {settled:?}", self.revision));
-        if let Some(Settled::Landed { unconfirmed }) = settled {
-            let still_pending: Vec<Key> = self
-                .ledger()
-                .pending()
-                .iter()
-                .map(|intent| key(&intent.output_id, intent.field))
-                .collect();
-            for key in carried {
-                // A newer intent for the field still goes out; nothing was
-                // given up on.
-                if still_pending.contains(&key) {
-                    continue;
-                }
-                let Some(value) = self.latest_local.get(&key) else {
-                    continue;
-                };
-                if read(&self.server, key.0, key.1) != *value {
-                    // A value the daemon does not hold was given up on: the
-                    // user must have been told.
-                    assert!(
-                        unconfirmed,
-                        "gave up on {}.{:?} without telling the user\n{}",
-                        key.0,
-                        key.1,
-                        self.trace()
-                    );
-                    if !applied {
-                        self.excused.insert(key);
-                    }
+            .push(format!("settled at {revision}: unconfirmed {unconfirmed}"));
+        let still_pending: Vec<Key> = self
+            .ledger()
+            .pending()
+            .iter()
+            .map(|intent| key(&intent.output_id, intent.field))
+            .collect();
+        for key in carried {
+            // A newer intent for the field still goes out; nothing was
+            // given up on.
+            if still_pending.contains(&key) {
+                continue;
+            }
+            let Some(value) = self.latest_local.get(&key) else {
+                continue;
+            };
+            if read(&self.server, key.0, key.1) != *value {
+                // A value the daemon does not hold was given up on: the
+                // user must have been told.
+                assert!(
+                    unconfirmed,
+                    "gave up on {}.{:?} without telling the user\n{}",
+                    key.0,
+                    key.1,
+                    self.trace()
+                );
+                if !applied {
+                    self.excused.insert(key);
                 }
             }
         }
@@ -834,9 +840,10 @@ impl Model {
     /// Deliver everything, writing what is pending, then refresh once more.
     fn settle(&mut self) {
         for _ in 0..400 {
-            let moved = self.deliver(0)
+            let moved = (self.socket_run != self.run && self.hello())
+                || self.deliver(0)
                 || self.refetch()
-                || self.settle_lost()
+                || self.settle_ended()
                 || self.anchor()
                 || self.retry()
                 || self.deliver_write(false)
@@ -849,7 +856,7 @@ impl Model {
         let read = self.read_now();
         self.ledgers
             .observe(&read, Some(ZONE))
-            .expect("a read on the current socket");
+            .expect("a read of the daemon's run");
         self.log.push(format!("final refresh {}", self.revision));
     }
 
@@ -863,7 +870,7 @@ impl Model {
         assert!(!self.ledger().in_flight(), "a write left out\n{trace}");
         assert!(
             !self.ledger().unsettled(),
-            "a lost write left unsettled\n{trace}"
+            "a write left without an answer\n{trace}"
         );
         assert!(
             !self.ledger().reanchoring(),
@@ -1023,7 +1030,7 @@ fn a_write_whose_reply_was_lost_never_undoes_a_later_remote_write() {
     model.deliver_write(true);
     model.remote("a", Field::X, 0.7);
     while model.deliver(0) {}
-    model.settle_lost();
+    // Sent again under its key, it gets the first answer back.
     model.settle();
     model.check();
     assert_eq!(
@@ -1034,7 +1041,7 @@ fn a_write_whose_reply_was_lost_never_undoes_a_later_remote_write() {
 }
 
 #[test]
-fn a_write_lost_before_the_daemon_goes_out_again_when_nothing_moved() {
+fn a_write_lost_before_the_daemon_goes_out_again_under_its_key() {
     let mut model = Model::new();
     model.edit("a", Field::X, 0.4);
     model.send();
@@ -1045,6 +1052,7 @@ fn a_write_lost_before_the_daemon_goes_out_again_when_nothing_moved() {
         1,
         "nothing landed, so it stays"
     );
+    assert!(model.ledgers.wants_retry());
     model.settle();
     model.check();
     assert_eq!(read(&model.server, "a", Field::X), 0.4);
@@ -1106,11 +1114,11 @@ impl Rng {
     }
 }
 
-fn explore(keyed: bool, cases: u64, seed: u64) {
+fn explore(cases: u64, seed: u64) {
     const STEPS: usize = 40;
     let mut rng = Rng(seed);
     for _ in 0..cases {
-        let mut model = Model::with_keys(keyed);
+        let mut model = Model::new();
         for _ in 0..STEPS {
             match rng.below(16) {
                 0 | 1 => {
@@ -1135,7 +1143,7 @@ fn explore(keyed: bool, cases: u64, seed: u64) {
                     model.deliver_write(true);
                 }
                 6 => {
-                    if keyed {
+                    if rng.below(2) == 0 {
                         model.stall_request();
                     } else {
                         model.lose_request();
@@ -1149,7 +1157,7 @@ fn explore(keyed: bool, cases: u64, seed: u64) {
                     model.refetch();
                 }
                 10 => {
-                    model.settle_lost();
+                    model.settle_ended();
                 }
                 11 => {
                     model.retry();
@@ -1157,10 +1165,10 @@ fn explore(keyed: bool, cases: u64, seed: u64) {
                 12 => {
                     model.commit_stalled();
                 }
-                13 => match rng.below(16) {
+                13 => match rng.below(12) {
                     0 => model.restart(),
-                    1 | 2 => {
-                        model.blip();
+                    1..=3 => {
+                        model.hello();
                     }
                     _ => {}
                 },
@@ -1179,19 +1187,19 @@ fn explore(keyed: bool, cases: u64, seed: u64) {
 
 #[test]
 fn every_interleaving_converges_and_keeps_both_clients_intents() {
-    explore(false, 20_000, 0x9E37_79B9_7F4A_7C15);
+    explore(20_000, 0x9E37_79B9_7F4A_7C15);
 }
 
 #[test]
-fn every_interleaving_with_keyed_writes_and_late_commits_converges() {
-    explore(true, 20_000, 0xD1B5_4A32_D192_ED03);
+fn every_interleaving_with_late_commits_and_restarts_converges() {
+    explore(20_000, 0xD1B5_4A32_D192_ED03);
 }
 
 // ── Keys, late commits, and new daemon runs ──────────────────────────────
 
 #[test]
-fn a_lost_request_that_commits_late_never_overwrites_a_later_remote_write() {
-    let mut model = Model::keyed();
+fn a_late_committing_lost_request_sent_again_under_its_key_applies_once() {
+    let mut model = Model::new();
     model.edit("a", Field::X, 0.4);
     model.send();
     // The request stalls in the daemon; the client hears nothing back.
@@ -1200,10 +1208,13 @@ fn a_lost_request_that_commits_late_never_overwrites_a_later_remote_write() {
     // It commits late, and another client writes after it.
     model.commit_stalled();
     model.remote("a", Field::X, 0.6);
-    while model.deliver(0) {}
-    // The retry under the same key gets the stored answer, not a resend.
+    // The retry under the same key gets the stored answer, not a second
+    // apply, and no resend follows to undo the later remote write.
+    model.retry();
+    model.deliver_write(false);
     model.settle();
     model.check();
+    assert_eq!(model.applied_keys.len(), 1, "applied once");
     assert_eq!(
         read(&model.server, "a", Field::X),
         0.6,
@@ -1213,7 +1224,7 @@ fn a_lost_request_that_commits_late_never_overwrites_a_later_remote_write() {
 
 #[test]
 fn a_retry_of_a_stalled_request_waits_for_it_rather_than_writing_twice() {
-    let mut model = Model::keyed();
+    let mut model = Model::new();
     model.edit("a", Field::X, 0.4);
     model.send();
     model.stall_request();
@@ -1223,6 +1234,28 @@ fn a_retry_of_a_stalled_request_waits_for_it_rather_than_writing_twice() {
     assert!(model.stalled.is_empty(), "the original answered the retry");
     model.settle();
     model.check();
+    assert_eq!(model.applied_keys.len(), 1);
+    assert_eq!(read(&model.server, "a", Field::X), 0.4);
+}
+
+#[test]
+fn a_socket_that_opens_again_on_the_same_run_keeps_the_key_good() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    model.stall_request();
+    while model.deliver(0) {}
+    model.hello();
+    assert!(
+        !model.ledger().reanchoring(),
+        "the same run needs no re-anchor"
+    );
+    assert!(model.ledgers.wants_retry(), "the key is still good");
+    model.retry();
+    model.deliver_write(false);
+    model.settle();
+    model.check();
+    assert_eq!(model.applied_keys.len(), 1);
     assert_eq!(read(&model.server, "a", Field::X), 0.4);
 }
 
@@ -1233,27 +1266,26 @@ fn a_new_daemon_run_reanchors_and_never_writes_under_an_old_fence() {
         model.edit("a", Field::X, value);
         model.settle();
     }
-    // The ledger stands well past revision 1.
     let before = model.ledger().revision().expect("confirmed");
-    assert!(before > 4);
     model.edit("a", Field::Y, 0.6);
     // Another client's write is read just before the daemon goes away; the
     // read reaches the client only once the socket is open again.
     model.remote("b", Field::X, 0.6);
     model.restart();
+    model.hello();
     model.deliver(0);
     assert!(
         model.ledger().reanchoring(),
-        "a read from the old socket does not re-anchor"
+        "a read of the old run does not re-anchor"
     );
     assert_eq!(model.ledger().revision(), Some(before));
     assert!(
         model.ledgers.take_write(ZONE).is_none(),
         "no old fence goes out"
     );
-    // The new run's first read is below confirmed, and is taken anyway.
+    // The new run's first read is taken, the edit kept.
     model.deliver(0);
-    assert_eq!(model.ledger().revision(), Some(1));
+    assert_eq!(model.ledger().revision(), Some(model.revision));
     assert_eq!(
         read(&model.display(), "a", Field::Y),
         0.6,
@@ -1265,61 +1297,89 @@ fn a_new_daemon_run_reanchors_and_never_writes_under_an_old_fence() {
 }
 
 #[test]
-fn a_reply_that_comes_after_the_socket_opened_again_settles_from_a_read() {
-    for restart in [false, true] {
-        let mut model = Model::new();
-        model.edit("a", Field::X, 0.4);
-        model.send();
-        model.deliver_write(false);
-        if restart {
-            model.restart();
-        } else {
-            model.blip();
-        }
-        // The reply the old socket's daemon sent comes in now, with the
-        // reads from either side of the reopen. It settles nothing by
-        // itself, and the zone does not wedge on it.
-        while model.deliver(0) {}
-        assert!(model.ledger().unsettled(), "a read settles it");
-        assert!(model.ledgers.wants_read());
-        model.edit("a", Field::Y, 0.6);
-        model.settle();
-        model.check();
-        assert_eq!(read(&model.server, "a", Field::X), 0.4);
-        assert_eq!(read(&model.server, "a", Field::Y), 0.6);
-    }
+fn a_reply_from_a_run_that_ended_settles_from_a_read() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    model.deliver_write(false);
+    model.restart();
+    model.hello();
+    // The reply the old run sent comes in now, with the reads from either
+    // side of the restart. It settles nothing by itself, and the zone does
+    // not wedge on it.
+    while model.deliver(0) {}
+    assert!(model.ledger().unsettled(), "a read settles it");
+    assert!(model.ledgers.wants_read());
+    assert!(
+        !model.ledgers.wants_retry(),
+        "its key means nothing to the new run"
+    );
+    model.edit("a", Field::Y, 0.6);
+    model.settle();
+    model.check();
+    assert_eq!(read(&model.server, "a", Field::X), 0.4);
+    assert_eq!(read(&model.server, "a", Field::Y), 0.6);
+}
+
+#[test]
+fn a_reply_after_the_socket_opened_again_on_the_same_run_settles_the_write() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    model.deliver_write(false);
+    model.hello();
+    while model.deliver(0) {}
+    assert!(
+        !model.ledger().has_pending(),
+        "its own run's answer is final"
+    );
+    assert!(!model.ledgers.wants_read());
+    model.settle();
+    model.check();
+}
+
+#[test]
+fn a_retry_a_new_run_answers_settles_from_a_read() {
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    model.stall_request();
+    while model.deliver(0) {}
+    // The daemon restarts with the request still held; the retry reaches
+    // the new run before the socket names it.
+    model.restart();
+    model.retry();
+    model.deliver_write(false);
+    while model.deliver(0) {}
+    assert!(model.ledger().unsettled());
+    assert!(model.ledgers.wants_read(), "its key settles nothing now");
+    model.settle();
+    model.check();
 }
 
 #[test]
 fn a_write_left_open_by_a_new_daemon_run_is_settled_from_a_read() {
-    for keyed in [false, true] {
-        let mut model = Model::with_keys(keyed);
-        model.edit("a", Field::X, 0.4);
-        model.send();
-        // The daemon goes away with the request in hand.
-        model.restart();
-        model.settle();
-        model.check();
-    }
+    let mut model = Model::new();
+    model.edit("a", Field::X, 0.4);
+    model.send();
+    // The daemon goes away with the request in hand.
+    model.restart();
+    model.settle();
+    model.check();
 }
 
 // ── The active scene's ledgers ───────────────────────────────────────────
 
 fn scene_read(scene_id: SceneId, revision: u64, zones: &[(&str, f32)]) -> SceneRead {
-    scene_read_on(1, scene_id, revision, zones)
+    scene_read_in("run-1", scene_id, revision, zones)
 }
 
-/// A read started on socket connection `connection`.
-fn scene_read_on(
-    connection: u64,
-    scene_id: SceneId,
-    revision: u64,
-    zones: &[(&str, f32)],
-) -> SceneRead {
+/// A read from daemon run `run`.
+fn scene_read_in(run: &str, scene_id: SceneId, revision: u64, zones: &[(&str, f32)]) -> SceneRead {
     SceneRead {
         scene_id,
         revision,
-        connection,
+        run: run.to_owned(),
         zones: zones
             .iter()
             .map(|(zone_id, x)| {
@@ -1334,10 +1394,10 @@ fn scene_read_on(
     }
 }
 
-/// Ledgers on socket connection 1.
+/// Ledgers in daemon run `run-1`.
 fn ledgers() -> SceneLedgers {
     let mut ledgers = SceneLedgers::new("page");
-    ledgers.connect(1);
+    ledgers.enter("run-1");
     ledgers
 }
 
@@ -1437,8 +1497,8 @@ fn a_reanchor_refuses_reads_started_before_it_and_takes_the_next_one() {
     ledgers.observe(&scene_read(desk, 500, &[("main", 0.2)]), Some("main"));
     moved(&mut ledgers, "main", 0.4);
     let before = ledgers.ticket().expect("a scene");
-    assert!(ledgers.connect(2));
-    assert!(!ledgers.connect(2), "the same connection opens once");
+    assert!(ledgers.enter("run-2"));
+    assert!(!ledgers.enter("run-2"), "the same run is entered once");
     assert!(
         ledgers.take_write("main").is_none(),
         "no old fence goes out"
@@ -1448,16 +1508,20 @@ fn a_reanchor_refuses_reads_started_before_it_and_takes_the_next_one() {
         "the writer reads for the waiting edit"
     );
     assert_eq!(
-        ledgers.admit(before, &scene_read_on(2, desk, 501, &[("main", 0.2)])),
+        ledgers.admit(before, &scene_read_in("run-2", desk, 501, &[("main", 0.2)])),
         Admission::Refused
     );
     // The new run's first read, far below confirmed, re-anchors.
-    ledgers.observe(&scene_read_on(2, desk, 6, &[("main", 0.2)]), Some("main"));
+    ledgers.observe(
+        &scene_read_in("run-2", desk, 6, &[("main", 0.2)]),
+        Some("main"),
+    );
     let ledger = ledgers.zone("main").expect("kept");
     assert_eq!(ledger.revision(), Some(6));
     assert!(ledger.has_pending(), "the edit is kept");
     let write = ledgers.take_write("main").expect("the edit goes out");
     assert_eq!(write.fence, 6);
+    assert_eq!(write.run, "run-2");
     assert!(
         write.key.starts_with("page:"),
         "keys are unique to the page"
@@ -1465,25 +1529,28 @@ fn a_reanchor_refuses_reads_started_before_it_and_takes_the_next_one() {
 }
 
 #[test]
-fn a_document_from_before_the_socket_opened_never_reanchors_a_ledger() {
+fn a_document_of_the_run_that_ended_never_reanchors_a_ledger() {
     let desk = SceneId::new();
     let mut ledgers = ledgers();
     ledgers.observe(&scene_read(desk, 50, &[("main", 0.2)]), Some("main"));
     moved(&mut ledgers, "main", 0.4);
-    ledgers.connect(2);
-    // The shared document still holds what the old socket read (here with
+    ledgers.enter("run-2");
+    // The shared document still holds what the old run reported (here with
     // another client's y), and Studio offers it again while its refetch is
     // out.
-    let mut stale = scene_read_on(1, desk, 50, &[("main", 0.2)]);
+    let mut stale = scene_read(desk, 50, &[("main", 0.2)]);
     set(&mut stale.zones[0].raw, "a", Field::Y, 0.9);
     set(&mut stale.zones[0].shown, "a", Field::Y, 0.9);
     assert_eq!(ledgers.observe(&stale, Some("main")), None);
     let ledger = ledgers.zone("main").expect("kept");
-    assert!(ledger.reanchoring(), "still waiting on the new socket");
+    assert!(ledger.reanchoring(), "still waiting on the new run");
     assert_eq!(read(&ledger.display().expect("drawn"), "a", Field::X), 0.4);
     // The new run's read re-anchors, and the old document offered again
     // afterwards, at a higher revision, is still refused.
-    ledgers.observe(&scene_read_on(2, desk, 1, &[("main", 0.2)]), Some("main"));
+    ledgers.observe(
+        &scene_read_in("run-2", desk, 1, &[("main", 0.2)]),
+        Some("main"),
+    );
     assert_eq!(ledgers.observe(&stale, Some("main")), None);
     let ledger = ledgers.zone("main").expect("kept");
     assert_eq!(ledger.revision(), Some(1));
@@ -1498,16 +1565,44 @@ fn a_document_from_before_the_socket_opened_never_reanchors_a_ledger() {
 }
 
 #[test]
-fn a_read_on_a_newer_socket_opens_it_before_it_is_taken() {
+fn a_read_of_a_run_the_socket_has_not_named_waits_for_it() {
     let desk = SceneId::new();
     let mut ledgers = ledgers();
     ledgers.observe(&scene_read(desk, 50, &[("main", 0.2)]), Some("main"));
     moved(&mut ledgers, "main", 0.4);
-    let before = ledgers.ticket().expect("a scene");
-    ledgers.observe(&scene_read_on(2, desk, 1, &[("main", 0.2)]), Some("main"));
-    assert_eq!(ledgers.connection(), 2);
-    assert!(!ledgers.admits(before));
-    assert_eq!(ledgers.zone("main").and_then(ZoneLedger::revision), Some(1));
+    let ticket = ledgers.ticket().expect("a scene");
+    // The daemon restarted, and an HTTP read beat the socket to it.
+    let newer = scene_read_in("run-2", desk, 7, &[("main", 0.2)]);
+    assert_eq!(ledgers.observe(&newer, Some("main")), None);
+    assert_eq!(ledgers.admit(ticket, &newer), Admission::OtherRun);
+    assert_eq!(ledgers.run(), "run-1");
+    // Once the socket names the run, the same read is taken.
+    ledgers.enter("run-2");
+    assert!(ledgers.observe(&newer, Some("main")).is_some());
+    assert_eq!(ledgers.zone("main").and_then(ZoneLedger::revision), Some(7));
+}
+
+#[test]
+fn until_a_run_is_named_the_first_read_names_it() {
+    let desk = SceneId::new();
+    let mut ledgers = SceneLedgers::new("page");
+    assert!(
+        ledgers
+            .observe(
+                &scene_read_in("run-7", desk, 3, &[("main", 0.2)]),
+                Some("main")
+            )
+            .is_some()
+    );
+    assert_eq!(ledgers.run(), "run-7");
+    assert_eq!(
+        ledgers.observe(
+            &scene_read_in("run-8", desk, 4, &[("main", 0.2)]),
+            Some("main")
+        ),
+        None,
+        "only the socket moves it on"
+    );
 }
 
 #[test]

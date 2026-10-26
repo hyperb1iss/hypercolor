@@ -38,11 +38,6 @@ pub struct ZonesContext {
     /// `multi_zone` and the zone lists describe it rather than an empty
     /// page still loading. See [`scene_read_settles`].
     pub scene_resolved: Memo<bool>,
-    /// The socket connection the latest read of the active scene was
-    /// started on (`WsContext::connection_generation` at the time). A
-    /// document read before the socket last opened may come from a daemon
-    /// run that has since ended.
-    pub active_scene_connection: Memo<u64>,
     /// The one record of which LED zone effect applies, presets, the
     /// controls, and the preview target. `None`, or an id that has left
     /// the scene, means the primary zone. Written by the zone tabs and by
@@ -296,9 +291,6 @@ pub fn provide_scene_contexts(
             })
         })
     });
-    let active_scene_connection = Memo::new(move |_| {
-        active_scene_resource.with(|read| read.as_ref().map_or(0, |(generation, _)| *generation))
-    });
     let scenes = Memo::new(move |_| {
         scenes_resource
             .get()
@@ -409,7 +401,6 @@ pub fn provide_scene_contexts(
         led_zones,
         multi_zone,
         scene_resolved,
-        active_scene_connection,
         focused_zone: RwSignal::new(None),
         refresh: refresh_active,
         studio_zone_patch: StoredValue::new(None),

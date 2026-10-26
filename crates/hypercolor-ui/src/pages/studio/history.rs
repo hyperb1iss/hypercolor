@@ -11,6 +11,7 @@
 use std::collections::VecDeque;
 
 use super::placement::{self, Footprint};
+use crate::components::layout_builder::keyed;
 use crate::{api, layout_history::LayoutEditorSnapshot, toasts};
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, MemberEdit, MemberPlacementHint, PatchZoneRequest,
@@ -27,6 +28,34 @@ use leptos::reactive::owner::LocalStorage;
 /// unsettled, since nothing is left to hear it.
 pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 
+/// Where a scene write is fenced: a scene revision, and the daemon run it
+/// belongs to, which the write's idempotency key is good for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Fence {
+    pub revision: u64,
+    pub run: String,
+}
+
+impl Fence {
+    /// The fence a write against `scene` as read carries.
+    #[must_use]
+    pub(crate) fn of(scene: &api::SceneDocument) -> Self {
+        Self {
+            revision: scene.revision,
+            run: scene.run_epoch.clone(),
+        }
+    }
+
+    /// The same run's fence at `revision`.
+    #[must_use]
+    pub(crate) fn at(&self, revision: u64) -> Self {
+        Self {
+            revision,
+            run: self.run.clone(),
+        }
+    }
+}
+
 mod announce;
 mod zones;
 
@@ -34,7 +63,7 @@ pub use announce::{DeviceLookup, ZoneLookup, replay_announcement};
 
 pub use zones::{
     DeletedZone, light_neighbor, rename_is_noop, resolve_deletion, restore_layer_requests,
-    zone_patch_before,
+    settles_by_key, zone_patch_before,
 };
 pub(crate) use zones::{Moved, NewZone};
 
@@ -394,24 +423,20 @@ impl StudioHistory {
                 !busy.get() && journal.with(|j| j.redo_edit().is_some())
             }),
         };
-        // A delete whose outcome a lost connection hid settles on a scene
-        // read taken once the connection is back: the next scene or the
-        // next socket open sends one.
-        let reconnects = use_context::<crate::app::WsContext>().map(|ws| ws.connection_generation);
+        // A delete no answer came back for settles once the connection is
+        // back: sent again under its own key in its own daemon run, or read
+        // from the scene once that run has ended.
+        let socket = use_context::<crate::app::WsContext>()
+            .map(|ws| (ws.connection_generation, ws.run_epoch));
         Effect::new(move |_| {
             scene.track();
-            if let Some(reconnects) = reconnects {
-                reconnects.track();
+            if let Some((opened, run)) = socket {
+                opened.track();
+                run.track();
             }
-            if !history.has_unresolved() {
-                return;
+            if history.has_unresolved() {
+                leptos::task::spawn_local(history.resolve_unresolved());
             }
-            let started = history.next_token();
-            leptos::task::spawn_local(async move {
-                if let Ok(live) = api::fetch_active_scene().await {
-                    history.resolve_unresolved(&live, started);
-                }
-            });
         });
         history
     }
@@ -426,7 +451,7 @@ impl StudioHistory {
                 .try_with_untracked(|latest| {
                     latest
                         .as_ref()
-                        .filter(|s| s.id == scene.id && s.revision > scene.revision)
+                        .filter(|latest| newer(latest, &scene))
                         .cloned()
                 })
                 .flatten()
@@ -441,7 +466,7 @@ impl StudioHistory {
                 .with(|latest| {
                     latest
                         .as_ref()
-                        .filter(|s| s.id == scene.id && s.revision > scene.revision)
+                        .filter(|latest| newer(latest, &scene))
                         .cloned()
                 })
                 .unwrap_or(scene),
@@ -700,10 +725,12 @@ impl StudioHistory {
     /// Treat `scene` as the live document when it is newer than the shared
     /// one, so an edit can follow a zone created a moment ago.
     pub fn adopt(self, scene: api::SceneDocument) {
-        let newer = self
-            .current_scene()
-            .is_none_or(|current| current.id != scene.id || scene.revision > current.revision);
-        if newer {
+        let take = self.current_scene().is_none_or(|current| {
+            current.id != scene.id
+                || current.run_epoch != scene.run_epoch
+                || scene.revision > current.revision
+        });
+        if take {
             self.latest.set(Some(scene));
         }
     }
@@ -761,7 +788,7 @@ impl StudioHistory {
             settle(done, None);
             return;
         };
-        self.submit(request, scene.revision, done);
+        self.submit(request, Fence::of(&scene), done);
     }
 
     fn assign_device_at_now(
@@ -778,7 +805,7 @@ impl StudioHistory {
             settle(done, None);
             return;
         };
-        self.submit_with(request, scene.revision, Some(point), done);
+        self.submit_with(request, Fence::of(&scene), Some(point), done);
     }
 
     fn assignment(
@@ -823,7 +850,12 @@ impl StudioHistory {
             return;
         };
         leptos::task::spawn_local(async move {
-            let result = api::zones::update_unassigned_behavior(&behavior, scene.revision).await;
+            let key = keyed::new_key();
+            let result = keyed::send(&scene.run_epoch, || {
+                api::zones::update_unassigned_behavior(&behavior, scene.revision, &key)
+            })
+            .await
+            .into_result();
             if self.is_current(generation) {
                 match result {
                     Ok(api::zones::ZoneOutcome::Applied(_)) => {}
@@ -893,20 +925,20 @@ impl StudioHistory {
                 changes,
                 assignment: None,
             },
-            scene.revision,
+            Fence::of(&scene),
             done,
         );
     }
 
-    fn submit(self, request: EditMembersRequest, revision: u64, done: Option<EditDone>) {
-        self.submit_with(request, revision, None, done);
+    fn submit(self, request: EditMembersRequest, fence: Fence, done: Option<EditDone>) {
+        self.submit_with(request, fence, None, done);
     }
 
     /// Send a membership write as one operation and journal what landed.
     fn submit_with(
         self,
         request: EditMembersRequest,
-        revision: u64,
+        fence: Fence,
         point: Option<NormalizedPosition>,
         done: Option<EditDone>,
     ) {
@@ -915,10 +947,7 @@ impl StudioHistory {
             return;
         };
         leptos::task::spawn_local(async move {
-            let applied = match self
-                .send_members(generation, request, revision, point)
-                .await
-            {
+            let applied = match self.send_members(generation, request, fence, point).await {
                 Sent::Superseded => {
                     self.settle_superseded(done);
                     return;
@@ -945,11 +974,11 @@ impl StudioHistory {
         self,
         generation: u64,
         request: EditMembersRequest,
-        revision: u64,
+        fence: Fence,
         point: Option<NormalizedPosition>,
     ) -> Sent {
         let scene_id = request.scene_id;
-        let result = api::zones::edit_members(&request, revision).await;
+        let result = edit_members(&request, &fence).await;
         if !self.is_current(generation) {
             return Sent::Superseded;
         }
@@ -976,7 +1005,7 @@ impl StudioHistory {
                 changes: placed,
                 assignment: None,
             };
-            let result = api::zones::edit_members(&request, landed).await;
+            let result = edit_members(&request, &fence.at(landed)).await;
             if !self.is_current(generation) {
                 return Sent::Superseded;
             }
@@ -1183,7 +1212,7 @@ impl StudioHistory {
                         changes,
                         assignment: None,
                     };
-                    let result = api::zones::edit_members(&request, scene.revision).await;
+                    let result = edit_members(&request, &Fence::of(&scene)).await;
                     if !self.is_current(generation) {
                         return;
                     }
@@ -1242,6 +1271,28 @@ fn settle(done: Option<EditDone>, applied: Option<u64>) {
     if let Some(done) = done {
         done(applied);
     }
+}
+
+/// Whether `latest`, a document history adopted, is newer than the shared
+/// `scene`. Revisions only compare within one daemon run, so a document
+/// of another run never is.
+fn newer(latest: &api::SceneDocument, scene: &api::SceneDocument) -> bool {
+    latest.id == scene.id && latest.run_epoch == scene.run_epoch && latest.revision > scene.revision
+}
+
+/// Send one membership edit fenced at `fence`, under an idempotency key of
+/// its own that every retry of it reuses. No answer, or one from another
+/// daemon run, reads as an error.
+pub(super) async fn edit_members(
+    request: &EditMembersRequest,
+    fence: &Fence,
+) -> api::ApiResult<api::zones::ZoneOutcome<EditMembersResponse>> {
+    let key = keyed::new_key();
+    keyed::send(&fence.run, || {
+        api::zones::edit_members(request, fence.revision, &key)
+    })
+    .await
+    .into_result()
 }
 
 fn report_failure<T>(outcome: &api::ApiResult<api::zones::ZoneOutcome<T>>) {
@@ -1722,7 +1773,8 @@ mod replay_tests {
         let owner = Owner::new();
         owner.with(|| {
             let history = history(None, false, None, "11111111-1111-4111-8111-111111111111");
-            let scene = two_zone_scene(9, 0.2);
+            let mut scene = two_zone_scene(9, 0.2);
+            scene.run_epoch = "first".to_owned();
             let gone = DeletedZone::of(&scene.zones[1], 1, 1);
             let mut after = scene.clone();
             after.zones.remove(1);
@@ -1734,15 +1786,28 @@ mod replay_tests {
                 });
                 journal.record(StudioEdit::Members(Vec::new()));
             });
-            // A read started before the delete was held cannot settle it.
-            let early = history.next_token();
-            history.hold_unresolved(scene.id, gone, Vec::new());
+            history.hold_unresolved(
+                scene.id,
+                gone,
+                zones::Held {
+                    release: Vec::new(),
+                    fence: Fence::of(&scene),
+                    key: "delete".to_owned(),
+                },
+            );
             assert!(history.has_unresolved());
-            history.resolve_unresolved(&after, early);
-            assert!(history.has_unresolved(), "an earlier read settles nothing");
-            let started = history.next_token();
-            history.resolve_unresolved(&after, started);
-            assert!(!history.has_unresolved());
+            let item = history
+                .unresolved
+                .with_value(|held| held.first().cloned())
+                .expect("held");
+            // The daemon restarted, and the new run's scene has no zone.
+            after.run_epoch = "next".to_owned();
+            assert!(!settles_by_key(&item.held.fence.run, &after.run_epoch));
+            let gone_now = !after
+                .zones
+                .iter()
+                .any(|zone| zone.id.to_string() == item.record.zone_id);
+            history.settle_held(&item, gone_now);
             history.journal.with_untracked(|journal| {
                 assert_eq!(journal.cursor, 2, "settling neither adds nor moves a step");
                 assert!(matches!(journal.entries[0], StudioEdit::ZoneDeleted(_)));

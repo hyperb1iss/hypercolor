@@ -8,6 +8,7 @@
 use std::{cell::RefCell, fmt, rc::Rc};
 
 use gloo_net::http::{Method, RequestBuilder};
+use hypercolor_types::api::envelope::{IDEMPOTENCY_KEY_HEADER, RUN_EPOCH_HEADER};
 use hypercolor_types::api::{ApiErrorBody, ApiResponse, ListResponse};
 #[cfg(any(test, all(debug_assertions, target_arch = "wasm32")))]
 use hypercolor_types::service::ProtectedControlCredential;
@@ -600,14 +601,16 @@ fn save_api_key_impl(_api_key: &str) {}
 // mapping live in exactly one place.
 
 /// Build and send one JSON request. Attaches the stored API key, an
-/// optional `If-Match` version precondition, and — when a body is supplied —
-/// serializes it with a `Content-Type: application/json` header. Performs
-/// no status-code handling; callers classify the response.
+/// optional `If-Match` version precondition, an optional idempotency key,
+/// and — when a body is supplied — serializes it with a `Content-Type:
+/// application/json` header. Performs no status-code handling; callers
+/// classify the response.
 async fn send_request<Req>(
     method: HttpMethod,
     url: &str,
     body: Option<&Req>,
     if_match: Option<u64>,
+    idempotency_key: Option<&str>,
 ) -> ApiResult<HttpResponse>
 where
     Req: Serialize + ?Sized,
@@ -617,6 +620,12 @@ where
         headers.push(HttpHeader {
             name: "If-Match".to_owned(),
             value: version.to_string(),
+        });
+    }
+    if let Some(key) = idempotency_key {
+        headers.push(HttpHeader {
+            name: IDEMPOTENCY_KEY_HEADER.to_owned(),
+            value: key.to_owned(),
         });
     }
     let body = match body {
@@ -656,7 +665,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    let resp = send_request(method, url, body, None).await?;
+    let resp = send_request(method, url, body, None, None).await?;
     let resp = ensure_success(resp)?;
     parse_envelope(&resp)
 }
@@ -666,7 +675,7 @@ async fn send_json_discard<Req>(method: HttpMethod, url: &str, body: Option<&Req
 where
     Req: Serialize + ?Sized,
 {
-    let resp = send_request(method, url, body, None).await?;
+    let resp = send_request(method, url, body, None, None).await?;
     ensure_success(resp)?;
     Ok(())
 }
@@ -709,11 +718,20 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    let resp = send_request(method, url, body, if_match).await?;
+    let resp = send_request(method, url, body, if_match, None).await?;
+    versioned_outcome(&resp)
+}
+
+/// Classify a versioned mutation's response: `Applied` with its data and
+/// `ETag` revision, `Stale` on `412`, an error otherwise.
+fn versioned_outcome<Res>(resp: &HttpResponse) -> ApiResult<MutationOutcome<(Res, Option<u64>)>>
+where
+    Res: DeserializeOwned,
+{
     match resp.status {
         200..=299 => Ok(MutationOutcome::Applied((
-            parse_envelope(&resp)?,
-            etag_revision(&resp),
+            parse_envelope(resp)?,
+            etag_revision(resp),
         ))),
         412 => {
             let body: serde_json::Value =
@@ -725,8 +743,69 @@ where
             })?;
             Ok(MutationOutcome::Stale { current })
         }
-        _ => Err(http_error(&resp)),
+        _ => Err(http_error(resp)),
     }
+}
+
+/// What came back for a write sent under an idempotency key.
+#[derive(Debug, Clone)]
+pub struct KeyedResponse<T> {
+    /// The daemon run that answered, from the run epoch header. `None`
+    /// when no response came back, or the one that did carries no run
+    /// epoch, so it may not be the daemon's own (a proxy's `502`, say).
+    pub run: Option<String>,
+    /// The response's status; `None` when no response came back.
+    pub status: Option<u16>,
+    pub outcome: ApiResult<MutationOutcome<T>>,
+}
+
+impl<T> KeyedResponse<T> {
+    /// Transform the `Applied` payload.
+    pub fn map<U>(self, transform: impl FnOnce(T) -> U) -> KeyedResponse<U> {
+        KeyedResponse {
+            run: self.run,
+            status: self.status,
+            outcome: self.outcome.map(|outcome| outcome.map(transform)),
+        }
+    }
+}
+
+/// [`send_json_versioned_with_revision`] under the idempotency key `key`,
+/// which names one logical write: send every retry of that write under the
+/// same key, and the daemon applies it at most once, answering a repeat
+/// with the answer it gave first.
+pub async fn send_json_keyed<Req, Res>(
+    method: HttpMethod,
+    url: &str,
+    body: Option<&Req>,
+    if_match: Option<u64>,
+    key: &str,
+) -> KeyedResponse<(Res, Option<u64>)>
+where
+    Req: Serialize + ?Sized,
+    Res: DeserializeOwned,
+{
+    match send_request(method, url, body, if_match, Some(key)).await {
+        Ok(resp) => KeyedResponse {
+            run: response_run(&resp),
+            status: Some(resp.status),
+            outcome: versioned_outcome(&resp),
+        },
+        Err(error) => KeyedResponse {
+            run: None,
+            status: None,
+            outcome: Err(error),
+        },
+    }
+}
+
+/// The daemon run a response names in its run epoch header.
+fn response_run(resp: &HttpResponse) -> Option<String> {
+    resp.headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(RUN_EPOCH_HEADER))
+        .map(|header| header.value.trim().to_owned())
+        .filter(|run| !run.is_empty())
 }
 
 /// Read the scene revision a successful mutation reported in `ETag`.
@@ -799,7 +878,7 @@ pub async fn fetch_json_optional<T>(url: &str) -> ApiResult<Option<T>>
 where
     T: DeserializeOwned,
 {
-    let resp = send_request::<()>(HttpMethod::Get, url, None, None).await?;
+    let resp = send_request::<()>(HttpMethod::Get, url, None, None, None).await?;
     if resp.status == 404 {
         return Ok(None);
     }

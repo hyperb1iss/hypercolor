@@ -14,7 +14,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use super::super::tab_model::describe_zone_failure;
-use super::{MovePlan, Sent, StudioEdit, StudioHistory, prepare_members_replay};
+use super::{
+    Fence, MovePlan, Sent, StudioEdit, StudioHistory, edit_members, prepare_members_replay,
+};
+use crate::components::layout_builder::keyed::{self, Answer};
 use crate::{api, toasts};
 
 /// What a zone delete removed, kept so its undo can rebuild the zone.
@@ -155,12 +158,48 @@ async fn live_scene(scene_id: SceneId) -> Result<api::SceneDocument, &'static st
     }
 }
 
+/// Create a zone fenced at `fence`, under an idempotency key of its own.
+async fn create_zone(
+    name: &str,
+    color: Option<&str>,
+    fence: &Fence,
+) -> api::ApiResult<api::zones::ZoneOutcome<api::ZoneResource>> {
+    let key = keyed::new_key();
+    keyed::send(&fence.run, || {
+        api::zones::create_zone(name, color, fence.revision, &key)
+    })
+    .await
+    .into_result()
+}
+
+/// Patch a zone fenced at `fence`, under an idempotency key of its own.
+async fn update_zone(
+    zone_id: &str,
+    request: &PatchZoneRequest,
+    fence: &Fence,
+) -> api::ApiResult<api::zones::ZoneOutcome<api::ZoneResource>> {
+    let key = keyed::new_key();
+    keyed::send(&fence.run, || {
+        api::zones::update_zone_keyed(zone_id, request, fence.revision, &key)
+    })
+    .await
+    .into_result()
+}
+
+/// Delete a zone fenced at `fence`, under `key`.
+async fn delete_zone(zone_id: &str, fence: &Fence, key: &str) -> Answer<()> {
+    keyed::send(&fence.run, || {
+        api::zones::delete_zone(zone_id, fence.revision, key)
+    })
+    .await
+}
+
 /// Put complete output snapshots back into a zone in one transaction.
 async fn restore_outputs(
     scene_id: SceneId,
     zone_id: ZoneId,
     outputs: &[Output],
-    revision: u64,
+    fence: &Fence,
 ) -> Result<(), ()> {
     let request = EditMembersRequest {
         scene_id,
@@ -178,7 +217,7 @@ async fn restore_outputs(
             .collect(),
         assignment: None,
     };
-    match api::zones::edit_members(&request, revision).await {
+    match edit_members(&request, fence).await {
         Ok(api::zones::ZoneOutcome::Applied(_)) => Ok(()),
         _ => Err(()),
     }
@@ -191,7 +230,7 @@ async fn patch_live_zone(scene_id: SceneId, zone_id: &str, request: &PatchZoneRe
         return false;
     };
     matches!(
-        api::zones::update_zone(zone_id, request, live.revision).await,
+        update_zone(zone_id, request, &Fence::of(&live)).await,
         Ok(api::zones::ZoneOutcome::Applied(_))
     )
 }
@@ -206,39 +245,49 @@ enum TakeDown {
     /// The outputs left, but the delete failed and they could not be put
     /// back: the release that stranded them, for the journal to undo.
     Stranded(Vec<MemberEdit>),
-    /// The delete was lost in transit and the scene could not be read to
-    /// learn whether it landed: the release, held with the zone's record
-    /// until the scene can be read.
-    Unknown(Vec<MemberEdit>),
+    /// No answer came back for the delete: the release, held with the
+    /// zone's record and the delete's fence and key until it settles.
+    Unknown(Held),
+}
+
+/// What a delete no answer came back for leaves to settle it with.
+#[derive(Clone, Debug)]
+pub(super) struct Held {
+    pub release: Vec<MemberEdit>,
+    pub fence: Fence,
+    pub key: String,
 }
 
 /// A zone delete whose outcome is not known yet, kept whole (layers
-/// included) until a scene read can tell what it was.
+/// included) until it settles.
 #[derive(Clone, Debug)]
 pub(super) struct Unresolved {
     pub scene_id: SceneId,
     pub record: DeletedZone,
-    pub release: Vec<MemberEdit>,
-    /// When it was held, on history's clock: only a read started after
-    /// this can say what the delete did.
-    pub held_at: u64,
+    pub held: Held,
 }
 
-/// What a delete whose outcome was unknown turned out to be, judged from a
-/// scene read after it: a delete when the zone is gone, so Undo rebuilds
-/// it from its record; the release of its devices when the zone is still
-/// there, so Undo puts them back; nothing when nothing changed.
+/// Whether a delete fenced in daemon run `fence_run` settles by going out
+/// again under its key, with the daemon's answer saying what it did, while
+/// the scene is read in run `live_run`. In any other run its own has
+/// ended and commits nothing more, so the read itself says whether it
+/// landed. A daemon that names no runs gets the read.
+#[must_use]
+pub fn settles_by_key(fence_run: &str, live_run: &str) -> bool {
+    !fence_run.is_empty() && fence_run == live_run
+}
+
+/// What a delete whose outcome was unknown turned out to be: a delete when
+/// it landed, so Undo rebuilds the zone from its record; the release of
+/// its devices when it did not, so Undo puts them back; nothing when
+/// nothing changed.
 #[must_use]
 pub fn resolve_deletion(
-    scene: &api::SceneDocument,
+    deleted: bool,
     record: &DeletedZone,
     release: &[MemberEdit],
 ) -> Option<StudioEdit> {
-    let present = scene
-        .zones
-        .iter()
-        .any(|zone| zone.id.to_string() == record.zone_id);
-    if !present {
+    if deleted {
         return Some(StudioEdit::ZoneDeleted(Box::new(record.clone())));
     }
     (!release.is_empty()).then(|| StudioEdit::Members(release.to_vec()))
@@ -261,9 +310,7 @@ fn flip(change: MemberEdit) -> MemberEdit {
 }
 
 impl StudioHistory {
-    /// History's clock: tokens for deletions, and the order of holds and
-    /// reads.
-    pub(super) fn next_token(self) -> u64 {
+    fn next_token(self) -> u64 {
         let token = self.tokens.get_value().wrapping_add(1);
         self.tokens.set_value(token);
         token
@@ -286,54 +333,77 @@ impl StudioHistory {
         }
     }
 
-    /// Keep a delete whose outcome is unknown until a scene read settles it.
-    pub(super) fn hold_unresolved(
-        self,
-        scene_id: SceneId,
-        record: DeletedZone,
-        release: Vec<MemberEdit>,
-    ) {
-        let held_at = self.next_token();
-        self.unresolved.try_update_value(|held| {
-            held.push(Unresolved {
+    /// Keep a delete whose outcome is unknown until it settles.
+    pub(super) fn hold_unresolved(self, scene_id: SceneId, record: DeletedZone, held: Held) {
+        self.unresolved.try_update_value(|unresolved| {
+            unresolved.push(Unresolved {
                 scene_id,
                 record,
-                release,
-                held_at,
+                held,
             });
         });
     }
 
-    /// Whether a delete waits for a scene read to settle it.
+    /// Whether a delete waits to settle.
     pub(super) fn has_unresolved(self) -> bool {
         self.unresolved
             .try_with_value(|held| !held.is_empty())
             .unwrap_or(false)
     }
 
-    /// Settle the unknown deletes of `scene` from a read of it that started
-    /// at `started` on history's clock: only those held before the read
-    /// began, since an earlier read cannot know what a later delete did.
-    /// Each one's place in the journal becomes the entry that undoes what
-    /// it really did.
-    pub(super) fn resolve_unresolved(self, scene: &api::SceneDocument, started: u64) {
-        let settled =
-            self.unresolved
-                .try_update_value(|held| {
-                    let (now, later): (Vec<_>, Vec<_>) = std::mem::take(held)
-                        .into_iter()
-                        .partition(|item: &Unresolved| {
-                            item.scene_id == scene.id && item.held_at < started
-                        });
-                    *held = later;
-                    now
-                })
-                .unwrap_or_default();
-        for item in settled {
-            let entry = resolve_deletion(scene, &item.record, &item.release);
-            self.journal
-                .update(|journal| journal.settle_unresolved(item.record.token, entry));
+    /// Settle the deletes no answer came back for, now the connection may
+    /// be back (see [`settles_by_key`]). Each one's place in the journal
+    /// becomes the entry that undoes what it really did; one still without
+    /// an answer, or whose scene is not active, waits for the next try.
+    pub(super) async fn resolve_unresolved(self) {
+        // Taken out while they settle, so a second try meanwhile finds none.
+        let held = self
+            .unresolved
+            .try_update_value(std::mem::take)
+            .unwrap_or_default();
+        let mut waiting = Vec::new();
+        for item in held {
+            match self.what_the_delete_did(&item).await {
+                Some(deleted) => self.settle_held(&item, deleted),
+                None => waiting.push(item),
+            }
         }
+        self.unresolved
+            .try_update_value(|unresolved| unresolved.extend(waiting));
+    }
+
+    /// Whether a held delete landed, or `None` while that cannot be told.
+    async fn what_the_delete_did(self, item: &Unresolved) -> Option<bool> {
+        let live = live_scene(item.scene_id).await.ok()?;
+        let gone = || {
+            !live
+                .zones
+                .iter()
+                .any(|zone| zone.id.to_string() == item.record.zone_id)
+        };
+        if !settles_by_key(&item.held.fence.run, &live.run_epoch) {
+            return Some(gone());
+        }
+        match delete_zone(&item.record.zone_id, &item.held.fence, &item.held.key).await {
+            Answer::Final {
+                outcome: Ok(api::zones::ZoneOutcome::Applied(())),
+                ..
+            } => Some(true),
+            // Not applied now: a zone that is gone anyway was deleted all the
+            // same (a key the daemon no longer keeps runs afresh, and finds
+            // the scene moved on).
+            Answer::Final { .. } => Some(gone()),
+            // The run ended while the delete went out again: the next try
+            // reads it from the scene.
+            Answer::OtherRun | Answer::Lost(_) => None,
+        }
+    }
+
+    /// Put the entry that undoes what a held delete did in its place.
+    pub(super) fn settle_held(self, item: &Unresolved, deleted: bool) {
+        let entry = resolve_deletion(deleted, &item.record, &item.held.release);
+        self.journal
+            .update(|journal| journal.settle_unresolved(item.record.token, entry));
     }
 
     /// Move the selection to `next` when it is on `zone_id`, a zone
@@ -422,7 +492,7 @@ impl StudioHistory {
             return;
         };
         spawn_local(async move {
-            let created = api::zones::create_zone(&name, color.as_deref(), scene.revision).await;
+            let created = create_zone(&name, color.as_deref(), &Fence::of(&scene)).await;
             if !self.is_current(generation) {
                 self.overtaken(outcome);
                 return;
@@ -514,7 +584,7 @@ impl StudioHistory {
                         placements,
                     }),
                 };
-                self.send_members(generation, request, scene.revision, point)
+                self.send_members(generation, request, Fence::of(scene), point)
                     .await
             }
             MovePlan::Edit(changes) => {
@@ -527,7 +597,7 @@ impl StudioHistory {
                     changes,
                     assignment: None,
                 };
-                self.send_members(generation, request, scene.revision, None)
+                self.send_members(generation, request, Fence::of(scene), None)
                     .await
             }
         }
@@ -568,7 +638,7 @@ impl StudioHistory {
             return;
         };
         spawn_local(async move {
-            let result = api::zones::update_zone(&zone_id, &after, scene.revision).await;
+            let result = update_zone(&zone_id, &after, &Fence::of(&scene)).await;
             if !self.is_current(generation) {
                 return;
             }
@@ -633,13 +703,13 @@ impl StudioHistory {
                     TakeDown::Stranded(released) => self.journal.update(|journal| {
                         journal.record(StudioEdit::Members(released));
                     }),
-                    TakeDown::Unknown(released) => {
+                    TakeDown::Unknown(held) => {
                         let token = record.token;
                         let name = record.name.clone();
                         self.journal.update(|journal| {
                             journal.record(StudioEdit::Unresolved { token, name });
                         });
-                        self.hold_unresolved(scene.id, record, released);
+                        self.hold_unresolved(scene.id, record, held);
                     }
                     TakeDown::Kept => {}
                 }
@@ -692,7 +762,7 @@ impl StudioHistory {
                 changes,
                 assignment: None,
             };
-            match api::zones::edit_members(&request, revision).await {
+            match edit_members(&request, &Fence::of(&scene)).await {
                 Ok(api::zones::ZoneOutcome::Applied(response)) => {
                     revision = response.document.revision;
                     release.clone_from(&response.changes);
@@ -714,30 +784,54 @@ impl StudioHistory {
                 }
             }
         }
-        let outcome = api::zones::delete_zone(&record.zone_id, revision).await;
-        if matches!(outcome, Ok(api::zones::ZoneOutcome::Applied(()))) {
-            return TakeDown::Deleted;
-        }
+        let fence = Fence {
+            revision,
+            run: scene.run_epoch.clone(),
+        };
+        let key = keyed::new_key();
+        let outcome = match delete_zone(&record.zone_id, &fence, &key).await {
+            Answer::Final {
+                outcome: Ok(api::zones::ZoneOutcome::Applied(())),
+                ..
+            } => return TakeDown::Deleted,
+            Answer::Final { outcome, .. } => Some(outcome),
+            Answer::OtherRun => None,
+            // No answer even under its key: the record waits, whole, until
+            // the delete can go out again and say what it did.
+            Answer::Lost(_) => {
+                toasts::toast_info(&format!(
+                    "Lost the connection while deleting {}. Once it is back, Undo can bring back what was removed.",
+                    record.name
+                ));
+                return TakeDown::Unknown(Held {
+                    release,
+                    fence,
+                    key,
+                });
+            }
+        };
         let live = live_scene(scene_id).await;
-        // A delete whose reply was lost may still have landed. A zone gone
-        // from the live scene was deleted, and its record can rebuild it.
+        // A zone gone from the live scene was deleted, by this delete or
+        // another, and its record can rebuild it. When the daemon restarted
+        // while the delete was out, the run that ended commits nothing more,
+        // so this read is the whole story.
         if let Ok(live) = &live
             && !live.zones.iter().any(|zone| zone.id == zone_key)
         {
             return TakeDown::Deleted;
         }
-        // Lost in transit with no scene to check: it may have landed or not,
-        // so the record waits, whole, for the next scene read to say which.
-        if outcome.is_err() && live.is_err() {
-            toasts::toast_info(&format!(
-                "Lost the connection while deleting {}. Once the scene loads again, Undo can bring back what was removed.",
-                record.name
-            ));
-            return TakeDown::Unknown(release);
+        // A restart with no scene to read yet: the record waits, whole, for
+        // the next read to say what the delete did.
+        if outcome.is_none() && live.is_err() {
+            return TakeDown::Unknown(Held {
+                release,
+                fence,
+                key,
+            });
         }
         let put_back = record.outputs.is_empty()
             || match live {
-                Ok(live) => restore_outputs(live.id, zone_key, &record.outputs, live.revision)
+                Ok(live) => restore_outputs(live.id, zone_key, &record.outputs, &Fence::of(&live))
                     .await
                     .is_ok(),
                 Err(_) => false,
@@ -750,8 +844,9 @@ impl StudioHistory {
             return TakeDown::Stranded(release);
         }
         match outcome {
-            Err(error) => toasts::toast_error(&format!("Zone delete failed: {error}")),
-            _ => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
+            Some(Err(error)) => toasts::toast_error(&format!("Zone delete failed: {error}")),
+            None => toasts::toast_error("Zone delete failed: the daemon restarted"),
+            Some(Ok(_)) => toasts::toast_error("Scene changed elsewhere. Reloaded, try again."),
         }
         TakeDown::Kept
     }
@@ -776,8 +871,7 @@ impl StudioHistory {
         if !self.is_current(generation) {
             return None;
         }
-        let created =
-            api::zones::create_zone(&record.name, record.color.as_deref(), live.revision).await;
+        let created = create_zone(&record.name, record.color.as_deref(), &Fence::of(&live)).await;
         if !self.is_current(generation) {
             return None;
         }
@@ -816,7 +910,7 @@ impl StudioHistory {
                     .collect();
                 let moved_on = record.outputs.len() - free.len();
                 let put_back = free.is_empty()
-                    || restore_outputs(live.id, zone_id, &free, live.revision)
+                    || restore_outputs(live.id, zone_id, &free, &Fence::of(&live))
                         .await
                         .is_ok();
                 if !self.is_current(generation) {
@@ -837,16 +931,21 @@ impl StudioHistory {
             if !self.is_current(generation) {
                 return None;
             }
-            let mut revision = live.ok().map(|live| live.revision);
-            let mut layers_back = revision.is_some();
-            if layers_back {
+            let mut fence = live.ok().map(|live| Fence::of(&live));
+            let mut layers_back = fence.is_some();
+            if let Some(at) = fence.as_mut() {
                 for request in restore_layer_requests(record) {
-                    let result = api::create_layer(&zone_key, &request, revision).await;
+                    let key = keyed::new_key();
+                    let result = keyed::send(&at.run, || {
+                        api::create_layer_keyed(&zone_key, &request, at.revision, &key)
+                    })
+                    .await
+                    .into_result();
                     if !self.is_current(generation) {
                         return None;
                     }
                     if let Ok(api::LayerStackOutcome::Applied(stack)) = result {
-                        revision = Some(stack.revision);
+                        at.revision = stack.revision;
                     } else {
                         layers_back = false;
                         break;
@@ -992,14 +1091,14 @@ impl StudioHistory {
                         }
                         // The redo's place holds until a scene read says
                         // what the delete did, so it cannot run twice.
-                        TakeDown::Unknown(released) => {
+                        TakeDown::Unknown(held) => {
                             self.replay_words.try_set_value(None);
                             let entry = StudioEdit::Unresolved {
                                 token: record.token,
                                 name: record.name.clone(),
                             };
                             self.settle_zone_entry(index, redo, entry, settle);
-                            self.hold_unresolved(scene_id, record, released);
+                            self.hold_unresolved(scene_id, record, held);
                         }
                         TakeDown::Kept => {}
                     }
@@ -1133,7 +1232,7 @@ impl StudioHistory {
                 assignment: None,
             };
             match self
-                .send_members(generation, request, scene.revision, None)
+                .send_members(generation, request, Fence::of(&scene), None)
                 .await
             {
                 Sent::Landed { changes, .. } => {
@@ -1162,13 +1261,19 @@ impl StudioHistory {
                 Some(zone) if !zone.members.is_empty() || !zone.layers.is_empty() => {
                     Removal::Kept("it holds devices or layers now")
                 }
-                Some(_) => match api::zones::delete_zone(&zone_id, live.revision).await {
-                    Ok(api::zones::ZoneOutcome::Applied(())) => Removal::Removed,
-                    Ok(api::zones::ZoneOutcome::Stale { .. }) => {
-                        Removal::Failed("the scene changed elsewhere".to_owned())
+                Some(_) => {
+                    let key = keyed::new_key();
+                    match delete_zone(&zone_id, &Fence::of(&live), &key)
+                        .await
+                        .into_result()
+                    {
+                        Ok(api::zones::ZoneOutcome::Applied(())) => Removal::Removed,
+                        Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                            Removal::Failed("the scene changed elsewhere".to_owned())
+                        }
+                        Err(error) => Removal::Failed(error.to_string()),
                     }
-                    Err(error) => Removal::Failed(error.to_string()),
-                },
+                }
             },
         };
         // Everything below reads Studio state, which a scene switch or an
@@ -1230,7 +1335,7 @@ impl StudioHistory {
         if !self.is_current(generation) {
             return None;
         }
-        let created = api::zones::create_zone(&name, color.as_deref(), live.revision).await;
+        let created = create_zone(&name, color.as_deref(), &Fence::of(&live)).await;
         if !self.is_current(generation) {
             return None;
         }
@@ -1272,7 +1377,7 @@ impl StudioHistory {
                         assignment: None,
                     };
                     match self
-                        .send_members(generation, request, scene.revision, None)
+                        .send_members(generation, request, Fence::of(&scene), None)
                         .await
                     {
                         Sent::Landed { changes, .. } => filled_now = changes,

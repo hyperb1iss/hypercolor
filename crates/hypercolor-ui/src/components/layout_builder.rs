@@ -216,6 +216,7 @@ impl LayoutWriteHandle {
 
 mod editor_session;
 pub mod gesture;
+pub mod keyed;
 pub mod ledger;
 pub(crate) mod writer;
 
@@ -486,9 +487,6 @@ pub(crate) fn ZoneLayoutProvider(
 ) -> impl IntoView {
     let devices_ctx = expect_context::<DevicesContext>();
     let ws_ctx = expect_context::<WsContext>();
-    // The socket connection the shared scene document was read on: a
-    // document from before the socket last opened is not taken in.
-    let scene_connection = expect_context::<crate::zones::ZonesContext>().active_scene_connection;
     let render_canvas_size = crate::render_canvas::use_render_canvas_size();
 
     let studio_history = expect_context::<crate::pages::studio::history::StudioHistory>();
@@ -561,7 +559,9 @@ pub(crate) fn ZoneLayoutProvider(
     Effect::new(move |_| {
         let next = canonical_zone.get();
         ledger_tick.track();
-        let connection = scene_connection.get();
+        // A document of another daemon run waits until the socket names
+        // that run, and is offered again then.
+        ws_ctx.run_epoch.track();
         let replay = studio_history.layout_replay_for_zone(
             next.as_ref()
                 .map(|(_, _, zone, _)| zone.id.to_string())
@@ -577,7 +577,7 @@ pub(crate) fn ZoneLayoutProvider(
             .current_scene()
             .filter(|scene| scene.id == scene_id && scene.revision == revision)
         {
-            writer::observe(&scene, connection, canvas, Some(&zone_id));
+            writer::observe(&scene, canvas, Some(&zone_id));
         }
         let Some(display) = writer::display(scene_id, &zone_id) else {
             return;
@@ -700,9 +700,9 @@ pub(crate) fn ZoneLayoutProvider(
     // land. Every zone with a ledger takes in each new scene, not only the
     // one on the canvas.
     Effect::new(move |_| {
-        let connection = scene_connection.get();
+        ws_ctx.run_epoch.track();
         if let Some(scene) = studio_history.current_scene_tracked() {
-            writer::observe(&scene, connection, render_canvas_size.get(), None);
+            writer::observe(&scene, render_canvas_size.get(), None);
         }
     });
 
@@ -771,17 +771,17 @@ pub(crate) fn ZoneLayoutProvider(
         }
     });
 
-    // The socket opening again may mean a new daemon run, whose revisions
-    // start over: the writer re-anchors its ledgers and resumes for as long
-    // as the page lives, and history lets go of the newest document it
-    // knew, which may belong to the run that ended.
-    writer::watch_connection(ws_ctx.connection_generation);
-    Effect::new(move |previous: Option<u64>| {
-        let opened = ws_ctx.connection_generation.get();
-        if previous.is_some_and(|previous| previous != opened) {
+    // The socket opening again lets a paused writer try again, for as long
+    // as the page lives; a new daemon run re-anchors its ledgers first, and
+    // history lets go of the newest document it knew, which belongs to the
+    // run that ended.
+    writer::watch_connection(ws_ctx.connection_generation, ws_ctx.run_epoch);
+    Effect::new(move |previous: Option<Option<String>>| {
+        let run = ws_ctx.run_epoch.get();
+        if previous.is_some_and(|previous| previous.is_some() && previous != run) {
             studio_history.forget_latest();
         }
-        opened
+        run
     });
 
     // One edit: the whole group scales and recenters together, so undo

@@ -7,7 +7,7 @@ use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
     DeletedZone, StudioEdit, StudioJournal, held_scene, light_neighbor, prepare_members_replay,
-    rename_is_noop, replay_announcement, resolve_deletion, restore_layer_requests,
+    rename_is_noop, replay_announcement, resolve_deletion, restore_layer_requests, settles_by_key,
     zone_patch_before,
 };
 use std::collections::HashSet;
@@ -492,22 +492,36 @@ fn an_unknown_delete_resolves_by_what_the_scene_shows_after_it() {
         }),
         after: None,
     }];
-    // The zone is gone: the delete landed, and its record, layers and all,
-    // is what Undo rebuilds from.
-    let mut without = scene.clone();
-    without.zones.clear();
-    match resolve_deletion(&without, &record, &release) {
+    // The delete landed: its record, layers and all, is what Undo rebuilds
+    // from.
+    match resolve_deletion(true, &record, &release) {
         Some(StudioEdit::ZoneDeleted(deleted)) => assert_eq!(deleted.layers.len(), 1),
         other => panic!("expected a delete, got {other:?}"),
     }
-    // The zone is still there: only the release happened.
+    // It did not: only the release happened.
     assert_eq!(
-        resolve_deletion(&scene, &record, &release),
+        resolve_deletion(false, &record, &release),
         Some(StudioEdit::Members(release.clone()))
     );
-    // Still there and nothing was released (a zone of layers alone):
+    // It did not, and nothing was released (a zone of layers alone):
     // nothing changed.
-    assert_eq!(resolve_deletion(&scene, &record, &[]), None);
+    assert_eq!(resolve_deletion(false, &record, &[]), None);
+}
+
+#[test]
+fn an_unknown_delete_goes_out_again_under_its_key_only_in_its_own_run() {
+    assert!(
+        settles_by_key("run-a", "run-a"),
+        "its key still means something"
+    );
+    assert!(
+        !settles_by_key("run-a", "run-b"),
+        "a new run: the read says what the old one did"
+    );
+    assert!(
+        !settles_by_key("", ""),
+        "a daemon that names no runs gets the read"
+    );
 }
 
 #[test]
