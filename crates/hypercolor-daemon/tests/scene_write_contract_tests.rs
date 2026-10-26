@@ -708,3 +708,39 @@ async fn every_documented_route_replays_a_keyed_repeat() {
     }
     assert_eq!(swept, 13);
 }
+
+/// `POST /scene/clear` reads its optional JSON body only with a JSON
+/// content type, so the same bytes without one are a different request
+/// (a whole-scene clear) and must never replay the zone-only answer.
+#[tokio::test]
+async fn the_same_bytes_under_another_content_type_are_another_request() {
+    let (_state, app) = isolated();
+    let (revision, _, zone_id) = live_scene(&app).await;
+    let body = json!({ "zone": zone_id }).to_string();
+    let clear = |content_type: Option<&str>| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scene/clear")
+            .header(http::header::IF_MATCH, format!("\"{revision}\""));
+        if let Some(content_type) = content_type {
+            builder = builder.header("content-type", content_type);
+        }
+        keyed(
+            builder
+                .body(Body::from(body.clone()))
+                .expect("request should build"),
+            "clear-key",
+        )
+    };
+
+    let zone_only = send(&app, clear(Some("application/json"))).await;
+    assert_eq!(zone_only.status(), StatusCode::OK);
+    let without_type = send(&app, clear(None)).await;
+    assert_eq!(without_type.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(without_type).await["error"]["code"],
+        IDEMPOTENCY_KEY_MISMATCH_CODE
+    );
+    let repeat = send(&app, clear(Some("application/json"))).await;
+    assert!(replayed(&repeat), "the original request still replays");
+}

@@ -32,7 +32,8 @@ pub const IDEMPOTENCY_REPLAYED_HEADER: &str = "idempotency-replayed";
 pub const IDEMPOTENCY_KEY_MAX_LEN: usize = 255;
 
 /// Error code for a key reused on a request whose method, path,
-/// `If-Match`, or body differs from the request it first named (`422`).
+/// `If-Match`, `Content-Type`, or body differs from the request it first
+/// named (`422`).
 pub const IDEMPOTENCY_KEY_MISMATCH_CODE: &str = "idempotency_key_mismatch";
 
 /// Response metadata included in every envelope.

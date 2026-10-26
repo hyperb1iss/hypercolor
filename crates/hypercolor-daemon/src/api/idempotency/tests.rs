@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use super::*;
 
 fn fingerprint(body: &str) -> Fingerprint {
-    Fingerprint::of(&Method::POST, "/things", None, body.as_bytes())
+    Fingerprint::of(&Method::POST, "/things", None, None, body.as_bytes())
 }
 
 fn answered(body: &'static str) -> Outcome {
@@ -134,20 +134,47 @@ fn a_key_names_exactly_one_request() {
 }
 
 #[test]
-fn the_fingerprint_covers_method_target_fence_and_body() {
-    let base = Fingerprint::of(&Method::PUT, "/a", None, b"x");
+fn the_fingerprint_covers_every_part_a_scene_write_reads() {
+    let of = |method: &Method,
+              target: &str,
+              fence: Option<&HeaderValue>,
+              kind: Option<&HeaderValue>,
+              body: &[u8]| { Fingerprint::of(method, target, fence, kind, body) };
+    let json = HeaderValue::from_static("application/json");
+    let base = of(&Method::PUT, "/a", None, Some(&json), b"x");
     let fence = HeaderValue::from_static("\"7\"");
-    assert_eq!(base, Fingerprint::of(&Method::PUT, "/a", None, b"x"));
-    assert_ne!(base, Fingerprint::of(&Method::POST, "/a", None, b"x"));
-    assert_ne!(base, Fingerprint::of(&Method::PUT, "/b", None, b"x"));
+    let empty = HeaderValue::from_static("");
+    assert_eq!(base, of(&Method::PUT, "/a", None, Some(&json), b"x"));
+    assert_ne!(base, of(&Method::POST, "/a", None, Some(&json), b"x"));
+    assert_ne!(base, of(&Method::PUT, "/b", None, Some(&json), b"x"));
     assert_ne!(
         base,
-        Fingerprint::of(&Method::PUT, "/a", Some(&fence), b"x")
+        of(&Method::PUT, "/a", Some(&fence), Some(&json), b"x")
     );
-    assert_ne!(base, Fingerprint::of(&Method::PUT, "/a", None, b"y"));
+    assert_ne!(base, of(&Method::PUT, "/a", None, Some(&json), b"y"));
     assert_ne!(
-        Fingerprint::of(&Method::PUT, "/ab", None, b"c"),
-        Fingerprint::of(&Method::PUT, "/a", None, b"bc"),
+        base,
+        of(&Method::PUT, "/a", None, None, b"x"),
+        "a body without a content type is read differently"
+    );
+    assert_ne!(
+        base,
+        of(
+            &Method::PUT,
+            "/a",
+            None,
+            Some(&HeaderValue::from_static("text/plain")),
+            b"x"
+        )
+    );
+    assert_ne!(
+        of(&Method::PUT, "/a", None, None, b"x"),
+        of(&Method::PUT, "/a", Some(&empty), None, b"x"),
+        "an absent header never hashes like an empty one"
+    );
+    assert_ne!(
+        of(&Method::PUT, "/ab", None, None, b"c"),
+        of(&Method::PUT, "/a", None, None, b"bc"),
         "components are length-prefixed"
     );
 }
@@ -210,24 +237,24 @@ fn an_answer_larger_than_the_byte_bound_still_replays() {
 
 #[test]
 fn keys_are_scoped_per_credential() {
-    let grant = |id: &str| {
-        CredentialGrant::new(
-            crate::api::security::CredentialTier::Control,
-            id,
-            tokio_util::sync::CancellationToken::new(),
-        )
-    };
-    let alice = grant("alice");
-    let bob = grant("bob");
+    let scope = CredentialScope::for_test;
     assert_ne!(
-        scoped_key(Some(&alice), "k"),
-        scoped_key(Some(&bob), "k"),
+        scoped_key(Some(&scope("credential:alice")), "k"),
+        scoped_key(Some(&scope("credential:bob")), "k"),
         "two credentials never share a key"
     );
-    assert_ne!(scoped_key(None, "k"), scoped_key(Some(&alice), "k"));
     assert_ne!(
-        scoped_key(Some(&grant("a:b")), "c"),
-        scoped_key(Some(&grant("a")), "b:c"),
+        scoped_key(Some(&scope("environment:control")), "k"),
+        scoped_key(Some(&scope("environment:read")), "k")
+    );
+    assert_ne!(
+        scoped_key(None, "k"),
+        scoped_key(Some(&scope("daemon-session")), "k"),
+        "an authenticated caller never shares the anonymous scope"
+    );
+    assert_ne!(
+        scoped_key(Some(&scope("a:b")), "c"),
+        scoped_key(Some(&scope("a")), "b:c"),
         "the scope is length-prefixed"
     );
 }

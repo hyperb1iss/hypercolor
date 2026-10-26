@@ -15,8 +15,8 @@
 //!   for it and gets the same; the draft also allows answering `409` there,
 //!   but a client retrying a lost reply wants the answer, not a second
 //!   retry loop.
-//! - The same key on a different request (method, path, `If-Match`, or
-//!   body) answers `422 idempotency_key_mismatch`.
+//! - The same key on a different request (method, path, `If-Match`,
+//!   `Content-Type`, or body) answers `422 idempotency_key_mismatch`.
 //! - A request without the header costs one header lookup and is otherwise
 //!   untouched, so the CLI, Home Assistant, and MCP behave as before.
 //!
@@ -24,8 +24,11 @@
 //! fence is as definitive as a `200`, and only a stored answer guarantees a
 //! retry cannot apply what the original did not.
 //!
-//! Keys are scoped per credential, as the draft recommends, when the
-//! request carries a recognized one; callers without one share a scope.
+//! Keys are scoped per credential, as the draft recommends: every
+//! credential source the security layer recognizes (environment keys, the
+//! daemon session credential, authority grants, in-process calls) names a
+//! stable scope, and only requests that present no credential at all share
+//! the anonymous one.
 //! Which routes honor the key is declared in the OpenAPI document: an
 //! operation that documents the optional `Idempotency-Key` header gets this
 //! behavior, so the published contract and the enforced one cannot drift.
@@ -53,7 +56,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tracing::Instrument;
 
-use super::security::CredentialGrant;
+use super::security::CredentialScope;
 use crate::domain::DomainError;
 
 /// The request header naming an idempotent attempt.
@@ -170,24 +173,43 @@ impl StoredResponse {
     }
 }
 
-/// SHA-256 over everything that makes two requests the same request.
+/// SHA-256 over everything that makes two requests the same request: the
+/// method, the target with its query, and the body, plus the two headers
+/// a scene write's meaning depends on. `If-Match` is the fence, and
+/// `Content-Type` decides whether a body is read at all (an optional JSON
+/// body without it is no body). No scene write reads any other header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Fingerprint([u8; 32]);
 
 impl Fingerprint {
-    fn of(method: &Method, target: &str, if_match: Option<&HeaderValue>, body: &[u8]) -> Self {
+    fn of(
+        method: &Method,
+        target: &str,
+        if_match: Option<&HeaderValue>,
+        content_type: Option<&HeaderValue>,
+        body: &[u8],
+    ) -> Self {
         let mut hasher = Sha256::new();
-        for part in [
-            method.as_str().as_bytes(),
-            target.as_bytes(),
-            if_match.map_or(&[][..], HeaderValue::as_bytes),
-            body,
-        ] {
-            // Length-prefixed, so no two different splits hash alike.
+        absorb(&mut hasher, Some(method.as_str().as_bytes()));
+        absorb(&mut hasher, Some(target.as_bytes()));
+        absorb(&mut hasher, if_match.map(HeaderValue::as_bytes));
+        absorb(&mut hasher, content_type.map(HeaderValue::as_bytes));
+        absorb(&mut hasher, Some(body));
+        Self(hasher.finalize().into())
+    }
+}
+
+/// Feed one optional part, tagged for presence and length-prefixed, so an
+/// absent header never hashes like an empty one and no two different
+/// splits hash alike.
+fn absorb(hasher: &mut Sha256, part: Option<&[u8]>) {
+    match part {
+        None => hasher.update([0]),
+        Some(part) => {
+            hasher.update([1]);
             hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
             hasher.update(part);
         }
-        Self(hasher.finalize().into())
     }
 }
 
@@ -485,7 +507,7 @@ pub(crate) async fn guard(
         return next.run(request).await;
     }
     let key = match parse_key(raw_key) {
-        Ok(key) => scoped_key(request.extensions().get::<CredentialGrant>(), key),
+        Ok(key) => scoped_key(request.extensions().get::<CredentialScope>(), key),
         Err(error) => return error.into_response(),
     };
 
@@ -501,6 +523,7 @@ pub(crate) async fn guard(
         &parts.method,
         target,
         parts.headers.get(header::IF_MATCH),
+        parts.headers.get(header::CONTENT_TYPE),
         &body,
     );
 
@@ -532,8 +555,8 @@ pub(crate) async fn guard(
 
 /// Place a client's key in its credential's scope, so two credentials that
 /// happen to pick the same key never see each other's answers.
-fn scoped_key(grant: Option<&CredentialGrant>, key: &str) -> String {
-    let scope = grant.map_or("", CredentialGrant::credential_id);
+fn scoped_key(scope: Option<&CredentialScope>, key: &str) -> String {
+    let scope = scope.map_or("", CredentialScope::as_str);
     format!("{}:{scope}:{key}", scope.len())
 }
 

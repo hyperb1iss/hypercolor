@@ -379,8 +379,11 @@ Content-Type: application/json
 
 The key is a client-generated opaque string, typically a UUID: visible ASCII
 with no spaces or quotes, at most 255 characters, sent bare or quoted. Keys are
-scoped per credential, so two clients that pick the same key never see each
-other's answers. These routes honor it:
+scoped per credential: each environment key, the desktop app's session
+credential, and each issued credential has a scope of its own, so two clients
+that pick the same key never see each other's answers. Requests that present no
+credential at all (security off, or a keyless loopback caller) share one
+anonymous scope. These routes honor it:
 `PATCH /scene`, `POST /scene/clear`, zone create, patch, and delete, zone
 layout replacement, `POST /scene/members/edit`, member assignment and removal,
 and layer create, reorder, replace, and delete. The control patch, effect
@@ -392,9 +395,9 @@ on exactly the routes that honor it, and every other route ignores it.
 - **Same key, same request:** not applied again. The stored answer comes back
   with `Idempotency-Replayed: true`, including a stored `412`. A repeat that
   arrives while the original is still running waits for it.
-- **Same key, different request:** a different method, path, `If-Match`, or
-  body is refused with `422 idempotency_key_mismatch`. Use a new key for a new
-  write.
+- **Same key, different request:** a different method, path, `If-Match`,
+  `Content-Type`, or body is refused with `422 idempotency_key_mismatch`. Use a
+  new key for a new write.
 - **No key:** the request behaves exactly as it always has.
 
 Keys live in memory for one daemon run. The daemon keeps up to the newest 1024

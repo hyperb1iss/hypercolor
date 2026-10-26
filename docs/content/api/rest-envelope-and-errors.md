@@ -126,7 +126,7 @@ daemon's only error rendering; this is the complete mapping.
 | `payload_too_large` | `413 Payload Too Large` | The request body exceeds the size limit. `details.limit_bytes` names the limit when the refusing route knows it (asset and effect uploads) and is omitted otherwise. |
 | `unsupported_media_type` | `415 Unsupported Media Type` | The `Content-Type` is not accepted for this endpoint. |
 | `validation_error` | `422 Unprocessable Entity` | The request was well-formed but semantically invalid: a value out of range, an incompatible combination of fields. |
-| `idempotency_key_mismatch` | `422 Unprocessable Entity` | An `Idempotency-Key` was reused on a request whose method, path, `If-Match`, or body differs from the request it first named. See [retrying a write](@/studio/zone-api-and-concurrency.md#retrying-a-write-whose-reply-was-lost). |
+| `idempotency_key_mismatch` | `422 Unprocessable Entity` | An `Idempotency-Key` was reused on a request whose method, path, `If-Match`, `Content-Type`, or body differs from the request it first named. See [retrying a write](@/studio/zone-api-and-concurrency.md#retrying-a-write-whose-reply-was-lost). |
 | `rate_limited` | `429 Too Many Requests` | The request was throttled by the rate limiter. See below for retry headers. |
 | `internal_error` | `500 Internal Server Error` | An unexpected daemon-side failure. The `message` is intentionally generic; the `request_id` is your key to the daemon logs. |
 | `device_unavailable` | `503 Service Unavailable` | The device exists but cannot serve the request right now. |
