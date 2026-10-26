@@ -63,6 +63,20 @@ pub fn effective_zone_display(
     effective_device_output_display(zone, device)
 }
 
+/// The pixel resolution of the display surface `zone` draws, from the
+/// device segment the daemon tags with a `Display` topology hint. `None`
+/// for LED outputs: a keyboard's matrix counts LEDs, not pixels.
+#[must_use]
+pub fn display_resolution(zone: &Output, devices: &[api::DeviceSummary]) -> Option<(u32, u32)> {
+    let device = devices
+        .iter()
+        .find(|device| device.layout_device_id == zone.device_id)?;
+    match resolve_device_segment_summary(device, zone.zone_name.as_deref())?.topology_hint {
+        Some(api::SegmentTopologySummary::Display { width, height, .. }) => Some((width, height)),
+        _ => None,
+    }
+}
+
 pub fn effective_device_name(
     layout_device_id: &str,
     devices: &[api::DeviceSummary],

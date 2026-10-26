@@ -12,7 +12,7 @@ use std::collections::HashMap;
 const NAME_CHAR_WIDTH: f32 = 6.4;
 /// One line of a box name, in pixels.
 const NAME_LINE_HEIGHT: f32 = 14.0;
-/// The LED count line under the name, in pixels.
+/// The detail line under the name (LED count or resolution), in pixels.
 const DETAIL_HEIGHT: f32 = 15.0;
 /// Inset between a box edge and its label, in pixels.
 const LABEL_INSET: f32 = 4.0;
@@ -60,9 +60,20 @@ pub struct LabelMode {
     pub callout: Visibility,
 }
 
+/// The line under a box's name: a display's resolution, since its pixels
+/// are not LEDs, or the output's LED count.
+#[must_use]
+pub fn detail_line(led_count: u32, display_resolution: Option<(u32, u32)>) -> String {
+    match display_resolution {
+        Some((width, height)) => format!("{width} \u{d7} {height}"),
+        None if led_count == 1 => "1 LED".to_owned(),
+        None => format!("{led_count} LEDs"),
+    }
+}
+
 /// The label a box of `width` by `height` pixels needs for a name of
 /// `chars` characters, or `None` when the box cannot hold the name on two
-/// lines above its LED count.
+/// lines above its detail line.
 #[must_use]
 pub fn label_extent(chars: usize, width: f32, height: f32) -> Option<(f32, f32)> {
     let inner_width = width - 2.0 * LABEL_INSET;

@@ -446,3 +446,46 @@ fn sync_device_display_name_in_layout_updates_plain_and_prefixed_defaults() {
     assert_eq!(layout.zones[1].name, "Aurora Hub · Channel 1");
     assert_eq!(layout.zones[2].name, "Top Radiator");
 }
+
+#[test]
+fn a_display_output_reports_its_resolution_and_an_led_output_none() {
+    let mut lcd = ring_zone(
+        "lcd",
+        "TL LCD 2",
+        "usb:prism8:test",
+        Some("Display"),
+        0,
+        None,
+    );
+    lcd.topology = LedTopology::Matrix {
+        width: 400,
+        height: 400,
+        serpentine: false,
+        start_corner: hypercolor_types::spatial::Corner::TopLeft,
+    };
+    let fan = ring_zone("fan", "Fan", "usb:prism8:test", Some("Channel 1"), 1, None);
+    let devices = vec![sample_device_summary(
+        "TL LCD",
+        vec![
+            api::SegmentSummary {
+                id: "segment_0".to_owned(),
+                name: "Display".to_owned(),
+                led_count: 160_000,
+                topology: "display".to_owned(),
+                topology_hint: Some(api::SegmentTopologySummary::Display {
+                    width: 400,
+                    height: 400,
+                    circular: true,
+                }),
+            },
+            sample_zone_summary("channel-1", "Channel 1", 20),
+        ],
+    )];
+
+    assert_eq!(
+        layout_utils::display_resolution(&lcd, &devices),
+        Some((400, 400))
+    );
+    assert_eq!(layout_utils::display_resolution(&fan, &devices), None);
+    assert_eq!(layout_utils::display_resolution(&lcd, &[]), None);
+}

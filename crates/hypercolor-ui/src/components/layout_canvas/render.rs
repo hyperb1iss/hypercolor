@@ -33,7 +33,8 @@ pub(super) struct ZoneRenderData {
     pub(super) primary_rgb: String,
     pub(super) secondary_rgb: String,
     pub(super) name: String,
-    pub(super) led_count: u32,
+    /// The line under the name: LED count, or resolution for a display.
+    pub(super) detail: String,
     pub(super) shape: Option<ZoneShape>,
 }
 

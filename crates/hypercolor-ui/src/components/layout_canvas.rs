@@ -110,7 +110,10 @@ fn zone_render_data(
         primary_rgb: primary,
         secondary_rgb: secondary,
         name: display.label,
-        led_count: zone.topology.led_count(),
+        detail: labels::detail_line(
+            zone.topology.led_count(),
+            layout_utils::display_resolution(zone, devices),
+        ),
         shape: zone.shape.clone(),
     })
 }
@@ -1116,7 +1119,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 .unwrap_or_default()
                                         }
                                     >
-                                        {move || zone_style.get().map(|zd| format!("{} · {} LEDs", zd.name, zd.led_count)).unwrap_or_default()}
+                                        {move || zone_style.get().map(|zd| format!("{} · {}", zd.name, zd.detail)).unwrap_or_default()}
                                     </div>
 
                                     // Resize handles (selected only) — small circles with accent glow.
@@ -1317,7 +1320,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 class="text-[9px] font-mono select-none tabular-nums mt-1 shrink min-h-0 overflow-hidden"
                                                 style="color: rgba(255, 255, 255, 0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.7)"
                                             >
-                                                {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
+                                                {move || zone_style.get().map(|zd| zd.detail).unwrap_or_default()}
                                             </div>
                                         </div>
                                     </div>

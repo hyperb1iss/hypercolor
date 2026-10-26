@@ -3,7 +3,7 @@
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, Winding};
 use hypercolor_ui::components::layout_canvas::labels::{
-    LabelBox, LabelMode, LabelRoom, Visibility, label_extent, label_mode, label_rooms,
+    LabelBox, LabelMode, LabelRoom, Visibility, detail_line, label_extent, label_mode, label_rooms,
     visibility_class,
 };
 use hypercolor_ui::components::layout_canvas::picking::{HitBox, hit_stack, pick_hit};
@@ -232,4 +232,12 @@ fn visibility_maps_to_hover_aware_classes() {
         "opacity-0 group-hover:opacity-100"
     );
     assert_eq!(visibility_class(Visibility::Hidden), "opacity-0");
+}
+
+#[test]
+fn a_display_box_names_its_resolution_and_a_light_its_led_count() {
+    assert_eq!(detail_line(160_000, Some((400, 400))), "400 \u{d7} 400");
+    assert_eq!(detail_line(153_600, Some((960, 160))), "960 \u{d7} 160");
+    assert_eq!(detail_line(26, None), "26 LEDs");
+    assert_eq!(detail_line(1, None), "1 LED");
 }
