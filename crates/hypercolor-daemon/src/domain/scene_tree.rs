@@ -747,15 +747,17 @@ async fn set_zone_layout_workflow(
     Ok(written)
 }
 
-/// The followed primary zone as the active-layout publication left it,
-/// with that publication's revision.
+/// The followed primary zone as the commit after the zone write left it,
+/// with that commit's revision.
 ///
-/// The publication admits a scene commit of its own, which syncs the
-/// active layout back into the zone. When it is the only commit since the
-/// zone write, the reply carries the zone as that commit left it beside
-/// its revision, read under one lock so the pair cannot split. Anything
-/// later stays out of the reply, because the caller learns only what its
-/// own write produced: answering `None` keeps the zone write's own pair.
+/// A publication of the active layout normally admits a scene commit of
+/// its own, which syncs the layout back into the zone. When exactly one
+/// commit landed since the zone write, the reply carries the zone as that
+/// commit left it beside its revision, read under one lock so the pair
+/// cannot split. The revision alone cannot prove that commit was the
+/// publication's rather than another writer's, so the pair is consistent
+/// but may include a foreign edit to this zone. Anything later stays out
+/// of the reply: answering `None` keeps the zone write's own pair.
 async fn synced_zone(
     ctx: &SceneTreeContext,
     scene_id: SceneId,
