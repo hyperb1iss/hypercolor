@@ -56,7 +56,6 @@ pub(crate) mod profile_import;
 pub mod render_thread;
 pub(crate) mod resource_summary;
 pub mod runtime_state;
-pub(crate) mod scene_revision_store;
 pub mod scene_store;
 pub(crate) mod scene_transactions;
 #[doc(hidden)]

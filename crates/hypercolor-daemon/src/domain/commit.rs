@@ -27,11 +27,9 @@ use std::sync::{Arc, Mutex};
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_types::event::HypercolorEvent;
 
-use super::scene_run::{RevisionReservation, RevisionsUnavailable};
-
-/// Monotonic version of the daemon's live scene state. Bumped once per
-/// admitted commit, under the scene write lock, and never repeated across
-/// daemon runs (see [`SceneRun`](super::scene_run::SceneRun)).
+/// Monotonic version of the daemon's live scene state within one daemon
+/// run. Bumped once per admitted commit, under the scene write lock; the
+/// run it belongs to is named by [`SceneRun`](super::scene_run::SceneRun).
 pub type SceneRevision = u64;
 
 /// Where an admitted scene payload ended up.
@@ -138,9 +136,6 @@ impl SceneCommit {
 #[derive(Debug, Default)]
 pub struct SceneCommitSequencer {
     state: Mutex<SequencerState>,
-    /// The durable bound every handed-out revision stays under, for a run
-    /// resumed across daemon restarts. `None` hands out without a bound.
-    reservation: Option<Arc<RevisionReservation>>,
 }
 
 #[derive(Debug, Default)]
@@ -160,56 +155,14 @@ impl SceneCommitSequencer {
         Self::default()
     }
 
-    /// A sequencer that continues a run's revision sequence at `start`,
-    /// handing out revisions only under `reservation`'s durable ceiling.
-    pub(crate) fn resuming(
-        start: SceneRevision,
-        reservation: Option<Arc<RevisionReservation>>,
-    ) -> Self {
+    /// A sequencer that continues a run's revision sequence at `start`.
+    pub(crate) fn resuming(start: SceneRevision) -> Self {
         Self {
             state: Mutex::new(SequencerState {
                 revision: start,
                 released_through: start,
                 parked: BTreeMap::new(),
             }),
-            reservation,
-        }
-    }
-
-    /// Whether the next revision is covered by the durable reservation.
-    /// A caller holding the scene write lock can rely on the answer until
-    /// it releases the lock: only admission consumes coverage, and every
-    /// admission happens under that lock.
-    pub(crate) fn covers_next(&self) -> bool {
-        self.reservation
-            .as_ref()
-            .is_none_or(|reservation| reservation.covers(self.revision().saturating_add(1)))
-    }
-
-    /// Wait until the next revision is covered, persisting a reservation
-    /// on the blocking pool when it is not. Call it before taking the
-    /// scene write lock, never under it.
-    ///
-    /// # Errors
-    ///
-    /// [`RevisionsUnavailable`] when the reservation cannot be persisted.
-    pub(crate) async fn reserve_next(&self) -> Result<(), RevisionsUnavailable> {
-        match self.reservation.as_ref() {
-            None => Ok(()),
-            Some(reservation) => reservation.ensure(self.revision().saturating_add(1)).await,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reservation_for_test(&self) -> Option<Arc<RevisionReservation>> {
-        self.reservation.clone()
-    }
-
-    /// Start topping the reservation up in the background when headroom
-    /// is low, without waiting and without I/O on the calling thread.
-    pub(crate) fn top_up(&self) {
-        if let Some(reservation) = self.reservation.as_ref() {
-            reservation.top_up_if_low(self.revision().saturating_add(1));
         }
     }
 
@@ -223,41 +176,22 @@ impl SceneCommitSequencer {
     /// Assign the next commit generation and advance the revision.
     ///
     /// Callers hold the scene write lock across this call, which is
-    /// what makes admission order and revision order the same order. It
-    /// never does I/O: past the durable reservation it refuses instead,
-    /// and it only queues a background top-up when headroom runs low.
-    ///
-    /// # Errors
-    ///
-    /// [`RevisionsUnavailable`] when the next revision is not below the
-    /// durable ceiling; nothing changes.
-    pub(crate) fn admit(
-        self: &Arc<Self>,
-        bus: Arc<HypercolorBus>,
-    ) -> Result<CommitTicket, RevisionsUnavailable> {
+    /// what makes admission order and revision order the same order.
+    pub(crate) fn admit(self: &Arc<Self>, bus: Arc<HypercolorBus>) -> CommitTicket {
         let generation = {
             let mut state = self.locked();
-            let next = state
+            state.revision = state
                 .revision
                 .checked_add(1)
                 .expect("scene commit generation must not exhaust u64");
-            if let Some(reservation) = self.reservation.as_ref()
-                && !reservation.covers(next)
-            {
-                return Err(RevisionsUnavailable::uncovered(next, reservation.durable()));
-            }
-            state.revision = next;
-            next
+            state.revision
         };
-        if let Some(reservation) = self.reservation.as_ref() {
-            reservation.top_up_if_low(generation);
-        }
-        Ok(CommitTicket {
+        CommitTicket {
             sequencer: Arc::clone(self),
             bus,
             generation,
             released: false,
-        })
+        }
     }
 
     fn locked(&self) -> std::sync::MutexGuard<'_, SequencerState> {
@@ -386,12 +320,8 @@ mod tests {
         let sequencer = Arc::new(SceneCommitSequencer::new());
         let bus = bus();
         assert_eq!(sequencer.revision(), 0);
-        let first = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
-        let second = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
+        let first = sequencer.admit(Arc::clone(&bus));
+        let second = sequencer.admit(Arc::clone(&bus));
         assert_eq!(first.generation(), 1);
         assert_eq!(second.generation(), 2);
         assert_eq!(sequencer.revision(), 2);
@@ -403,12 +333,8 @@ mod tests {
         let bus = bus();
         let mut events = bus.subscribe_all();
 
-        let first = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
-        let second = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
+        let first = sequencer.admit(Arc::clone(&bus));
+        let second = sequencer.admit(Arc::clone(&bus));
 
         // The younger commit finishes its persistence first.
         second.release(vec![marker(2)]);
@@ -427,12 +353,8 @@ mod tests {
         let bus = bus();
         let mut events = bus.subscribe_all();
 
-        let first = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
-        let second = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
+        let first = sequencer.admit(Arc::clone(&bus));
+        let second = sequencer.admit(Arc::clone(&bus));
 
         second.release(vec![marker(2)]);
         first.discard();
@@ -450,12 +372,8 @@ mod tests {
         let bus = bus();
         let mut events = bus.subscribe_all();
 
-        let first = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
-        let second = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
+        let first = sequencer.admit(Arc::clone(&bus));
+        let second = sequencer.admit(Arc::clone(&bus));
         second.release(vec![marker(2)]);
         drop(first);
 
@@ -468,12 +386,8 @@ mod tests {
         let bus = bus();
         let mut events = bus.subscribe_all();
 
-        let first = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
-        let second = sequencer
-            .admit(Arc::clone(&bus))
-            .expect("an unbounded sequencer always admits");
+        let first = sequencer.admit(Arc::clone(&bus));
+        let second = sequencer.admit(Arc::clone(&bus));
         let generation = first.generation();
         drop(first);
         second.release(vec![marker(2)]);

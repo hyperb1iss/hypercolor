@@ -131,7 +131,7 @@ daemon's only error rendering; this is the complete mapping.
 | `rate_limited` | `429 Too Many Requests` | The request was throttled by the rate limiter. See below for retry headers. |
 | `internal_error` | `500 Internal Server Error` | An unexpected daemon-side failure. The `message` is intentionally generic; the `request_id` is your key to the daemon logs. |
 | `device_unavailable` | `503 Service Unavailable` | The device exists but cannot serve the request right now. |
-| `service_unavailable` | `503 Service Unavailable` | A daemon capability cannot serve the request right now. Scene writes answer this while their revisions cannot be reserved durably (until the state directory accepts writes again) and while too many keyed scene writes are in flight. Retry later; a keyed write retries with the same `Idempotency-Key`. |
+| `service_unavailable` | `503 Service Unavailable` | A daemon capability cannot serve the request right now. A keyed scene write answers this while too many keyed scene writes are already in flight; nothing is recorded, so retry with the same `Idempotency-Key`. |
 
 {% <callout type="danger"> %}
 `validation_error` maps to **422**, not 400. A well-formed request that fails a

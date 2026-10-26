@@ -73,10 +73,6 @@ pub const HISTORY_EXCLUSIONS: &[(&str, &str)] = &[
         "device-binding-journal",
         "a crash-recovery journal for an identity migration, not user state",
     ),
-    (
-        "scene-revisions",
-        "a reservation ceiling; restoring an older one could let scene revisions repeat",
-    ),
 ];
 
 /// One daemon-owned store file and where it lives.

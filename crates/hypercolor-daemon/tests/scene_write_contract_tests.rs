@@ -3,9 +3,9 @@
 //!
 //! A read that serves contents beside a revision must serve the revision
 //! those contents were committed at, or a fenced client writes stale
-//! fields straight past the fence. A revision from an earlier daemon run
-//! must never pass as a fence in a later one, and every answer names the
-//! run it came from so a client knows when to re-anchor.
+//! fields straight past the fence. A fence from an earlier daemon run must
+//! never pass in a later one, so the fence names its run, and every answer
+//! names the run it came from so a client knows when to re-anchor.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -15,10 +15,7 @@ use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
-use hypercolor_daemon::domain::scene_run::{
-    CLOCK_BASE_CEILING, MAX_TRUSTED_FLOOR, REVISION_RESERVATION_BLOCK, SCENE_REVISIONS_FILE,
-    SceneRun,
-};
+use hypercolor_daemon::domain::scene_run::{CLOCK_BASE_CEILING, SceneRun};
 use hypercolor_types::api::envelope::{
     IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_MISMATCH_CODE, IDEMPOTENCY_REPLAYED_HEADER,
     RUN_EPOCH_HEADER,
@@ -250,79 +247,28 @@ async fn a_fence_from_a_previous_daemon_run_never_passes() {
 }
 
 #[test]
-fn a_resumed_run_starts_above_the_previous_reservation_even_with_a_backwards_clock() {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn a_run_starts_at_the_wall_clock_under_a_fresh_epoch() {
     let now = UNIX_EPOCH + Duration::from_hours(500_000);
-
-    let first = SceneRun::resume_at(tmp.path(), now);
-    let first_ceiling = first
-        .reserved_until()
-        .expect("a resumed run persists a ceiling");
+    let first = SceneRun::from_clock_at(now);
+    let second = SceneRun::from_clock_at(now);
+    assert_eq!(first.start_revision(), 1_800_000_000 * 1_000_000);
+    assert_ne!(
+        first.epoch(),
+        second.epoch(),
+        "two runs at the same instant are still two runs"
+    );
     assert_eq!(
-        first_ceiling,
-        first.start_revision() + REVISION_RESERVATION_BLOCK
-    );
-
-    // The clock jumped back a decade between runs.
-    let second = SceneRun::resume_at(tmp.path(), now - Duration::from_hours(87_600));
-    assert!(second.start_revision() >= first_ceiling);
-    assert_ne!(second.epoch(), first.epoch());
-
-    // And a clock before the Unix epoch contributes nothing at all.
-    let third = SceneRun::resume_at(tmp.path(), UNIX_EPOCH);
-    assert!(third.start_revision() >= second.reserved_until().expect("ceiling"));
-}
-
-#[test]
-fn a_lost_or_corrupt_reservation_falls_back_to_the_clock() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let now = UNIX_EPOCH + Duration::from_hours(500_000);
-    let micros = 1_800_000_000 * 1_000_000;
-
-    let fresh = SceneRun::resume_at(tmp.path(), now);
-    assert_eq!(
-        fresh.start_revision(),
-        micros,
-        "no reservation yet: start at the clock"
-    );
-
-    std::fs::write(tmp.path().join(SCENE_REVISIONS_FILE), b"not json").expect("corrupt");
-    let recovered = SceneRun::resume_at(tmp.path(), now + Duration::from_secs(1));
-    assert_eq!(recovered.start_revision(), micros + 1_000_000);
-    assert!(
-        SceneRun::resume_at(tmp.path(), now).start_revision()
-            >= recovered.reserved_until().expect("ceiling"),
-        "the corrupt file is replaced by a readable reservation"
-    );
-}
-
-#[test]
-fn a_floor_beyond_any_real_ceiling_is_distrusted() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-        tmp.path().join(SCENE_REVISIONS_FILE),
-        json!({ "reserved_until": MAX_TRUSTED_FLOOR }).to_string(),
-    )
-    .expect("seed a bogus reservation");
-    let now = UNIX_EPOCH + Duration::from_hours(500_000);
-    let run = SceneRun::resume_at(tmp.path(), now);
-    assert_eq!(
-        run.start_revision(),
-        1_800_000_000 * 1_000_000,
-        "a floor no real run could reach falls back to the clock"
-    );
-    assert!(
-        SceneRun::resume_at(tmp.path(), now).start_revision() < MAX_TRUSTED_FLOOR,
-        "and the bogus file is replaced"
+        SceneRun::from_clock_at(UNIX_EPOCH).start_revision(),
+        0,
+        "a clock at the epoch contributes nothing"
     );
 }
 
 #[test]
 fn the_clock_term_stays_exact_as_a_json_double() {
-    let tmp = tempfile::tempdir().expect("tempdir");
     // Year 2286: microseconds since the epoch pass 2^53 there.
     let far_future = UNIX_EPOCH + Duration::from_secs(10_000_000_000);
-    let run = SceneRun::resume_at(tmp.path(), far_future);
+    let run = SceneRun::from_clock_at(far_future);
     assert_eq!(run.start_revision(), CLOCK_BASE_CEILING);
 }
 
@@ -331,7 +277,6 @@ fn an_ephemeral_run_starts_at_zero_under_its_own_epoch() {
     let first = SceneRun::ephemeral();
     let second = SceneRun::ephemeral();
     assert_eq!(first.start_revision(), 0);
-    assert_eq!(first.reserved_until(), None);
     assert!(!first.epoch().is_empty());
     assert_ne!(first.epoch(), second.epoch());
 }

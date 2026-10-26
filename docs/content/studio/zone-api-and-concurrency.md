@@ -311,17 +311,16 @@ revision.
 
 ### Revisions across daemon restarts
 
-Revisions never repeat, even across restarts. The daemon keeps a reservation
-ceiling in `scene-revisions.json` in its state directory, and every run starts
-above the previous run's ceiling, so a fence a client kept from before a
-restart can never pass. A revision is only ever handed out below a ceiling
-that is already on disk; if the state directory stops accepting the
-reservation, scene writes answer `503 service_unavailable` until it does,
-rather than risk a revision that could repeat. Every run also starts at or
-above the wall clock in microseconds, which covers a reservation that cannot
-be read. Expect a jump: the first revision of a new run can
-sit far above the last one the old run served. The daemon keeps revisions
-below 2^53, so they stay exact in a JSON double.
+Revisions count up within one daemon run, and only the run epoch tells two
+runs apart. That is why the fence carries it: an epoch-qualified fence from
+before a restart is stale whatever its revision, so it can never land on the
+new run's scene. Each run also starts its revisions at the wall clock in
+microseconds, so even a bare numeric fence from an earlier run is practically
+unreachable; a clock that jumped backwards is the case only the epoch covers.
+Expect a jump: the first revision of a new run sits far above the last one the
+old run served. Revisions stay below 2^53, so they are exact in a JSON double.
+Nothing about revisions is persisted, and nothing near a commit touches the
+disk.
 
 Each run also has an opaque `run_epoch`. The live document carries it, every
 HTTP response repeats it in the `hypercolor-run-epoch` header (zone write

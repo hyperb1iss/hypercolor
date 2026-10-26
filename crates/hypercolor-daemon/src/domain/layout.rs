@@ -672,17 +672,6 @@ impl LayoutContext {
         self.publication.acquire_scene_activation_guard().await
     }
 
-    /// Wait until the next scene revision is durably reserved, before a
-    /// device binding migration takes its guards or persists anything.
-    ///
-    /// # Errors
-    ///
-    /// [`DomainError::ServiceUnavailable`] when the reservation cannot be
-    /// persisted.
-    pub(crate) async fn reserve_scene_revision(&self) -> Result<(), DomainError> {
-        self.publication.scenes().reserve_next_revision().await
-    }
-
     pub(crate) async fn acquire_update_guard(&self) -> LayoutUpdateGuard {
         self.publication.acquire_update_guard().await
     }
@@ -1101,9 +1090,6 @@ fn layout_update_domain_error(error: LayoutUpdateError) -> DomainError {
         }) => DomainError::validation(error.to_string()),
         LayoutUpdateError::Transaction(LayoutTransactionRejection::Superseded)
         | LayoutUpdateError::PersistenceSuperseded => DomainError::conflict(error.to_string()),
-        LayoutUpdateError::Transaction(LayoutTransactionRejection::RevisionsUnavailable) => {
-            DomainError::service_unavailable(error.to_string())
-        }
         LayoutUpdateError::Transaction(LayoutTransactionRejection::RendererStopped)
         | LayoutUpdateError::Coordinator(_)
         | LayoutUpdateError::Persistence(_)

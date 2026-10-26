@@ -476,7 +476,7 @@ impl AppState {
             Arc::clone(&event_bus),
             scene_store,
             Arc::clone(&zone_layout_previews),
-            crate::domain::scene_run::SceneRun::resume(&state_dir),
+            crate::domain::scene_run::SceneRun::from_clock(),
         );
         let scene_transactions = SceneTransactionQueue::default();
         let asset_library = Arc::new(RwLock::new(

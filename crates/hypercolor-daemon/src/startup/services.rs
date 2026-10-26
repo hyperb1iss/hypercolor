@@ -459,9 +459,9 @@ impl DaemonState {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
-        // Resumed before the first commit can hand out a revision, so no
-        // fence a client kept from an earlier run can ever pass again.
-        let scene_run = crate::domain::scene_run::SceneRun::resume(&state_dir);
+        // A fresh run: a new epoch, so no fence from an earlier run passes,
+        // and revisions that start at the clock.
+        let scene_run = crate::domain::scene_run::SceneRun::from_clock();
         let scene_revision_start = scene_run.start_revision();
         let scene_manager = crate::domain::scene::SceneService::new(
             scene_manager_inner,
