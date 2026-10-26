@@ -84,6 +84,16 @@ struct Writer {
     next_hooks: u64,
     /// Whether the socket watch has started.
     watching: bool,
+    /// The newest read refused for coming from a daemon run the socket had
+    /// not named yet, offered again once it does: the document, the canvas
+    /// it is drawn for, and the zone that wanted a ledger.
+    refused: Option<Refused>,
+}
+
+struct Refused {
+    scene: api::SceneDocument,
+    canvas: (u32, u32),
+    wanted: Option<String>,
 }
 
 impl Writer {
@@ -97,6 +107,7 @@ impl Writer {
             hooks: None,
             next_hooks: 0,
             watching: false,
+            refused: None,
         }
     }
 
@@ -243,26 +254,43 @@ pub(crate) fn watch_connection(opened: ReadSignal<u64>, run: ReadSignal<Option<S
 }
 
 /// The socket opened, its handshake naming daemon run `run`: the ledgers
-/// enter that run, and a paused writer tries again.
+/// enter that run, a read of it refused before is taken in now, and a
+/// paused writer tries again.
 fn connected(run: Option<&str>) {
-    with_writer(|writer| {
+    let refused = with_writer(|writer| {
         if let Some(run) = run {
             writer.ledgers.enter(run);
         }
         writer.holding = false;
+        writer
+            .refused
+            .take_if(|refused| run == Some(refused.scene.run_epoch.as_str()))
     });
+    if let Some(refused) = refused {
+        observe(&refused.scene, refused.canvas, refused.wanted.as_deref());
+        changed();
+    }
     resume();
 }
 
 /// Take in the active scene as a read of it reported, drawn for `canvas`,
 /// making sure `wanted` has a ledger. A read from another daemon run than
-/// the ledgers' is not taken in. Edits the read cancelled are reported.
+/// the ledgers' is not taken in; the newest such read is kept, and taken in
+/// once the socket names its run. Edits the read cancelled are reported.
 pub(crate) fn observe(scene: &api::SceneDocument, canvas: (u32, u32), wanted: Option<&str>) {
     let read = scene_read(scene, canvas);
     let taken = with_writer(|writer| {
         writer.canvas = Some(canvas);
         let switching = writer.ledgers.scene_id() != Some(scene.id);
-        let cancelled = writer.ledgers.observe(&read, wanted)?;
+        let Some(cancelled) = writer.ledgers.observe(&read, wanted) else {
+            writer.refused = Some(Refused {
+                scene: scene.clone(),
+                canvas,
+                wanted: wanted.map(str::to_owned),
+            });
+            return None;
+        };
+        writer.refused = None;
         if switching {
             writer.paused = false;
         }
@@ -986,6 +1014,56 @@ mod tests {
             assert!(!with_writer(|writer| writer.writing));
             assert!(busy(scene_id), "the edit still waits to go");
             detach(lent);
+        });
+        owner.cleanup();
+    }
+
+    #[test]
+    fn a_read_of_a_run_the_socket_has_not_named_is_taken_once_it_does() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let scene = |revision: u64, run: &str, x: f32| {
+                let mut scene: api::SceneDocument = serde_json::from_value(serde_json::json!({
+                    "id": "33333333-3333-4333-8333-333333333333", "name": "Desk",
+                    "kind": "named", "is_default": false, "revision": revision,
+                    "zones": [{ "id": "11111111-1111-4111-8111-111111111111", "name": "Main",
+                        "role": "primary", "enabled": true, "brightness": 1, "layers": [],
+                        "members": [{ "id": "a", "device_id": "usb:a", "segment": "Main",
+                            "name": "A" }],
+                        "layout": { "placements": [{ "member": "a",
+                            "position": { "x": x, "y": 0.5 }, "size": { "x": 0.1, "y": 0.1 },
+                            "topology": { "type": "strip", "count": 10,
+                                "direction": "left_to_right" } }] } }],
+                }))
+                .expect("valid scene fixture");
+                scene.run_epoch = run.to_owned();
+                scene
+            };
+            let zone = "11111111-1111-4111-8111-111111111111";
+            let canvas = crate::render_canvas::DEFAULT_RENDER_CANVAS;
+            connected(Some("run-a"));
+            let before = scene(9, "run-a", 0.2);
+            observe(&before, canvas, Some(zone));
+            // The daemon restarted: the new run's read comes before the
+            // socket's handshake names that run, so it waits.
+            let after = scene(2, "run-b", 0.7);
+            observe(&after, canvas, Some(zone));
+            let revision = || {
+                with_writer(|writer| {
+                    writer
+                        .ledgers
+                        .zone(zone)
+                        .and_then(super::super::ledger::ZoneLedger::revision)
+                })
+            };
+            assert_eq!(revision(), Some(9));
+            // Nothing else reads the scene again; the handshake alone brings
+            // the waiting read in.
+            connected(Some("run-b"));
+            assert_eq!(revision(), Some(2));
+            let shown = display(after.id, zone).expect("the zone");
+            assert!((shown[0].position.x - 0.7).abs() < f32::EPSILON);
+            assert!(with_writer(|writer| writer.refused.is_none()));
         });
         owner.cleanup();
     }
