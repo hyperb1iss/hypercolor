@@ -451,12 +451,44 @@ fn assignment_hints_seed_each_light_segment_from_the_rig() {
         ]),
     );
     let zone_id = scene.zones[0].id.to_string();
-    let hints = assignment_hints(&scene, Some(&rig), &strip, &zone_id, CANVAS);
+    let hints = assignment_hints(&scene, Some(&rig), &strip, &zone_id, &[], CANVAS);
     assert_eq!(hints.len(), 2, "the screen segment mints no LED output");
     assert_eq!(hints[0].segment.as_deref(), Some("Top"));
     assert_close(hints[0].position.y, 0.1);
     assert_eq!(hints[1].segment.as_deref(), Some("Bottom"));
     assert_close(hints[1].position.y, 0.9);
+}
+
+#[test]
+fn a_channel_assignment_seeds_only_its_own_segment() {
+    let scene = scene(
+        &[
+            ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
+            ("custom", &[]),
+        ],
+        &[],
+    );
+    let strip = device(
+        "strip",
+        serde_json::json!([
+            { "id": "top", "name": "Top", "led_count": 20, "topology": "strip" },
+            { "id": "bottom", "name": "Bottom", "led_count": 20, "topology": "strip" },
+        ]),
+    );
+    // Into the empty zone: the one channel fits the canvas on its own.
+    let zone_id = scene.zones[1].id.to_string();
+    let hints = assignment_hints(
+        &scene,
+        None,
+        &strip,
+        &zone_id,
+        &["Bottom".to_owned()],
+        CANVAS,
+    );
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].segment.as_deref(), Some("Bottom"));
+    assert_close(hints[0].position.x, 0.5);
+    assert_close(hints[0].position.y, 0.5);
 }
 
 #[test]
@@ -473,7 +505,7 @@ fn assignment_hints_leave_an_unknown_device_in_a_populated_zone_to_the_daemon() 
         serde_json::json!([{ "id": "main", "name": "Main", "led_count": 30, "topology": "strip" }]),
     );
     let zone_id = scene.zones[0].id.to_string();
-    assert!(assignment_hints(&scene, None, &lamp, &zone_id, CANVAS).is_empty());
+    assert!(assignment_hints(&scene, None, &lamp, &zone_id, &[], CANVAS).is_empty());
 }
 
 #[test]
@@ -490,7 +522,7 @@ fn assignment_hints_fit_a_zone_s_first_device() {
         serde_json::json!([{ "id": "main", "name": "Main", "led_count": 30, "topology": "strip" }]),
     );
     let zone_id = scene.zones[1].id.to_string();
-    let hints = assignment_hints(&scene, None, &lamp, &zone_id, CANVAS);
+    let hints = assignment_hints(&scene, None, &lamp, &zone_id, &[], CANVAS);
     assert_eq!(hints.len(), 1);
     assert_close(hints[0].position.x, 0.5);
     assert_close(hints[0].position.y, 0.5);

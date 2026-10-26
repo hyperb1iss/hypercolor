@@ -529,16 +529,18 @@ fn default_arrangement(
         .collect()
 }
 
-/// Placement hints for assigning every light segment of `device` to the
-/// zone `zone_id`: rig positions carried into the zone, a fit for a zone's
-/// first devices, a device's own seeded footprint when the rig does not
-/// know it, and nothing (the daemon's placement) otherwise.
+/// Placement hints for assigning light segments of `device` to the zone
+/// `zone_id` (the named `segments`, or every one when that is empty): rig
+/// positions carried into the zone, a fit for a zone's first devices, a
+/// device's own seeded footprint when the rig does not know it, and
+/// nothing (the daemon's placement) otherwise.
 #[must_use]
 pub fn assignment_hints(
     scene: &SceneDocument,
     active_layout: Option<&SpatialLayout>,
     device: &DeviceSummary,
     zone_id: &str,
+    segments: &[String],
     canvas: (u32, u32),
 ) -> Vec<MemberPlacementHint> {
     let Some(zone) = scene
@@ -548,14 +550,21 @@ pub fn assignment_hints(
     else {
         return Vec::new();
     };
-    let segments = light_segments(device);
+    let all = light_segments(device);
+    let segments: Vec<SegmentSummary> = all
+        .iter()
+        .filter(|segment| segments.is_empty() || segments.contains(&segment.name))
+        .cloned()
+        .collect();
     if segments.is_empty() {
         return Vec::new();
     }
+    // The seeded footprint lays out the whole device, so a channel keeps
+    // its place within it.
     let seeded = layout_geometry::seeded_device_layout(
         &device.layout_device_id,
         &device.name,
-        &segments,
+        &all,
         canvas.0,
         canvas.1,
         0,

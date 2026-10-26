@@ -24,6 +24,7 @@ use super::drag_model::{
     placed_announcement, zone_name_for_device,
 };
 use super::history::EditDone;
+use super::placement;
 use super::surface::{SurfaceKind, surfaces_from_zones};
 
 /// Run `action` on `payload`. `focus` names where focus goes once the move
@@ -170,8 +171,11 @@ fn held_outputs(studio: StudioContext, payload: &MovePayload) -> Vec<MemberState
         .collect()
 }
 
-/// Move `payload` into `zone_id`. With a `point`, the outputs center on it;
-/// without one, the zone's arrival rule places them.
+/// Move `payload` into `zone_id`. Outputs land per the zone's arrival
+/// rule ([`placement`]): where they sit in the rig, carried into the zone
+/// alongside its members, or fitted to an empty zone. With a `point`, the
+/// arriving group then centers on it: the drop point decides where, the
+/// arrival rule still decides how large.
 fn move_into(
     drag: DragController,
     payload: &MovePayload,
@@ -194,21 +198,26 @@ fn move_into(
         return;
     };
 
+    let canvas = studio.render_canvas_size.get_untracked();
     if payload.origin == Origin::Unassigned {
-        let device = registry_device(drag, &payload.device_id);
-        let mut arriving = Vec::new();
-        let mut hints = arrival_placement(studio, zone_id, device.as_ref(), &mut arriving);
         let segments = payload.segments.clone();
         // A channel brings only its own segment, so only its hint counts.
-        if !segments.is_empty() {
-            hints.retain(|hint| {
-                hint.segment
-                    .as_ref()
-                    .is_some_and(|segment| segments.contains(segment))
-            });
-        }
-        // Seeded hints already carry the geometry, so a drop point only
-        // moves them; without hints the arrivals are placed once minted.
+        let mut hints = registry_device(drag, &payload.device_id)
+            .map(|device| {
+                studio.rig_layout.with_untracked(|rig| {
+                    placement::assignment_hints(
+                        &scene,
+                        rig.as_ref(),
+                        &device,
+                        zone_id,
+                        &segments,
+                        canvas,
+                    )
+                })
+            })
+            .unwrap_or_default();
+        // Hints already carry the geometry, so a drop point only moves
+        // them; without hints the arrivals are placed once minted.
         let point = point.filter(|point| !center_hints_on(&mut hints, *point));
         match point {
             Some(point) => history.assign_device_at(
@@ -231,13 +240,23 @@ fn move_into(
     }
 
     let held = held_outputs(studio, payload);
-    let mut arriving: Vec<Output> = held.iter().map(|state| state.output.clone()).collect();
-    match point {
-        Some(point) => center_on(&mut arriving, point),
-        None => {
-            let device = registry_device(drag, &payload.device_id);
-            arrival_placement(studio, zone_id, device.as_ref(), &mut arriving);
-        }
+    // Outputs from other zones land per the arrival rule; outputs the zone
+    // already holds stay where they are until a point moves them.
+    let landings = studio.rig_layout.with_untracked(|rig| {
+        placement::move_edits(&scene, rig.as_ref(), zone_id, &payload.outputs, canvas)
+    });
+    let mut arriving: Vec<Output> = held
+        .iter()
+        .map(|state| {
+            landings
+                .iter()
+                .filter_map(|edit| edit.after.as_ref())
+                .find(|after| after.output.id == state.output.id)
+                .map_or_else(|| state.output.clone(), |after| after.output.clone())
+        })
+        .collect();
+    if let Some(point) = point {
+        center_on(&mut arriving, point);
     }
     let mut next_index = target.members.len();
     let changes: Vec<MemberEdit> = held
@@ -398,61 +417,6 @@ fn center_on(outputs: &mut [Output], point: NormalizedPosition) {
     for output in outputs {
         output.position = NormalizedPosition::new(output.position.x + dx, output.position.y + dy);
     }
-}
-
-/// Where outputs arriving in `zone_id` without a drop point land.
-///
-/// Returns placement hints, keyed by segment, for outputs the daemon will
-/// mint for `device`, and may adjust `arriving`, the outputs that already
-/// exist and keep their geometry otherwise. Devices with a seeded
-/// footprint get hints; placement from the rig's physical layout plugs in
-/// here too.
-fn arrival_placement(
-    studio: StudioContext,
-    _zone_id: &str,
-    device: Option<&DeviceSummary>,
-    _arriving: &mut Vec<Output>,
-) -> Vec<MemberPlacementHint> {
-    let Some(device) = device else {
-        return Vec::new();
-    };
-    let (width, height) = studio.render_canvas_size.get_untracked();
-    let light_segments: Vec<_> = device
-        .segments
-        .iter()
-        .filter(|segment| {
-            segment.led_count > 0
-                && !matches!(
-                    segment.topology_hint,
-                    Some(api::SegmentTopologySummary::Display { .. })
-                )
-        })
-        .cloned()
-        .collect();
-    // Seeded footprints describe editor geometry only. The daemon keeps
-    // ownership of output identity, hardware topology, and binding metadata.
-    crate::layout_geometry::seeded_device_layout(
-        &device.layout_device_id,
-        &device.name,
-        &light_segments,
-        width,
-        height,
-        0,
-    )
-    .map(|seed| {
-        seed.zones
-            .into_iter()
-            .map(|output| MemberPlacementHint {
-                segment: output.zone_name,
-                position: output.position,
-                size: output.size,
-                rotation: output.rotation,
-                scale: output.scale,
-                orientation: output.orientation,
-            })
-            .collect()
-    })
-    .unwrap_or_default()
 }
 
 /// A device's registry record by its layout device id.
