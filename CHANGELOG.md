@@ -5,6 +5,39 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-10-26
+
+### Added
+
+- Studio zone tabs, a device pane, drag and drop with menu equivalents, rig-seeded placement, and Fit.
+- Live layout saves with shared undo history for layout, device, and zone operations.
+- Daemon-run scene fences and idempotency keys for structural scene-tree writes.
+- Python `scene_fence(document)` and `HypercolorPreconditionError.current_fence` support.
+
+### Changed
+
+- Use consistent scene selection and zone tabs across pages, and update the Studio documentation.
+- Cache orthogonal LCD sampling, share raw preview frame storage, and skip Bubble Garden shading outside visible bubbles.
+- Preserve preview source aspect ratios and scale mixed preview demands consistently.
+
+### Fixed
+
+- Pair scene snapshots with the revision they describe.
+- Preserve untouched remote placement fields when queued Studio edits rebase.
+- Retain create-and-fill undo receipts when committed move responses are lost.
+- Handle GPU allocation and readback failures without retaining stale frame identities.
+
+### Security
+
+- Update zstd to 0.14.3, zstd-safe to 8.2.0, and zstd-sys to 2.1.2+zstd.1.5.7 for RUSTSEC-2026-0391, RUSTSEC-2026-0398, RUSTSEC-2026-0403, and RUSTSEC-2026-0410.
+
+### Upgrade notes
+
+- Deploy the UI and daemon together. Scene ETags now use `"<run_epoch>:<revision>"`; clients should preserve the full value in `If-Match`.
+- Remote adapters must accept `Idempotency-Key` and forward `hypercolor-run-epoch`, `ETag`, and `Idempotency-Replayed` responses.
+- Python client 0.7.3 cannot extract `current_revision` from the new 412 response. The 0.8.0 client handles it and exposes the full fence. Home Assistant's current `hypercolor>=0.7.0,<0.8.0` pin needs updating to adopt the new client.
+- Opt-in GPU timing counters currently expose only the last compositor; combining scene and display counters remains a follow-up.
+
 ## [0.7.3] - 2026-10-25
 
 Zone-targeted previews land across the daemon, web UI, TUI, and Python client: multi-zone scenes now preview one zone at a time, and the daemon does preview work only for zones a subscriber actually selects. The release also hardens the render thread against failure churn and pins every Linux CI job to the Ubuntu 24.04 release baseline.
