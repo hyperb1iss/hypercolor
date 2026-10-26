@@ -141,14 +141,20 @@ enabled. The auth and rate-limiting model is documented in full on the
 
 ## Concurrency: revisions and `If-Match`
 
-The live scene document has one concurrency token: `revision`. `GET /scene`
-returns it in the document and in the `ETag` header. Structural mutations may
-send that value as `If-Match`; a stale value returns `412 Precondition Failed`
-with the current revision instead of overwriting a concurrent edit.
+The live scene document has one concurrency token, its fence: the `revision`
+qualified by the daemon run that counted it. `GET /scene` returns `revision`
+and `run_epoch` in the document and the fence in the `ETag` header, as
+`"<run_epoch>:<revision>"`. Structural mutations may send that `ETag` back
+verbatim as `If-Match`; a stale fence, including any epoch-qualified fence
+from an earlier daemon run, returns `412 Precondition Failed` with the current fence instead
+of overwriting a concurrent edit. Treat the `ETag` as opaque. A bare revision
+(`"42"` or `42`) is still accepted and checks the revision alone, which is not
+safe across a daemon restart.
 
-The atomic membership route, `POST /scene/members/edit`, requires a numeric
-`If-Match` revision. A quoted or bare integer is accepted; a missing header
-or `*` is rejected.
+The atomic membership route, `POST /scene/members/edit`, requires a fence in
+`If-Match`; a missing header or `*` is rejected. See
+[Zone API and concurrency](@/studio/zone-api-and-concurrency.md#structural-preconditions)
+for the full contract.
 
 Control-value patches never use `If-Match`. They address a real layer id read
 from the live document. Replacing a layer mints a fresh id, so a stale control
@@ -810,22 +816,23 @@ current named layout reference. Global output brightness is not captured.
 {% <api_endpoint method="GET" path="/api/v1/scene"> %}
 Read the complete live scene document. The response always exists and embeds
 every authored zone, each zone's member device segments, and every layer with
-its real id. The document's `revision` is also returned as `ETag`.
+its real id. The response's `ETag` is the document's fence,
+`"<run_epoch>:<revision>"`, ready to send back as `If-Match`.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/scenes/{id}"> %}
 Read one stored scene as a complete document, including its zones, members,
 layouts, and layer stacks. The response carries the document's `revision` and
-the same value as an `ETag` header.
+`run_epoch`, and their fence, `"<run_epoch>:<revision>"`, as the `ETag` header.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PUT" path="/api/v1/scenes/{id}"> %}
 Replace one stored scene in full. Read the current document first, apply the
 intended edits, and send the whole document back. The read-only fields the
-read carried are checked, not written: the body's `revision` acts exactly like
-`If-Match`, so a document read before someone else's write is refused with
-`412 Precondition Failed`. `If-Match` remains accepted, and when both are sent
-each must name the current revision.
+read carried are checked, not written: the body's `revision` and `run_epoch`
+together act exactly like `If-Match`, so a document read before someone else's
+write, or in an earlier daemon run, is refused with `412 Precondition Failed`.
+`If-Match` remains accepted, and when both are sent each must be current.
 
 The route id is authoritative. If the body includes `id`, it must match the
 route or the daemon returns `422 Unprocessable Entity`; `kind` and
@@ -931,7 +938,7 @@ Remove one membership by the member id returned in the live zone document.
 
 {% <api_endpoint method="POST" path="/api/v1/scene/members/edit"> %}
 Add, move, or remove outputs in one atomic transaction. Supply the active
-`scene_id` and a numeric `If-Match` revision, then choose one request form:
+`scene_id` and the scene fence in `If-Match`, then choose one request form:
 
 - **Explicit changes:** a `changes` array containing `before` and `after`
   states. Each state contains `zone_id`, the complete `output`, and its ordered

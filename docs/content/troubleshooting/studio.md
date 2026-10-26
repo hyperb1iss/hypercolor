@@ -5,19 +5,22 @@ weight = 40
 +++
 
 Studio edits the always-present live tree under `/api/v1/scene`. Structural
-writes may carry the scene document's `revision` in `If-Match`; the daemon
-returns HTTP 412 when that revision is stale. Control values follow a different
-rule: they never use `If-Match` and instead address a real layer id from the
+writes may carry the scene's fence, the `ETag` the last read or write returned,
+in `If-Match`; the daemon returns HTTP 412 when that fence is stale, and an
+epoch-qualified fence from before a daemon restart is always stale. Control
+values follow a different rule: they never use `If-Match` and instead address a real layer id from the
 live document.
 
 {{< img path="img/ui/studio.webp" alt="Studio workspace with zone tabs, the device pane, and the open zone's canvas" />}}
 
 ## Edit rejected: "Scene changed elsewhere. Reloaded, try again."
 
-The daemon returned `412 Precondition Failed` because the `If-Match` value no
-longer matched the live scene's `revision`. The response carries the
-authoritative value in `error.details.current`. Studio reloads `GET /scene` so
-you can reapply the edit without overwriting another client's change.
+The daemon returned `412 Precondition Failed` because the `If-Match` fence no
+longer matched the live scene: its `revision` moved on, or the daemon restarted
+and the fence names the earlier run. The response's `ETag` is the current fence,
+and `error.details` carries `current` and `current_epoch`. Studio reloads
+`GET /scene` so you can reapply the edit without overwriting another client's
+change.
 
 Canvas edits retry on their own: Studio reads the zone again, keeps only the
 changes the daemon does not hold yet, and sends them once more. After three
@@ -34,7 +37,7 @@ live-tree routes:
 journalctl --user -u hypercolor -f | grep '/scene'
 ```
 
-A missing `If-Match` is an unconditional structural write. Send a revision when
+A missing `If-Match` is an unconditional structural write. Send the fence when
 you need conflict detection, and update it from each successful response's
 `ETag` before issuing the next guarded mutation.
 
@@ -169,23 +172,27 @@ pane.
 
 ## Debug a revision conflict directly
 
-Read the live scene and its `ETag`, then use that one revision on a structural
+Read the live scene and its `ETag`, then send that one fence on a structural
 write:
 
 ```bash
 curl -s -D /tmp/hypercolor-scene-headers \
   http://localhost:9420/api/v1/scene \
-  | jq '{id: .data.id, revision: .data.revision}'
+  | jq '{id: .data.id, revision: .data.revision, run_epoch: .data.run_epoch}'
+
+grep -i '^etag' /tmp/hypercolor-scene-headers
+# etag: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"
 
 curl -s -X POST http://localhost:9420/api/v1/scene/zones \
   -H 'Content-Type: application/json' \
-  -H 'If-Match: "42"' \
+  -H 'If-Match: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:1798012345678901"' \
   -d '{"name":"Desk"}'
 ```
 
 A successful mutation returns the new `ETag`. A stale write returns
-`precondition_failed` with `error.details.current`. There are no separate zone,
-layer, or control version tokens.
+`precondition_failed` with `error.details.current` and `current_epoch`, and the
+current fence as its `ETag`. There are no separate zone, layer, or control
+version tokens.
 
 For the complete contract, see
 [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).

@@ -372,7 +372,7 @@ Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, w
 | `/api/v1/scene/zones/{zone}` | GET, PATCH, DELETE | ⚡ |
 | `/api/v1/scene/zones/{zone}/layout` | PUT | ⚡ |
 | `/api/v1/scene/zones/{zone}/members` | POST | ⚡ |
-| `/api/v1/scene/members/edit` | POST | Atomic reversible assignments; numeric `If-Match` required |
+| `/api/v1/scene/members/edit` | POST | Atomic reversible assignments; scene fence in `If-Match` required |
 | `/api/v1/scene/zones/{zone}/members/{member}` | DELETE | ⚡ |
 | `/api/v1/scene/zones/{zone}/layers` | GET, POST | ⚡ |
 | `/api/v1/scene/zones/{zone}/layers/order` | PATCH | ⚡ |

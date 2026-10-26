@@ -349,18 +349,21 @@ and checks the revision alone, which is not safe across a restart: prefer the
 epoch-qualified form. Omitting the header, or sending `*`, applies without a
 precondition on most structural routes. The exception is
 `POST /scene/members/edit`, which requires a fence and rejects both a missing
-header and `*`. Anything else in `If-Match` is `400 malformed_request`. A stale
-fence returns the canonical `412 Precondition Failed` envelope, whose `ETag` is
-the current fence to rebase onto:
+header and `*`. Anything else in `If-Match` is `400 malformed_request`: a weak
+tag, a list of tags (comma-joined or split over several `If-Match` lines), or a
+revision written with a sign or a leading zero. A stale fence returns the
+canonical `412 Precondition Failed` envelope, whose `ETag` is the current fence
+to rebase onto:
 
 ```json
 {
   "error": {
     "code": "precondition_failed",
-    "message": "version mismatch: expected 42, current 0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:43",
+    "message": "version mismatch: expected 0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42, current 0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:43",
     "details": {
       "expected": 42,
       "current": 43,
+      "expected_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10",
       "current_epoch": "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10"
     }
   },
@@ -372,8 +375,13 @@ the current fence to rebase onto:
 }
 ```
 
-A fence that named another run also carries `details.expected_epoch`, and the
-refusal can show equal revisions: the run is what was stale.
+An epoch-qualified fence puts its run in `details.expected_epoch`; a bare
+fence leaves it out. When that run is not the current one, the refusal can show
+equal revisions: the run is what was stale. The fence is checked against the
+commit itself, so a request that names an unknown effect or stored scene
+answers `404` as it would without the header. On the `/scene` routes the fence
+is checked before the zone, layer, or member is looked up, so there a stale
+fence answers `412` even for an id that does not exist.
 
 Structural writes include scene metadata, zone create, patch, and delete, zone
 layout replacement, member assignment and removal, layer create, replace,
@@ -395,7 +403,7 @@ retry with the same key until an answer arrives:
 
 ```http
 PUT /api/v1/scene/zones/84b20af9-0700-4b82-8488-88314b87fb5c/layout HTTP/1.1
-If-Match: "42"
+If-Match: "0b6f2b57-6e0c-4d7c-9a51-7c1d1f0e2a10:42"
 Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"
 Content-Type: application/json
 ```

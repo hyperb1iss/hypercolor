@@ -585,6 +585,8 @@ Common event names include `effect_started`, `effect_stopped`,
 Zone-addressed events use `zone_id`. Lifecycle events also carry `zone_name`;
 `zone_changed` carries `scene_id`, `role`, and `kind`; and
 `scene_settings_changed` carries the live scene document's single `revision`.
+To fence a write from it, send `"<run_epoch>:<revision>"` with the `run_epoch`
+from `hello`, which holds for the life of the connection.
 Saved scenes on disk still
 store the concept as `groups`, while the public wire uses zone vocabulary.
 
