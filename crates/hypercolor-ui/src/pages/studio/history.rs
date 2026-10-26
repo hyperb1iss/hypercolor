@@ -379,22 +379,29 @@ impl StudioHistory {
         )
     }
 
+    /// Record a zone write that landed at `revision` after its fence held
+    /// against `base`. The fence admits no other change in between, so the
+    /// scene at `revision` is `base` with that zone replaced, never an
+    /// older cached copy with the zone patched in and stamped as current.
     pub fn record_saved_zone(
         self,
-        scene_id: hypercolor_types::scene::SceneId,
+        base: &api::SceneDocument,
         zone: api::ZoneResource,
         revision: u64,
     ) {
-        if let Some(mut scene) = self
-            .current_scene()
-            .filter(|scene| scene.id == scene_id && scene.revision <= revision)
+        if revision <= base.revision
+            || self
+                .current_scene()
+                .is_none_or(|current| current.id != base.id)
         {
-            if let Some(current) = scene.zones.iter_mut().find(|current| current.id == zone.id) {
-                *current = zone;
-            }
-            scene.revision = revision;
-            self.latest.set(Some(scene));
+            return;
         }
+        let mut scene = base.clone();
+        if let Some(current) = scene.zones.iter_mut().find(|current| current.id == zone.id) {
+            *current = zone;
+        }
+        scene.revision = revision;
+        self.adopt(scene);
     }
 
     /// Whether nothing holds the scene.
@@ -1481,6 +1488,59 @@ mod replay_tests {
                 operation.stand_down();
             }
             assert_eq!(heard.get_value(), vec![false]);
+        });
+        owner.cleanup();
+    }
+
+    fn two_zone_scene(revision: u64, keyboard_x: f32) -> api::SceneDocument {
+        serde_json::from_value(serde_json::json!({
+            "id": "33333333-3333-4333-8333-333333333333", "name": "Desk", "kind": "named",
+            "is_default": false, "revision": revision,
+            "zones": [
+                { "id": "11111111-1111-4111-8111-111111111111", "name": "Main",
+                  "role": "primary", "enabled": true, "brightness": 1, "layers": [],
+                  "members": [{ "id": "stand", "device_id": "usb:stand", "segment": "Main",
+                      "name": "Stand" }],
+                  "layout": { "placements": [{ "member": "stand",
+                      "position": { "x": 0.2, "y": 0.5 }, "size": { "x": 0.1, "y": 0.1 },
+                      "topology": { "type": "strip", "count": 15,
+                          "direction": "left_to_right" } }] } },
+                { "id": "22222222-2222-4222-8222-222222222222", "name": "Keyboard",
+                  "role": "custom", "enabled": true, "brightness": 1, "layers": [],
+                  "members": [{ "id": "keys", "device_id": "usb:keys", "segment": "Main",
+                      "name": "Keys" }],
+                  "layout": { "placements": [{ "member": "keys",
+                      "position": { "x": keyboard_x, "y": 0.5 }, "size": { "x": 0.1, "y": 0.1 },
+                      "topology": { "type": "strip", "count": 15,
+                          "direction": "left_to_right" } }] } },
+            ],
+        }))
+        .expect("valid scene fixture")
+    }
+
+    #[test]
+    fn a_retried_zone_write_records_the_scene_it_was_fenced_against() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let cached = two_zone_scene(4, 0.2);
+            let history = history(
+                Some(cached),
+                false,
+                None,
+                "11111111-1111-4111-8111-111111111111",
+            );
+            // Another client moved Keyboard; the retry fenced on that scene.
+            let fresh = two_zone_scene(6, 0.7);
+            let mut main = fresh.zones[0].clone();
+            main.name = "Main written".to_owned();
+            history.record_saved_zone(&fresh, main, 7);
+            let current = history.current_scene().expect("scene");
+            assert_eq!(current.revision, 7);
+            assert_eq!(current.zones[0].name, "Main written");
+            assert_eq!(
+                current.zones[1], fresh.zones[1],
+                "the other zone is the one the write was fenced against"
+            );
         });
         owner.cleanup();
     }

@@ -764,44 +764,43 @@ pub(crate) fn ZoneLayoutProvider(
 
     // A landed commit becomes the editor's baseline, and its preview
     // retires unless newer edits for the zone are still queued.
-    let acknowledge = move |scene_id: hypercolor_types::scene::SceneId,
-                            zone_id: &str,
-                            zone: api::ZoneResource,
-                            revision: u64| {
-        let (width, height) = render_canvas_size.get_untracked();
-        let mut acknowledged = editor_layout_for_zone(&zone);
-        acknowledged.canvas_width = width;
-        acknowledged.canvas_height = height;
-        let acknowledged = layout_geometry::normalize_layout_for_editor(acknowledged);
-        drafts.update_value(|drafts| {
-            if let Some(draft) = drafts.get_mut(&(scene_id, zone_id.to_owned())) {
-                draft.baseline = acknowledged.clone();
-            }
-        });
-        studio_history.record_saved_zone(scene_id, zone, revision);
-        let completion = zone_save_completion(
-            selected_zone_id.get_untracked().as_deref(),
-            active_preview_key.get_value().as_deref(),
-            zone_id,
-            !commit_queue.with_value(|queue| queue.holds(zone_id)),
-        );
-        if completion.update_editor {
-            let clean = layout.with_untracked(|layout| {
-                layout
-                    .as_ref()
-                    .is_some_and(|layout| layout.zones == acknowledged.zones)
+    let acknowledge =
+        move |base: &api::SceneDocument, zone_id: &str, zone: api::ZoneResource, revision: u64| {
+            let scene_id = base.id;
+            let (width, height) = render_canvas_size.get_untracked();
+            let mut acknowledged = editor_layout_for_zone(&zone);
+            acknowledged.canvas_width = width;
+            acknowledged.canvas_height = height;
+            let acknowledged = layout_geometry::normalize_layout_for_editor(acknowledged);
+            drafts.update_value(|drafts| {
+                if let Some(draft) = drafts.get_mut(&(scene_id, zone_id.to_owned())) {
+                    draft.baseline = acknowledged.clone();
+                }
             });
-            set_saved_layout.set(Some(acknowledged));
-            set_layout.set_dirty.set(!clean);
-        }
-        if completion.clear_preview {
-            ws_ctx.clear_zone_layout_preview.run(zone_id.to_owned());
-        }
-        if completion.clear_active_preview {
-            active_preview_key.set_value(None);
-        }
-        refresh_scene.run(());
-    };
+            studio_history.record_saved_zone(base, zone, revision);
+            let completion = zone_save_completion(
+                selected_zone_id.get_untracked().as_deref(),
+                active_preview_key.get_value().as_deref(),
+                zone_id,
+                !commit_queue.with_value(|queue| queue.holds(zone_id)),
+            );
+            if completion.update_editor {
+                let clean = layout.with_untracked(|layout| {
+                    layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.zones == acknowledged.zones)
+                });
+                set_saved_layout.set(Some(acknowledged));
+                set_layout.set_dirty.set(!clean);
+            }
+            if completion.clear_preview {
+                ws_ctx.clear_zone_layout_preview.run(zone_id.to_owned());
+            }
+            if completion.clear_active_preview {
+                active_preview_key.set_value(None);
+            }
+            refresh_scene.run(());
+        };
 
     // Write one zone's edit. A stale revision means another client moved
     // the scene on: the edit is laid over the live scene and written once
@@ -828,7 +827,7 @@ pub(crate) fn ZoneLayoutProvider(
                 Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
                     if studio_history.is_current(generation) {
                         let landed = landed.unwrap_or_else(|| revision.saturating_add(1));
-                        acknowledge(scene.id, &zone_id, zone, landed);
+                        acknowledge(&scene, &zone_id, zone, landed);
                     }
                     return;
                 }
