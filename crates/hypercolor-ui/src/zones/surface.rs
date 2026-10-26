@@ -45,15 +45,6 @@ pub struct Surface {
     pub top_layer: Option<String>,
 }
 
-impl Surface {
-    /// Whether this surface is an LED zone the user may delete. The
-    /// `Primary` zone is permanent; `Custom` zones are removable.
-    #[must_use]
-    pub fn is_deletable_zone(&self) -> bool {
-        self.kind == SurfaceKind::Light && self.role == ZoneRole::Custom
-    }
-}
-
 /// The primary LED zone: the `Primary` role, else the first LED zone.
 #[must_use]
 pub fn primary_led_zone(zones: &[Surface]) -> Option<&Surface> {

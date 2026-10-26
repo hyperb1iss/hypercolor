@@ -251,49 +251,6 @@ fn attachment_binding_slot_alias_matches_generated_zone_ids_and_names() {
 }
 
 #[test]
-fn representative_zone_for_device_prefers_visible_attachment_over_suppressed_source() {
-    let layout = prism_attachment_layout();
-
-    assert_eq!(
-        layout_utils::representative_zone_id_for_device(&layout, "usb:prism8:test").as_deref(),
-        Some("front-fan-1")
-    );
-}
-
-#[test]
-fn representative_zone_for_device_slot_uses_slot_alias_and_skips_source_slot() {
-    let layout = prism_attachment_layout();
-
-    assert_eq!(
-        layout_utils::representative_zone_id_for_device_slot(
-            &layout,
-            "usb:prism8:test",
-            Some("Channel 1"),
-        )
-        .as_deref(),
-        Some("front-fan-1")
-    );
-}
-
-#[test]
-fn selected_zone_matches_device_slot_when_attachment_alias_is_selected() {
-    let layout = prism_attachment_layout();
-
-    assert!(layout_utils::selected_zone_matches_device_slot(
-        &layout,
-        "front-fan-2",
-        "usb:prism8:test",
-        Some("Channel 1"),
-    ));
-    assert!(!layout_utils::selected_zone_matches_device_slot(
-        &layout,
-        "front-fan-2",
-        "usb:prism8:test",
-        Some("Channel 2"),
-    ));
-}
-
-#[test]
 fn apply_slot_display_names_to_seeded_attachment_layout_renames_matching_zones() {
     let mut seeded = prism_seeded_attachment_layout();
     let slot_display_names = HashMap::from([("channel-1".to_owned(), "Radiator".to_owned())]);

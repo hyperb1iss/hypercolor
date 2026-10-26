@@ -168,23 +168,6 @@ fn a_surface_carries_backing_zone_role_and_accent_color() {
 }
 
 #[test]
-fn only_custom_led_zones_are_deletable() {
-    let surfaces = surfaces_from_zones(&[
-        zone_resource("Default", ZoneRole::Primary, None),
-        zone_resource("Case Fans", ZoneRole::Custom, None),
-        zone_resource(
-            "AIO Screen",
-            ZoneRole::Display,
-            Some(DisplayFaceTarget::new(DeviceId::new())),
-        ),
-    ]);
-    // Primary is the permanent Default zone; a Screen is not a zone.
-    assert!(!surfaces[0].is_deletable_zone());
-    assert!(surfaces[1].is_deletable_zone());
-    assert!(!surfaces[2].is_deletable_zone());
-}
-
-#[test]
 fn led_zone_count_excludes_display_zones() {
     let zones = [
         zone_resource("Default", ZoneRole::Primary, None),
