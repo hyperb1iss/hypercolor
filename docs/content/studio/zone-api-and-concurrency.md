@@ -46,7 +46,9 @@ POST   /scenes/{id}/activate
 
 `POST /scenes` seeds a primary zone named "Main" server-side. `POST /scenes/snapshot` is the
 other creation path: it captures the live scene as a new stored scene instead of
-starting from a fresh default. Activating a stored scene
+starting from a fresh default. The copy is stored snapshot-locked, so the scene
+picker's **Duplicate current** follows it with a guarded `PUT /scenes/{id}` that
+sets `mutation_mode` to `live` before activating it. Activating a stored scene
 makes it the resource returned by `GET /scene`. To edit stored scene structure,
 activate it and edit the live tree, or replace the stored scene document with
 `PUT /scenes/{id}`.
@@ -91,7 +93,8 @@ Patch the zone's name, enabled state, brightness, or color, or move it with
 display zones together. An index past the end clamps to the last slot. Every
 field in one request lands in one commit. A patch that changes nothing, such as
 a move to the slot the zone already holds, keeps the revision and publishes no
-event.
+event. Studio's tab strip reorders zones with `index`, computed against the full
+zone order so Screens keep their place.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}"> %}
@@ -116,19 +119,35 @@ has `before` and `after` states: a state identifies its `zone_id`, complete
 
 To assign a device through the daemon's canonical output factory, send
 `assignment` with the target `zone_id`, `device_id`, optional `segments`, and
-optional `placements`, leaving `changes` empty. Studio uses this form when
-adding a device, preserving its prepared geometry when available.
+optional `placements`, leaving `changes` empty. Empty `segments` claims every
+light segment. Each placement is a seed for one newly minted output, keyed by
+`segment`, with normalized `position` and `size`, plus `rotation`, `scale`, and
+an optional `orientation`; the device binding and topology stay daemon-owned. A
+hint applies to every output minted for its segment, a segment without a hint
+gets the daemon's default placement, and naming a segment twice is rejected.
+
+Studio uses this form when you add a device from Unassigned, and computes the
+`placements` from the rig (the active named layout): a zone's first devices are
+fitted to the zone's canvas together, and later arrivals keep their physical
+relation to the devices already there. A move between zones sends explicit
+`changes` instead, with the arrival geometry already in each `after` state.
 
 A numeric `If-Match` is required. Omitting it or sending `*` is rejected.
 All changes validate before any commit, so a failed transaction makes no
 partial assignment changes. The response contains the committed `document`
 and canonical `changes` receipts, with complete output snapshots for undo
-and redo. Studio uses this route for device add, move, and remove actions.
+and redo. Studio uses this route for every device add, move, and unassign,
+for undo and redo of those steps, and for the two halves of a zone delete and
+its restore (releasing the zone's outputs, then putting them back).
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layout"> %}
 Write a compact zone layout containing member placements. Every placement names
-a member id from the live zone document.
+a member id from the live zone document, and the request names exactly the
+zone's current members, each once. Studio commits each finished canvas edit
+here, laying only the fields it changed over the zone as it stands.
+In a scene with no custom LED zones, a write to the primary zone also updates
+the active named layout.
 {% </api_endpoint> %}
 
 All mutating routes in this section are structural. The atomic membership-edit
@@ -373,8 +392,8 @@ scene and applies the preview to its named zone. Clear it with:
 
 The daemon clears a connection's previews when that socket closes. A committed
 layout write retires only the preview version it replaced, so it cannot erase a
-newer drag. Saving, reverting, and unmounting also send the explicit clear
-command.
+newer drag. Studio also sends the explicit clear command when a commit lands,
+when you switch to another zone tab, and when the editor unmounts.
 
 ### The binary preview frame
 

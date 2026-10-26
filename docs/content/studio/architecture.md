@@ -1,10 +1,10 @@
 +++
 title = "Studio architecture"
-description = "Developer view of Studio: StudioContext, shared-vs-local state, the reused LayerPanel and LayoutWorkspace contracts, and optimistic concurrency."
+description = "Developer view of Studio: StudioContext, the one target zone, the one Studio history, live layout commit, and the reused LayerPanel and LayoutWorkspace contracts."
 weight = 110
 +++
 
-Studio is a two-column Leptos workspace built from shared app-wide state plus a thin layer of page-local UI state. This page maps that split for developers working in `crates/hypercolor-ui/`: which context owns which signal, how the reused `LayerPanel` and `LayoutWorkspace` contracts mount, and how structural mutations use the live scene revision so concurrent edits never clobber each other.
+Studio is a Leptos workspace built from shared app-wide state plus a thin layer of page-local UI state. This page maps that split for developers working in `crates/hypercolor-ui/`: which context owns which signal, how every Studio write goes through one history, how canvas edits commit live, and how the reused `LayerPanel` and `LayoutWorkspace` contracts mount.
 
 If you want the runtime wire protocol and the daemon REST surface behind these contracts, read the [zone API and concurrency](@/studio/zone-api-and-concurrency.md) page next. For the user-facing tour, start at the [Studio overview](@/studio/overview.md).
 
@@ -14,15 +14,17 @@ This is a developer reference. The canonical wire type is `hypercolor_types::api
 
 ## The state map
 
-Studio reads from three app-root contexts and owns one of its own. The rule of thumb: anything that must survive navigation, stay fresh across clients, or be addressable from another page lives at the app root; anything that is purely Studio's view of the moment lives in `StudioContext` or in a provider scoped to the Stage.
+Studio reads from three app-root contexts and provides its own. The rule of thumb: anything that must survive navigation, stay fresh across clients, or be addressable from another page lives at the app root; anything that is purely Studio's view of the moment lives in a context `StudioPage` provides, or in a provider scoped to the Stage.
 
 | Context | Defined in | Lifetime | Owns |
 | --- | --- | --- | --- |
-| `ZonesContext` | `zones.rs` | App root | The shared active scene, the zone lists, the focused zone |
-| `ScenesContext` | `zones.rs` | App root | The scene library, switching/activation state |
-| `EffectsContext` | `app.rs` | App root | The apply-target, per-zone effect state, active-effect signals |
-| `StudioContext` | `pages/studio/mod.rs` | Studio page | Surface selection, slide-over state, rail highlight + hidden-output UI state |
-| `LayoutEditorContext` / `ZoneCanvasActions` | `components/layout_builder.rs` | The Stage | The in-flight `SpatialLayout`, selection, undo history, save/revert |
+| `ZonesContext` | `zones.rs` | App root | The shared active scene, the zone lists, the target zone (`focused_zone`) |
+| `ScenesContext` | `zones.rs` | App root | The scene library, switching and activation state |
+| `EffectsContext` | `app.rs` | App root | Per-zone effect state, active-effect signals, and the apply path that lands in the target zone |
+| `StudioContext` | `pages/studio/mod.rs` | Studio page | Tab selection, slide-over state, pane state, rail highlight and hidden-output UI state, the rig layout |
+| `StudioHistory` | `pages/studio/history.rs` | Studio page | The undo journal and the queue every membership, zone-delete, and layout write goes through |
+| `DragController` | `pages/studio/drag.rs` | Studio page | The one pointer drag between the pane, the tabs, and the canvas, the **Move to** menu, and the move announcements |
+| `LayoutEditorContext` / `ZoneCanvasActions` | `components/layout_builder.rs` | The Stage | The in-flight `SpatialLayout`, selection, undo and redo, Fit |
 
 ### Shared state at the app root
 
@@ -32,96 +34,116 @@ WebSocket scene events are freshness hints for the REST snapshot. Structural sce
 
 Because the scene projection is shared and WebSocket-fresh, a structural change made from another page, another client, or the CLI lands in Studio with no page-local scene resource. There are no Studio-local active-scene snapshots to drift from `GET /scene`.
 
-`ZonesContext` derives the rest with memos, not derives, so a refetch returning identical state does not wake every zone-aware surface in the app:
+`ZonesContext` derives the rest with memos, so a refetch returning identical state does not wake every zone-aware surface in the app:
 
 - `zones`: every surface of the active scene in scene order (LED zones and display Screens).
 - `led_zones`: LED-role zones only; what effect application targets.
-- `multi_zone`: whether `led_zone_count(&scene.zones) > 1`. This is the trigger for every per-zone affordance.
-- `focused_zone: RwSignal<Option<String>>`: the zone that quick-applies and the controls panel target. `None` means the primary zone.
+- `multi_zone`: whether the scene has more than one LED zone. This is the trigger for every per-zone affordance outside Studio.
+- `scene_resolved`: whether the active scene has been read for this connection, so `multi_zone` describes the scene rather than an empty page still loading.
+- `focused_zone: RwSignal<Option<String>>`: the target zone.
 
-### EffectsContext and the apply-target
+### One target zone
 
-`EffectsContext` (`app.rs`) is the cross-page composition seam. Its `apply_target: RwSignal<ApplyTarget>` is what makes a quick-apply from the dashboard, sidebar command palette, or shell land in the zone you are composing in Studio.
+`ZonesContext::focused_zone` is the only record of which LED zone quick actions target. `ZonesContext::target_zone()` resolves it: the focused LED zone when it is still in the scene, otherwise the primary zone. `None`, a stale id, and a Screen id all resolve to the primary zone. `surface::apply_zone_id` turns the target into the zone an effect apply names; the primary zone goes unnamed and keeps the daemon's default apply path.
 
-`ApplyTarget` (`apply_target.rs`) is a three-variant enum:
+Three writers move it:
 
-```rust
-pub enum ApplyTarget {
-    Primary,
-    Zone(String),
-    AllZones,
-}
-```
+- Studio's selection effect writes it whenever the open tab is an LED zone. Opening the Screens tab leaves it alone.
+- `CompactZoneTabs` (`components/zone_tabs.rs`) writes it from the preview cabinet on the Dashboard and Effects page. The tabs hide while `multi_zone` is false.
+- Nothing else. There is no "all zones" target and no second signal to keep in step.
 
-It defaults to `Primary`. Studio's selection effect writes it from the selected LED zone, so a quick-apply always has a visible, defined target. A Screen or the synthetic Unassigned entry is not an apply target, so when one of those is selected Studio falls back to `Primary`:
-
-```rust
-if let Some(zone_id) = selected_led_zone {
-    zones_ctx.focused_zone.set(Some(zone_id.clone()));
-    effects_ctx.apply_target.set(ApplyTarget::Zone(zone_id));
-} else if matches!(/* a stale Zone(target) no longer in the scene */) {
-    zones_ctx.focused_zone.set(None);
-    effects_ctx.apply_target.set(ApplyTarget::Primary);
-}
-```
+`EffectsContext::apply_effect` applies to the target zone. The command palette names the target zone next to its search field in a multi-zone scene.
 
 ### StudioContext: the page-local view
 
-`StudioContext` (`pages/studio/mod.rs`) holds what is specifically Studio's, provided once from `StudioPage` so both columns read one source of truth. The shared active scene is re-exposed here as `active_scene` for convenience, but everything else is page-local:
+`StudioContext` (`pages/studio/mod.rs`) holds what is specifically Studio's, provided once from `StudioPage` so the tab strip, the pane, and the Stage read one source of truth. The shared active scene is re-exposed here as `active_scene` for convenience, but everything else is page-local:
 
 | Field | Type | Purpose |
 | --- | --- | --- |
-| `selected_surface_id` | `RwSignal<Option<String>>` | The selected surface; the single selection source the tree owns and the Stage reads |
+| `history` | `StudioHistory` | The page's undo journal and write queue (also provided as its own context) |
+| `selected_surface_id` | `RwSignal<Option<String>>` | The open tab's zone, or the selected Screen; the single selection source |
 | `active_scene` | `Signal<Option<SceneDocument>>` | Re-exposed shared active-scene document |
 | `refresh_scene` | `Callback<()>` | Re-fetch the shared active scene after a zone mutation |
-| `composition_open` | `RwSignal<bool>` | Whether the composition slide-over (effect and layer editing) is open |
+| `composition_open` | `RwSignal<bool>` | Whether the composition slide-over is open |
+| `screen_face`, `refresh_screen_face` | `Signal<Option<DisplayFaceResponse>>`, `Callback<()>` | The selected Screen's live face and its refetch |
 | `hidden_outputs` | `RwSignal<HashMap<String, HashSet<String>>>` | Per-`(scene, zone)` hidden-output sets, client UI state only |
-| `selected_output_ids` | `RwSignal<HashSet<String>>` | Rail click selection bridged into the canvas |
-| `hovered_output_ids` | `RwSignal<HashSet<String>>` | Rail hover highlight bridged into the canvas |
-| `attachment_cache` | `RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>` | Per-device component-binding cache the cards fill lazily |
-| `device_search` | `Signal<String>` | Header search term, filters the tree's device rows |
+| `selected_output_ids` | `RwSignal<HashSet<String>>` | Pane click selection bridged into the canvas |
+| `hovered_output_ids` | `RwSignal<HashSet<String>>` | Pane hover highlight bridged into the canvas |
+| `pointer_output_id` | `RwSignal<Option<String>>` | The canvas box under the pointer, mirrored back so the pane can highlight the owning card |
+| `attachment_cache` | `RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>` | Per-device component-binding cache the cards fill lazily and search reads |
+| `screen_labels` | `Memo<HashMap<String, String>>` | Screen labels that tell identical device names apart ("TL LCD 2") |
 | `render_canvas_size` | `Memo<(u32, u32)>` | The daemon's render canvas extent, read by anything fitting a footprint to the canvas |
-| `rail_disclosure` | `RwSignal<Option<String>>` | The single open-disclosure slot shared by the zone menu, the device kebab, and the add-device picker |
-| `zone_rename_draft` | `RwSignal<Option<(String, String)>>` | An in-flight zone rename as `(zone id, draft text)` |
-| `pointer_output_id` | `RwSignal<Option<String>>` | The canvas box under the pointer, mirrored back so the rail can highlight the owning card |
+| `rig_layout` | `Signal<Option<SpatialLayout>>` | The active named layout; arriving outputs are placed from it |
+| `rail_disclosure` | `RwSignal<Option<String>>` | The single open-disclosure slot shared by the device cards' menus |
+| `zone_rename_draft` | `RwSignal<Option<(String, String)>>` | An in-flight tab rename as `(zone id, draft text)` |
+| `pane_expanded` | `RwSignal<HashSet<String>>` | Which Other zones rows are expanded |
+| `undo_notice` | `RwSignal<Option<UndoNotice>>` | The open offer to undo a zone delete |
+| `pane_drawer` | `RwSignal<bool>` | Whether the narrow-viewport device drawer is open |
 
-`rail_disclosure` and `zone_rename_draft` exist because the rail rebuilds on every scene event and every search keystroke. Disclosure state and in-flight text have to outlive the DOM that renders them, or a menu snaps shut and a half-typed name vanishes mid-edit. One shared disclosure slot also means opening a menu closes the previous one.
+`rail_disclosure` and `zone_rename_draft` exist because the pane and the tab strip rebuild on every scene event and every search keystroke. Disclosure state and in-flight text have to outlive the DOM that renders them, or a menu snaps shut and a half-typed name vanishes mid-edit. One shared disclosure slot also means opening a menu closes the previous one.
 
-Two more details are easy to get wrong. The hidden-output state is keyed `(scene_id, zone_id)` through `hidden_outputs_storage_key` and persisted to `localStorage`. It is purely client UI state and is never mirrored to the daemon's `layout_auto_exclusions`, which is discovery-reconciliation memory and a different concept entirely. And the rail highlight signals (`selected_output_ids`, `hovered_output_ids`) clear on every surface switch, so a stale highlight from the previous zone never lingers on the new one.
+Two more details are easy to get wrong. The hidden-output state is keyed `(scene_id, zone_id)` through `hidden_outputs_storage_key` and persisted to `localStorage`. It is purely client UI state and is never mirrored to the daemon's `layout_auto_exclusions`, which is discovery-reconciliation memory and a different concept entirely. And the highlight signals (`selected_output_ids`, `hovered_output_ids`) clear on every real tab switch, so a stale highlight from the previous zone never lingers on the new one.
 
 ## How selection drives everything
 
-Surface selection is the spine of the page. `selected_surface_id` lives in `StudioContext`, the zone tree writes it, and three effects in `StudioPage` react to it.
+Tab selection is the spine of the page. `selected_surface_id` lives in `StudioContext`, the tab strip and the Screens list write it, and the rest of the page reacts to it.
 
 {% <mermaid> %}
 flowchart TD
     A[active_scene memo] --> B[Selection-guard effect]
     B --> C[selected_surface_id]
-    C --> D[apply-target effect]
+    C --> D[target-zone effect]
     C --> E[layers_resource]
-    C --> F[ZoneLayoutProvider zone_signature]
-    D --> G[EffectsContext.apply_target + focused_zone]
+    C --> F[ZoneLayoutProvider]
+    C --> P[DevicePane sections]
+    D --> G[ZonesContext.focused_zone]
     E --> H[LayerPanel in the slide-over]
     F --> I[Stage canvas]
 {% </mermaid> %}
 
-The selection-guard effect keeps `selected_surface_id` pointing at a still-present surface. When the live scene changes it defaults to the first non-Display zone, so Studio always opens on a Light:
+The selection-guard effect keeps `selected_surface_id` pointing at a still-present zone. A fresh selection opens the target zone when it is an LED zone of the scene, otherwise the first LED zone, so Studio always opens on a Light and opens on the zone the rest of the app was pointed at:
 
 ```rust
-let next = scene
-    .zones
-    .iter()
-    .find(|zone| zone.role != ZoneRole::Display)
+let next = led_zones()
+    .find(|zone| focused.as_deref() == Some(zone.id.to_string().as_str()))
+    .or_else(|| led_zones().next())
     .or_else(|| scene.zones.first())
     .map(|zone| zone.id.to_string());
 selected_surface_id.set(next);
 ```
 
-The synthetic Unassigned entry is a special case throughout. `UNASSIGNED_SURFACE_ID` is the sentinel `"__unassigned__"`, deliberately not a UUID so it never collides with a real zone id. It is "present" only while the scene is genuinely multi-zone, it is not an apply target, and it has no layer stack. `layers_resource` therefore short-circuits to an empty stack instead of extracting a zone stack from `GET /scene`.
+`layers_resource` projects the open zone's stack straight out of the shared document instead of fetching it again.
+
+## Leptos-free models
+
+The rules behind the tab strip, the pane, placement, and moves live in Leptos-free modules, exercised from `crates/hypercolor-ui/tests/` without a WASM toolchain. Change the rule there and the test there.
+
+| Module | Rules |
+| --- | --- |
+| `pages/studio/tab_model.rs` | Which tabs fit and which overflow, reorder targets and the full-order `index`, keyboard stepping, delete eligibility and prompts, Screen labels |
+| `pages/studio/pane_model.rs` | The pane's sections, split-device hints, search and hit counts, when Unassigned shows, the policy select |
+| `pages/studio/placement.rs` | Where arrivals land from the rig, the first-arrival fit, and Fit |
+| `pages/studio/drag_model.rs` | What a drag carries, what each drop target does with it, spring-loaded tabs, announcements, names for zones made from a device |
+| `pages/studio/history.rs` | The journal, replay preparation, and the order waiting operations run in |
+| `components/layout_builder/commit.rs` | The live layout commit queue |
+| `components/layout_canvas/{picking,labels}.rs` | Smallest-box hit testing with Alt cycling, and when a box names itself |
+| `zones/surface.rs` | `zone_display_name`, layer labels, the target-zone rule |
+
+## One history for every Studio write
+
+Every write that changes membership, deletes or restores a zone, or replays a layout goes through `StudioHistory`. The scene revision fences each write, so one operation runs at a time:
+
+- `busy` marks a membership write, a zone delete or restore, or a layout replay in flight. The Stage canvas is `inert` while it holds.
+- `committing` marks the layout commit queue draining. Editing carries on.
+- An operation asked for while either holds waits its turn in order instead of being dropped. Queued layout commits always go first, so an operation acts on a scene with every finished edit already written.
+
+The journal records two kinds of step: `StudioEdit::Layout` (a zone's editor snapshot before and after) and `StudioEdit::Members` (the canonical `MemberEdit` receipts `POST /scene/members/edit` returns). Undo replays a members step by swapping each receipt's `before` and `after`, rebased on the live scene; an output still where the step left it returns to the placement the step recorded. An undo or redo waits for a canvas gesture to end, and one that finds a newer edit recorded since it was asked for stands down rather than reversing the wrong thing. The journal resets when the active scene changes.
+
+Zone deletes are not journal steps. `delete_zone` releases the zone's outputs through one membership edit, keeping their complete snapshots, then deletes the empty zone; `restore_zone` rebuilds the zone, its outputs that are still unclaimed, its paused state, and its `index`. The undo bar (`undo_notice.rs`) offers that restore for eight seconds. Zone create, rename, color, pause, and reorder are plain revision-guarded `PATCH`es in `zone_controls.rs`, outside the journal.
 
 ## The reused contracts
 
-Two pieces of Studio are not Studio's at all. They are shared singletons mounted with a fixed contract, so the editor for a thing exists exactly once and cannot drift between pages.
+Two pieces of Studio are shared components mounted with a fixed contract, so the editor for a thing exists exactly once and cannot drift between pages.
 
 ### LayerPanel
 
@@ -129,22 +151,23 @@ Two pieces of Studio are not Studio's at all. They are shared singletons mounted
 
 - **Zone identity**: the shared active-scene projection plus the selected zone id identify the live stack. Structural routes need the zone id, and layer-specific routes use the real layer id embedded by `GET /scene`.
 - **Scene revision**: `layers_resource` extracts the selected zone's stack and the enclosing document `revision`. Structural layer writes may send that value as `If-Match`.
-- **One mutation callback**: `on_layers_mutated: Callback<()>` fires after every applied or rejected mutation; the host refetches the stack and the active scene in response. There is exactly one.
+- **One mutation callback**: `on_layers_mutated: Callback<()>` fires after every applied or rejected mutation; the host refetches the active scene in response. There is exactly one.
 - **Internal content selection**: the asset list and effect-name resolution are owned inside the panel, so it is decoupled from any host page's selection state.
 
-Studio passes a `surface_label`, which tells the panel to show the selected surface's name in its header and drop its own redundant zone selector. The Studio zone tree already owns selection, so that selector would be dead weight.
+Studio passes a `surface_label`, which tells the panel to show the open tab's name in its header and drop its own zone selector. The tab strip already owns selection.
 
-One display detail worth knowing when you read the code: layers are authored bottom-to-top, but the row list is reversed for display so "Top" reads first. The Top/Bottom stack markers only show with more than one layer.
+New layers land on the open tab. The only multi-target add is the Screens tab's **All screens**, offered when the scene has more than one screen.
+
+One display detail worth knowing when you read the code: layers are authored bottom-to-top, but the row list is reversed for display so "Top" reads first. The Top and Bottom stack markers only show with more than one layer.
 
 ### LayoutWorkspace and its provider
 
 `LayoutWorkspace` and `LayoutCanvas` (`components/layout_builder.rs`, `components/layout_canvas.rs`) form the single spatial editor. Studio's Stage is its only mount.
 
-`ZoneLayoutProvider` is the ownership seam. Studio's Stage wraps the editor in this provider, which loads the selected zone's own `Zone.layout` and persists it through the per-zone layout API.
+`ZoneLayoutProvider` is the ownership seam. Studio's Stage wraps the editor in this provider, which loads the open zone's own placements and commits each finished edit through the per-zone layout route.
 
 ```rust
 <ZoneLayoutProvider
-    active_scene=active_scene
     selected_zone_id=selected_surface_id
     refresh_scene=refresh_scene
 >
@@ -154,19 +177,29 @@ One display detail worth knowing when you read the code: layers are authored bot
 
 `ZoneLayoutProvider` provides three contexts down to the Stage:
 
-- `LayoutEditorContext`: the editor's working state: the in-flight `Signal<Option<SpatialLayout>>`, selection sets, hover sets, compound depth, the `LayoutWriteHandle`, and `can_undo`/`can_redo`.
+- `LayoutEditorContext`: the editor's working state: the in-flight `Signal<Option<SpatialLayout>>`, selection sets, hover sets, compound depth, the `LayoutWriteHandle`, and `can_undo` and `can_redo` (read from `StudioHistory`).
 - `LayoutZoneDisplayContext`: the per-device attachment profiles resource.
-- `ZoneCanvasActions`: `save`, `revert`, `is_dirty`, and `has_layout`, consumed by the Stage header so the header drives Save and Revert off the same provider state.
+- `ZoneCanvasActions`: `fit`, `can_fit`, and `has_layout`, consumed by the Stage header's **Fit** button.
 
-The provider reloads the canvas on a **zone signature**, not on every scene refetch. The signature is the zone id plus its sorted output-id set, so a placement-only change (including this canvas's own saved edits) leaves the signature unchanged. That is what stops an unrelated scene refetch from clobbering in-flight canvas edits.
+The provider reloads the canvas from the shared scene and merges in any edit that has not landed yet, so a refetch never clobbers an edit in flight. It also connects the commit queue and the gesture state to `StudioHistory`, which is how a waiting undo knows to hold for a drag.
 
 {% <callout type="tip"> %}
-The drag and resize hot path is deliberately non-reactive. A single requestAnimationFrame scheduler paints positions directly to cached DOM elements, and the layout signal is written once on `mouseup`. Live drag preview goes to the daemon over the outbound WebSocket as JSON messages typed `zone_layout_preview` and `zone_layout_preview_clear` (sent by `send_zone_layout_preview` / `send_zone_layout_preview_clear` in `ws/preview.rs`), throttled to `PREVIEW_PUSH_INTERVAL_MS = 75.0`. It is not a REST route and does not touch the global `SpatialEngine`. See [zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the full hot path.
+The drag and resize hot path is deliberately non-reactive. A single requestAnimationFrame scheduler paints positions directly to cached DOM elements, and the layout signal is written once on `pointerup`. Live drag preview goes to the daemon over the outbound WebSocket as JSON messages typed `zone_layout_preview` and `zone_layout_preview_clear` (sent by `send_zone_layout_preview` and `send_zone_layout_preview_clear` in `ws/preview.rs`), throttled to `PREVIEW_PUSH_INTERVAL_MS = 75.0`. It is not a REST route and does not touch the global `SpatialEngine`. See [zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the full hot path.
 {% </callout> %}
+
+## Live layout commit
+
+There is no Save. `LayoutWriteHandle` records every finished edit (a released drag or resize, a properties field, Fit) in `StudioHistory` and hands the zone to the commit queue (`components/layout_builder/commit.rs`):
+
+- The queue keeps the newest state per zone, in the order zones were first queued, and drains one zone at a time because writes are revision-fenced.
+- A commit writes only what the editor changed against the zone it last loaded, field by field, over the zone as it stands when the write goes out. A concurrent edit to another output or another field is never put back.
+- On a `412`, the commit reads the live scene, lays the edit over it, and writes once more. An edit that still cannot land stays on the canvas, a toast says so, and it rides along with the zone's next commit.
+
+The wire target is `PUT /scene/zones/{zone}/layout`. The write updates member placements while the daemon preserves member identity and topology; membership changes go through `POST /scene/members/edit` instead. Full route semantics are on the [zone API and concurrency](@/studio/zone-api-and-concurrency.md) page.
 
 ## Optimistic concurrency
 
-Studio has one optimistic-concurrency token: `SceneDocument.revision`. Zone, membership, layout, and structural layer mutations may send it in `If-Match`. A stale structural write returns the canonical 412 response, which the client maps to a `Stale` outcome before reloading the scene. Control-value patches never send `If-Match`; they apply in commit order against the real layer id.
+Studio has one optimistic-concurrency token: `SceneDocument.revision`. Zone, membership, layout, and structural layer mutations send it in `If-Match`; the atomic membership edit requires it. A stale structural write returns the canonical 412 response, which the client maps to a `Stale` outcome before reloading the scene. Control-value patches never send `If-Match`; they apply in commit order against the real layer id.
 
 ### Layer mutations
 
@@ -185,15 +218,13 @@ match api::update_layer(&zone_id, &layer_id, &request, Some(revision)).await {
 
 `LayerStackOutcome::Stale` is a refetch-and-retry signal, not an error and not a clobber. The same pattern covers `delete_layer` and `reorder_layer`.
 
-Bulk add-layer carries the same document revision across every target. Each applied structural write returns a projected stack carrying the next revision, which becomes the precondition for the next target. The loop stops on the first stale or failed write.
+Adding a layer to every screen carries the document revision across the targets. Each applied structural write returns a projected stack carrying the next revision, which becomes the precondition for the next target. The loop stops on the first stale or failed write.
 
 Live control editing is separate. `patch_layer_controls` sends `PatchControlsRequest` to `/scene/zones/{zone}/layers/{layer}/controls` without a revision header. The layer id comes from the current document; replacing a layer retires that id, so a late control patch cannot land on its replacement.
 
-### Layout saves
+### Membership and zone writes
 
-`ZoneLayoutProvider::save` passes the scene revision to `api::zones::update_zone_layout(zone_id, layout, revision)` and handles `ZoneOutcome::Stale` the same way: clear the preview, tell the user the scene changed, and refetch. The wire target is `PUT /scene/zones/{zone}/layout`.
-
-The save updates member placements while the daemon preserves member identity and topology. Membership changes use `/scene/zones/{zone}/members`, not the layout write. Full route semantics are on the [zone API and concurrency](@/studio/zone-api-and-concurrency.md) page.
+Device adds, moves, unassigns, and their undo and redo all go through `POST /scene/members/edit`. An add from Unassigned sends the `assignment` form with `placements` the UI computed from the rig (`placement::assignment_hints`); a move sends explicit `changes` whose `after` states already carry the arrival geometry from `placement.rs`. Zone create, rename, color, pause, and reorder `PATCH /scene/zones/{zone}`, reordering through `index` against the scene's full zone order (`tab_model::zone_move_index`).
 
 ## Capability gating
 
@@ -207,7 +238,7 @@ pub fn zone_crud_ready(&self) -> bool {
 }
 ```
 
-`+ New zone` and the zone rows need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The unassigned-lights policy editor gates separately on `scene-unassigned-behavior-write`.
+The **+** after the tabs and the **New zone** move target need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The Unassigned policy select gates separately on `scene-unassigned-behavior-write`.
 
 {{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
 
