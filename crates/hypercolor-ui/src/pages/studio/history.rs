@@ -347,12 +347,6 @@ impl StudioHistory {
         }
     }
 
-    /// The active scene's id, tracked.
-    pub fn scene_id(self) -> Signal<Option<hypercolor_types::scene::SceneId>> {
-        let scene = self.scene;
-        Signal::derive(move || scene.with(|scene| scene.as_ref().map(|scene| scene.id)))
-    }
-
     /// The newest scene document Studio knows. `None` once Studio is gone,
     /// so a write finishing after it unmounts reads nothing instead of
     /// panicking on its disposed signals.
@@ -429,13 +423,6 @@ impl StudioHistory {
         self.generation.try_get_untracked() == Some(generation)
     }
 
-    /// Whether a newer operation or a scene switch has replaced
-    /// `generation`. A history whose Studio is gone has none newer.
-    pub fn is_superseded(self, generation: u64) -> bool {
-        self.generation
-            .try_get_untracked()
-            .is_some_and(|current| current != generation)
-    }
     pub fn finish(self, generation: u64) {
         if self.is_current(generation) {
             self.busy.set(false);
@@ -1606,25 +1593,6 @@ mod replay_tests {
         history.prepare_words(&StudioEdit::Members(Vec::new()), false);
         history.announce_replay();
         assert!(!history.is_current(1));
-    }
-
-    #[test]
-    fn a_generation_is_superseded_only_by_a_newer_one() {
-        let owner = Owner::new();
-        let (history, second) = owner.with(|| {
-            let history = history(None, false, None, "11111111-1111-4111-8111-111111111111");
-            let first = history.begin().expect("free");
-            assert!(!history.is_superseded(first));
-            history.finish(first);
-            let second = history.begin().expect("free again");
-            assert!(history.is_superseded(first));
-            assert!(!history.is_superseded(second));
-            (history, second)
-        });
-        owner.cleanup();
-        // A layout commit draining when Studio goes keeps going.
-        assert!(!history.is_superseded(second));
-        assert!(!history.is_current(second));
     }
 
     #[test]

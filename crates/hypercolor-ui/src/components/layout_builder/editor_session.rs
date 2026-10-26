@@ -11,12 +11,6 @@ use super::LayoutWriteHandle;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone)]
-pub(super) struct ZoneDraft {
-    pub baseline: SpatialLayout,
-    pub snapshot: crate::layout_history::LayoutEditorSnapshot,
-}
-
 /// Apply an edit's placement delta without replacing fields changed elsewhere.
 fn apply_placement_delta(
     target: &mut hypercolor_types::spatial::Output,
@@ -53,40 +47,6 @@ fn apply_placement_delta(
     if desired.brightness != previous.brightness {
         target.brightness = desired.brightness;
     }
-}
-
-pub(super) fn merge_draft(
-    canonical: &SpatialLayout,
-    draft: &ZoneDraft,
-) -> crate::layout_history::LayoutEditorSnapshot {
-    let mut snapshot = draft.snapshot.clone();
-    snapshot.zones = canonical
-        .zones
-        .iter()
-        .map(|output| {
-            let mut merged = output.clone();
-            if let Some(local) = draft
-                .snapshot
-                .zones
-                .iter()
-                .find(|local| local.id == output.id)
-                && let Some(saved) = draft
-                    .baseline
-                    .zones
-                    .iter()
-                    .find(|saved| saved.id == output.id)
-                && local.device_id == output.device_id
-                && local.zone_name == output.zone_name
-            {
-                apply_placement_delta(&mut merged, saved, local);
-            }
-            merged
-        })
-        .collect();
-    snapshot
-        .selected_zone_ids
-        .retain(|id| snapshot.zones.iter().any(|output| &output.id == id));
-    snapshot
 }
 
 pub(super) fn reconcile_replay(
@@ -177,8 +137,6 @@ pub(super) fn embedded_attachment_profiles(
 #[derive(Clone, Copy)]
 pub(super) struct LayoutEditorSession {
     pub(super) layout: ReadSignal<Option<SpatialLayout>>,
-    pub(super) saved_layout: ReadSignal<Option<SpatialLayout>>,
-    pub(super) set_saved_layout: WriteSignal<Option<SpatialLayout>>,
     pub(super) selected_zone_ids: ReadSignal<HashSet<String>>,
     pub(super) set_selected_zone_ids: WriteSignal<HashSet<String>>,
     pub(super) compound_depth: ReadSignal<CompoundDepth>,
@@ -204,7 +162,6 @@ impl LayoutEditorSession {
         selected_surface: Signal<Option<String>>,
     ) -> Self {
         let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
-        let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
         let (selected_zone_ids, set_selected_zone_ids) = signal(HashSet::<String>::new());
         let (compound_depth, set_compound_depth) = signal(CompoundDepth::Root);
         let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(keep_aspect_ratio_initial);
@@ -228,8 +185,6 @@ impl LayoutEditorSession {
 
         Self {
             layout,
-            saved_layout,
-            set_saved_layout,
             selected_zone_ids,
             set_selected_zone_ids,
             compound_depth,

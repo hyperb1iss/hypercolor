@@ -550,7 +550,7 @@ pub fn LayoutCanvas() -> impl IntoView {
         let gestured = std::mem::take(&mut runtime.current_zones);
         let merged = layout.with_untracked(|current| {
             current.as_ref().map(|current| {
-                crate::components::layout_builder::commit::merge_gesture(
+                crate::components::layout_builder::gesture::merge_gesture(
                     &current.zones,
                     &runtime.base_zones,
                     &gestured,

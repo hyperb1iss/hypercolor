@@ -33,30 +33,6 @@ const BOTTOM_MAX: f64 = 500.0;
 
 const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
 
-#[derive(Debug, PartialEq, Eq)]
-struct ZoneSaveCompletion {
-    update_editor: bool,
-    clear_preview: bool,
-    clear_active_preview: bool,
-}
-
-fn zone_save_completion(
-    selected_zone_id: Option<&str>,
-    active_preview_key: Option<&str>,
-    saved_zone_id: &str,
-    is_latest_save: bool,
-) -> ZoneSaveCompletion {
-    let active_preview_matches = active_preview_key == Some(saved_zone_id);
-    ZoneSaveCompletion {
-        // Every landing is the selected zone's new baseline, newer edits
-        // queued or not: an edit still waiting then reads as a change from
-        // what landed, as it is, instead of snapping back to it.
-        update_editor: selected_zone_id == Some(saved_zone_id),
-        clear_preview: is_latest_save || !active_preview_matches,
-        clear_active_preview: is_latest_save && active_preview_matches,
-    }
-}
-
 fn load_panel_size(key: &str, default: f64, min: f64, max: f64) -> f64 {
     storage::get_clamped(key, default, min, max)
 }
@@ -231,14 +207,13 @@ impl LayoutWriteHandle {
     }
 }
 
-pub mod commit;
 mod editor_session;
+pub mod gesture;
 pub mod ledger;
+mod writer;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
-use editor_session::{
-    LayoutEditorSession, ZoneDraft, embedded_attachment_profiles, merge_draft, reconcile_replay,
-};
+use editor_session::{LayoutEditorSession, embedded_attachment_profiles, reconcile_replay};
 
 /// The layout editor body: the canvas viewport above a resizable
 /// zone-properties panel. It consumes the [`LayoutEditorContext`]
@@ -467,96 +442,6 @@ pub(crate) struct ZoneCanvasActions {
     pub has_layout: Signal<bool>,
 }
 
-/// The zone layout commits a Studio canvas owes the daemon, shared with
-/// the task writing them: a commit needs no canvas to land, so what is
-/// still queued when the canvas goes is written anyway.
-#[derive(Default)]
-struct CommitLane {
-    /// The scene the queued commits belong to.
-    scene_id: Option<hypercolor_types::scene::SceneId>,
-    queue: commit::CommitQueue,
-    /// The drain writing the queue now, by its history generation and the
-    /// scene it writes for. Only that drain clears it, so one a scene
-    /// switch replaced cannot mark a newer drain as finished.
-    draining: Option<(u64, hypercolor_types::scene::SceneId)>,
-    /// The commit written now and still waiting for its reply, with its
-    /// scene, so a refresh that brings it back first is known as ours.
-    in_flight: Option<(hypercolor_types::scene::SceneId, commit::PendingCommit)>,
-}
-
-impl CommitLane {
-    /// The next commit, while the queue still holds `scene_id`'s edits. It
-    /// is in flight until [`Self::settled`].
-    fn pop_for(
-        &mut self,
-        scene_id: hypercolor_types::scene::SceneId,
-    ) -> Option<commit::PendingCommit> {
-        if self.scene_id != Some(scene_id) {
-            return None;
-        }
-        let pending = self.queue.pop()?;
-        self.in_flight = Some((scene_id, pending.clone()));
-        Some(pending)
-    }
-
-    /// The commit `scene_id`'s drain had in flight finished, landed or not.
-    /// Another scene's drain keeps its own.
-    fn settled(&mut self, scene_id: hypercolor_types::scene::SceneId) {
-        if self
-            .in_flight
-            .as_ref()
-            .is_some_and(|(scene, _)| *scene == scene_id)
-        {
-            self.in_flight = None;
-        }
-    }
-
-    /// The commit in flight for `zone_id` of `scene_id`, if one is.
-    fn in_flight_for(
-        &self,
-        scene_id: hypercolor_types::scene::SceneId,
-        zone_id: &str,
-    ) -> Option<commit::PendingCommit> {
-        self.in_flight
-            .as_ref()
-            .filter(|(scene, pending)| *scene == scene_id && pending.zone_id == zone_id)
-            .map(|(_, pending)| pending.clone())
-    }
-}
-
-type SharedLane = std::sync::Arc<std::sync::Mutex<CommitLane>>;
-
-fn with_lane<T>(lane: &SharedLane, f: impl FnOnce(&mut CommitLane) -> T) -> T {
-    let mut lane = lane
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    f(&mut lane)
-}
-
-/// What a queued commit would write against one scene document.
-enum PreparedCommit {
-    Write(SpatialLayout),
-    Unchanged,
-    Missing,
-}
-
-fn prepare_commit(scene: &api::SceneDocument, pending: &commit::PendingCommit) -> PreparedCommit {
-    let Some(zone) = scene
-        .zones
-        .iter()
-        .find(|zone| zone.id.to_string() == pending.zone_id)
-    else {
-        return PreparedCommit::Missing;
-    };
-    match commit::commit_placements(&api::zone_outputs(zone), &pending.baseline, &pending.edited) {
-        Some(placements) => PreparedCommit::Write(SpatialLayout {
-            zones: placements,
-            ..editor_layout_for_zone(zone)
-        }),
-        None => PreparedCommit::Unchanged,
-    }
-}
-
 fn editor_layout_for_zone(zone: &api::ZoneResource) -> SpatialLayout {
     SpatialLayout {
         id: zone.id.to_string(),
@@ -599,8 +484,6 @@ pub(crate) fn ZoneLayoutProvider(
     let studio_history = expect_context::<crate::pages::studio::history::StudioHistory>();
     let session = LayoutEditorSession::new(false, studio_history, selected_zone_id);
     let layout = session.layout;
-    let saved_layout = session.saved_layout;
-    let set_saved_layout = session.set_saved_layout;
     let set_selected_zone_ids = session.set_selected_zone_ids;
     let set_compound_depth = session.set_compound_depth;
     let set_layout = session.write;
@@ -641,8 +524,9 @@ pub(crate) fn ZoneLayoutProvider(
         attachment_profiles,
     });
 
-    // Canonical placement changes refresh clean fields while local drafts keep
-    // their edited fields. Layer control updates leave this memo unchanged.
+    // The selected zone as the daemon last reported it, with the scene's
+    // revision and the canvas it is drawn for. The zone's ledger turns it
+    // into what the canvas shows.
     let canonical_zone = Memo::new(move |_| {
         let zone_id = selected_zone_id.get()?;
         let scene = studio_history.current_scene_tracked()?;
@@ -653,112 +537,81 @@ pub(crate) fn ZoneLayoutProvider(
         if zone.role == ZoneRole::Display {
             return None;
         }
-        let mut canonical = editor_layout_for_zone(zone);
-        let (width, height) = render_canvas_size.get();
-        canonical.canvas_width = width;
-        canonical.canvas_height = height;
         Some((
             scene.id,
-            zone_id,
-            layout_geometry::normalize_layout_for_editor(canonical),
+            scene.revision,
+            zone.clone(),
+            render_canvas_size.get(),
         ))
     });
-    let lane = StoredValue::new(SharedLane::default());
+    // Moves whenever the writer changes a ledger, so the canvas redraws
+    // what its zone now shows.
+    let ledger_tick = RwSignal::new(0_u64);
     let loaded_key = StoredValue::new(None::<(hypercolor_types::scene::SceneId, String)>);
-    let drafts = StoredValue::new(std::collections::HashMap::<
-        (hypercolor_types::scene::SceneId, String),
-        ZoneDraft,
-    >::new());
     Effect::new(move |_| {
         let next = canonical_zone.get();
-        let replay = studio_history
-            .layout_replay_for_zone(next.as_ref().map(|(_, zone_id, _)| zone_id.as_str()));
-        // A commit landing mid-gesture reloads the same zone; the gesture
-        // keeps its press-time snapshot so its release still records and
-        // commits.
-        let gesture = set_layout.interaction_start.get_untracked();
-        let mut previous_saved = saved_layout.get_untracked();
-        // Capture the outgoing editor before changing the selected surface.
-        if let (Some(key), Some(baseline), Some(snapshot)) = (
-            loaded_key.get_value(),
-            saved_layout.get_untracked(),
-            set_layout.capture_snapshot(),
-        ) {
-            drafts.update_value(|drafts| {
-                let mut next = ZoneDraft { baseline, snapshot };
-                if let Some(previous) = drafts.get(&key) {
-                    // Removed members can return through assignment Undo. Keep
-                    // their drafts without rendering them while unassigned.
-                    for output in &previous.snapshot.zones {
-                        if !next
-                            .snapshot
-                            .zones
-                            .iter()
-                            .any(|current| current.id == output.id)
-                        {
-                            next.snapshot.zones.push(output.clone());
-                        }
-                    }
-                    for output in &previous.baseline.zones {
-                        if !next
-                            .baseline
-                            .zones
-                            .iter()
-                            .any(|current| current.id == output.id)
-                        {
-                            next.baseline.zones.push(output.clone());
-                        }
-                    }
-                }
-                drafts.insert(key, next);
-            });
-        }
-        let Some((scene_id, zone_id, canonical)) = next else {
+        ledger_tick.track();
+        let replay = studio_history.layout_replay_for_zone(
+            next.as_ref()
+                .map(|(_, _, zone, _)| zone.id.to_string())
+                .as_deref(),
+        );
+        let Some((scene_id, revision, zone, canvas)) = next else {
             set_layout.set(None);
-            set_saved_layout.set(None);
             loaded_key.set_value(None);
             return;
         };
+        let zone_id = zone.id.to_string();
+        writer::confirm(scene_id, &zone, revision, canvas);
+        let Some(display) = writer::display(scene_id, &zone_id) else {
+            return;
+        };
+        let mut shown = editor_layout_for_zone(&zone);
+        shown.canvas_width = canvas.0;
+        shown.canvas_height = canvas.1;
+        shown.zones = display;
         let key = (scene_id, zone_id.clone());
-        // Drafts from an old scene cannot be revived by a later scene switch.
-        drafts.update_value(|drafts| drafts.retain(|(id, _), _| *id == scene_id));
-        let mut draft = drafts.with_value(|drafts| drafts.get(&key).cloned());
-        // A refresh can bring our own write back before its reply does. On
-        // the fields it already carries, the write is the baseline, so an
-        // edit made while it flew (a move back, say) stays an edit.
-        let written = lane
-            .try_get_value()
-            .and_then(|shared| with_lane(&shared, |lane| lane.in_flight_for(scene_id, &zone_id)));
-        if let Some(written) = written.as_ref() {
-            if let Some(draft) = draft.as_mut() {
-                commit::recognize_write(&mut draft.baseline.zones, &canonical.zones, written);
+        if loaded_key.get_value().as_ref() == Some(&key) {
+            // The zone being edited, drawn again: its selection and any
+            // gesture under way stay. What changed meanwhile joins the
+            // gesture's press-time snapshot, so undoing the gesture takes
+            // back the gesture alone; a field the snapshot holds at a value
+            // of its own keeps it.
+            let previous = layout
+                .with_untracked(|current| current.as_ref().map(|layout| layout.zones.clone()));
+            if let (Some(previous), Some(mut gesture)) =
+                (previous, set_layout.interaction_start.get_untracked())
+            {
+                gesture::rebase_unedited(&mut gesture.zones, &previous, &shown.zones);
+                set_layout.interaction_start.set(Some(gesture));
             }
-            if let Some(previous) = previous_saved.as_mut() {
-                commit::recognize_write(&mut previous.zones, &canonical.zones, written);
+            // A new revision that leaves the drawing alone (a layer tweak,
+            // another zone's edit) touches nothing, so the canvas does not
+            // redraw for it.
+            let unchanged = layout.with_untracked(|current| {
+                current.as_ref().is_some_and(|current| {
+                    current.zones == shown.zones
+                        && (current.canvas_width, current.canvas_height)
+                            == (shown.canvas_width, shown.canvas_height)
+                })
+            });
+            if !unchanged {
+                let present: std::collections::HashSet<String> =
+                    shown.zones.iter().map(|output| output.id.clone()).collect();
+                set_layout.update_without_history(|current| *current = Some(shown));
+                let gone = session
+                    .selected_zone_ids
+                    .with_untracked(|ids| ids.iter().any(|id| !present.contains(id)));
+                if gone {
+                    set_selected_zone_ids.update(|ids| ids.retain(|id| present.contains(id)));
+                }
             }
-        }
-        let snapshot = draft.as_ref().map(|draft| merge_draft(&canonical, draft));
-        set_saved_layout.set(Some(canonical.clone()));
-        set_layout.set(Some(canonical.clone()));
-        if let Some(snapshot) = snapshot {
-            set_layout.apply_snapshot(snapshot);
         } else {
+            set_layout.set(Some(shown));
             set_selected_zone_ids.set(std::collections::HashSet::new());
             set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
+            loaded_key.set_value(Some(key));
         }
-        if loaded_key.get_value().as_ref() == Some(&key)
-            && let Some(mut gesture) = gesture
-        {
-            // What changed elsewhere joins the press-time snapshot too, so
-            // undoing the gesture takes back the gesture alone. A field the
-            // snapshot holds at an edit of its own (one still landing) keeps
-            // it.
-            if let Some(previous) = previous_saved.as_ref() {
-                commit::rebase_unedited(&mut gesture.zones, &previous.zones, &canonical.zones);
-            }
-            set_layout.interaction_start.set(Some(gesture));
-        }
-        loaded_key.set_value(Some(key));
         let applied_replay = replay.filter(|replay| replay.zone_id == zone_id);
         if let Some(replay) = applied_replay.as_ref() {
             let mut snapshot = replay.snapshot.clone();
@@ -767,17 +620,19 @@ pub(crate) fn ZoneLayoutProvider(
                 .expect("selected editor was initialized");
             reconcile_replay(&current, &replay.previous, &mut snapshot);
             set_layout.apply_snapshot(snapshot);
+            set_layout.update_without_history(|current| {
+                if let Some(layout) = current.take() {
+                    *current = Some(layout_geometry::normalize_layout_for_editor(layout));
+                }
+            });
         }
-        set_layout.update_without_history(|current| {
-            if let Some(layout) = current.take() {
-                *current = Some(layout_geometry::normalize_layout_for_editor(layout));
-            }
-        });
-        let dirty = layout.with_untracked(|current| {
-            current
-                .as_ref()
-                .is_some_and(|current| current.zones != canonical.zones)
-        });
+        if let Some(replay) = applied_replay {
+            // An undo or redo is an edit like any other: it makes intents,
+            // ahead of anything that waited for it.
+            set_layout.commit(zone_id.clone());
+            studio_history.complete_layout(replay.redo);
+        }
+        let dirty = writer::pending(scene_id, &zone_id);
         set_layout.set_dirty.set(dirty);
         if !dirty
             && !set_layout.in_interaction()
@@ -786,45 +641,8 @@ pub(crate) fn ZoneLayoutProvider(
             ws_ctx.clear_zone_layout_preview.run(preview);
             active_preview_key.set_value(None);
         }
-        if let Some(replay) = applied_replay {
-            // An undo or redo is an edit like any other: it commits, ahead
-            // of anything that waited for it.
-            set_layout.commit(zone_id);
-            studio_history.complete_layout(replay.redo);
-        }
-    });
-
-    // The daemon can retune its canvas live (and config lands after the
-    // first scene paint), so the extent follows it without a reload. This
-    // is not an edit: no history entry, no dirty flag.
-    Effect::new(move |_| {
-        let (canvas_width, canvas_height) = render_canvas_size.get();
-        // Circular zones are normalized against the pixel aspect, so a live
-        // extent change re-normalizes them for the new canvas too.
-        let stamp = |layout: &mut Option<SpatialLayout>| {
-            if let Some(layout) = layout.as_mut() {
-                layout.canvas_width = canvas_width;
-                layout.canvas_height = canvas_height;
-                let aspect = layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height);
-                for zone in &mut layout.zones {
-                    zone.size = layout_geometry::normalize_zone_size_for_editor(
-                        zone.size,
-                        &zone.topology,
-                        zone.shape.as_ref(),
-                        aspect,
-                    );
-                }
-            }
-        };
-        let stale = layout.with_untracked(|current| {
-            current
-                .as_ref()
-                .is_some_and(|l| (l.canvas_width, l.canvas_height) != (canvas_width, canvas_height))
-        });
-        if stale {
-            set_layout.update_without_history(stamp);
-            set_saved_layout.update(stamp);
-        }
+        // A newer scene lets a writer that paused on a failure go again.
+        writer::wake();
     });
 
     // Every edit previews on the hardware the moment it lands, not just
@@ -844,207 +662,17 @@ pub(crate) fn ZoneLayoutProvider(
         snapshot
     });
 
-    // Edits queued against one scene cannot land in the next.
-    let committed_scene = studio_history.scene_id();
-    Effect::new(
-        move |previous: Option<Option<hypercolor_types::scene::SceneId>>| {
-            let current = committed_scene.get();
-            if previous.is_some_and(|previous| previous != current)
-                && let Some(shared) = lane.try_get_value()
-            {
-                with_lane(&shared, |lane| {
-                    lane.queue = commit::CommitQueue::default();
-                    lane.scene_id = None;
-                });
-            }
-            current
-        },
-    );
-
-    // A landed commit moves the editor's baseline on by what it wrote,
-    // and its preview retires unless newer edits for the zone are still
-    // queued. Only the write's own changes move it: a change from another
-    // client in the same reply arrives through the scene refresh, where the
-    // editor takes it in, and folding it in here would make the editor's
-    // copy of it read as a local edit.
-    let acknowledge = move |base: &api::SceneDocument,
-                            pending: &commit::PendingCommit,
-                            zone: api::ZoneResource,
-                            revision: u64| {
-        let zone_id = pending.zone_id.as_str();
-        let advance = |layout: &mut SpatialLayout| {
-            // Guarded: a refresh that came first already set these fields,
-            // perhaps to a newer value from elsewhere, which stays.
-            commit::rebase_unedited(&mut layout.zones, &pending.baseline, &pending.edited);
-        };
-        drafts.update_value(|drafts| {
-            if let Some(draft) = drafts.get_mut(&(base.id, zone_id.to_owned())) {
-                advance(&mut draft.baseline);
-            }
-        });
-        studio_history.record_saved_zone(base, zone, revision);
-        let completion = zone_save_completion(
-            selected_zone_id.get_untracked().as_deref(),
-            active_preview_key.get_value().as_deref(),
-            zone_id,
-            !lane
-                .try_get_value()
-                .is_some_and(|shared| with_lane(&shared, |lane| lane.queue.holds(zone_id))),
-        );
-        if completion.update_editor
-            && let Some(mut saved) = saved_layout.get_untracked()
-        {
-            advance(&mut saved);
-            let clean = layout.with_untracked(|layout| {
-                layout
-                    .as_ref()
-                    .is_some_and(|layout| layout.zones == saved.zones)
-            });
-            set_saved_layout.set(Some(saved));
-            set_layout.set_dirty.set(!clean);
+    // The ledgers belong to the active scene, and another scene's never
+    // land. Every zone with a ledger takes in each new scene, not only the
+    // one on the canvas.
+    Effect::new(move |_| {
+        if let Some(scene) = studio_history.current_scene_tracked() {
+            writer::confirm_known(&scene, render_canvas_size.get());
         }
-        if completion.clear_preview {
-            ws_ctx.clear_zone_layout_preview.run(zone_id.to_owned());
-        }
-        if completion.clear_active_preview {
-            active_preview_key.set_value(None);
-        }
-        refresh_scene.run(());
-    };
-
-    // Write one zone's edit. A stale revision means another client moved
-    // the scene on: the edit is laid over the live scene and written once
-    // more. An edit that still cannot land stays on the canvas, says so,
-    // and rides along with the zone's next commit. A commit whose canvas
-    // has gone (`generation` is `None`) still lands; it only tells no one.
-    let commit_zone = move |pending: commit::PendingCommit,
-                            generation: Option<u64>,
-                            scene_id: hypercolor_types::scene::SceneId,
-                            shared: SharedLane| async move {
-        // The canvas still shows this write: its lane is alive, and no newer
-        // operation or scene replaced the drain.
-        let shown = move || {
-            lane.try_with_value(|_| ()).is_some()
-                && generation.is_some_and(|generation| studio_history.is_current(generation))
-        };
-        let overtaken =
-            move || generation.is_some_and(|generation| studio_history.is_superseded(generation));
-        let cached = studio_history
-            .current_scene()
-            .filter(|scene| scene.id == scene_id);
-        let mut scene = match cached {
-            Some(scene) => scene,
-            None => match api::fetch_active_scene().await {
-                Ok(live) if live.id == scene_id => live,
-                _ => return,
-            },
-        };
-        let zone_id = pending.zone_id.clone();
-        for rebased in [false, true] {
-            let layout = match prepare_commit(&scene, &pending) {
-                PreparedCommit::Write(layout) => layout,
-                PreparedCommit::Unchanged => return,
-                PreparedCommit::Missing => {
-                    if shown() {
-                        toasts::toast_error("Layout change not saved: its zone no longer exists");
-                    }
-                    return;
-                }
-            };
-            let revision = scene.revision;
-            match api::zones::update_zone_layout(&zone_id, &layout, revision).await {
-                Ok(api::zones::ZoneOutcome::Applied((zone, landed))) => {
-                    with_lane(&shared, |lane| lane.queue.landed(&pending));
-                    if shown() {
-                        let landed = landed.unwrap_or_else(|| revision.saturating_add(1));
-                        acknowledge(&scene, &pending, zone, landed);
-                    }
-                    return;
-                }
-                Ok(api::zones::ZoneOutcome::Stale { .. }) if !rebased => {
-                    let live = api::fetch_active_scene().await;
-                    if overtaken() {
-                        return;
-                    }
-                    match live {
-                        Ok(live) if live.id == scene_id => scene = live,
-                        _ => break,
-                    }
-                }
-                Ok(api::zones::ZoneOutcome::Stale { .. }) => break,
-                Err(error) => {
-                    if shown() {
-                        toasts::toast_error(&format!("Layout change not saved: {error}"));
-                    }
-                    return;
-                }
-            }
-        }
-        if shown() {
-            toasts::toast_error(
-                "Layout change not saved: the scene changed elsewhere. Your next edit retries it.",
-            );
-            refresh_scene.run(());
-        }
-    };
-
-    // Writes are revision-fenced, so the queue drains one zone at a time
-    // while editing carries on. A scene switch stops the drain; the canvas
-    // going away does not.
-    let drain = move || {
-        let Some(shared) = lane.try_get_value() else {
-            return;
-        };
-        let (empty, scene_id) = with_lane(&shared, |lane| (lane.queue.is_empty(), lane.scene_id));
-        let (false, Some(scene_id)) = (empty, scene_id) else {
-            return;
-        };
-        let Some(generation) = studio_history.begin_commit() else {
-            return;
-        };
-        with_lane(&shared, |lane| lane.draining = Some((generation, scene_id)));
-        leptos::task::spawn_local(async move {
-            // It takes only its own scene's edits; a scene switch it outlives
-            // leaves the next scene's for their own drain.
-            while !studio_history.is_superseded(generation) {
-                let Some(pending) = with_lane(&shared, |lane| lane.pop_for(scene_id)) else {
-                    break;
-                };
-                commit_zone(pending, Some(generation), scene_id, shared.clone()).await;
-                with_lane(&shared, |lane| lane.settled(scene_id));
-            }
-            with_lane(&shared, |lane| {
-                if lane.draining.is_some_and(|(owner, _)| owner == generation) {
-                    lane.draining = None;
-                }
-            });
-            studio_history.end_commit(generation);
-        });
-    };
-
-    // Commits still queued with no drain running, because a structural
-    // operation held the scene, go out when the canvas goes.
-    on_cleanup(move || {
-        let Some(shared) = lane.try_get_value() else {
-            return;
-        };
-        let (idle, scene_id) = with_lane(&shared, |lane| {
-            let drained = lane
-                .draining
-                .is_some_and(|(_, scene)| lane.scene_id == Some(scene));
-            (!drained && !lane.queue.is_empty(), lane.scene_id)
-        });
-        let (true, Some(scene_id)) = (idle, scene_id) else {
-            return;
-        };
-        leptos::task::spawn_local(async move {
-            while let Some(pending) = with_lane(&shared, |lane| lane.pop_for(scene_id)) {
-                commit_zone(pending, None, scene_id, shared.clone()).await;
-                with_lane(&shared, |lane| lane.settled(scene_id));
-            }
-        });
     });
 
+    // An edit becomes intents in the zone's ledger, and the writer sends
+    // them.
     set_layout
         .on_commit
         .set_value(Some(Callback::new(move |zone_id: String| {
@@ -1053,40 +681,58 @@ pub(crate) fn ZoneLayoutProvider(
             else {
                 return;
             };
-            // The zone as the editor last loaded it: the edit is whatever
-            // differs from here.
-            let baseline = saved_layout
-                .with_untracked(|saved| saved.as_ref().map(|saved| saved.zones.clone()))
-                .unwrap_or_default();
             let Some(scene_id) = studio_history.current_scene().map(|scene| scene.id) else {
                 return;
             };
-            if let Some(shared) = lane.try_get_value() {
-                with_lane(&shared, |lane| {
-                    lane.scene_id = Some(scene_id);
-                    lane.queue.push(zone_id, baseline, edited);
-                });
+            if writer::edit(scene_id, &zone_id, &edited) {
+                writer::wake();
             }
-            drain();
+            set_layout
+                .set_dirty
+                .set(writer::pending(scene_id, &zone_id));
         })));
 
-    // Studio history runs these commits ahead of any operation waiting for
+    // While this canvas is mounted, the writer takes its turn with Studio's
+    // other scene operations, records what lands in Studio's history, and
+    // redraws the canvas when a ledger changes.
+    let lent = writer::attach(writer::WriterHooks {
+        begin: Callback::new(move |()| studio_history.begin_commit()),
+        end: Callback::new(move |generation| studio_history.end_commit(generation)),
+        landed: Callback::new(
+            move |(fence, zone, revision): (u64, api::ZoneResource, u64)| {
+                if let Some(base) = studio_history
+                    .current_scene()
+                    .filter(|scene| scene.revision == fence)
+                {
+                    studio_history.record_saved_zone(&base, zone, revision);
+                }
+                refresh_scene.run(());
+            },
+        ),
+        refetched: Callback::new(move |scene| studio_history.adopt(scene)),
+        changed: Callback::new(move |_zone_id: String| ledger_tick.update(|tick| *tick += 1)),
+        problem: Callback::new(move |message: String| toasts::toast_error(&message)),
+    });
+    on_cleanup(move || writer::detach(lent));
+
+    // Studio history lets the writer go ahead of any operation waiting for
     // the scene, and holds a waiting undo or redo until a gesture ends.
     studio_history.attach_editor(Some(crate::pages::studio::history::EditorHooks {
         commits_pending: Callback::new(move |()| {
-            lane.try_get_value()
-                .is_some_and(|shared| !with_lane(&shared, |lane| lane.queue.is_empty()))
+            studio_history
+                .current_scene()
+                .is_some_and(|scene| writer::busy(scene.id))
         }),
-        drain_commits: Callback::new(move |()| drain()),
+        drain_commits: Callback::new(move |()| writer::wake()),
         gesture_active: Callback::new(move |()| set_layout.in_interaction()),
     }));
     on_cleanup(move || studio_history.attach_editor(None));
 
-    // A commit queued while a structural operation held the scene goes out
+    // An edit made while a structural operation held the scene goes out
     // once it finishes.
     Effect::new(move |_| {
         if !studio_history.busy.get() {
-            drain();
+            writer::wake();
         }
     });
 
@@ -1153,55 +799,4 @@ pub(crate) fn ZoneLayoutProvider(
     });
 
     children()
-}
-
-#[cfg(test)]
-mod zone_save_tests {
-    use super::{ZoneSaveCompletion, zone_save_completion};
-
-    #[test]
-    fn current_zone_completion_updates_editor_and_retires_its_preview() {
-        assert_eq!(
-            zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", true),
-            ZoneSaveCompletion {
-                update_editor: true,
-                clear_preview: true,
-                clear_active_preview: true,
-            }
-        );
-    }
-
-    #[test]
-    fn old_zone_completion_does_not_mutate_the_new_zone() {
-        assert_eq!(
-            zone_save_completion(Some("zone-b"), Some("zone-b"), "zone-a", true),
-            ZoneSaveCompletion {
-                update_editor: false,
-                clear_preview: true,
-                clear_active_preview: false,
-            }
-        );
-    }
-
-    #[test]
-    fn superseded_save_does_not_clear_the_newer_preview() {
-        let completion = zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", false);
-        assert!(!completion.clear_preview);
-        assert!(!completion.clear_active_preview);
-    }
-
-    #[test]
-    fn a_save_with_newer_edits_queued_still_becomes_the_selected_zones_baseline() {
-        // Moved 0.2 to 0.4, then back to 0.2 while the first write was in
-        // flight: once 0.4 lands it is the baseline the return is an edit
-        // from, or the canvas snaps back to 0.4.
-        assert_eq!(
-            zone_save_completion(Some("zone-a"), Some("zone-a"), "zone-a", false),
-            ZoneSaveCompletion {
-                update_editor: true,
-                clear_preview: false,
-                clear_active_preview: false,
-            }
-        );
-    }
 }
