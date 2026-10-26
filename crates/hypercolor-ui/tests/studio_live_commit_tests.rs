@@ -51,12 +51,10 @@ fn a_commit_writes_the_edited_geometry_in_member_order() {
 fn a_commit_never_adds_drops_or_rebinds_a_member() {
     let members = [output("a", "one", 0.1), output("b", "two", 0.2)];
     // The editor lost "a", holds an output the zone does not, and holds
-    // "b" bound to a different device.
+    // "b" with a different binding than the zone has.
     let edited = [output("stray", "three", 0.9), output("b", "other", 0.7)];
-    assert_eq!(commit_placements(&members, &members, &edited), None);
-
-    let edited = [output("stray", "three", 0.9), output("b", "two", 0.7)];
-    let written = commit_placements(&members, &members, &edited).expect("b moved");
+    let baseline = [output("a", "one", 0.1), output("b", "other", 0.2)];
+    let written = commit_placements(&members, &baseline, &edited).expect("b moved");
     assert_eq!(
         written
             .iter()
@@ -65,6 +63,23 @@ fn a_commit_never_adds_drops_or_rebinds_a_member() {
         ["a", "b"]
     );
     assert_eq!(written[0], members[0]);
+    assert_eq!(written[1].position.x, 0.7);
+    assert_eq!(written[1].device_id, "two", "the binding is the zone's");
+}
+
+#[test]
+fn an_output_whose_editor_copy_was_renamed_still_commits_its_moves() {
+    let members = [output("a", "one", 0.1)];
+    // The editor copy carries a different channel and name than the zone.
+    let mut loaded = members[0].clone();
+    loaded.zone_name = Some("Channel 2".to_owned());
+    loaded.name = "Desk".to_owned();
+    let mut moved = loaded.clone();
+    moved.position.x = 0.6;
+    let written = commit_placements(&members, &[loaded], &[moved]).expect("a moved");
+    assert_eq!(written[0].position.x, 0.6);
+    assert_eq!(written[0].zone_name.as_deref(), Some("Main"));
+    assert_eq!(written[0].name, "a");
 }
 
 #[test]

@@ -117,18 +117,16 @@ fn apply_edit(target: &mut Output, baseline: &Output, edited: &Output) {
 
 /// The outputs a zone commit writes: the zone's current `members`, in
 /// their order, each carrying the placement fields the editor changed
-/// from `baseline`. Only an output with the same id and binding in all
-/// three takes an edit, so a commit can never add, drop, or rebind a
-/// member. `None` when the result would not change the zone.
+/// from `baseline`. Outputs match by member id, and only placement fields
+/// carry over, so a commit can never add, drop, or rebind a member.
+/// `None` when the result would not change the zone.
 #[must_use]
 pub fn commit_placements(
     members: &[Output],
     baseline: &[Output],
     edited: &[Output],
 ) -> Option<Vec<Output>> {
-    let same = |a: &Output, b: &Output| {
-        a.id == b.id && a.device_id == b.device_id && a.zone_name == b.zone_name
-    };
+    let same = |a: &Output, b: &Output| a.id == b.id;
     let mut changed = false;
     let placements = members
         .iter()
