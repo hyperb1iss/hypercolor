@@ -899,9 +899,10 @@ pub struct KeyedResponse<T> {
     pub run: Option<String>,
     /// The response's status; `None` when no response came back.
     pub status: Option<u16>,
-    /// The daemon served this answer from what it stored under the key
-    /// (`Idempotency-Replayed: true`): it is the first request's answer,
-    /// not one it gave this request on its own.
+    /// The daemon served a response it stored under the key rather than
+    /// run this request (`Idempotency-Replayed: true`). That stored response
+    /// answered some earlier request under the key, not necessarily the
+    /// first (see [`crate::components::layout_builder::keyed::tells`]).
     pub replayed: bool,
     pub outcome: ApiResult<MutationOutcome<T>>,
 }
