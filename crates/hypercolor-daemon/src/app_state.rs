@@ -390,8 +390,8 @@ impl AppState {
             id: "default".into(),
             name: "Default Layout".into(),
             description: None,
-            canvas_width: 320,
-            canvas_height: 200,
+            canvas_width: config.daemon.canvas_width,
+            canvas_height: config.daemon.canvas_height,
             zones: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
@@ -515,6 +515,10 @@ impl AppState {
         let simulated_displays = Arc::new(RwLock::new(simulated_displays));
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+        let render_canvas = crate::domain::layout::RenderCanvas::new(
+            default_layout.canvas_width,
+            default_layout.canvas_height,
+        );
         let layouts = HashMap::from([(default_layout.id.clone(), default_layout)]);
         let layouts_path = data_dir.join("layouts.json");
         let layout_auto_exclusions = HashMap::new();
@@ -567,6 +571,7 @@ impl AppState {
                     layouts_path,
                     layout_auto_exclusions,
                     layout_auto_exclusions_path,
+                    render_canvas,
                 ),
                 scene_transactions: scene_transactions.clone(),
                 runtime_state_path: runtime_state_path.clone(),

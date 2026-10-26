@@ -1128,3 +1128,18 @@ fn invalid_interaction_route_policy_is_rejected() {
         .expect_err("unknown route policy must fail");
     assert!(error.to_string().contains("unknown variant"));
 }
+
+#[test]
+fn render_canvas_validation_accepts_large_surfaces_and_rejects_empty_or_overflow() {
+    let mut config = DaemonConfig {
+        canvas_width: 7680,
+        canvas_height: 4320,
+        ..DaemonConfig::default()
+    };
+    assert!(config.validate_canvas().is_ok());
+    config.canvas_width = 0;
+    assert!(config.validate_canvas().is_err());
+    config.canvas_width = u32::MAX;
+    config.canvas_height = u32::MAX;
+    assert!(config.validate_canvas().is_err());
+}

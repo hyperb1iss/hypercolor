@@ -31,12 +31,15 @@ class SpatialLayout:
     `[0.0, 1.0]` space where `(0,0)` is top-left and `(1,1)` is bottom-right.
 
         Attributes:
-            canvas_height (int): Canvas height in pixels. Standard: 200.
-            canvas_width (int): Canvas width in pixels. Standard: 320.
             id (str): Unique layout identifier (UUID or slug).
             name (str): Human-readable name (e.g., "Bliss's PC Case", "Full Room").
             version (int): Schema version for forward-compatible migrations.
             zones (list[Output]): All device zones in this layout, ordered by rendering priority.
+            canvas_height (int | Unset): Canvas height in pixels; see [`SpatialLayout::canvas_width`].
+            canvas_width (int | Unset): Canvas width in pixels this layout is sampled against. The engine
+                owns it: an LED layout always carries the configured render
+                resolution (`daemon.canvas_width`), and a display zone carries its
+                face's size. Nothing a client sends sets it.
             default_edge_behavior (EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset): Edge behavior for out-of-bounds LED
                 positions.
             default_sampling_mode (SamplingModeType0 | SamplingModeType1 | SamplingModeType2 | SamplingModeType3 | Unset):
@@ -44,12 +47,12 @@ class SpatialLayout:
             description (None | str | Unset): Optional description for the layout editor UI.
     """
 
-    canvas_height: int
-    canvas_width: int
     id: str
     name: str
     version: int
     zones: list[Output]
+    canvas_height: int | Unset = UNSET
+    canvas_width: int | Unset = UNSET
     default_edge_behavior: EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset = UNSET
     default_sampling_mode: (
         SamplingModeType0
@@ -66,10 +69,6 @@ class SpatialLayout:
         from ..models.sampling_mode_type_1 import SamplingModeType1
         from ..models.sampling_mode_type_2 import SamplingModeType2
 
-        canvas_height = self.canvas_height
-
-        canvas_width = self.canvas_width
-
         id = self.id
 
         name = self.name
@@ -80,6 +79,10 @@ class SpatialLayout:
         for zones_item_data in self.zones:
             zones_item = zones_item_data.to_dict()
             zones.append(zones_item)
+
+        canvas_height = self.canvas_height
+
+        canvas_width = self.canvas_width
 
         default_edge_behavior: dict[str, Any] | str | Unset
         if isinstance(self.default_edge_behavior, Unset):
@@ -111,14 +114,16 @@ class SpatialLayout:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "canvas_height": canvas_height,
-                "canvas_width": canvas_width,
                 "id": id,
                 "name": name,
                 "version": version,
                 "zones": zones,
             }
         )
+        if canvas_height is not UNSET:
+            field_dict["canvas_height"] = canvas_height
+        if canvas_width is not UNSET:
+            field_dict["canvas_width"] = canvas_width
         if default_edge_behavior is not UNSET:
             field_dict["default_edge_behavior"] = default_edge_behavior
         if default_sampling_mode is not UNSET:
@@ -140,10 +145,6 @@ class SpatialLayout:
         from ..models.sampling_mode_type_3 import SamplingModeType3
 
         d = dict(src_dict)
-        canvas_height = d.pop("canvas_height")
-
-        canvas_width = d.pop("canvas_width")
-
         id = d.pop("id")
 
         name = d.pop("name")
@@ -156,6 +157,10 @@ class SpatialLayout:
             zones_item = Output.from_dict(zones_item_data)
 
             zones.append(zones_item)
+
+        canvas_height = d.pop("canvas_height", UNSET)
+
+        canvas_width = d.pop("canvas_width", UNSET)
 
         def _parse_default_edge_behavior(
             data: object,
@@ -243,12 +248,12 @@ class SpatialLayout:
         description = _parse_description(d.pop("description", UNSET))
 
         spatial_layout = cls(
-            canvas_height=canvas_height,
-            canvas_width=canvas_width,
             id=id,
             name=name,
             version=version,
             zones=zones,
+            canvas_height=canvas_height,
+            canvas_width=canvas_width,
             default_edge_behavior=default_edge_behavior,
             default_sampling_mode=default_sampling_mode,
             description=description,

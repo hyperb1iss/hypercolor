@@ -17,16 +17,12 @@ class LayoutSummary:
     """Summary row from `GET /api/v1/layouts`.
 
     Attributes:
-        canvas_height (int):
-        canvas_width (int):
         id (str):
         name (str):
         zone_count (int):
         is_active (bool | Unset):
     """
 
-    canvas_height: int
-    canvas_width: int
     id: str
     name: str
     zone_count: int
@@ -34,10 +30,6 @@ class LayoutSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        canvas_height = self.canvas_height
-
-        canvas_width = self.canvas_width
-
         id = self.id
 
         name = self.name
@@ -50,8 +42,6 @@ class LayoutSummary:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "canvas_height": canvas_height,
-                "canvas_width": canvas_width,
                 "id": id,
                 "name": name,
                 "zone_count": zone_count,
@@ -65,10 +55,6 @@ class LayoutSummary:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
-        canvas_height = d.pop("canvas_height")
-
-        canvas_width = d.pop("canvas_width")
-
         id = d.pop("id")
 
         name = d.pop("name")
@@ -78,8 +64,6 @@ class LayoutSummary:
         is_active = d.pop("is_active", UNSET)
 
         layout_summary = cls(
-            canvas_height=canvas_height,
-            canvas_width=canvas_width,
             id=id,
             name=name,
             zone_count=zone_count,

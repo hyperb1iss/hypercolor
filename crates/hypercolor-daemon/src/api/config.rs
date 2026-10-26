@@ -302,6 +302,9 @@ async fn write_config_key(
     if let Err(error) = updated.capture.validate() {
         return DomainError::validation(error.to_string()).into_response();
     }
+    if let Err(error) = updated.daemon.validate_canvas() {
+        return DomainError::validation(format!("render resolution: {error}")).into_response();
+    }
 
     if apply_capture {
         match apply_capture_config_transaction(state, &current_snapshot, updated.capture.clone())
@@ -536,6 +539,9 @@ async fn reset_config_state(
     }
     if let Err(error) = updated.capture.validate() {
         return DomainError::validation(error.to_string()).into_response();
+    }
+    if let Err(error) = updated.daemon.validate_canvas() {
+        return DomainError::validation(format!("render resolution: {error}")).into_response();
     }
 
     // The calibration pseudo-key is absent from the registry; any of its

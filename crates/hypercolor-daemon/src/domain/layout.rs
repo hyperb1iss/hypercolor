@@ -5,6 +5,7 @@ mod catalog;
 mod convergence;
 mod exclusions;
 mod publication;
+mod render_canvas;
 mod workflows;
 
 use std::collections::{HashMap, HashSet};
@@ -58,6 +59,7 @@ use self::exclusions::{
     PersistedLayoutExclusionsBindingMigration,
 };
 use self::publication::{ActiveLayoutBindingMigration, LayoutPublication};
+pub(crate) use self::render_canvas::RenderCanvas;
 
 pub(crate) struct LayoutDeviceBindingMigration {
     update_guard: LayoutUpdateGuard,
@@ -325,28 +327,40 @@ pub(crate) struct LayoutContextResources {
     layouts_path: PathBuf,
     layout_auto_exclusions: layout_auto_exclusions::LayoutAutoExclusionStore,
     layout_auto_exclusions_path: PathBuf,
+    render_canvas: RenderCanvas,
 }
 
 impl LayoutContextResources {
+    /// `render_canvas` is the configured render resolution; every stored
+    /// layout is put on it, whatever size it was saved with.
     pub(crate) fn new(
-        layouts: HashMap<String, SpatialLayout>,
+        mut layouts: HashMap<String, SpatialLayout>,
         layouts_path: PathBuf,
         layout_auto_exclusions: layout_auto_exclusions::LayoutAutoExclusionStore,
         layout_auto_exclusions_path: PathBuf,
+        render_canvas: RenderCanvas,
     ) -> Self {
+        stamp_catalog(&mut layouts, &render_canvas);
         Self {
             layouts,
             layouts_path,
             layout_auto_exclusions,
             layout_auto_exclusions_path,
+            render_canvas,
         }
     }
 
+    /// Load the stored catalog. `default_layout` carries the configured
+    /// render resolution, which every stored layout takes on load: a layout
+    /// saved at another size (before layouts stopped carrying one) is
+    /// rewritten instead of changing the resolution when it is applied.
     pub(crate) fn load(
         layouts_path: PathBuf,
         layout_auto_exclusions_path: PathBuf,
         default_layout: &SpatialLayout,
     ) -> Self {
+        let render_canvas =
+            RenderCanvas::new(default_layout.canvas_width, default_layout.canvas_height);
         let mut layouts = crate::layout_store::load(&layouts_path).unwrap_or_else(|error| {
             tracing::warn!(
                 path = %layouts_path.display(),
@@ -355,6 +369,25 @@ impl LayoutContextResources {
             );
             HashMap::new()
         });
+        let legacy_sizes = layouts
+            .values()
+            .any(|layout| layout.canvas_width != 0 || layout.canvas_height != 0);
+        let resized = stamp_catalog(&mut layouts, &render_canvas);
+        if legacy_sizes {
+            if let Err(error) = crate::layout_store::save(&layouts_path, &layouts) {
+                tracing::warn!(
+                    path = %layouts_path.display(),
+                    %error,
+                    "Failed to persist layouts moved onto the render resolution"
+                );
+            } else {
+                tracing::info!(
+                    path = %layouts_path.display(),
+                    resized,
+                    "Moved stored layouts onto the render resolution"
+                );
+            }
+        }
         if crate::layout_store::ensure_default_layout(&mut layouts, default_layout) {
             if let Err(error) = crate::layout_store::save(&layouts_path, &layouts) {
                 tracing::warn!(
@@ -392,6 +425,7 @@ impl LayoutContextResources {
             layouts_path,
             layout_auto_exclusions,
             layout_auto_exclusions_path,
+            render_canvas,
         )
     }
 
@@ -407,6 +441,7 @@ pub struct LayoutContext {
     publication: LayoutPublication,
     convergence: LayoutConvergence,
     events: Arc<HypercolorBus>,
+    render_canvas: RenderCanvas,
     #[cfg(feature = "persistence-test-hooks")]
     test_hooks: LayoutMutationTestHooks,
 }
@@ -427,12 +462,14 @@ impl LayoutContext {
             resources.layout_auto_exclusions_path,
             scenes.clone(),
         );
+        let render_canvas = resources.render_canvas;
         let publication = LayoutPublication::new(
             spatial,
             scenes,
             transactions,
             runtime_state_path,
             runtime_projection,
+            render_canvas.clone(),
         );
         let convergence = LayoutConvergence::new(
             catalog.clone(),
@@ -446,6 +483,7 @@ impl LayoutContext {
             publication,
             convergence,
             events,
+            render_canvas,
             #[cfg(feature = "persistence-test-hooks")]
             test_hooks: LayoutMutationTestHooks::default(),
         }
@@ -590,13 +628,16 @@ impl LayoutContext {
         );
         let projection =
             RuntimeSessionProjection::new(scenes.clone(), spatial.clone(), output_power);
+        let current = spatial.layout();
+        let render_canvas = RenderCanvas::new(current.canvas_width, current.canvas_height);
         Self::new(
-            LayoutContextResources {
+            LayoutContextResources::new(
                 layouts,
                 layouts_path,
                 layout_auto_exclusions,
                 layout_auto_exclusions_path,
-            },
+                render_canvas,
+            ),
             spatial,
             scenes,
             transactions,
@@ -955,12 +996,22 @@ async fn await_layout_workflow<T>(
     })?
 }
 
+/// Put every stored layout on the render canvas. Returns how many changed.
+fn stamp_catalog(
+    layouts: &mut HashMap<String, SpatialLayout>,
+    render_canvas: &RenderCanvas,
+) -> usize {
+    layouts
+        .values_mut()
+        .map(|layout| render_canvas.stamp(layout))
+        .filter(|changed| *changed)
+        .count()
+}
+
 fn layout_summary(layout: &SpatialLayout, is_active: bool) -> LayoutSummary {
     LayoutSummary {
         id: layout.id.clone(),
         name: layout.name.clone(),
-        canvas_width: layout.canvas_width,
-        canvas_height: layout.canvas_height,
         zone_count: layout.zones.len(),
         is_active,
     }

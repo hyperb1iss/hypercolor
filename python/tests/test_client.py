@@ -436,8 +436,6 @@ async def test_get_layouts_follows_pagination(client: HypercolorClient) -> None:
                 {
                     "id": layout_id,
                     "name": layout_id,
-                    "canvas_width": 640,
-                    "canvas_height": 480,
                     "zone_count": 2,
                 }
                 for layout_id in ids

@@ -19,7 +19,7 @@ use crate::scene_transactions::{
     LayoutUpdateError, LayoutUpdateGuard, SceneActivationGuard, SceneTransactionQueue,
 };
 
-use super::LayoutPersistenceStatus;
+use super::{LayoutPersistenceStatus, RenderCanvas};
 use crate::domain::context::RuntimeSessionDeviceBindingMigrationAdmission;
 use crate::domain::device_binding::DeviceBindingRemaps;
 
@@ -32,6 +32,9 @@ pub(super) struct LayoutPublication {
     transactions: LayoutTransactionAuthority,
     runtime_state_path: PathBuf,
     runtime_projection: RuntimeSessionProjection,
+    /// Every layout that goes active is put on this first, so no layout
+    /// can change the render resolution.
+    render_canvas: RenderCanvas,
 }
 
 pub(super) struct ActiveLayoutBindingMigration {
@@ -56,6 +59,8 @@ impl LayoutPublication {
         use crate::domain::scene_activation::{
             LayoutSceneFence, ProjectionDurability, SelectedLayoutOutcome,
         };
+        let mut layout = layout;
+        self.render_canvas.stamp(&mut layout);
         let fence = LayoutSceneFence::new(expected);
         let selected_layout = layout.clone();
         let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -123,6 +128,7 @@ impl LayoutPublication {
         transactions: SceneTransactionQueue,
         runtime_state_path: PathBuf,
         runtime_projection: RuntimeSessionProjection,
+        render_canvas: RenderCanvas,
     ) -> Self {
         Self {
             transactions: LayoutTransactionAuthority::new(
@@ -134,6 +140,7 @@ impl LayoutPublication {
             scenes,
             runtime_state_path,
             runtime_projection,
+            render_canvas,
         }
     }
 
@@ -211,6 +218,8 @@ impl LayoutPublication {
         &self,
         layout: SpatialLayout,
     ) -> Result<(), DomainError> {
+        let mut layout = layout;
+        self.render_canvas.stamp(&mut layout);
         let prepared = SpatialEngine::try_new(layout.clone())
             .map_err(|error| DomainError::validation(error.to_string()))?;
         self.spatial.replace(prepared);
@@ -233,6 +242,8 @@ impl LayoutPublication {
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
     ) -> Result<(), LayoutUpdateError> {
+        let mut layout = layout;
+        self.render_canvas.stamp(&mut layout);
         self.transactions.apply_under_guard(guard, layout).await
     }
 
@@ -241,6 +252,8 @@ impl LayoutPublication {
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
     ) -> Result<(), LayoutUpdateError> {
+        let mut layout = layout;
+        self.render_canvas.stamp(&mut layout);
         self.transactions
             .apply_renderer_only_under_guard(guard, layout)
             .await
@@ -252,6 +265,8 @@ impl LayoutPublication {
         layout: SpatialLayout,
         driver_host: Arc<DaemonDriverHost>,
     ) -> Result<(), LayoutUpdateError> {
+        let mut layout = layout;
+        self.render_canvas.stamp(&mut layout);
         let persistence = self.persistence_context(driver_host);
         self.transactions
             .apply_under_guard_with_persistence(guard, layout, move |phase| {

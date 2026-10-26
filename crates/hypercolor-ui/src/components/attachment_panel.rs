@@ -857,8 +857,6 @@ pub fn sync_wiring_to_layout(
             let req = api::UpdateLayoutRequest {
                 name: None,
                 description: None,
-                canvas_width: None,
-                canvas_height: None,
                 zones: Some(layout.zones),
             };
             api::update_layout(&layout_id, &req).await?;
@@ -908,8 +906,6 @@ fn sync_channel_name_to_active_layout(
             let req = api::UpdateLayoutRequest {
                 name: None,
                 description: None,
-                canvas_width: None,
-                canvas_height: None,
                 zones: Some(layout.zones),
             };
             api::update_layout(&layout_id, &req).await?;

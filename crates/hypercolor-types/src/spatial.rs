@@ -489,10 +489,17 @@ pub struct SpatialLayout {
     pub description: Option<String>,
 
     // ── Canvas ────────────────────────────────────────────────────────
-    /// Canvas width in pixels. Standard: 320.
+    /// Canvas width in pixels this layout is sampled against. The engine
+    /// owns it: an LED layout always carries the configured render
+    /// resolution (`daemon.canvas_width`), and a display zone carries its
+    /// face's size. Nothing a client sends sets it.
+    #[cfg_attr(feature = "schema", schema(read_only))]
+    #[serde(default)]
     pub canvas_width: u32,
 
-    /// Canvas height in pixels. Standard: 200.
+    /// Canvas height in pixels; see [`SpatialLayout::canvas_width`].
+    #[cfg_attr(feature = "schema", schema(read_only))]
+    #[serde(default)]
     pub canvas_height: u32,
 
     // ── Zones ─────────────────────────────────────────────────────────

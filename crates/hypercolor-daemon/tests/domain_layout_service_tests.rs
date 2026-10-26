@@ -20,8 +20,6 @@ async fn catalog_create_and_update_share_one_durable_transaction() {
         .layout
         .create(CreateLayoutRequest {
             name: "  Studio  ".to_owned(),
-            canvas_width: Some(640),
-            canvas_height: Some(360),
             ..CreateLayoutRequest::default()
         })
         .await
@@ -35,7 +33,6 @@ async fn catalog_create_and_update_share_one_durable_transaction() {
             "studio".to_owned(),
             UpdateLayoutRequest {
                 name: Some("Editing Suite".to_owned()),
-                canvas_width: Some(800),
                 ..UpdateLayoutRequest::default()
             },
         )
@@ -43,13 +40,22 @@ async fn catalog_create_and_update_share_one_durable_transaction() {
         .expect("layout should update by name");
     assert_eq!(updated.id, created.id);
     assert_eq!(updated.name, "Editing Suite");
-    assert_eq!(updated.canvas_width, 800);
+    assert_eq!(
+        state
+            .domains
+            .layout
+            .resolve(&updated.id)
+            .await
+            .expect("layout fixture should be valid")
+            .canvas_width,
+        640
+    );
 
     let persisted =
         hypercolor_daemon::layout_store::load(&tempdir.path().join("data/layouts.json"))
             .expect("layout catalog should load");
     assert_eq!(persisted[&created.id].name, "Editing Suite");
-    assert_eq!(persisted[&created.id].canvas_width, 800);
+    assert_eq!(persisted[&created.id].canvas_width, 0);
 }
 
 #[tokio::test]

@@ -68,7 +68,34 @@ pub(crate) fn save(path: &Path, store: &HashMap<String, SpatialLayout>) -> anyho
 pub(crate) fn serialize(store: &HashMap<String, SpatialLayout>) -> anyhow::Result<Vec<u8>> {
     let mut entries: Vec<&SpatialLayout> = store.values().collect();
     entries.sort_by(|left, right| left.id.cmp(&right.id));
+    // Resolution belongs to daemon config; stored LED positions are normalized.
+    let entries: Vec<SavedLayout<'_>> = entries.into_iter().map(SavedLayout::from).collect();
     serialize_json_pretty(&entries).context("failed to serialize layout store")
+}
+
+#[derive(serde::Serialize)]
+struct SavedLayout<'a> {
+    id: &'a str,
+    name: &'a str,
+    description: &'a Option<String>,
+    zones: &'a [hypercolor_types::spatial::Output],
+    default_sampling_mode: &'a hypercolor_types::spatial::SamplingMode,
+    default_edge_behavior: &'a hypercolor_types::spatial::EdgeBehavior,
+    version: u32,
+}
+
+impl<'a> From<&'a SpatialLayout> for SavedLayout<'a> {
+    fn from(layout: &'a SpatialLayout) -> Self {
+        Self {
+            id: &layout.id,
+            name: &layout.name,
+            description: &layout.description,
+            zones: &layout.zones,
+            default_sampling_mode: &layout.default_sampling_mode,
+            default_edge_behavior: &layout.default_edge_behavior,
+            version: layout.version,
+        }
+    }
 }
 
 #[cfg(test)]
