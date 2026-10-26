@@ -1001,17 +1001,26 @@ async fn a_zone_target_the_scene_lacks_opens_and_waits_without_rendering() {
         .expect("a zone the scene lacks is admitted, like a zone_preview selection");
     let receiver = lane.frame_receiver();
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(
-        receiver.borrow().is_none(),
-        "nothing renders for an absent zone"
-    );
-    let snapshot = lane.snapshot();
-    assert!(snapshot.active);
-    assert_eq!(snapshot.frames_published, 0);
+    let snapshot = timeout(Duration::from_secs(2), async {
+        loop {
+            let snapshot = lane.snapshot();
+            if snapshot.last_error.is_some() {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the lane resolves its absent zone");
     assert_eq!(
         snapshot.last_error.as_deref(),
         Some("preview zone is not in the active scene")
+    );
+    assert!(snapshot.active);
+    assert_eq!(snapshot.frames_published, 0);
+    assert!(
+        receiver.borrow().is_none(),
+        "nothing renders for an absent zone"
     );
 }
 
@@ -1208,6 +1217,11 @@ async fn retargeting_to_a_target_with_nothing_to_show_releases_the_old_frame() {
         "the old target's frame is withdrawn"
     );
     assert_eq!(
+        lane.snapshot().last_error.as_deref(),
+        Some("preview zone is not in the active scene"),
+        "the retarget that withdraws the frame says why"
+    );
+    assert_eq!(
         rig.executor.resource_snapshot().used,
         one_lane,
         "only the new target's resources stay reserved"
@@ -1262,6 +1276,11 @@ async fn a_followed_zone_stops_with_its_scene_and_returns_with_it() {
     assert!(
         every_pixel_is(&back, BLUE),
         "the lane picks the zone back up when its scene returns"
+    );
+    assert_eq!(
+        lane.snapshot().last_error,
+        None,
+        "the frame that brings the zone back arrives with its absence cleared"
     );
 }
 

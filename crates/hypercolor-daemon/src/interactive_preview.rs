@@ -54,6 +54,7 @@ pub use resources::{PreviewCapacitySnapshot, PreviewResourceLedger};
 
 const MAX_PREVIEW_FPS: u32 = 60;
 const BACKGROUND_INPUT_HZ: u32 = 1;
+const MISSING_ZONE_ERROR: &str = "preview zone is not in the active scene";
 static NEXT_CONSUMER_INCARNATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1041,8 +1042,7 @@ impl PreviewLane {
             self.last_tick = now;
             // Record why before withdrawing: the withdrawal wakes frame
             // receivers, and one that reads the snapshot next must see it.
-            self.telemetry
-                .publish_error("preview zone is not in the active scene");
+            self.telemetry.publish_error(MISSING_ZONE_ERROR);
             self.withdraw_frame();
             return;
         }
@@ -1088,7 +1088,8 @@ impl PreviewLane {
             &self.acceleration,
             resources,
         )?;
-        let frame = if scene.targets_missing_zone() {
+        let missing_zone = scene.targets_missing_zone();
+        let frame = if missing_zone {
             InteractivePreviewRender::Pending
         } else {
             render_preview_scene(
@@ -1126,6 +1127,9 @@ impl PreviewLane {
         self.telemetry
             .spec_generation
             .store(self.spec_generation, Ordering::Release);
+        if missing_zone {
+            self.telemetry.publish_error(MISSING_ZONE_ERROR);
+        }
         self.spec_generation_tx.send_replace(self.spec_generation);
         // The previous target's frame never publishes again, so a target
         // with nothing to show yet does not keep its resources reserved.
@@ -1176,8 +1180,8 @@ impl PreviewLane {
             surface,
             resource_lease: self.resources.clone(),
         });
-        self.frame_tx.send_replace(Some(Arc::clone(&frame)));
-        self.retained_frame = Some(frame);
+        // Telemetry first, so a client woken by the frame reads counters
+        // and an error state that already account for it.
         self.telemetry
             .frames_published
             .fetch_add(1, Ordering::Relaxed);
@@ -1185,6 +1189,8 @@ impl PreviewLane {
             .last_frame_number
             .store(self.frame_number, Ordering::Relaxed);
         self.telemetry.clear_error();
+        self.frame_tx.send_replace(Some(Arc::clone(&frame)));
+        self.retained_frame = Some(frame);
         self.frame_number = self.frame_number.wrapping_add(1);
     }
 }
