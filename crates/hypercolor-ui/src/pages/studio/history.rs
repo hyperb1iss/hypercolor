@@ -1029,7 +1029,22 @@ impl StudioHistory {
     }
 
     fn accept(self, response: EditMembersResponse) {
+        // The membership write placed these outputs; a leftover layout edit
+        // for them must not land over it.
+        let moved: Vec<String> = response
+            .changes
+            .iter()
+            .filter_map(|change| change.after.as_ref().or(change.before.as_ref()))
+            .map(|state| state.output.id.clone())
+            .collect();
+        crate::components::layout_builder::writer::forget(response.document.id, &moved);
         self.latest.set(Some(response.document));
+    }
+
+    /// Let go of the newest document history knew, as when the daemon may
+    /// have started a new run whose revisions start over below it.
+    pub fn forget_latest(self) {
+        self.latest.try_set(None);
     }
 
     /// The journal index an undo (`false`) or redo (`true`) replays.

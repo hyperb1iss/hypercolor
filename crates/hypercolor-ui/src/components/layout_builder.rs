@@ -21,7 +21,6 @@ use crate::pointer_gesture::{
     suppress_press_defaults,
 };
 use crate::storage;
-use crate::toasts;
 use hypercolor_leptos_ext::events::target_is_text_entry;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
@@ -218,7 +217,7 @@ impl LayoutWriteHandle {
 mod editor_session;
 pub mod gesture;
 pub mod ledger;
-mod writer;
+pub(crate) mod writer;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
 use editor_session::{LayoutEditorSession, embedded_attachment_profiles, reconcile_replay};
@@ -570,7 +569,12 @@ pub(crate) fn ZoneLayoutProvider(
             return;
         };
         let zone_id = zone.id.to_string();
-        writer::confirm(scene_id, &zone, revision, canvas);
+        if let Some(scene) = studio_history
+            .current_scene()
+            .filter(|scene| scene.id == scene_id && scene.revision == revision)
+        {
+            writer::observe(&scene, canvas, Some(&zone_id));
+        }
         let Some(display) = writer::display(scene_id, &zone_id) else {
             return;
         };
@@ -669,7 +673,8 @@ pub(crate) fn ZoneLayoutProvider(
             ws_ctx.clear_zone_layout_preview.run(preview);
             active_preview_key.set_value(None);
         }
-        // A newer scene lets a writer that paused on a failure go again.
+        // A read can free a write that waited for it, as a ledger
+        // re-anchoring in a new daemon run does.
         writer::wake();
     });
 
@@ -695,7 +700,7 @@ pub(crate) fn ZoneLayoutProvider(
     // one on the canvas.
     Effect::new(move |_| {
         if let Some(scene) = studio_history.current_scene_tracked() {
-            writer::confirm_known(&scene, render_canvas_size.get());
+            writer::observe(&scene, render_canvas_size.get(), None);
         }
     });
 
@@ -739,7 +744,6 @@ pub(crate) fn ZoneLayoutProvider(
         ),
         refetched: Callback::new(move |scene| studio_history.adopt(scene)),
         changed: Callback::new(move |_zone_id: String| ledger_tick.update(|tick| *tick += 1)),
-        problem: Callback::new(move |message: String| toasts::toast_error(&message)),
         idle: Callback::new(move |()| studio_history.resume()),
     });
     on_cleanup(move || writer::detach(lent));
@@ -765,12 +769,15 @@ pub(crate) fn ZoneLayoutProvider(
         }
     });
 
-    // A writer that paused on a failure tries again once the socket opens
-    // again.
+    // The socket opening again may mean a new daemon run, whose revisions
+    // start over: the writer re-anchors its ledgers and resumes for as long
+    // as the page lives, and history lets go of the newest document it
+    // knew, which may belong to the old run.
+    writer::watch_connection(ws_ctx.connection_generation);
     Effect::new(move |previous: Option<u64>| {
         let opened = ws_ctx.connection_generation.get();
         if previous.is_some_and(|previous| previous != opened) {
-            writer::resume();
+            studio_history.forget_latest();
         }
         opened
     });

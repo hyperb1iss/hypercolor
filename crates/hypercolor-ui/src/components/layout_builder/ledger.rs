@@ -16,13 +16,15 @@
 //!
 //! The canvas shows confirmed with every pending intent applied in order.
 //! An edit adds intents only for the fields it changed from what the canvas
-//! showed, so a field the user never touched never holds an intent.
+//! showed, so a field the user never touched never holds an intent. An
+//! intent for an output the zone no longer holds is cancelled, and the
+//! caller is told so it can tell the user.
 //!
 //! A write carries every intent pending when it is sent, each field at its
 //! latest value, and is fenced at confirmed's revision. Fields with no
 //! intent go out as the daemon stores them in confirmed, which under the
-//! fence changes nothing. One write is out at a time. Its outcome settles
-//! it:
+//! fence changes nothing. One write is out at a time, under a key of its
+//! own that every retry of it reuses. Its outcome settles it:
 //!
 //! - **Applied**: the intents it carried retire, and the reply's zone is
 //!   adopted if its revision is newer than confirmed.
@@ -30,21 +32,34 @@
 //!   fresh value already equals its latest intent drops its intents (that
 //!   is how an edit that depended on a write the daemon already holds
 //!   settles), and what remains goes out again.
-//! - **Unknown** (the reply was lost): the zone is read afresh before
-//!   anything else goes out. At the write's own fence nothing landed, so it
-//!   goes out again. Past it, the write may have landed and been followed
-//!   by others, so it is taken as landed and its intents retire: sending it
-//!   again could undo a later remote write. When the fresh zone does not
-//!   hold what it carried, the user is told.
+//! - **Unknown** (the reply was lost). Where the daemon honors the write's
+//!   key, the same write goes out again under the same key until an answer
+//!   comes back, and the daemon applies it at most once. Where it does
+//!   not, the zone is read afresh first: at the write's own fence nothing
+//!   has landed yet, so it goes out again; past it, the write may have
+//!   landed and been followed by others, so it is taken as landed and its
+//!   intents retire, since sending it again could undo a later remote
+//!   write. When the fresh zone does not hold what it carried, the user is
+//!   told.
 //!
 //! Between clients the daemon's order decides. A remote write that lands
 //! after ours wins; a local intent that reaches the daemon later wins.
 //! Undo and redo are edits like any other and make intents the same way.
 //!
+//! When the daemon starts a new run its revisions start over, so every
+//! zone re-anchors: its next read becomes confirmed whatever its revision,
+//! intents stay, and nothing goes out fenced at a revision of the old run.
+//!
 //! Confirmed holds the zone twice: `raw`, as the daemon stores it, which a
 //! write starts from; and `shown`, as the canvas draws it (sizes normalized
 //! for the canvas), which edits and the fresh-read checks compare against.
+//!
+//! [`SceneLedgers`] keeps the ledgers of the active scene. A read for any
+//! other scene, or one started before the ledgers last changed scene or
+//! re-anchored, is never admitted, and a read drops a zone's ledger only
+//! when it is at least as new as that ledger.
 
+use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{Orientation, Output};
 
 /// One placement field of an output.
@@ -120,20 +135,24 @@ struct Confirmed {
     shown: Vec<Output>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Sent {
-    id: u64,
-    fence: u64,
+    write: Write,
     /// The newest intent the write carried.
     through: u64,
-    /// The reply was lost; a fresh read must settle it.
+    /// The reply was lost.
     unknown: bool,
+    /// Sent in a daemon run that has since ended: its fence means nothing
+    /// to the new run, and neither does its key.
+    old_run: bool,
 }
 
-/// A write to send: the zone's outputs to store, fenced at `fence`.
+/// A write to send: the zone's outputs to store, fenced at `fence`, under
+/// `key`, which every retry of this write reuses.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Write {
     pub id: u64,
+    pub key: String,
     pub fence: u64,
     pub outputs: Vec<Output>,
 }
@@ -154,6 +173,9 @@ pub struct ZoneLedger {
     confirmed: Option<Confirmed>,
     pending: Vec<Intent>,
     sent: Option<Sent>,
+    /// The daemon started a new run: the next read is taken whatever its
+    /// revision, and nothing goes out until it comes.
+    reanchor: bool,
     next_seq: u64,
     next_write: u64,
 }
@@ -169,31 +191,72 @@ fn apply(outputs: &mut [Output], intents: &[Intent]) {
     }
 }
 
+/// The latest intent per field among `intents`, by index.
+fn is_latest(intents: &[Intent], index: usize) -> bool {
+    let intent = &intents[index];
+    !intents[index + 1..]
+        .iter()
+        .any(|later| later.output_id == intent.output_id && later.field == intent.field)
+}
+
 impl ZoneLedger {
-    fn adopt(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) {
-        self.pending
-            .retain(|intent| shown.iter().any(|output| output.id == intent.output_id));
+    /// Make `raw` and `shown` confirmed at `revision`, cancelling intents
+    /// for outputs it no longer holds. Returns the cancelled outputs' ids.
+    fn adopt(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) -> Vec<String> {
+        let mut cancelled: Vec<String> = Vec::new();
+        self.pending.retain(|intent| {
+            let held = shown.iter().any(|output| output.id == intent.output_id);
+            if !held && !cancelled.contains(&intent.output_id) {
+                cancelled.push(intent.output_id.clone());
+            }
+            held
+        });
         self.confirmed = Some(Confirmed {
             revision,
             raw,
             shown,
         });
+        cancelled
     }
 
     /// Take in the zone as a scene read reported it at `revision`. A read
     /// as new as confirmed or newer replaces it (the same revision redraws
     /// it, after a canvas resize or over a reply's account of that
-    /// revision); an older one changes nothing. Intents for outputs the
-    /// zone no longer holds go with them.
-    pub fn confirm(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) {
+    /// revision); an older one changes nothing, unless the ledger waits to
+    /// re-anchor in a new daemon run. Returns the ids of outputs whose
+    /// intents it cancelled because the zone no longer holds them.
+    pub fn confirm(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) -> Vec<String> {
+        if self.reanchor {
+            // A write still out keeps its outcome: its reply may yet come,
+            // and if the daemon went away it fails and settles as lost.
+            self.reanchor = false;
+            return self.adopt(revision, raw, shown);
+        }
         if self
             .confirmed
             .as_ref()
             .is_some_and(|confirmed| revision < confirmed.revision)
         {
-            return;
+            return Vec::new();
         }
-        self.adopt(revision, raw, shown);
+        self.adopt(revision, raw, shown)
+    }
+
+    /// The daemon started a new run. Revisions start over, so the next read
+    /// is confirmed whatever its revision, pending intents stay, and no
+    /// write goes out until that read comes, so none is fenced at a
+    /// revision of the old run.
+    pub fn reanchor(&mut self) {
+        self.reanchor = true;
+        if let Some(sent) = self.sent.as_mut() {
+            sent.old_run = true;
+        }
+    }
+
+    /// Whether the ledger waits for its first read of a new daemon run.
+    #[must_use]
+    pub fn reanchoring(&self) -> bool {
+        self.reanchor
     }
 
     /// Confirmed's outputs as the daemon stores them.
@@ -257,6 +320,15 @@ impl ZoneLedger {
         changed
     }
 
+    /// Drop the pending intents for `output_ids`: a newer local operation
+    /// placed those outputs itself, so a leftover edit must not land over
+    /// it, not even through a write already out, whose outcome still
+    /// settles the rest.
+    pub fn forget(&mut self, output_ids: &[String]) {
+        self.pending
+            .retain(|intent| !output_ids.contains(&intent.output_id));
+    }
+
     /// Whether any edit waits for the daemon, sent or not.
     #[must_use]
     pub fn has_pending(&self) -> bool {
@@ -266,13 +338,13 @@ impl ZoneLedger {
     /// Whether a write is out and its outcome not yet known.
     #[must_use]
     pub fn in_flight(&self) -> bool {
-        self.sent.is_some_and(|sent| !sent.unknown)
+        self.sent.as_ref().is_some_and(|sent| !sent.unknown)
     }
 
-    /// Whether a write's reply was lost, so a fresh read must come first.
+    /// Whether a write's reply was lost and its outcome is still open.
     #[must_use]
     pub fn unsettled(&self) -> bool {
-        self.sent.is_some_and(|sent| sent.unknown)
+        self.sent.as_ref().is_some_and(|sent| sent.unknown)
     }
 
     /// The pending intents, oldest first.
@@ -281,11 +353,12 @@ impl ZoneLedger {
         &self.pending
     }
 
-    /// The next write, when intents wait and no write is out or unsettled:
-    /// confirmed's stored outputs with each intent's field at its latest
-    /// value, fenced at confirmed's revision.
-    pub fn take_write(&mut self) -> Option<Write> {
-        if self.sent.is_some() {
+    /// The next write, under `key`, when intents wait, no write is out or
+    /// open, and the ledger is not re-anchoring: confirmed's stored outputs
+    /// with each intent's field at its latest value, fenced at confirmed's
+    /// revision.
+    pub fn take_write(&mut self, key: impl FnOnce(u64) -> String) -> Option<Write> {
+        if self.sent.is_some() || self.reanchor {
             return None;
         }
         let through = self.pending.last()?.seq;
@@ -293,30 +366,50 @@ impl ZoneLedger {
         let mut outputs = confirmed.raw.clone();
         apply(&mut outputs, &self.pending);
         self.next_write += 1;
-        self.sent = Some(Sent {
+        let write = Write {
             id: self.next_write,
-            fence: confirmed.revision,
-            through,
-            unknown: false,
-        });
-        Some(Write {
-            id: self.next_write,
+            key: key(self.next_write),
             fence: confirmed.revision,
             outputs,
-        })
+        };
+        self.sent = Some(Sent {
+            write: write.clone(),
+            through,
+            unknown: false,
+            old_run: false,
+        });
+        Some(write)
+    }
+
+    /// The write whose reply was lost, to send again under its own key,
+    /// where the daemon honors keys and applies a write at most once. None
+    /// for a write of an earlier daemon run, whose key the new run does not
+    /// know: [`Self::settle_lost`] settles that one from a fresh read.
+    #[must_use]
+    pub fn retry(&self) -> Option<Write> {
+        self.sent
+            .as_ref()
+            .filter(|sent| sent.unknown && !sent.old_run)
+            .map(|sent| sent.write.clone())
     }
 
     fn settle(&mut self, id: u64) -> Option<Sent> {
-        let sent = self.sent.filter(|sent| sent.id == id && !sent.unknown)?;
-        self.sent = None;
+        let sent = self.sent.take_if(|sent| sent.write.id == id)?;
         Some(sent)
     }
 
     /// Write `id` landed at `revision`: the intents it carried retire, and
-    /// the reply's zone becomes confirmed if it is newer.
-    pub fn applied(&mut self, id: u64, revision: u64, raw: Vec<Output>, shown: Vec<Output>) {
+    /// the reply's zone becomes confirmed if it is newer. Returns the ids of
+    /// outputs whose intents that cancelled.
+    pub fn applied(
+        &mut self,
+        id: u64,
+        revision: u64,
+        raw: Vec<Output>,
+        shown: Vec<Output>,
+    ) -> Vec<String> {
         let Some(sent) = self.settle(id) else {
-            return;
+            return Vec::new();
         };
         self.pending.retain(|intent| intent.seq > sent.through);
         if self
@@ -324,8 +417,9 @@ impl ZoneLedger {
             .as_ref()
             .is_none_or(|confirmed| revision > confirmed.revision)
         {
-            self.adopt(revision, raw, shown);
+            return self.adopt(revision, raw, shown);
         }
+        Vec::new()
     }
 
     /// Write `id` met a newer revision than its fence. Its intents stay;
@@ -340,42 +434,44 @@ impl ZoneLedger {
         self.settle(id);
     }
 
-    /// Write `id`'s reply was lost, so whether it landed is unknown. No
-    /// write goes out until [`Self::settle_lost`] takes in a fresh read.
+    /// Write `id`'s reply was lost, so whether it landed is unknown. No new
+    /// write goes out until its outcome is known: from the daemon's answer
+    /// to [`Self::retry`], or from a fresh read through
+    /// [`Self::settle_lost`].
     pub fn lost(&mut self, id: u64) {
-        if let Some(sent) = self.sent.as_mut().filter(|sent| sent.id == id) {
+        if let Some(sent) = self.sent.as_mut().filter(|sent| sent.write.id == id) {
             sent.unknown = true;
         }
     }
 
-    /// Take in a fresh read after a lost reply, and settle the write it
-    /// left unknown: at the write's fence nothing landed, so its intents
-    /// stay to go out again; past it, the write is taken as landed and its
-    /// intents retire. `None` when no write was unknown.
+    /// Take in a fresh read after a lost reply, where the daemon does not
+    /// honor keys (or the write belongs to an earlier daemon run), and
+    /// settle the write it left open: at the write's fence nothing landed
+    /// yet, so its intents stay to go out again; past it, or for a write of
+    /// an earlier run, whose fence the new run's revisions say nothing
+    /// about, the write is taken as landed and its intents retire. `None`
+    /// when no write was open.
     pub fn settle_lost(
         &mut self,
         revision: u64,
         raw: Vec<Output>,
         shown: Vec<Output>,
     ) -> Option<Settled> {
-        let sent = self.sent.filter(|sent| sent.unknown)?;
-        self.sent = None;
-        if revision <= sent.fence {
+        let sent = self.sent.take_if(|sent| sent.unknown)?;
+        if !sent.old_run && revision <= sent.write.fence {
             self.confirm(revision, raw, shown);
             return Some(Settled::Resend);
         }
         // Given up on: a field the write carried with no newer intent to
-        // send after it, which the fresh zone does not hold.
+        // send after it, which the fresh zone does not hold (a zone without
+        // the output at all holds nothing).
         let unconfirmed = self.pending.iter().enumerate().any(|(index, intent)| {
-            let latest = !self.pending[index + 1..]
-                .iter()
-                .any(|later| later.output_id == intent.output_id && later.field == intent.field);
             intent.seq <= sent.through
-                && latest
+                && is_latest(&self.pending, index)
                 && shown
                     .iter()
                     .find(|output| output.id == intent.output_id)
-                    .is_some_and(|output| intent.field.read(output) != intent.value)
+                    .is_none_or(|output| intent.field.read(output) != intent.value)
         });
         self.pending.retain(|intent| intent.seq > sent.through);
         self.confirm(revision, raw, shown);
@@ -385,22 +481,25 @@ impl ZoneLedger {
     /// Take in the zone read afresh after a stale rejection, then drop the
     /// intents it already satisfies: a field whose latest intent equals the
     /// fresh value is settled, earlier intents for that field included.
-    pub fn refetched(&mut self, revision: u64, raw: Vec<Output>, shown: Vec<Output>) {
-        self.confirm(revision, raw, shown);
+    /// Returns the ids of outputs whose intents it cancelled.
+    pub fn refetched(
+        &mut self,
+        revision: u64,
+        raw: Vec<Output>,
+        shown: Vec<Output>,
+    ) -> Vec<String> {
+        let cancelled = self.confirm(revision, raw, shown);
         let Some(confirmed) = self.confirmed.as_ref() else {
-            return;
+            return cancelled;
         };
         let mut settled: Vec<(String, Field)> = Vec::new();
         for (index, intent) in self.pending.iter().enumerate() {
-            let latest = !self.pending[index + 1..]
-                .iter()
-                .any(|later| later.output_id == intent.output_id && later.field == intent.field);
             let satisfied = confirmed
                 .shown
                 .iter()
                 .find(|output| output.id == intent.output_id)
                 .is_some_and(|output| intent.field.read(output) == intent.value);
-            if latest && satisfied {
+            if is_latest(&self.pending, index) && satisfied {
                 settled.push((intent.output_id.clone(), intent.field));
             }
         }
@@ -409,5 +508,238 @@ impl ZoneLedger {
                 .iter()
                 .any(|(output_id, field)| *output_id == intent.output_id && *field == intent.field)
         });
+        cancelled
     }
+}
+
+/// A zone as one scene read reported it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoneRead {
+    pub zone_id: String,
+    /// As the daemon stores it.
+    pub raw: Vec<Output>,
+    /// As the canvas draws it.
+    pub shown: Vec<Output>,
+}
+
+/// One scene read: every zone of the scene at one revision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneRead {
+    pub scene_id: SceneId,
+    pub revision: u64,
+    pub zones: Vec<ZoneRead>,
+}
+
+/// Which ledgers a read was started for, so a read that comes back after
+/// they changed scene or re-anchored is not admitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ticket {
+    scene_id: SceneId,
+    generation: u64,
+}
+
+/// Edits the daemon's state cancelled: pending intents for outputs a zone
+/// no longer holds, or for a zone that is gone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cancelled {
+    pub zone_id: String,
+    pub output_ids: Vec<String>,
+}
+
+/// The zone ledgers of the active scene.
+#[derive(Clone, Debug, Default)]
+pub struct SceneLedgers {
+    scene_id: Option<SceneId>,
+    /// Moves on every change of scene and every re-anchor.
+    generation: u64,
+    /// Zone ledgers, in the order their zones were first seen.
+    zones: Vec<(String, ZoneLedger)>,
+    /// Makes write keys unique to this page.
+    key_prefix: String,
+}
+
+impl SceneLedgers {
+    /// Ledgers whose write keys start with `key_prefix`, which must be
+    /// unique to this page.
+    #[must_use]
+    pub fn new(key_prefix: impl Into<String>) -> Self {
+        Self {
+            key_prefix: key_prefix.into(),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn scene_id(&self) -> Option<SceneId> {
+        self.scene_id
+    }
+
+    /// The ticket a read started now carries.
+    #[must_use]
+    pub fn ticket(&self) -> Option<Ticket> {
+        self.scene_id.map(|scene_id| Ticket {
+            scene_id,
+            generation: self.generation,
+        })
+    }
+
+    /// Whether a read started under `ticket` may still be taken in.
+    #[must_use]
+    pub fn admits(&self, ticket: Ticket) -> bool {
+        self.ticket() == Some(ticket)
+    }
+
+    /// Make `scene_id` the active scene. Switching drops the other scene's
+    /// ledgers; their pending edits are reported cancelled.
+    pub fn select(&mut self, scene_id: SceneId) -> Vec<Cancelled> {
+        if self.scene_id == Some(scene_id) {
+            return Vec::new();
+        }
+        let dropped = std::mem::take(&mut self.zones)
+            .into_iter()
+            .filter(|(_, ledger)| ledger.has_pending())
+            .map(|(zone_id, ledger)| Cancelled {
+                zone_id,
+                output_ids: outputs_of(ledger.pending()),
+            })
+            .collect();
+        self.scene_id = Some(scene_id);
+        self.generation += 1;
+        dropped
+    }
+
+    /// The daemon started a new run: every ledger re-anchors, and reads
+    /// started before now are no longer admitted.
+    pub fn reanchor(&mut self) {
+        self.generation += 1;
+        for (_, ledger) in &mut self.zones {
+            ledger.reanchor();
+        }
+    }
+
+    #[must_use]
+    pub fn zone(&self, zone_id: &str) -> Option<&ZoneLedger> {
+        self.zones
+            .iter()
+            .find(|(id, _)| id == zone_id)
+            .map(|(_, ledger)| ledger)
+    }
+
+    /// The zone's ledger, made empty when it has none.
+    pub fn zone_mut(&mut self, zone_id: &str) -> &mut ZoneLedger {
+        let index = self
+            .zones
+            .iter()
+            .position(|(id, _)| id == zone_id)
+            .unwrap_or_else(|| {
+                self.zones.push((zone_id.to_owned(), ZoneLedger::default()));
+                self.zones.len() - 1
+            });
+        &mut self.zones[index].1
+    }
+
+    pub fn zones_mut(&mut self) -> impl Iterator<Item = (&str, &mut ZoneLedger)> {
+        self.zones
+            .iter_mut()
+            .map(|(id, ledger)| (id.as_str(), ledger))
+    }
+
+    pub fn zones(&self) -> impl Iterator<Item = (&str, &ZoneLedger)> {
+        self.zones.iter().map(|(id, ledger)| (id.as_str(), ledger))
+    }
+
+    /// The active scene as a read of it reported: it becomes the active
+    /// scene, `wanted` gets a ledger if it has none, and every ledger takes
+    /// the read in. Returns the edits it cancelled.
+    pub fn observe(&mut self, read: &SceneRead, wanted: Option<&str>) -> Vec<Cancelled> {
+        let mut cancelled = self.select(read.scene_id);
+        if let Some(zone_id) = wanted
+            && read.zones.iter().any(|zone| zone.zone_id == zone_id)
+        {
+            self.zone_mut(zone_id);
+        }
+        cancelled.extend(self.take_in(read));
+        cancelled
+    }
+
+    /// A read started under `ticket`, such as the writer's own after a
+    /// stale or lost reply. Taken in only while the ledgers are still the
+    /// ones it was started for; `None` when it is not admitted.
+    pub fn admit(&mut self, ticket: Ticket, read: &SceneRead) -> Option<Vec<Cancelled>> {
+        if !self.admits(ticket) || read.scene_id != ticket.scene_id {
+            return None;
+        }
+        Some(self.take_in(read))
+    }
+
+    /// Every ledger takes in its zone from `read`. A ledger whose zone the
+    /// read does not hold goes, but only when the read is at least as new
+    /// as that ledger: an older read cannot know of a zone made since.
+    fn take_in(&mut self, read: &SceneRead) -> Vec<Cancelled> {
+        let mut cancelled = Vec::new();
+        self.zones.retain(|(zone_id, ledger)| {
+            let held = read.zones.iter().any(|zone| zone.zone_id == *zone_id);
+            let older = !ledger.reanchoring()
+                && ledger
+                    .revision()
+                    .is_some_and(|revision| read.revision < revision);
+            if held || older {
+                return true;
+            }
+            if ledger.has_pending() {
+                cancelled.push(Cancelled {
+                    zone_id: zone_id.clone(),
+                    output_ids: outputs_of(ledger.pending()),
+                });
+            }
+            false
+        });
+        for zone in &read.zones {
+            let Some(index) = self.zones.iter().position(|(id, _)| *id == zone.zone_id) else {
+                continue;
+            };
+            let output_ids =
+                self.zones[index]
+                    .1
+                    .confirm(read.revision, zone.raw.clone(), zone.shown.clone());
+            if !output_ids.is_empty() {
+                cancelled.push(Cancelled {
+                    zone_id: zone.zone_id.clone(),
+                    output_ids,
+                });
+            }
+        }
+        cancelled
+    }
+
+    /// The next write for `zone_id` under a key unique to this page.
+    pub fn take_write(&mut self, zone_id: &str) -> Option<Write> {
+        let prefix = self.key_prefix.clone();
+        let index = self.zones.iter().position(|(id, _)| id == zone_id)?;
+        let (id, ledger) = &mut self.zones[index];
+        let id = id.clone();
+        ledger.take_write(|write| format!("{prefix}:{id}:{write}"))
+    }
+
+    /// The first zone with a write to send, and that write.
+    pub fn next_write(&mut self) -> Option<(String, Write)> {
+        let zone_id = self
+            .zones
+            .iter()
+            .find(|(_, ledger)| {
+                ledger.has_pending() && ledger.sent.is_none() && !ledger.reanchoring()
+            })
+            .map(|(id, _)| id.clone())?;
+        self.take_write(&zone_id).map(|write| (zone_id, write))
+    }
+}
+
+fn outputs_of(intents: &[Intent]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for intent in intents {
+        if !ids.contains(&intent.output_id) {
+            ids.push(intent.output_id.clone());
+        }
+    }
+    ids
 }
