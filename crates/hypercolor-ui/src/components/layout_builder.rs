@@ -233,6 +233,7 @@ impl LayoutWriteHandle {
 
 pub mod commit;
 mod editor_session;
+pub mod ledger;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
 use editor_session::{
