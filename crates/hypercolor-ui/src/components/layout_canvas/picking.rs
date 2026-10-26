@@ -8,7 +8,7 @@
 
 use hypercolor_types::spatial::Output;
 
-use crate::layout_geometry;
+use crate::layout_geometry::DrawnBox;
 
 /// One drawn box, in canvas pixel proportions (x spans the canvas aspect,
 /// y spans 1).
@@ -27,15 +27,17 @@ pub struct HitBox {
 }
 
 impl HitBox {
-    /// The box an output draws on a canvas of pixel aspect `aspect`.
+    /// The box an output draws on a canvas of pixel aspect `aspect`, as
+    /// [`DrawnBox`] measures it.
     #[must_use]
     pub fn from_output(output: &Output, aspect: f32, order: usize) -> Self {
+        let drawn = DrawnBox::of(output, aspect);
         Self {
             id: output.id.clone(),
-            center: (output.position.x * aspect, output.position.y),
-            half: layout_geometry::drawn_half_size(output, aspect),
-            rotation: output.rotation,
-            circular: layout_geometry::is_circular_zone(output.shape.as_ref(), &output.topology),
+            center: drawn.center,
+            half: drawn.half,
+            rotation: drawn.rotation,
+            circular: drawn.circular,
             order,
         }
     }
