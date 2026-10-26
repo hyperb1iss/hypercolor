@@ -28,6 +28,9 @@ pub(super) struct GpuDisplayFinalizeSurfaceSet {
     pub(super) readback_surfaces: RenderSurfacePool,
     pub(super) scene_source: Option<GpuDisplaySourceTexture>,
     pub(super) face_source: Option<GpuDisplaySourceTexture>,
+    /// Retry schedules for source textures that failed admission.
+    pub(super) scene_source_retry: Option<super::admission::AdmissionRetry<(u32, u32)>>,
+    pub(super) face_source_retry: Option<super::admission::AdmissionRetry<(u32, u32)>>,
     pub(super) pending_upload_buffers: super::PendingUploadBuffers,
     #[cfg(test)]
     pub(super) scene_upload_count: usize,

@@ -310,6 +310,8 @@ fn display_finalize_surfaces_that_fail_to_allocate_are_rebuilt_on_retry() {
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
     let params = display_finalize_params(2, 2, BlendMode::Replace);
+    let start = std::time::Instant::now();
+    compositor.admission_clock.pin(start);
 
     super::super::fail_next_scoped_gpu_allocation_for_test();
     let Err(error) = compositor.begin_finalize_display_face(&scene, &face, params) else {
@@ -326,6 +328,9 @@ fn display_finalize_surfaces_that_fail_to_allocate_are_rebuilt_on_retry() {
         "the failed surface set must not be cached for the route"
     );
 
+    compositor
+        .admission_clock
+        .pin(start + super::super::admission::ADMISSION_RETRY_INITIAL_DELAY);
     let surface = finalize_display_face_blocking(&mut compositor, &scene, &face, params);
     assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
 }
@@ -345,6 +350,8 @@ fn display_source_textures_that_fail_to_allocate_are_rebuilt_on_retry() {
     finalize_display_face_blocking(&mut compositor, &scene, &small_face, params);
 
     // A larger face needs a new source texture, and that allocation fails.
+    let start = std::time::Instant::now();
+    compositor.admission_clock.pin(start);
     super::super::fail_next_scoped_gpu_allocation_for_test();
     let Err(error) = compositor.begin_finalize_display_face(&scene, &large_face, params) else {
         panic!("a failed source texture allocation must fail the finalization");
@@ -363,6 +370,9 @@ fn display_source_textures_that_fail_to_allocate_are_rebuilt_on_retry() {
     );
     assert_eq!(compositor.display_finalize_readback_slots_in_use(), 0);
 
+    compositor
+        .admission_clock
+        .pin(start + super::super::admission::ADMISSION_RETRY_INITIAL_DELAY);
     let surface = finalize_display_face_blocking(&mut compositor, &scene, &large_face, params);
     assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
 }
@@ -431,4 +441,116 @@ fn finished_display_readbacks_unmap_their_buffer_once() {
             "a finished {format} readback unmaps once"
         );
     }
+}
+
+/// Drive `dispatch` once per 16 ms render tick from `start` while scoped
+/// allocations fail, and return the tick times (ms) that attempted one.
+fn admission_attempt_ticks(
+    compositor: &mut GpuSparkleFlinger,
+    start: std::time::Instant,
+    ticks: std::ops::RangeInclusive<u64>,
+    mut dispatch: impl FnMut(&mut GpuSparkleFlinger) -> anyhow::Result<GpuDisplayFinalizeDispatch>,
+) -> Vec<u64> {
+    let mut attempted = Vec::new();
+    for tick in ticks {
+        let at_ms = tick * 16;
+        compositor
+            .admission_clock
+            .pin(start + std::time::Duration::from_millis(at_ms));
+        let before = super::super::scoped_gpu_allocation_attempts_for_test();
+        let result = dispatch(compositor);
+        if super::super::scoped_gpu_allocation_attempts_for_test() > before {
+            assert!(result.is_err(), "an attempt at {at_ms} ms should fail");
+            attempted.push(at_ms);
+        } else {
+            assert!(
+                matches!(result, Ok(GpuDisplayFinalizeDispatch::Saturated)),
+                "a tick inside the backoff at {at_ms} ms should wait"
+            );
+        }
+    }
+    attempted
+}
+
+/// Sustained admission failure retries a route's surface allocation at the
+/// backoff deadlines (100 ms, then 200 ms, then 400 ms after each failure),
+/// not on every tick, and recovers at the first deadline after memory is
+/// back.
+#[test]
+fn display_surface_admission_backs_off_while_allocation_keeps_failing() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+    let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
+    let start = std::time::Instant::now();
+
+    super::super::fail_scoped_gpu_allocations_for_test(u32::MAX);
+    let attempted = admission_attempt_ticks(&mut compositor, start, 0..=44, |compositor| {
+        compositor.begin_finalize_display_face(&scene, &face, params)
+    });
+    assert_eq!(attempted, [0, 112, 320]);
+    super::super::fail_scoped_gpu_allocations_for_test(0);
+
+    // The next deadline is 720 ms (tick 45): the first attempt after the
+    // pressure ends succeeds there.
+    compositor
+        .admission_clock
+        .pin(start + std::time::Duration::from_millis(720));
+    let before = super::super::scoped_gpu_allocation_attempts_for_test();
+    let GpuDisplayFinalizeDispatch::Pending(pending) = compositor
+        .begin_finalize_display_face(&scene, &face, params)
+        .expect("admission should succeed once memory is back")
+    else {
+        panic!("the recovered route should dispatch its finalization");
+    };
+    assert!(
+        super::super::scoped_gpu_allocation_attempts_for_test() > before,
+        "the route allocates again at its deadline"
+    );
+    let Some(GpuDisplayFinalizeFrame::Rgba(surface)) = compositor
+        .finish_pending_display_finalization_blocking(pending)
+        .expect("the recovered finalization should finish")
+    else {
+        panic!("the recovered RGBA finalization should produce a surface");
+    };
+    assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
+
+    // A healthy route reuses its surfaces and allocates nothing.
+    let before = super::super::scoped_gpu_allocation_attempts_for_test();
+    finalize_display_face_blocking(&mut compositor, &scene, &face, params);
+    assert_eq!(
+        super::super::scoped_gpu_allocation_attempts_for_test(),
+        before
+    );
+}
+
+/// The same backoff covers a source texture whose allocation keeps
+/// failing on a route whose surfaces exist.
+#[test]
+fn display_source_admission_backs_off_while_allocation_keeps_failing() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
+    let small_face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 255, 255)));
+    let large_face = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(255, 0, 0, 255)));
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
+    finalize_display_face_blocking(&mut compositor, &scene, &small_face, params);
+    let start = std::time::Instant::now();
+
+    super::super::fail_scoped_gpu_allocations_for_test(u32::MAX);
+    let attempted = admission_attempt_ticks(&mut compositor, start, 0..=44, |compositor| {
+        compositor.begin_finalize_display_face(&scene, &large_face, params)
+    });
+    assert_eq!(attempted, [0, 112, 320]);
+    assert_eq!(compositor.display_finalize_readback_slots_in_use(), 0);
+    super::super::fail_scoped_gpu_allocations_for_test(0);
+
+    compositor
+        .admission_clock
+        .pin(start + std::time::Duration::from_millis(720));
+    let surface = finalize_display_face_blocking(&mut compositor, &scene, &large_face, params);
+    assert_eq!(&surface.rgba_bytes()[0..4], &[255, 0, 0, 255]);
 }

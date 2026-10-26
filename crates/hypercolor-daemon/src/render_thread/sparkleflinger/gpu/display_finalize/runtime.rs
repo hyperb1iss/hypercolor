@@ -9,6 +9,7 @@ use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::scene::ZoneId;
 
 use super::super::super::{DisplayFinalizeCacheKey, DisplayFinalizeParams};
+use super::super::admission::AdmissionRetry;
 use super::super::readback::copy_mapped_range_into_surface;
 use super::super::source::{GpuSourceFrame, gpu_source_frame, prepare_display_source_texture};
 #[cfg(test)]
@@ -110,7 +111,11 @@ impl GpuSparkleFlinger {
         record_gpu_display_finalize_attempt(format == GpuDisplayFinalizeFormat::Yuv420);
         self.flush_pending_output_submission()?;
         self.retain_current_display_finalize_route(params.cache_key);
-        self.ensure_display_finalize_surfaces(params.cache_key)?;
+        if !self.ensure_display_finalize_surfaces(params.cache_key)? {
+            // The route's surfaces are waiting out a failed admission.
+            return Ok(GpuDisplayFinalizeDispatch::Saturated);
+        }
+        let admission_clock = self.admission_clock;
         let device = &self.device;
         let queue = &self.queue;
         let pipeline = &mut self.pipeline;
@@ -135,6 +140,8 @@ impl GpuSparkleFlinger {
             pipeline,
             &mut encoder,
             &mut surfaces.scene_source,
+            &mut surfaces.scene_source_retry,
+            admission_clock,
             &mut surfaces.pending_upload_buffers,
             scene,
             scene_gpu.as_ref(),
@@ -143,9 +150,17 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             &mut surfaces.scene_upload_count,
         );
-        if let Err(error) = scene_prepared {
-            surfaces.abandon_dispatch(readback_slot);
-            return Err(error);
+        match scene_prepared {
+            Ok(true) => {}
+            Ok(false) => {
+                // The source texture is waiting out a failed admission.
+                surfaces.abandon_dispatch(readback_slot);
+                return Ok(GpuDisplayFinalizeDispatch::Saturated);
+            }
+            Err(error) => {
+                surfaces.abandon_dispatch(readback_slot);
+                return Err(error);
+            }
         }
         let face_gpu = gpu_source_frame(face);
         let face_prepared = prepare_display_source_texture(
@@ -154,6 +169,8 @@ impl GpuSparkleFlinger {
             pipeline,
             &mut encoder,
             &mut surfaces.face_source,
+            &mut surfaces.face_source_retry,
+            admission_clock,
             &mut surfaces.pending_upload_buffers,
             face,
             face_gpu.as_ref(),
@@ -162,9 +179,17 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             &mut surfaces.face_upload_count,
         );
-        if let Err(error) = face_prepared {
-            surfaces.abandon_dispatch(readback_slot);
-            return Err(error);
+        match face_prepared {
+            Ok(true) => {}
+            Ok(false) => {
+                // The source texture is waiting out a failed admission.
+                surfaces.abandon_dispatch(readback_slot);
+                return Ok(GpuDisplayFinalizeDispatch::Saturated);
+            }
+            Err(error) => {
+                surfaces.abandon_dispatch(readback_slot);
+                return Err(error);
+            }
         }
 
         for frame in [&scene_gpu, &face_gpu]
@@ -469,20 +494,39 @@ impl GpuSparkleFlinger {
         }
     }
 
-    /// Allocate the route's surfaces unless they already exist. A set that
-    /// fails to allocate is not cached, so the next finalization on the same
-    /// route tries again instead of reusing invalid resources.
-    fn ensure_display_finalize_surfaces(&mut self, key: DisplayFinalizeCacheKey) -> Result<()> {
+    /// Allocate the route's surfaces unless they already exist, and report
+    /// whether they are ready. A set that fails to allocate is not cached;
+    /// the route retries on a backoff schedule instead of every tick, and
+    /// returns `false` while it waits. Existing surfaces skip all of this.
+    fn ensure_display_finalize_surfaces(&mut self, key: DisplayFinalizeCacheKey) -> Result<bool> {
         if self.display_finalize_surfaces.contains_key(&key) {
-            return Ok(());
+            return Ok(true);
+        }
+        let now = self.admission_clock.now();
+        let retry = self
+            .display_finalize_admission_retries
+            .get(&key.zone_id)
+            .copied();
+        if !AdmissionRetry::allows(retry.as_ref(), key, now) {
+            return Ok(false);
         }
         let generation = self.display_finalize_generation.saturating_add(1);
-        let surfaces =
-            GpuDisplayFinalizeSurfaceSet::try_new(&self.device, generation, key.width, key.height)?;
-        record_gpu_display_finalize_surface_realloc();
-        self.display_finalize_generation = generation;
-        self.display_finalize_surfaces.insert(key, surfaces);
-        Ok(())
+        match GpuDisplayFinalizeSurfaceSet::try_new(&self.device, generation, key.width, key.height)
+        {
+            Ok(surfaces) => {
+                self.display_finalize_admission_retries.remove(&key.zone_id);
+                record_gpu_display_finalize_surface_realloc();
+                self.display_finalize_generation = generation;
+                self.display_finalize_surfaces.insert(key, surfaces);
+                Ok(true)
+            }
+            Err(error) => {
+                let retry = AdmissionRetry::after_failure(retry.as_ref(), key, now);
+                self.display_finalize_admission_retries
+                    .insert(key.zone_id, retry);
+                Err(error)
+            }
+        }
     }
 
     fn retain_current_display_finalize_route(&mut self, key: DisplayFinalizeCacheKey) {
@@ -493,6 +537,8 @@ impl GpuSparkleFlinger {
     pub(crate) fn retain_display_finalize_zones(&mut self, active_zone_ids: &[ZoneId]) {
         self.display_finalize_surfaces
             .retain(|key, _| active_zone_ids.contains(&key.zone_id));
+        self.display_finalize_admission_retries
+            .retain(|zone_id, _| active_zone_ids.contains(zone_id));
     }
 
     fn release_display_finalize_slot(

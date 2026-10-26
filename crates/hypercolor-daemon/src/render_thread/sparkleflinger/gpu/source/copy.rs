@@ -2,6 +2,8 @@ use std::borrow::Cow;
 
 use anyhow::Result;
 
+use super::super::admission::{AdmissionClock, AdmissionRetry};
+
 use crate::render_thread::sparkleflinger::gpu_buffer_init::create_buffer_with_contents;
 use hypercolor_types::canvas::BYTES_PER_PIXEL;
 
@@ -67,15 +69,27 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
     pipeline: &mut GpuCompositorPipeline,
     encoder: &mut wgpu::CommandEncoder,
     source: &mut Option<GpuDisplaySourceTexture>,
+    source_retry: &mut Option<AdmissionRetry<(u32, u32)>>,
+    admission_clock: AdmissionClock,
     pending_upload_buffers: &mut PendingUploadBuffers,
     frame: &ProducerFrame,
     gpu_frame: Option<&GpuSourceFrame<'_>>,
     label: &'static str,
     native_screen_leases: &mut Vec<NativeScreenTextureLease>,
     #[cfg(test)] upload_count: &mut usize,
-) -> Result<()> {
+) -> Result<bool> {
+    let shape = (frame.width(), frame.height());
     let Some(gpu_frame) = gpu_frame else {
-        ensure_display_source_texture(device, source, frame.width(), frame.height(), label)?;
+        if !ensure_display_source_texture(
+            device,
+            source,
+            source_retry,
+            admission_clock,
+            shape,
+            label,
+        )? {
+            return Ok(false);
+        }
         let source = source
             .as_mut()
             .expect("display source texture should exist before upload");
@@ -88,20 +102,23 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
             #[cfg(test)]
             upload_count,
         );
-        return Ok(());
+        return Ok(true);
     };
 
     if !gpu_frame.needs_display_source_copy() {
-        return Ok(());
+        return Ok(true);
     }
 
-    ensure_display_source_texture(device, source, frame.width(), frame.height(), label)?;
+    if !ensure_display_source_texture(device, source, source_retry, admission_clock, shape, label)?
+    {
+        return Ok(false);
+    }
     let source = source
         .as_mut()
         .expect("display source texture should exist before GPU copy");
     let next_copy = gpu_frame.cached_display_source_copy();
     if source.cached_gpu_copy == Some(next_copy) {
-        return Ok(());
+        return Ok(true);
     }
     record_gpu_source_upload_skipped();
     copy_gpu_source_frame_into_texture(
@@ -117,32 +134,53 @@ pub(in crate::render_thread::sparkleflinger::gpu) fn prepare_display_source_text
     )?;
     source.cached_upload = None;
     source.cached_gpu_copy = Some(next_copy);
-    Ok(())
+    Ok(true)
 }
 
-/// Make `source` a texture of the frame's size, allocated inside scoped GPU
-/// error handling so a texture the device could not create is never kept
-/// for later frames to upload into.
+/// Make `source` a texture of the frame's size and report whether it is
+/// ready. The texture is allocated inside scoped GPU error handling, so one
+/// the device could not create is never kept for later frames to upload
+/// into; a failed allocation retries on a backoff schedule, and this
+/// returns `false` while it waits. A texture of the right size skips all of
+/// this.
 fn ensure_display_source_texture(
     device: &wgpu::Device,
     source: &mut Option<GpuDisplaySourceTexture>,
-    width: u32,
-    height: u32,
+    source_retry: &mut Option<AdmissionRetry<(u32, u32)>>,
+    admission_clock: AdmissionClock,
+    (width, height): (u32, u32),
     label: &'static str,
-) -> Result<()> {
+) -> Result<bool> {
     if source
         .as_ref()
         .is_some_and(|texture| texture.width == width && texture.height == height)
     {
-        return Ok(());
+        return Ok(true);
     }
     *source = None;
-    *source = Some(super::super::try_create_gpu_resources(
+    let now = admission_clock.now();
+    if !AdmissionRetry::allows(source_retry.as_ref(), (width, height), now) {
+        return Ok(false);
+    }
+    match super::super::try_create_gpu_resources(
         device,
         "GPU display source texture could not be allocated",
         || GpuDisplaySourceTexture::new(device, width, height, label),
-    )?);
-    Ok(())
+    ) {
+        Ok(texture) => {
+            *source_retry = None;
+            *source = Some(texture);
+            Ok(true)
+        }
+        Err(error) => {
+            *source_retry = Some(AdmissionRetry::after_failure(
+                source_retry.as_ref(),
+                (width, height),
+                now,
+            ));
+            Err(error)
+        }
+    }
 }
 
 pub(in crate::render_thread::sparkleflinger::gpu) fn upload_frame_into_source_texture(

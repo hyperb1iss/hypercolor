@@ -21,6 +21,7 @@ use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, PublishedSurface, SurfaceStateCounts};
 use hypercolor_types::scene::ZoneId;
 
+mod admission;
 mod canvas;
 mod compositor;
 mod display_finalize;
@@ -188,20 +189,40 @@ fn try_create_gpu_resources<T>(
 
 #[cfg(test)]
 thread_local! {
-    static FAIL_NEXT_SCOPED_ALLOCATION: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
+    /// Scoped allocations on this thread still set to fail.
+    static FAILING_SCOPED_ALLOCATIONS: std::cell::Cell<u32> =
+        const { std::cell::Cell::new(0) };
+    /// Scoped allocations attempted on this thread.
+    static SCOPED_ALLOCATION_ATTEMPTS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Make the next scoped GPU allocation on this thread report an error, the
 /// way an allocation that ran out of memory does.
 #[cfg(test)]
 pub(super) fn fail_next_scoped_gpu_allocation_for_test() {
-    FAIL_NEXT_SCOPED_ALLOCATION.set(true);
+    fail_scoped_gpu_allocations_for_test(1);
+}
+
+/// Make the next `count` scoped GPU allocations on this thread fail; zero
+/// lets them succeed again.
+#[cfg(test)]
+pub(super) fn fail_scoped_gpu_allocations_for_test(count: u32) {
+    FAILING_SCOPED_ALLOCATIONS.set(count);
+}
+
+/// Scoped GPU allocations attempted on this thread so far.
+#[cfg(test)]
+pub(super) fn scoped_gpu_allocation_attempts_for_test() -> u64 {
+    SCOPED_ALLOCATION_ATTEMPTS.get()
 }
 
 #[cfg(test)]
 fn inject_scoped_allocation_failure(device: &wgpu::Device) {
-    if FAIL_NEXT_SCOPED_ALLOCATION.replace(false) {
+    SCOPED_ALLOCATION_ATTEMPTS.set(SCOPED_ALLOCATION_ATTEMPTS.get().saturating_add(1));
+    let failing = FAILING_SCOPED_ALLOCATIONS.get();
+    if failing > 0 {
+        FAILING_SCOPED_ALLOCATIONS.set(failing - 1);
         // A buffer with no usage raises a validation error inside the open
         // scopes and leaves the device alive.
         let _ = device.create_buffer(&wgpu::BufferDescriptor {
@@ -239,6 +260,10 @@ pub(crate) struct GpuSparkleFlinger {
     compositor_surface_cache: HashMap<(u32, u32), Option<GpuCompositorSurfaceSet>>,
     display_finalize_surfaces: HashMap<DisplayFinalizeCacheKey, GpuDisplayFinalizeSurfaceSet>,
     display_finalize_generation: u64,
+    /// Retry schedules for display routes whose surfaces failed admission.
+    display_finalize_admission_retries:
+        HashMap<ZoneId, admission::AdmissionRetry<DisplayFinalizeCacheKey>>,
+    admission_clock: admission::AdmissionClock,
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
     media_texture_epoch: u64,

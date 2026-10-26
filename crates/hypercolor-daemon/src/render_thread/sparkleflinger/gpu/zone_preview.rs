@@ -51,6 +51,7 @@ pub(super) struct GpuZonePreviewLane {
     readback: wgpu::Buffer,
     surfaces: RenderSurfacePool,
     source: Option<GpuDisplaySourceTexture>,
+    source_retry: Option<super::admission::AdmissionRetry<(u32, u32)>>,
     pending_upload_buffers: PendingUploadBuffers,
     bind_groups: Vec<CachedZonePreviewBindGroup>,
     pending: Option<PendingZonePreviewMap>,
@@ -111,6 +112,7 @@ impl GpuSparkleFlinger {
             self.flush_pending_output_submission()?;
         }
 
+        let admission_clock = self.admission_clock;
         let device = &self.device;
         let queue = &self.queue;
         let pipeline = &mut self.pipeline;
@@ -124,12 +126,14 @@ impl GpuSparkleFlinger {
         let mut native_screen_leases = Vec::new();
         #[cfg(test)]
         let mut source_upload_count = 0;
-        prepare_display_source_texture(
+        let source_ready = prepare_display_source_texture(
             device,
             queue,
             pipeline,
             &mut encoder,
             &mut lane.source,
+            &mut lane.source_retry,
+            admission_clock,
             &mut lane.pending_upload_buffers,
             frame,
             Some(&source),
@@ -138,6 +142,10 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             &mut source_upload_count,
         )?;
+        if !source_ready {
+            // The source texture is waiting out a failed admission.
+            return Ok(ZonePreviewStage::Busy);
+        }
         let source_view = if source.needs_display_source_copy() {
             lane.source
                 .as_ref()
@@ -335,6 +343,7 @@ impl GpuZonePreviewLane {
             readback,
             surfaces,
             source: None,
+            source_retry: None,
             pending_upload_buffers: PendingUploadBuffers::default(),
             bind_groups: Vec::new(),
             pending: None,

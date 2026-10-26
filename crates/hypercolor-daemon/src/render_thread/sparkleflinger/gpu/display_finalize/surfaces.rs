@@ -187,6 +187,8 @@ impl GpuDisplayFinalizeSurfaceSet {
             ),
             scene_source: None,
             face_source: None,
+            scene_source_retry: None,
+            face_source_retry: None,
             pending_upload_buffers: PendingUploadBuffers::default(),
             #[cfg(test)]
             scene_upload_count: 0,
