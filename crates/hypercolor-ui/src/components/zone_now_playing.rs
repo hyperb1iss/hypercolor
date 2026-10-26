@@ -14,6 +14,7 @@ use leptos_router::components::A;
 use crate::api;
 use crate::api::zones::ZoneOutcome;
 use crate::app::EffectsContext;
+use crate::components::zone_tabs::ZoneDot;
 use crate::icons::*;
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
@@ -106,7 +107,7 @@ pub fn SidebarZoneRows() -> impl IntoView {
     }
 }
 
-/// One zone row: color swatch, zone name, what it is showing, and a
+/// One zone row: zone dot, zone name, what it is showing, and a
 /// per-zone pause/resume toggle.
 #[component]
 fn SidebarZoneRow(state: ZoneEffectState) -> impl IntoView {
@@ -114,12 +115,7 @@ fn SidebarZoneRow(state: ZoneEffectState) -> impl IntoView {
     let zone_id = state.zone.id.clone();
     let zone_name = state.zone.name.clone();
     let enabled = state.zone.enabled;
-    let swatch = state
-        .zone
-        .color
-        .clone()
-        .unwrap_or_else(|| "rgb(var(--np-primary))".to_owned());
-    let swatch_glow = format!("0 0 6px {swatch}");
+    let color = state.zone.color.clone();
     let label = state
         .display_label()
         .unwrap_or_else(|| "No effect".to_owned());
@@ -134,11 +130,9 @@ fn SidebarZoneRow(state: ZoneEffectState) -> impl IntoView {
             class="flex items-center gap-2 px-1.5 py-1 rounded-md min-w-0"
             class:opacity-60=!enabled
         >
-            <div
-                class="w-2 h-2 rounded-full shrink-0"
-                style:background=swatch
-                style:box-shadow=swatch_glow
-            />
+            <span class="flex shrink-0 text-[11px]">
+                <ZoneDot color=Signal::stored(color) />
+            </span>
             <div class="min-w-0 flex-1">
                 <div class="text-[11px] font-medium text-fg-primary truncate leading-tight">
                     {zone_name}

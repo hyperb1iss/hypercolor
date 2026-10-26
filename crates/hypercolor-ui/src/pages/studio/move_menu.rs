@@ -11,6 +11,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::app::CapabilitiesContext;
+use crate::components::zone_tabs::ZoneDot;
 use crate::icons::*;
 use crate::pointer_gesture::listener_element;
 
@@ -248,11 +249,7 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
                                             disabled=busy
                                             on:click=move |_| choose(DropAction::MoveTo(zone_id.clone()))
                                         >
-                                            <span
-                                                class="h-2 w-2 shrink-0 rounded-full bg-fg-tertiary/45"
-                                                style:background-color=color
-                                                aria-hidden="true"
-                                            />
+                                            <ZoneDot color=Signal::stored(color) />
                                             <span class="min-w-0 truncate">{name}</span>
                                         </button>
                                     }

@@ -8,10 +8,9 @@ use hypercolor_types::scene::{DisplayFaceTarget, ZoneId, ZoneRole};
 
 use hypercolor_ui::api::{ApiError, ZoneResource};
 use hypercolor_ui::pages::studio::tab_model::{
-    DeleteBlock, ReorderTarget, ScreenName, TabStatus, deletable, delete_prompt,
-    describe_zone_failure, drag_target, drop_slot, fit_tab_count, full_zone_index, next_tab_index,
-    next_zone_name, nudge_target, screen_label_map, screen_labels, split_overflow, tab_status,
-    tab_status_note, zone_device_count, zone_move_index,
+    DeleteBlock, ReorderTarget, ScreenName, deletable, delete_prompt, describe_zone_failure,
+    drag_target, drop_slot, fit_tab_count, full_zone_index, next_zone_name, nudge_target,
+    screen_label_map, screen_labels, split_overflow, zone_device_count, zone_move_index,
 };
 
 fn zone(name: &str, role: ZoneRole, devices: &[&str]) -> ZoneResource {
@@ -47,24 +46,6 @@ fn screen(name: &str, device: DeviceId) -> ZoneResource {
 
 fn ids(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
-}
-
-#[test]
-fn a_paused_zone_shows_paused_before_any_warning() {
-    assert_eq!(tab_status(false, true, 0), TabStatus::Paused);
-    assert_eq!(tab_status(true, true, 4), TabStatus::Warning);
-    assert_eq!(tab_status(true, false, 0), TabStatus::Warning);
-    assert_eq!(tab_status(true, false, 3), TabStatus::Clear);
-    assert_eq!(tab_status_note(TabStatus::Clear, false), None);
-    assert_eq!(tab_status_note(TabStatus::Paused, true), Some("Paused"));
-    assert_eq!(
-        tab_status_note(TabStatus::Warning, true),
-        Some("A layer on this zone failed to render")
-    );
-    assert_eq!(
-        tab_status_note(TabStatus::Warning, false),
-        Some("No devices in this zone yet")
-    );
 }
 
 #[test]
@@ -216,21 +197,6 @@ fn a_drag_drops_before_the_tab_it_lands_ahead_of() {
         Some(ReorderTarget::AfterLast)
     );
     assert_eq!(drag_target(&ids(&["a"]), "a", 0, &ids(&["a"])), None);
-}
-
-#[test]
-fn arrow_keys_wrap_and_home_end_jump() {
-    assert_eq!(next_tab_index(Some(0), 3, "ArrowRight"), Some(1));
-    assert_eq!(next_tab_index(Some(2), 3, "ArrowRight"), Some(0));
-    assert_eq!(next_tab_index(Some(0), 3, "ArrowLeft"), Some(2));
-    assert_eq!(next_tab_index(Some(1), 3, "]"), Some(2));
-    assert_eq!(next_tab_index(Some(0), 3, "["), Some(2));
-    assert_eq!(next_tab_index(Some(1), 3, "Home"), Some(0));
-    assert_eq!(next_tab_index(Some(1), 3, "End"), Some(2));
-    assert_eq!(next_tab_index(None, 3, "ArrowRight"), Some(0));
-    assert_eq!(next_tab_index(None, 3, "ArrowLeft"), Some(2));
-    assert_eq!(next_tab_index(Some(1), 3, "Enter"), None);
-    assert_eq!(next_tab_index(None, 0, "ArrowRight"), None);
 }
 
 #[test]

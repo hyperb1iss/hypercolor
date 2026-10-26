@@ -21,21 +21,23 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::app::{CapabilitiesContext, WsContext};
+use crate::components::zone_tabs::{
+    TabStatus, ZoneLabel, ZoneTabLabel, focus_tab_soon, next_tab, status_description,
+    surface_status,
+};
 use crate::icons::*;
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture, listener_element,
 };
 use crate::toasts;
-use crate::ws::messages::zone_has_degraded_layer;
 
 use super::StudioContext;
 use super::drag::{DragController, DropLook};
 use super::drag_model::DropTarget;
 use super::surface::{Surface, SurfaceKind, surfaces_from_zones};
 use super::tab_model::{
-    DeletePrompt, TabStatus, ZONE_COLOR_PRESETS, deletable, delete_prompt, drag_target, drop_slot,
-    fit_tab_count, next_tab_index, nudge_target, split_overflow, tab_status, tab_status_note,
-    zone_device_count,
+    DeletePrompt, ZONE_COLOR_PRESETS, deletable, delete_prompt, drag_target, drop_slot,
+    fit_tab_count, nudge_target, split_overflow, zone_device_count,
 };
 use super::undo_notice::UndoNotice;
 use super::zone_controls::{
@@ -49,10 +51,10 @@ pub const SCREENS_TAB_ID: &str = "zone-tab-screens";
 /// The Screens tab's slot in keyboard order, after every zone tab.
 const SCREENS_KEY: &str = "\u{0}screens";
 
-/// The narrowest a zone tab shrinks before the tail overflows. The active
-/// tab keeps more, since it also carries the kebab.
+/// The narrowest a zone tab shrinks before the tail overflows. Every tab
+/// holds room for the active tab's kebab, so selecting a tab never
+/// resizes it or shifts the tabs after it.
 const TAB_MIN_PX: f64 = 116.0;
-const ACTIVE_TAB_EXTRA_PX: f64 = 32.0;
 const TAB_GAP_PX: f64 = 4.0;
 /// Room held back for the overflow button, the Screens tab with its
 /// divider, and "+", when each is present.
@@ -84,54 +86,6 @@ pub fn active_tab_dom_id(selected: Option<&str>, on_screens: bool) -> Option<Str
     }
 }
 
-/// A zone tab's identity dot, name, and one optional status glyph. Shared
-/// anatomy for every place a zone is picked by tab.
-#[component]
-pub fn ZoneTabLabel(
-    #[prop(into)] name: Signal<String>,
-    #[prop(into)] color: Signal<Option<String>>,
-    #[prop(into)] status: Signal<TabStatus>,
-) -> impl IntoView {
-    view! {
-        <span class="flex min-w-0 items-center gap-2">
-            {move || match color.get() {
-                Some(color) => view! {
-                    <span
-                        class="h-2 w-2 shrink-0 rounded-full"
-                        style:background-color=color
-                        aria-hidden="true"
-                    />
-                }
-                    .into_any(),
-                None => view! {
-                    <span class="h-2 w-2 shrink-0 rounded-full bg-fg-tertiary/45" aria-hidden="true" />
-                }
-                    .into_any(),
-            }}
-            <span class="min-w-0 truncate">{move || name.get()}</span>
-            {move || match status.get() {
-                TabStatus::Clear => None,
-                TabStatus::Warning => Some(
-                    view! {
-                        <span class="flex shrink-0 text-status-warning" aria-hidden="true">
-                            <Icon icon=LuTriangleAlert width="11px" height="11px" />
-                        </span>
-                    }
-                        .into_any(),
-                ),
-                TabStatus::Paused => Some(
-                    view! {
-                        <span class="flex shrink-0 text-fg-tertiary" aria-hidden="true">
-                            <Icon icon=LuPause width="11px" height="11px" />
-                        </span>
-                    }
-                        .into_any(),
-                ),
-            }}
-        </span>
-    }
-}
-
 /// An open tab menu: which zone, and where on screen.
 #[derive(Clone, Debug, PartialEq)]
 struct MenuAnchor {
@@ -156,8 +110,6 @@ struct StripHandles {
     lights: Memo<Vec<Surface>>,
     light_ids: Memo<Vec<String>>,
     visible_ids: Memo<Vec<String>>,
-    member_counts: Memo<HashMap<String, usize>>,
-    scene_id: Memo<Option<String>>,
     menu: RwSignal<Option<MenuAnchor>>,
     tabs_ref: NodeRef<html::Div>,
     drag: StoredValue<PointerGesture<TabDrag>, LocalStorage>,
@@ -206,25 +158,6 @@ pub fn ZoneStrip() -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-    let member_counts = Memo::new(move |_| {
-        studio.active_scene.with(|scene| {
-            scene
-                .as_ref()
-                .map(|scene| {
-                    scene
-                        .zones
-                        .iter()
-                        .map(|zone| (zone.id.to_string(), zone.members.len()))
-                        .collect::<HashMap<_, _>>()
-                })
-                .unwrap_or_default()
-        })
-    });
-    let scene_id = Memo::new(move |_| {
-        studio
-            .active_scene
-            .with(|scene| scene.as_ref().map(|scene| scene.id.to_string()))
-    });
     let on_screens = Memo::new(move |_| {
         let selected = studio.selected_surface_id.get();
         screen_ids.with(|ids| selected.as_ref().is_some_and(|id| ids.contains(id)))
@@ -258,7 +191,7 @@ pub fn ZoneStrip() -> impl IntoView {
 
     let layout = Memo::new(move |_| {
         let ids = light_ids.get();
-        let mut reserved = ACTIVE_TAB_EXTRA_PX;
+        let mut reserved = 0.0;
         if !screen_ids.with(Vec::is_empty) {
             reserved += SCREENS_TAB_PX;
         }
@@ -347,8 +280,6 @@ pub fn ZoneStrip() -> impl IntoView {
         lights,
         light_ids,
         visible_ids,
-        member_counts,
-        scene_id,
         menu,
         tabs_ref: NodeRef::new(),
         drag: StoredValue::new_local(PointerGesture::new()),
@@ -366,7 +297,8 @@ pub fn ZoneStrip() -> impl IntoView {
         }
         order
     };
-    let step = move |key: &str, focus: bool| {
+    // Selection follows focus: a step selects the next tab and focuses it.
+    let step = move |key: &str| {
         let order = tab_order();
         let current = if on_screens.get_untracked() {
             order.iter().position(|id| id == SCREENS_KEY)
@@ -376,7 +308,7 @@ pub fn ZoneStrip() -> impl IntoView {
                 .iter()
                 .position(|id| selected.as_deref() == Some(id.as_str()))
         };
-        let Some(next) = next_tab_index(current, order.len(), key) else {
+        let Some(next) = next_tab(current, order.len(), key) else {
             return false;
         };
         let Some(target) = order.get(next).cloned() else {
@@ -390,9 +322,7 @@ pub fn ZoneStrip() -> impl IntoView {
             studio.selected_surface_id.set(Some(target));
             dom_id
         };
-        if focus {
-            focus_soon(dom_id);
-        }
+        focus_tab_soon(dom_id);
         true
     };
 
@@ -434,12 +364,13 @@ pub fn ZoneStrip() -> impl IntoView {
         if ev.ctrl_key() || ev.meta_key() || ev.alt_key() {
             return;
         }
-        if matches!(key.as_str(), "ArrowLeft" | "ArrowRight" | "Home" | "End") && step(&key, true) {
+        if matches!(key.as_str(), "ArrowLeft" | "ArrowRight" | "Home" | "End") && step(&key) {
             ev.prevent_default();
         }
     };
 
-    // `[` and `]` cycle tabs from anywhere on the page outside a text field.
+    // `[` and `]` cycle tabs from anywhere on the page outside a text
+    // field, and take focus to the new tab like the arrows do.
     let brackets = window_event_listener(ev::keydown, move |ev| {
         if ev.default_prevented() || ev.ctrl_key() || ev.meta_key() || ev.alt_key() {
             return;
@@ -454,7 +385,7 @@ pub fn ZoneStrip() -> impl IntoView {
         {
             return;
         }
-        if step(&key, false) {
+        if step(&key) {
             ev.prevent_default();
         }
     });
@@ -601,24 +532,18 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
                 .cloned()
         })
     });
-    let degraded = Memo::new(move |_| {
-        let (Some(ws), Some(scene_id), Some(surface)) = (ws, handles.scene_id.get(), surface.get())
-        else {
-            return false;
-        };
-        ws.layer_health
-            .with(|map| zone_has_degraded_layer(map, &scene_id, &surface.id, &surface.layer_ids))
-    });
     let status = Memo::new(move |_| {
         let Some(surface) = surface.get() else {
             return TabStatus::Clear;
         };
-        let members = handles
-            .member_counts
-            .with(|counts| id.with_value(|id| counts.get(id).copied().unwrap_or(0)));
-        tab_status(surface.enabled, degraded.get(), members)
+        studio.active_scene.with(|scene| match ws {
+            Some(ws) => ws
+                .layer_health
+                .with(|map| surface_status(&surface, scene.as_ref(), map)),
+            None => surface_status(&surface, scene.as_ref(), &HashMap::new()),
+        })
     });
-    let note = Memo::new(move |_| tab_status_note(status.get(), degraded.get()));
+    let note = Memo::new(move |_| status.get().note());
     let name = Signal::derive(move || {
         surface
             .get()
@@ -683,6 +608,7 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
     });
 
     let tab_dom_id = dom_id.clone();
+    let status_id = format!("{dom_id}-status");
     let tab_view = move || {
         if renaming.get() {
             return view! { <TabRenameField zone_id=id.get_value() dom_id=tab_dom_id.clone() /> }
@@ -695,6 +621,10 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
                 id=tab_dom_id.clone()
                 aria-selected=move || is_active.get().to_string()
                 aria-controls=ZONE_PANEL_ID
+                aria-describedby={
+                    let status_id = status_id.clone();
+                    move || status_description(status.get(), &status_id)
+                }
                 tabindex=move || if is_active.get() { "0" } else { "-1" }
                 title=move || note.get()
                 class="flex h-full min-w-0 flex-1 touch-none select-none items-center pl-3 pr-2 text-[12px] font-medium"
@@ -776,7 +706,7 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
                 on:pointercancel=move |ev: web_sys::PointerEvent| end_drag(ev.pointer_id(), PointerEnd::Cancel)
                 on:lostpointercapture=move |ev: web_sys::PointerEvent| end_drag(ev.pointer_id(), PointerEnd::LostCapture)
             >
-                <ZoneTabLabel name=name color=color status=status />
+                <ZoneLabel name=name color=color status=status status_id=status_id.clone() />
             </button>
         }
             .into_any()
@@ -786,9 +716,7 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
         <div
             role="presentation"
             data-zone-tab=zone_id
-            class="relative flex h-8 max-w-[220px] shrink items-center rounded-t-lg transition-[background-color,color,opacity] duration-150 md:h-9"
-            class=("min-w-[148px]", move || is_active.get())
-            class=("min-w-[116px]", move || !is_active.get())
+            class="relative flex h-8 min-w-[116px] max-w-[220px] shrink items-center rounded-t-lg transition-[background-color,color,opacity] duration-150 md:h-9"
             class=("bg-surface-base", move || is_active.get())
             class=("text-fg-primary", move || is_active.get())
             class=("text-fg-tertiary", move || !is_active.get())
@@ -836,7 +764,12 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
                     />
                 </svg>
             </Show>
-            <Show when=move || is_active.get() && !renaming.get()>
+            // Every tab keeps the kebab's room, so selection never resizes a
+            // tab or shifts the ones after it.
+            <Show
+                when=move || is_active.get() && !renaming.get()
+                fallback=|| view! { <span class="mr-1 h-6 w-6 shrink-0" aria-hidden="true" /> }
+            >
                 <button
                     type="button"
                     tabindex="-1"
@@ -1383,11 +1316,7 @@ fn OverflowMenu(
                                             focus_soon(dom_id);
                                         }
                                     >
-                                        <ZoneTabLabel
-                                            name=Signal::stored(surface.name.clone())
-                                            color=Signal::stored(surface.color.clone())
-                                            status=Signal::stored(if surface.enabled { TabStatus::Clear } else { TabStatus::Paused })
-                                        />
+                                        <ZoneTabLabel zone=surface />
                                     </button>
                                 }
                             })

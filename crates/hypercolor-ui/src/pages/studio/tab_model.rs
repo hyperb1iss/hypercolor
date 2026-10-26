@@ -12,30 +12,6 @@ use hypercolor_types::scene::ZoneRole;
 
 use crate::api::{ApiError, ZoneResource};
 
-/// The one optional status glyph a zone tab carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TabStatus {
-    /// Nothing to report.
-    Clear,
-    /// A layer failed to render, or the zone has no devices.
-    Warning,
-    /// The zone is disabled.
-    Paused,
-}
-
-/// Pick a tab's status glyph. A paused zone says so before anything else,
-/// because a disabled zone renders nothing whatever its layers report.
-#[must_use]
-pub fn tab_status(enabled: bool, degraded: bool, member_count: usize) -> TabStatus {
-    if !enabled {
-        TabStatus::Paused
-    } else if degraded || member_count == 0 {
-        TabStatus::Warning
-    } else {
-        TabStatus::Clear
-    }
-}
-
 /// Why a zone cannot be deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteBlock {
@@ -212,23 +188,6 @@ pub fn drag_target(
     Some(rest.get(after_last).map_or(ReorderTarget::AfterLast, |id| {
         ReorderTarget::Before((*id).clone())
     }))
-}
-
-/// The tab a navigation key moves to over `len` tabs: arrows wrap, Home
-/// and End jump. Any other key returns `None`.
-#[must_use]
-pub fn next_tab_index(current: Option<usize>, len: usize, key: &str) -> Option<usize> {
-    if len == 0 {
-        return None;
-    }
-    let last = len - 1;
-    match key {
-        "ArrowRight" | "]" => Some(current.map_or(0, |i| if i >= last { 0 } else { i + 1 })),
-        "ArrowLeft" | "[" => Some(current.map_or(last, |i| if i == 0 { last } else { i - 1 })),
-        "Home" => Some(0),
-        "End" => Some(last),
-        _ => None,
-    }
 }
 
 /// How many zone tabs fit in `available` pixels before the tail folds
@@ -431,14 +390,3 @@ pub const ZONE_COLOR_PRESETS: [(&str, &str); 8] = [
     ("Orange", "#ff9e64"),
     ("Red", "#ff6363"),
 ];
-
-/// The hover and title text for a tab's status glyph.
-#[must_use]
-pub const fn tab_status_note(status: TabStatus, degraded: bool) -> Option<&'static str> {
-    match status {
-        TabStatus::Clear => None,
-        TabStatus::Paused => Some("Paused"),
-        TabStatus::Warning if degraded => Some("A layer on this zone failed to render"),
-        TabStatus::Warning => Some("No devices in this zone yet"),
-    }
-}
