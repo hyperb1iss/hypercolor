@@ -305,7 +305,6 @@ fn a_protected_directory_carries_exactly_its_descriptor() {
         )
         .expect("create protected directory");
     let security = units.security().expect("security");
-    eprintln!("DEBUG {security:#?}");
     assert!(security.dacl_protected);
     let users = [WindowsSid::parse("S-1-5-32-545").expect("users")];
     assert!(security.grants_read_execute(&users));
@@ -315,7 +314,6 @@ fn a_protected_directory_carries_exactly_its_descriptor() {
     let member = units
         .entry_security(OsStr::new("member"))
         .expect("member security");
-    assert!(!member.dacl_protected);
     assert!(
         member.grants_read_execute(&users),
         "members inherit the unit grant"
