@@ -181,7 +181,8 @@ impl GpuSparkleFlinger {
                 self.discard_pending_preview_map();
             }
             self.ready_preview_surface = None;
-            return self.read_back_current_output_surface(
+            // The restaged readback carries the output's own deferred work.
+            let restaged = self.read_back_current_output_surface(
                 plan.width,
                 plan.height,
                 Some(key.clone()),
@@ -191,6 +192,10 @@ impl GpuSparkleFlinger {
                 native_screen_leases,
                 prepared_preview_surface,
             );
+            if restaged.is_err() {
+                self.invalidate_output_identity();
+            }
+            return restaged;
         }
         let reuse_cached_readback = readback_key.as_ref().is_some_and(|key| {
             self.cached_readback_surface.as_ref().is_some_and(|cached| {
@@ -305,6 +310,7 @@ impl GpuSparkleFlinger {
                 drop(uploaded_screen_frames);
                 return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
                 surfaces.abandon_encoded_composition();
+                self.invalidate_output_identity();
                 return Err(error);
             }
         } else {
@@ -332,6 +338,7 @@ impl GpuSparkleFlinger {
                 drop(uploaded_screen_frames);
                 return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
                 surfaces.abandon_encoded_composition();
+                self.invalidate_output_identity();
                 return Err(error);
             }
             use_front_as_current = false;
@@ -357,6 +364,7 @@ impl GpuSparkleFlinger {
                 drop(uploaded_screen_frames);
                 return_screen_frame_scratch(surfaces, &mut uploaded_screen_frame_scratch);
                 surfaces.abandon_encoded_composition();
+                self.invalidate_output_identity();
                 return Err(error);
             }
             use_front_as_current = !use_front_as_current;
@@ -403,7 +411,7 @@ impl GpuSparkleFlinger {
             ));
         }
 
-        self.read_back_current_output_surface(
+        let read_back = self.read_back_current_output_surface(
             plan.width,
             plan.height,
             readback_key,
@@ -412,6 +420,26 @@ impl GpuSparkleFlinger {
             Some(encoder),
             native_screen_leases,
             prepared_preview_surface,
-        )
+        );
+        if read_back.is_err() {
+            self.invalidate_output_identity();
+        }
+        read_back
+    }
+
+    /// Stop trusting the compositor's output after a composition failed.
+    ///
+    /// Dropping the failed composition's encoder cannot cancel the
+    /// `Queue::write_texture` uploads it already queued into the output
+    /// textures, which still run at the next submit, and the previous
+    /// composition's own deferred encoder may have been dropped unsubmitted
+    /// along the way. Either way the texture `current_output` names no
+    /// longer provably holds `cached_composition_key`'s frame, so the next
+    /// plan composes from scratch instead of reusing it.
+    fn invalidate_output_identity(&mut self) {
+        self.current_output = None;
+        self.cached_composition_key = None;
+        self.output_generation = self.output_generation.saturating_add(1);
+        self.invalidate_output_sample();
     }
 }

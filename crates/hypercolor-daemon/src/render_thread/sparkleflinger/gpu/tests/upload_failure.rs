@@ -40,6 +40,107 @@ fn composed_preview(compositor: &mut GpuSparkleFlinger, plan: &CompositionPlan) 
         .to_vec()
 }
 
+/// Read the compositor's current output texture straight from the GPU, so
+/// no cached CPU copy of a frame can stand in for what the texture holds.
+fn read_current_output(compositor: &mut GpuSparkleFlinger) -> Vec<u8> {
+    let frame = compositor
+        .current_output_frame()
+        .expect("flushing the output submission should succeed")
+        .expect("a composed output should exist");
+    let row_bytes = frame.width * 4;
+    let padded_row_bytes = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = compositor.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("SparkleFlinger upload failure output readback"),
+        size: u64::from(padded_row_bytes) * u64::from(frame.height),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = compositor
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        frame.texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row_bytes),
+                rows_per_image: Some(frame.height),
+            },
+        },
+        wgpu::Extent3d {
+            width: frame.width,
+            height: frame.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    compositor.queue.submit(Some(encoder.finish()));
+    let (sender, receiver) = mpsc::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+    compositor.wait_for_gpu_idle();
+    receiver
+        .recv()
+        .expect("the output readback callback should run")
+        .expect("the output readback should map");
+    let mapped = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("the output readback should be readable");
+    let pixels = mapped
+        .chunks_exact(padded_row_bytes as usize)
+        .flat_map(|row| row[..row_bytes as usize].iter().copied())
+        .collect();
+    drop(mapped);
+    buffer.unmap();
+    pixels
+}
+
+/// A failed composition's queued texture writes still run at the next
+/// submit, so the previous plan's output cannot be reused afterwards even
+/// though its cache key never changed.
+#[test]
+fn a_failed_composition_does_not_leave_the_previous_output_reusable() {
+    let (Some(mut compositor), Some(mut reference)) =
+        (super::gpu_test_compositor(), super::gpu_test_compositor())
+    else {
+        return;
+    };
+    let (base, _base) = shared_canvas(Rgba::new(0, 0, 0, 255));
+    let (red, _red) = shared_canvas(Rgba::new(255, 0, 0, 255));
+    let (green, _green) = shared_canvas(Rgba::new(0, 255, 0, 255));
+    let (blue, _blue) = shared_canvas(Rgba::new(0, 0, 255, 255));
+    let plan_a = plan_over_black(&base, &[(&red, 1.0), (&green, 0.5)]);
+    let plan_b = plan_over_black(&base, &[(&blue, 1.0)]);
+
+    reference
+        .compose(&plan_a, false, None)
+        .expect("the reference frame should compose");
+    let expected = read_current_output(&mut reference);
+    compositor
+        .compose(&plan_a, false, None)
+        .expect("frame A should compose");
+    assert_eq!(read_current_output(&mut compositor), expected);
+
+    // B queues its base straight into the texture holding A, then fails.
+    fail_buffer_with_contents_after_for_test(0);
+    compositor
+        .compose(&plan_b, false, None)
+        .expect_err("a failed overlay upload must fail its composition");
+
+    compositor
+        .compose(&plan_a, false, None)
+        .expect("frame A should compose again");
+    assert_eq!(
+        read_current_output(&mut compositor),
+        expected,
+        "frame A must not reuse an output the failed frame overwrote"
+    );
+}
+
 #[test]
 fn a_failed_layer_upload_commits_nothing_and_the_next_frame_recomposes() {
     let Some(mut compositor) = super::gpu_test_compositor() else {
