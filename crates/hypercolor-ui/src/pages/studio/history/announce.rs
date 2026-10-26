@@ -4,9 +4,11 @@
 use std::collections::BTreeSet;
 
 use hypercolor_types::api::scene::{MemberEdit, MemberState, PatchZoneRequest};
+use hypercolor_types::scene::ZoneRole;
 
 use super::super::drag_model::channel_label;
 use super::StudioEdit;
+use crate::zones::surface::zone_display_name;
 
 /// Where moved outputs end up when no zone holds them.
 const UNASSIGNED: &str = "Unassigned";
@@ -14,25 +16,34 @@ const UNASSIGNED: &str = "Unassigned";
 /// A device's shown name and light segment count, by its layout device id.
 pub type DeviceLookup<'a> = dyn Fn(&str) -> Option<(String, usize)> + 'a;
 
+/// A zone's stored name and role, by its id.
+pub type ZoneLookup<'a> = dyn Fn(&str) -> Option<(String, ZoneRole)> + 'a;
+
 /// The announcement for replaying `edit` as an undo (`redo == false`) or a
-/// redo. `zone_name` names a zone by id and `device` looks a device up by
-/// its layout device id, each as the scene and registry have them now.
-/// `None` for a step with nothing to say, such as an empty membership
-/// entry.
+/// redo. `zone` and `device` look a zone up by id and a device by its
+/// layout device id, as the scene and registry have them now. Zones go by
+/// the names their tabs show. `None` for a step with nothing to say, such
+/// as an empty membership entry.
 #[must_use]
 pub fn replay_announcement(
     edit: &StudioEdit,
     redo: bool,
-    zone_name: &dyn Fn(&str) -> Option<String>,
+    zone_lookup: &ZoneLookup<'_>,
     device: &DeviceLookup<'_>,
 ) -> Option<String> {
     let verb = if redo { "Redid" } else { "Undid" };
-    let zone = |id: &str| zone_name(id).unwrap_or_else(|| "a zone".to_owned());
+    let role = |id: &str| zone_lookup(id).map_or(ZoneRole::Custom, |(_, role)| role);
+    let zone = |id: &str| {
+        zone_lookup(id).map_or_else(
+            || "a zone".to_owned(),
+            |(name, role)| zone_display_name(&name, role),
+        )
+    };
     let action = match edit {
         StudioEdit::Layout { zone_id, .. } => format!("layout change on {}", zone(zone_id)),
         StudioEdit::Members(changes) => members_action(changes, redo, &zone, device)?,
         StudioEdit::ZoneCreated { name, filled, .. } if filled.is_empty() => {
-            format!("created {name}")
+            format!("created {}", zone_display_name(name, ZoneRole::Custom))
         }
         StudioEdit::ZoneCreated { filled, .. } => {
             let label = moved_label(filled, device);
@@ -53,8 +64,13 @@ pub fn replay_announcement(
             zone_id,
             before,
             after,
-        } => patch_action(&zone(zone_id), before, after),
-        StudioEdit::ZoneDeleted(record) => format!("deleted {}", record.name),
+        } => patch_action(&zone(zone_id), role(zone_id), before, after),
+        StudioEdit::ZoneDeleted(record) => {
+            format!(
+                "deleted {}",
+                zone_display_name(&record.name, ZoneRole::Custom)
+            )
+        }
     };
     Some(format!("{verb}: {action}"))
 }
@@ -122,9 +138,18 @@ fn moved_label(changes: &[MemberEdit], device: &DeviceLookup<'_>) -> String {
 }
 
 /// A zone patch, named for the field it changed.
-fn patch_action(zone: &str, before: &PatchZoneRequest, after: &PatchZoneRequest) -> String {
+fn patch_action(
+    zone: &str,
+    role: ZoneRole,
+    before: &PatchZoneRequest,
+    after: &PatchZoneRequest,
+) -> String {
     if let (Some(from), Some(to)) = (&before.name, &after.name) {
-        return format!("renamed {from} to {to}");
+        return format!(
+            "renamed {} to {}",
+            zone_display_name(from, role),
+            zone_display_name(to, role)
+        );
     }
     match after.enabled {
         Some(false) => return format!("paused {zone}"),

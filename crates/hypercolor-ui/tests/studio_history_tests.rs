@@ -2,11 +2,11 @@ use hypercolor_types::api::scene::{MemberEdit, MemberState, PatchZoneRequest, Sc
 use hypercolor_types::layer::{
     BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
-use hypercolor_types::scene::ZoneId;
+use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_ui::compound_selection::CompoundDepth;
 use hypercolor_ui::layout_history::LayoutEditorSnapshot;
 use hypercolor_ui::pages::studio::history::{
-    DeletedZone, StudioEdit, StudioJournal, light_neighbor, prepare_members_replay,
+    DeletedZone, StudioEdit, StudioJournal, light_neighbor, prepare_members_replay, rename_is_noop,
     replay_announcement, restore_layer_requests, zone_patch_before,
 };
 use std::collections::HashSet;
@@ -333,10 +333,10 @@ fn stand_move(from: Option<&str>, to: Option<&str>) -> MemberEdit {
     }
 }
 
-fn zone_names(id: &str) -> Option<String> {
+fn zone_names(id: &str) -> Option<(String, ZoneRole)> {
     match id {
-        ZONE_A => Some("Case".to_owned()),
-        ZONE_B => Some("Keyboard".to_owned()),
+        ZONE_A => Some(("Case".to_owned(), ZoneRole::Primary)),
+        ZONE_B => Some(("Keyboard".to_owned(), ZoneRole::Custom)),
         _ => None,
     }
 }
@@ -446,4 +446,33 @@ fn an_empty_membership_step_has_nothing_to_say() {
         replay_announcement(&edit, true, &zone_names, &whole_stand),
         None
     );
+}
+
+#[test]
+fn a_legacy_main_zone_is_announced_and_renamed_by_the_name_its_tab_shows() {
+    let legacy = |id: &str| (id == ZONE_A).then(|| ("Default zone".to_owned(), ZoneRole::Primary));
+    let pause = StudioEdit::ZonePatched {
+        zone_id: ZONE_A.to_owned(),
+        before: PatchZoneRequest {
+            enabled: Some(true),
+            ..Default::default()
+        },
+        after: PatchZoneRequest {
+            enabled: Some(false),
+            ..Default::default()
+        },
+    };
+    assert_eq!(
+        replay_announcement(&pause, false, &legacy, &whole_stand).as_deref(),
+        Some("Undid: paused Main")
+    );
+
+    let mut scene = scene();
+    scene.zones[0].name = "Default zone".to_owned();
+    scene.zones[0].role = ZoneRole::Primary;
+    let zone = &scene.zones[0];
+    assert!(rename_is_noop(zone, "Main"), "the tab already says Main");
+    assert!(rename_is_noop(zone, "  "));
+    assert!(rename_is_noop(zone, "Default zone"));
+    assert!(!rename_is_noop(zone, "Desk"));
 }

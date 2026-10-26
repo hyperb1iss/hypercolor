@@ -30,9 +30,11 @@ pub(crate) type EditDone = Box<dyn FnOnce(Option<u64>)>;
 mod announce;
 mod zones;
 
-pub use announce::{DeviceLookup, replay_announcement};
+pub use announce::{DeviceLookup, ZoneLookup, replay_announcement};
 
-pub use zones::{DeletedZone, light_neighbor, restore_layer_requests, zone_patch_before};
+pub use zones::{
+    DeletedZone, light_neighbor, rename_is_noop, restore_layer_requests, zone_patch_before,
+};
 pub(crate) use zones::{Moved, NewZone};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -474,19 +476,19 @@ impl StudioHistory {
     fn prepare_words(self, edit: &StudioEdit, redo: bool) {
         let scene = self.current_scene();
         let announcer = self.announcer.try_get_value().flatten();
-        let zone_name = |id: &str| {
+        let zone_lookup = |id: &str| {
             scene.as_ref().and_then(|scene| {
                 scene
                     .zones
                     .iter()
                     .find(|zone| zone.id.to_string() == id)
-                    .map(|zone| zone.name.clone())
+                    .map(|zone| (zone.name.clone(), zone.role))
             })
         };
         let device = |id: &str| {
             announcer.and_then(|announcer| announcer.device.try_run(id.to_owned()).flatten())
         };
-        let words = replay_announcement(edit, redo, &zone_name, &device);
+        let words = replay_announcement(edit, redo, &zone_lookup, &device);
         self.replay_words.try_set_value(words);
     }
 

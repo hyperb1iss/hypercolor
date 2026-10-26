@@ -18,6 +18,7 @@ use crate::toasts;
 
 use super::StudioContext;
 use super::device_pane::other_led_zone_ids;
+use super::history::rename_is_noop;
 use super::tab_model::{ReorderTarget, next_zone_name, zone_move_index};
 
 /// Create a zone under a fresh default name, open its tab, and put its
@@ -68,7 +69,7 @@ pub fn commit_zone_rename(studio: StudioContext, zone_id: &str, name: &str) {
             scene
                 .zones
                 .iter()
-                .any(|zone| zone.id.to_string() == zone_id && zone.name == name)
+                .any(|zone| zone.id.to_string() == zone_id && rename_is_noop(zone, &name))
         })
     });
     if name.is_empty() || unchanged {

@@ -84,6 +84,17 @@ pub fn zone_patch_before(
     }
 }
 
+/// Whether renaming `zone` to `draft` would change nothing: a blank draft,
+/// or one that matches the name its tab shows. A legacy "Default zone"
+/// shows as "Main", so leaving "Main" as it is renames nothing.
+#[must_use]
+pub fn rename_is_noop(zone: &api::ZoneResource, draft: &str) -> bool {
+    let draft = draft.trim();
+    draft.is_empty()
+        || draft == zone.name
+        || draft == crate::zones::surface::zone_display_name(&zone.name, zone.role)
+}
+
 /// The tab that takes the selection when the light zone `zone_id` goes:
 /// the one before it, else the one after. `None` when it is the only one.
 #[must_use]
