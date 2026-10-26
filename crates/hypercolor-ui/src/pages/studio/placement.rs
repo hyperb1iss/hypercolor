@@ -64,21 +64,6 @@ impl Footprint {
         output.orientation = self.orientation;
     }
 
-    /// The placement a seed carries. A seed names no shape, so it measures
-    /// as a box; a circle's seed is already square in pixels, so that only
-    /// overstates a seed that also turns.
-    #[must_use]
-    pub fn of_hint(hint: &MemberPlacementHint) -> Self {
-        Self {
-            position: hint.position,
-            size: hint.size,
-            rotation: hint.rotation,
-            scale: hint.scale,
-            orientation: hint.orientation,
-            circular: false,
-        }
-    }
-
     /// The seed the daemon applies to the output it mints for `segment`.
     #[must_use]
     pub fn hint(self, segment: Option<String>) -> MemberPlacementHint {
@@ -160,6 +145,37 @@ impl Bounds {
 
 fn union_of(bounds: impl IntoIterator<Item = Bounds>) -> Option<Bounds> {
     bounds.into_iter().reduce(Bounds::union)
+}
+
+/// Where one segment of an assigned device lands, with its shape, so a
+/// drop can center the group by the boxes the canvas will draw. The
+/// daemon takes it as a [`MemberPlacementHint`], which names no shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Seed {
+    pub segment: Option<String>,
+    pub footprint: Footprint,
+}
+
+impl Seed {
+    /// The hint the daemon applies to the output it mints for the segment.
+    #[must_use]
+    pub fn hint(&self) -> MemberPlacementHint {
+        self.footprint.hint(self.segment.clone())
+    }
+}
+
+/// Center seeds on `point`, keeping their arrangement and measuring them
+/// as drawn (see [`offset_to_center`]). False when there are none.
+pub fn center_seeds_on(seeds: &mut [Seed], point: NormalizedPosition, canvas: (u32, u32)) -> bool {
+    let Some((dx, dy)) = offset_to_center(seeds.iter().map(|seed| seed.footprint), point, canvas)
+    else {
+        return false;
+    };
+    for seed in seeds {
+        let position = seed.footprint.position;
+        seed.footprint.position = NormalizedPosition::new(position.x + dx, position.y + dy);
+    }
+    true
 }
 
 /// The normalized offset that centers a group's drawn bounds (rotation and
@@ -280,11 +296,15 @@ fn keep_on_canvas(mut footprint: Footprint, aspect: f32) -> Footprint {
     footprint
 }
 
-/// One footprint spanning several, unrotated.
+/// One footprint spanning several, unrotated. A single footprint spans
+/// itself, keeping its turn and shape.
 fn spanning(footprints: impl IntoIterator<Item = Footprint>, aspect: f32) -> Option<Footprint> {
-    let mut footprints = footprints.into_iter().peekable();
-    let orientation = footprints.peek()?.orientation;
-    let bounds = union_of(footprints.map(|footprint| footprint.bounds(aspect)))?;
+    let footprints: Vec<Footprint> = footprints.into_iter().collect();
+    if let [only] = footprints.as_slice() {
+        return Some(*only);
+    }
+    let orientation = footprints.first()?.orientation;
+    let bounds = union_of(footprints.iter().map(|footprint| footprint.bounds(aspect)))?;
     let (center_x, center_y) = bounds.center();
     Some(Footprint {
         position: NormalizedPosition::new(center_x / aspect, center_y),
@@ -585,20 +605,20 @@ fn default_arrangement(
         .collect()
 }
 
-/// Placement hints for assigning light segments of `device` to the zone
-/// `zone_id` (the named `segments`, or every one when that is empty): rig
-/// positions carried into the zone, a fit for a zone's first devices, a
-/// device's own seeded footprint when the rig does not know it, and
-/// nothing (the daemon's placement) otherwise.
+/// Seeds for assigning light segments of `device` to the zone `zone_id`
+/// (the named `segments`, or every one when that is empty): rig positions
+/// carried into the zone, a fit for a zone's first devices, a device's own
+/// seeded footprint when the rig does not know it, and nothing (the
+/// daemon's placement) otherwise.
 #[must_use]
-pub fn assignment_hints(
+pub fn assignment_seeds(
     scene: &SceneDocument,
     active_layout: Option<&SpatialLayout>,
     device: &DeviceSummary,
     zone_id: &str,
     segments: &[String],
     canvas: (u32, u32),
-) -> Vec<MemberPlacementHint> {
+) -> Vec<Seed> {
     let Some(zone) = scene
         .zones
         .iter()
@@ -653,7 +673,12 @@ pub fn assignment_hints(
     arrivals
         .into_iter()
         .zip(landings)
-        .filter_map(|(arrival, landing)| landing.map(|footprint| footprint.hint(arrival.segment)))
+        .filter_map(|(arrival, landing)| {
+            landing.map(|footprint| Seed {
+                segment: arrival.segment,
+                footprint,
+            })
+        })
         .collect()
 }
 

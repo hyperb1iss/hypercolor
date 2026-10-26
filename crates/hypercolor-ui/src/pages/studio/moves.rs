@@ -5,7 +5,7 @@
 //! back, then announces where the outputs went and hands focus back to
 //! whatever opened the move.
 
-use hypercolor_types::api::scene::{MemberEdit, MemberPlacementHint, MemberState};
+use hypercolor_types::api::scene::{MemberEdit, MemberState};
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::spatial::{NormalizedPosition, Output};
 use leptos::prelude::*;
@@ -219,11 +219,11 @@ fn plan_move(
         let segments = payload.segments.clone();
         let device = registry_device(drag, &payload.device_id);
         // A channel brings only its own segment, so only its hint counts.
-        let mut hints = device
+        let mut seeds = device
             .as_ref()
             .map(|device| {
                 studio.rig_layout.with_untracked(|rig| {
-                    placement::assignment_hints(
+                    placement::assignment_seeds(
                         scene,
                         rig.as_ref(),
                         device,
@@ -239,17 +239,17 @@ fn plan_move(
         } else {
             segments.len()
         };
-        // Hints that place every arrival already carry the geometry, so a
+        // Seeds that place every arrival already carry the geometry, so a
         // drop point only moves them. Otherwise the daemon mints some
         // arrivals unplaced, and the point centers the whole group once
         // they land.
-        let seeds_all = !hints.is_empty() && hints.len() >= claimed;
-        let point =
-            point.filter(|point| !(seeds_all && center_hints_on(&mut hints, *point, canvas)));
+        let seeds_all = !seeds.is_empty() && seeds.len() >= claimed;
+        let point = point
+            .filter(|point| !(seeds_all && placement::center_seeds_on(&mut seeds, *point, canvas)));
         return Planned::Write(MovePlan::Assign {
             device_id: payload.device_id.clone(),
             segments,
-            placements: hints,
+            placements: seeds.iter().map(placement::Seed::hint).collect(),
             point,
         });
     }
@@ -421,23 +421,6 @@ fn move_to_new_zone(drag: DragController, payload: MovePayload, focus: Option<Fo
             }
         }),
     );
-}
-
-/// Center seeded placement hints on `point`, keeping their arrangement.
-/// False when there are none to move.
-fn center_hints_on(
-    hints: &mut [MemberPlacementHint],
-    point: NormalizedPosition,
-    canvas: (u32, u32),
-) -> bool {
-    let footprints = hints.iter().map(placement::Footprint::of_hint);
-    let Some((dx, dy)) = placement::offset_to_center(footprints, point, canvas) else {
-        return false;
-    };
-    for hint in hints {
-        hint.position = NormalizedPosition::new(hint.position.x + dx, hint.position.y + dy);
-    }
-    true
 }
 
 /// Center a group of outputs on `point`, keeping their arrangement.

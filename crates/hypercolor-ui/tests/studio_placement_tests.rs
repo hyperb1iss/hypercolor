@@ -8,8 +8,8 @@ use hypercolor_types::spatial::{
 };
 use hypercolor_ui::api::DeviceSummary;
 use hypercolor_ui::pages::studio::placement::{
-    Arrival, FIT_MARGIN, Fallback, Footprint, assignment_hints, fit_outputs, move_edits,
-    offset_to_center, place_arrivals, rig_footprint, rig_layouts,
+    Arrival, FIT_MARGIN, Fallback, Footprint, Seed, assignment_seeds, center_seeds_on, fit_outputs,
+    move_edits, offset_to_center, place_arrivals, rig_footprint, rig_layouts,
 };
 
 const CANVAS: (u32, u32) = (640, 480);
@@ -206,6 +206,16 @@ fn a_segment_split_into_components_spans_every_instance() {
     assert_position(span, 0.4, 0.5);
     assert_close(span.size.x, 0.5);
     assert_close(span.size.y, 0.1);
+}
+
+#[test]
+fn a_segment_with_one_component_keeps_its_turn_and_shape() {
+    let mut ring = turned_ring(0.5, 0.5);
+    ring.zone_name = Some("channel-1".to_owned());
+    let rig = vec![vec![component(ring, "channel-1", 0)]];
+    let only = rig_footprint(&rig, None, "fan", Some("Channel 1"), ASPECT).expect("found");
+    assert!(only.circular);
+    assert_close(only.rotation, std::f32::consts::FRAC_PI_4);
 }
 
 #[test]
@@ -536,7 +546,7 @@ fn device(id: &str, segments: serde_json::Value) -> DeviceSummary {
 }
 
 #[test]
-fn assignment_hints_seed_each_light_segment_from_the_rig() {
+fn assignment_seeds_seed_each_light_segment_from_the_rig() {
     let scene = scene(
         &[
             ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
@@ -559,12 +569,12 @@ fn assignment_hints_seed_each_light_segment_from_the_rig() {
         ]),
     );
     let zone_id = scene.zones[0].id.to_string();
-    let hints = assignment_hints(&scene, Some(&rig), &strip, &zone_id, &[], CANVAS);
-    assert_eq!(hints.len(), 2, "the screen segment mints no LED output");
-    assert_eq!(hints[0].segment.as_deref(), Some("Top"));
-    assert_close(hints[0].position.y, 0.1);
-    assert_eq!(hints[1].segment.as_deref(), Some("Bottom"));
-    assert_close(hints[1].position.y, 0.9);
+    let seeds = assignment_seeds(&scene, Some(&rig), &strip, &zone_id, &[], CANVAS);
+    assert_eq!(seeds.len(), 2, "the screen segment mints no LED output");
+    assert_eq!(seeds[0].segment.as_deref(), Some("Top"));
+    assert_close(seeds[0].footprint.position.y, 0.1);
+    assert_eq!(seeds[1].segment.as_deref(), Some("Bottom"));
+    assert_close(seeds[1].footprint.position.y, 0.9);
 }
 
 #[test]
@@ -585,7 +595,7 @@ fn a_channel_assignment_seeds_only_its_own_segment() {
     );
     // Into the empty zone: the one channel fits the canvas on its own.
     let zone_id = scene.zones[1].id.to_string();
-    let hints = assignment_hints(
+    let seeds = assignment_seeds(
         &scene,
         None,
         &strip,
@@ -593,14 +603,14 @@ fn a_channel_assignment_seeds_only_its_own_segment() {
         &["Bottom".to_owned()],
         CANVAS,
     );
-    assert_eq!(hints.len(), 1);
-    assert_eq!(hints[0].segment.as_deref(), Some("Bottom"));
-    assert_close(hints[0].position.x, 0.5);
-    assert_close(hints[0].position.y, 0.5);
+    assert_eq!(seeds.len(), 1);
+    assert_eq!(seeds[0].segment.as_deref(), Some("Bottom"));
+    assert_close(seeds[0].footprint.position.x, 0.5);
+    assert_close(seeds[0].footprint.position.y, 0.5);
 }
 
 #[test]
-fn assignment_hints_leave_an_unknown_device_in_a_populated_zone_to_the_daemon() {
+fn assignment_seeds_leave_an_unknown_device_in_a_populated_zone_to_the_daemon() {
     let scene = scene(
         &[
             ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
@@ -613,11 +623,11 @@ fn assignment_hints_leave_an_unknown_device_in_a_populated_zone_to_the_daemon() 
         serde_json::json!([{ "id": "main", "name": "Main", "led_count": 30, "topology": "strip" }]),
     );
     let zone_id = scene.zones[0].id.to_string();
-    assert!(assignment_hints(&scene, None, &lamp, &zone_id, &[], CANVAS).is_empty());
+    assert!(assignment_seeds(&scene, None, &lamp, &zone_id, &[], CANVAS).is_empty());
 }
 
 #[test]
-fn assignment_hints_fit_a_zone_s_first_device() {
+fn assignment_seeds_fit_a_zone_s_first_device() {
     let scene = scene(
         &[
             ("primary", &[("fan", "case", "Fan", 0.2, 0.3)]),
@@ -630,11 +640,11 @@ fn assignment_hints_fit_a_zone_s_first_device() {
         serde_json::json!([{ "id": "main", "name": "Main", "led_count": 30, "topology": "strip" }]),
     );
     let zone_id = scene.zones[1].id.to_string();
-    let hints = assignment_hints(&scene, None, &lamp, &zone_id, &[], CANVAS);
-    assert_eq!(hints.len(), 1);
-    assert_close(hints[0].position.x, 0.5);
-    assert_close(hints[0].position.y, 0.5);
-    let footprint = Footprint::of_hint(&hints[0]);
+    let seeds = assignment_seeds(&scene, None, &lamp, &zone_id, &[], CANVAS);
+    assert_eq!(seeds.len(), 1);
+    assert_close(seeds[0].footprint.position.x, 0.5);
+    assert_close(seeds[0].footprint.position.y, 0.5);
+    let footprint = seeds[0].footprint;
     let bounds = footprint.bounds(ASPECT);
     let usable = 1.0 - 2.0 * FIT_MARGIN;
     assert!(
@@ -694,4 +704,36 @@ fn moving_into_a_populated_zone_lands_at_the_rig_position() {
     assert_close(after.output.position.x, 0.4);
     assert_close(after.output.position.y, 0.7);
     assert_eq!(after.index, 1);
+}
+
+#[test]
+fn a_dropped_ring_seed_centers_by_the_circle_it_draws() {
+    let ring = turned_ring(0.5, 0.5);
+    let mut seeds = vec![Seed {
+        segment: Some("Fan".to_owned()),
+        footprint: Footprint::of(&ring),
+    }];
+    assert!(center_seeds_on(
+        &mut seeds,
+        NormalizedPosition::new(1.0, 0.5),
+        CANVAS
+    ));
+    // Its radius on the x axis is half its width, not half a turned square.
+    assert_close(seeds[0].footprint.position.x, 1.0 - 0.1);
+    assert!(seeds[0].footprint.circular);
+    assert_eq!(seeds[0].hint().segment.as_deref(), Some("Fan"));
+}
+
+#[test]
+fn a_fan_device_seeds_its_rings_as_circles() {
+    let scene = scene(&[("primary", &[]), ("custom", &[])], &[]);
+    let fan = device(
+        "fan",
+        serde_json::json!([{ "id": "ring", "name": "Ring", "led_count": 24, "topology": "ring",
+                             "topology_hint": { "type": "ring", "count": 24 } }]),
+    );
+    let zone_id = scene.zones[1].id.to_string();
+    let seeds = assignment_seeds(&scene, None, &fan, &zone_id, &[], CANVAS);
+    assert_eq!(seeds.len(), 1);
+    assert!(seeds[0].footprint.circular);
 }
