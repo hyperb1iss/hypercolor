@@ -470,9 +470,9 @@ for the logged-in user with `GROUP="users"` as a fallback.
 visible, the VID/PID may not be in the device database. Run at `debug` level and look for
 discovery output from `hypercolor_hal`.
 
-**Effects apply but LEDs show wrong colors**: likely a spatial layout mismatch. Verify device
-zones are positioned correctly. Use `hypercolor devices identify <id>` to confirm the device is
-receiving data.
+**Effects apply but LEDs show wrong colors**: likely a spatial layout mismatch. In Studio, open
+the zone's tab and check that the device's outputs sit where the device physically is on the
+canvas. Use `hypercolor devices identify <id>` to confirm the device is receiving data.
 
 **Low FPS in the render loop**: enable `RUST_LOG=hypercolor_core::engine=trace` and look for
 frame time spikes. Common causes: slow USB writes (check `avg_write_ms` per device in the

@@ -10,14 +10,19 @@ returns HTTP 412 when that revision is stale. Control values follow a different
 rule: they never use `If-Match` and instead address a real layer id from the
 live document.
 
-{{< img path="img/ui/studio.webp" alt="Studio workspace with zone tree and layout canvas" />}}
+{{< img path="img/ui/studio.webp" alt="Studio workspace with zone tabs, the device pane, and the open zone's canvas" />}}
 
-## Save rejected: "Scene changed elsewhere, reloaded, try again"
+## Edit rejected: "Scene changed elsewhere. Reloaded, try again."
 
 The daemon returned `412 Precondition Failed` because the `If-Match` value no
 longer matched the live scene's `revision`. The response carries the
 authoritative value in `error.details.current`. Studio reloads `GET /scene` so
 you can reapply the edit without overwriting another client's change.
+
+Canvas edits retry on their own: Studio lays the edit over the live scene and
+writes it once more. When that also fails, the toast reads "Layout change not
+saved: the scene changed elsewhere. Your next edit retries it." The edit stays
+on your canvas and goes out with the zone's next commit.
 
 If the rejection repeats, another browser tab, CLI command, or MCP agent is
 actively changing the scene. Run the daemon with debug logging and watch the
@@ -74,8 +79,9 @@ member placements in Studio. If blocks overlap at the origin, or have no useful
 spatial separation, the sampler reads nearly the same canvas location for every
 output.
 
-Move each member to its physical position, then save. Some effects intentionally
-render one color per zone. Switch to a spatial effect such as Borealis, Color
+Move each output to its physical position, or click **Fit** in the Stage
+header to spread the zone's devices across the canvas; the change commits when
+you release. Some effects intentionally render one color per zone. Switch to a spatial effect such as Borealis, Color
 Wave, or Gradient to distinguish an effect choice from a placement problem.
 
 ## Zone went stale mid-edit
@@ -112,12 +118,17 @@ ls -la ~/.config/hypercolor/
 Also verify that the daemon is starting with the same config path that received
 the write. `hypercolor service status` and the startup log show the active path.
 
-## Studio shows a different layout than `/layout`
+## A zone's canvas differs from the named layout
 
-The two views edit related but distinct resources. Studio writes a zone's
-member placement override through
-`PUT /api/v1/scene/zones/{zone}/layout`. The `/layout` page manages the named
-layout collection under `/api/v1/layouts`.
+The two edit related but distinct resources. Studio writes a zone's member
+placement through `PUT /api/v1/scene/zones/{zone}/layout`. Named layouts live
+in the collection under `/api/v1/layouts` (`hypercolor layouts` on the CLI).
+
+In a scene with a single LED zone, the Main zone follows the active named
+layout, and a canvas edit there writes through to it. Once a scene has a second
+LED zone, every zone's canvas belongs to that scene alone, so it drifts from the
+named layout by design. Studio still places devices joining a zone from the
+active named layout.
 
 A scene can deliberately reference a named layout through `scene.layout_id`.
 The daemon does not infer that link from the current effect. Effect-layout
@@ -129,9 +140,9 @@ Studio pushes an in-memory `zone_layout_preview` WebSocket command while you
 drag. The command is keyed by `zone_id` and always targets the active scene. A
 disconnected socket cannot deliver it, so check the WebSocket indicator first.
 
-The preview is temporary. Saving writes the member placements through the live
-zone layout route and clears the preview. Reverting, unmounting, or disconnecting
-also clears it.
+The preview is temporary. Releasing the drag commits the member placements
+through the live zone layout route and clears the preview. Switching zone tabs,
+leaving Studio, or disconnecting also clears it.
 
 ## Layer ordering looks reversed
 
@@ -151,7 +162,8 @@ daemon log for the exact response instead of retrying a stale revision.
 
 The live scene's `unassigned_behavior` controls device segments that are not
 members of any zone. Patch it through `PATCH /api/v1/scene`. Studio exposes the
-same setting in the Unassigned row for multi-zone scenes.
+same setting as the select on the **Unassigned** section header in the device
+pane.
 
 ## Debug a revision conflict directly
 
