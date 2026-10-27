@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use hypercolor_core::attachment::TemplateFilter;
-use hypercolor_core::effect::bundled_effects_root;
+use hypercolor_core::effect::{bundled_effects_root, html_effect_bundle};
 use hypercolor_types::attachment::ComponentOrigin;
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::portable_setup::{
@@ -270,16 +270,9 @@ impl PortableSetupService {
             effect_sources
                 .into_iter()
                 .map(|(id, name, source)| {
-                    let root = source
-                        .parent()
-                        .ok_or_else(|| anyhow::anyhow!("effect has no bundle directory"))?;
-                    let entrypoint = source
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .ok_or_else(|| anyhow::anyhow!("effect entrypoint is not UTF-8"))?
-                        .to_owned();
+                    let (root, entrypoint) = effect_resource_root(&source)?;
                     let mut files = BTreeMap::new();
-                    capture_files(root, root, &blobs, &mut files)?;
+                    capture_files(&root, &root, &blobs, &mut files)?;
                     Ok((
                         id,
                         PortableEffect {
@@ -302,6 +295,23 @@ impl PortableSetupService {
             .map_err(|error| DomainError::validation(error.to_string()))?;
         Ok(manifest)
     }
+}
+
+fn effect_resource_root(source: &Path) -> anyhow::Result<(std::path::PathBuf, String)> {
+    if let Some(bundle) =
+        html_effect_bundle(source).map_err(|error| anyhow::anyhow!(error.message))?
+    {
+        return Ok((bundle.root, bundle.manifest.entrypoint));
+    }
+    let root = source
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("effect has no bundle directory"))?;
+    let entrypoint = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("effect entrypoint is not UTF-8"))?
+        .to_owned();
+    Ok((root.to_owned(), entrypoint))
 }
 
 fn capture_files(
@@ -395,5 +405,44 @@ fn retain_unresolved(
                 zone.display_target = Some(target.clone());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{capture_files, effect_resource_root};
+    use hypercolor_core::effect::{HTML_EFFECT_BUNDLE_MANIFEST, HtmlEffectBundleManifest};
+    use hypercolor_core::portable_setup::SetupBlobStore;
+    use hypercolor_types::effect::EffectId;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn nested_entrypoint_keeps_resources_at_bundle_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("effect");
+        std::fs::create_dir_all(root.join("content")).unwrap();
+        std::fs::create_dir_all(root.join("shared")).unwrap();
+        std::fs::write(root.join("content/main.html"), "<html></html>").unwrap();
+        std::fs::write(root.join("shared/script.js"), "const color = 'violet'").unwrap();
+        let manifest = HtmlEffectBundleManifest {
+            schema_version: 1,
+            id: EffectId::new(uuid::Uuid::now_v7()),
+            entrypoint: "content/main.html".into(),
+        };
+        std::fs::write(
+            root.join(HTML_EFFECT_BUNDLE_MANIFEST),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let (actual_root, entrypoint) =
+            effect_resource_root(&root.join("content/main.html")).unwrap();
+        assert_eq!(actual_root, root.canonicalize().unwrap());
+        assert_eq!(entrypoint, "content/main.html");
+        let blobs = SetupBlobStore::open(directory.path().join("blobs")).unwrap();
+        let mut files = BTreeMap::new();
+        capture_files(&actual_root, &actual_root, &blobs, &mut files).unwrap();
+        assert!(files.contains_key("content/main.html"));
+        assert!(files.contains_key("shared/script.js"));
+        assert!(!files.contains_key(HTML_EFFECT_BUNDLE_MANIFEST));
     }
 }
