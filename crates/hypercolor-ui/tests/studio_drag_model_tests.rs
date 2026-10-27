@@ -5,13 +5,61 @@ use hypercolor_types::spatial::NormalizedPosition;
 
 use hypercolor_ui::pages::studio::drag_model::{
     CANCELLED_ANNOUNCEMENT, DragSource, DropAction, DropTarget, MovePayload, Origin, SpringLoad,
-    SpringPhase, action_hint, channel_label, moved_announcement, new_zone_announcement,
-    opened_announcement, origin_name, placed_announcement, resolve_drop, springs,
-    zone_name_for_device,
+    SpringPhase, action_hint, channel_label, ghost_position, moved_announcement,
+    new_zone_announcement, opened_announcement, origin_name, placed_announcement, resolve_drop,
+    springs, zone_name_for_device,
 };
 
 const MAIN: &str = "main";
 const KEYS: &str = "keyboard";
+
+#[test]
+fn ghost_tracks_pointer_until_it_reaches_the_viewport_inset() {
+    let viewport = (1024.0, 768.0);
+    let size = (240.0, 48.0);
+    assert_eq!(
+        ghost_position((100.0, 200.0), viewport, size),
+        (114.0, 212.0)
+    );
+    assert_eq!(
+        ghost_position((1024.0, 768.0), viewport, size),
+        (776.0, 712.0)
+    );
+    assert_eq!(ghost_position((-30.0, -30.0), viewport, size), (8.0, 8.0));
+}
+
+#[test]
+fn ghost_never_jumps_when_crossing_an_edge_threshold_in_either_direction() {
+    let viewport = (1024.0, 768.0);
+    let size = (240.0, 48.0);
+    let mut previous = ghost_position((0.0, 0.0), viewport, size);
+    for step in 1..1200 {
+        let point = f64::from(step);
+        let current = ghost_position((point, point), viewport, size);
+        assert!((0.0..=1.0).contains(&(current.0 - previous.0)));
+        assert!((0.0..=1.0).contains(&(current.1 - previous.1)));
+        previous = current;
+    }
+    for step in (0..1200).rev() {
+        let point = f64::from(step);
+        let current = ghost_position((point, point), viewport, size);
+        assert!((-1.0..=0.0).contains(&(current.0 - previous.0)));
+        assert!((-1.0..=0.0).contains(&(current.1 - previous.1)));
+        previous = current;
+    }
+}
+
+#[test]
+fn ghost_accounts_for_a_preview_narrowed_to_fit_a_small_viewport() {
+    assert_eq!(
+        ghost_position((180.0, 100.0), (200.0, 160.0), (240.0, 48.0)),
+        (8.0, 104.0)
+    );
+    assert_eq!(
+        ghost_position((0.0, 0.0), (0.0, 0.0), (240.0, 48.0)),
+        (8.0, 8.0)
+    );
+}
 
 fn point(x: f32, y: f32) -> NormalizedPosition {
     NormalizedPosition::new(x, y)

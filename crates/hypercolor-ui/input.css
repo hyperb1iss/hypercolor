@@ -2,6 +2,54 @@
 @import "./tokens/primitives.css";
 @import "./tokens/semantic.css";
 
+/* Studio keeps live surfaces mounted. Motion follows selection and
+   disclosure state without interpolating pointer-driven geometry. */
+.studio-tab-indicator {
+    transition: transform 200ms var(--ease-silk), width 200ms var(--ease-silk);
+}
+
+.studio-workspace[data-switch="1"] .studio-zone-content {
+    animation: studio-settle-a 160ms var(--ease-silk);
+}
+.studio-workspace[data-switch="2"] .studio-zone-content {
+    animation: studio-settle-b 160ms var(--ease-silk);
+}
+@keyframes studio-settle-a { from { opacity: 0.65; } to { opacity: 1; } }
+@keyframes studio-settle-b { from { opacity: 0.65; } to { opacity: 1; } }
+
+.studio-workspace[data-dragging="true"] .studio-zone-content {
+    animation: none;
+}
+
+.studio-disclosure {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition: grid-template-rows 200ms var(--ease-silk), opacity 160ms var(--ease-silk);
+}
+.studio-disclosure[data-open="true"] {
+    grid-template-rows: 1fr;
+    opacity: 1;
+}
+
+.studio-composition-panel,
+.studio-device-drawer {
+    transition: translate 240ms var(--ease-silk);
+}
+.studio-composition-scrim {
+    transition: opacity 200ms var(--ease-silk);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .studio-workspace[data-switch] .studio-zone-content { animation: none; }
+    .studio-tab-indicator,
+    .studio-disclosure,
+    .studio-composition-panel,
+    .studio-composition-scrim,
+    .studio-device-drawer,
+    .studio-workspace [aria-expanded] svg { transition: none; }
+}
+
 /* ── Toasts ──────────────────────────────────────────────────────────────
 
    Toasts float at the bottom right of the content area, clear of the

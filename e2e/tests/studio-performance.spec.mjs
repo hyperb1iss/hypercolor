@@ -5,7 +5,7 @@ import { getStack, parseFence } from "./helpers.mjs";
 const OUTPUT_COUNT = 80;
 const FIRST_ZONE = "11111111-1111-4111-8111-111111111111";
 const SECOND_ZONE = "22222222-2222-4222-8222-222222222222";
-const outputSelector = "[data-zone-id]";
+const outputSelector = "[data-studio-canvas] [data-zone-id]";
 const handleSelector = ":scope > div.w-3.h-3";
 
 function studioScene() {
