@@ -13,8 +13,8 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::persistence::{
-    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteReservation, serialize_json_pretty,
-    write_atomic,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation,
+    serialize_json_pretty, write_atomic,
 };
 
 /// Persistent attachment profile store keyed by physical device ID.
@@ -22,6 +22,13 @@ use crate::persistence::{
 pub struct ComponentProfileStore {
     profiles: HashMap<String, DeviceComponentProfile>,
     path: PathBuf,
+}
+
+pub(crate) struct PreparedPortableAttachments {
+    store: OwnedRwLockWriteGuard<ComponentProfileStore>,
+    candidate: Option<HashMap<String, DeviceComponentProfile>>,
+    write: Option<(AtomicWriteReservation, Vec<u8>)>,
+    durable: bool,
 }
 
 pub(crate) struct ComponentProfileBindingMigration {
@@ -52,6 +59,28 @@ pub(crate) struct ComponentProfileBindingPublication {
 }
 
 impl ComponentProfileStore {
+    /// Reserve authored profiles while excluding derived hints from the fence.
+    pub(crate) async fn prepare_portable_replace(
+        store: Arc<RwLock<Self>>,
+        expected: &HashMap<String, DeviceComponentProfile>,
+        candidate: HashMap<String, DeviceComponentProfile>,
+    ) -> anyhow::Result<PreparedPortableAttachments> {
+        let store = store.write_owned().await;
+        anyhow::ensure!(
+            authored_profiles_equal(&store.profiles, expected),
+            "portable attachment replacement was superseded by a local edit"
+        );
+        // The caller resolves candidate hints from the same candidate catalog.
+        let payload = serialize_profiles(&candidate)?;
+        let writer = AtomicFileWriter::new(&store.path)?;
+        Ok(PreparedPortableAttachments {
+            store,
+            candidate: Some(candidate),
+            write: Some((writer.reserve(), payload)),
+            durable: false,
+        })
+    }
+
     pub(crate) fn portable_snapshot(&self) -> HashMap<String, DeviceComponentProfile> {
         self.profiles.clone()
     }
@@ -177,6 +206,49 @@ impl ComponentProfileStore {
             migrated,
         }))
     }
+}
+
+impl PreparedPortableAttachments {
+    pub(crate) fn candidate(&self) -> &HashMap<String, DeviceComponentProfile> {
+        self.candidate
+            .as_ref()
+            .expect("replacement has not published")
+    }
+
+    pub(crate) fn persist(&mut self) -> MigrationPersistence {
+        let (write, payload) = self
+            .write
+            .take()
+            .expect("replacement persistence is attempted once");
+        let outcome = match write.admit(payload).commit_and_wait_durable() {
+            AtomicWriteOutcome::Written => MigrationPersistence::Durable,
+            AtomicWriteOutcome::Superseded => MigrationPersistence::Superseded,
+        };
+        self.durable = matches!(outcome, MigrationPersistence::Durable);
+        outcome
+    }
+
+    pub(crate) fn publish(&mut self) {
+        assert!(
+            self.durable,
+            "replacement must be durable before publication"
+        );
+        self.store.profiles = self.candidate.take().expect("replacement publishes once");
+    }
+}
+
+fn authored_profiles_equal(
+    left: &HashMap<String, DeviceComponentProfile>,
+    right: &HashMap<String, DeviceComponentProfile>,
+) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(id, profile)| {
+            right.get(id).is_some_and(|other| {
+                profile.schema_version == other.schema_version
+                    && profile.slots == other.slots
+                    && profile.bindings == other.bindings
+            })
+        })
 }
 
 impl ComponentProfileBindingMigration {
@@ -324,6 +396,162 @@ mod tests {
     };
 
     use super::ComponentProfileStore;
+
+    #[tokio::test]
+    async fn portable_attachments_ignore_derived_hints_and_publish_regenerated_hints() {
+        use super::*;
+        use hypercolor_types::attachment::{
+            ComponentCanvasSize, ComponentCategory, ComponentSuggestedZone,
+        };
+        use hypercolor_types::spatial::LedTopology;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("attachments.json");
+        let store = Arc::new(RwLock::new(ComponentProfileStore::new(path.clone())));
+        let key = "physical-device".to_owned();
+        let profile = DeviceComponentProfile::default();
+        store.write().await.update(&key, profile.clone());
+        let expected = store.read().await.portable_snapshot();
+        let hint = ComponentSuggestedZone {
+            slot_id: "slot".to_owned(),
+            template_id: "template".to_owned(),
+            template_name: "Fan".to_owned(),
+            name: "Local hint".to_owned(),
+            instance: 0,
+            led_start: 0,
+            led_count: 1,
+            category: ComponentCategory::Fan,
+            default_size: ComponentCanvasSize::default(),
+            topology: LedTopology::Point,
+            led_mapping: None,
+        };
+        let mut local = profile.clone();
+        local.suggested_zones.push(hint.clone());
+        store.write().await.update(&key, local);
+        let mut restored = profile;
+        restored.suggested_zones.push(ComponentSuggestedZone {
+            name: "Regenerated".to_owned(),
+            ..hint
+        });
+        let candidate = HashMap::from([(key.clone(), restored)]);
+        let mut prepared = ComponentProfileStore::prepare_portable_replace(
+            Arc::clone(&store),
+            &expected,
+            candidate.clone(),
+        )
+        .await
+        .expect("derived hint does not conflict");
+        assert_eq!(prepared.candidate(), &candidate);
+        assert!(store.try_write().is_err());
+        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert_eq!(
+            ComponentProfileStore::load(&path)
+                .expect("reopen")
+                .portable_snapshot(),
+            candidate
+        );
+        assert_eq!(
+            prepared.store.profiles[&key].suggested_zones[0].name,
+            "Local hint"
+        );
+        prepared.publish();
+        drop(prepared);
+        assert_eq!(store.read().await.portable_snapshot(), candidate);
+    }
+
+    #[tokio::test]
+    async fn portable_attachments_reject_authored_changes_and_retain_local_profiles() {
+        use super::*;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(RwLock::new(ComponentProfileStore::new(
+            directory.path().join("attachments.json"),
+        )));
+        let expected = store.read().await.portable_snapshot();
+        store
+            .write()
+            .await
+            .update("new-device", DeviceComponentProfile::default());
+        assert!(
+            ComponentProfileStore::prepare_portable_replace(
+                Arc::clone(&store),
+                &expected,
+                HashMap::new()
+            )
+            .await
+            .is_err()
+        );
+        let expected = store.read().await.portable_snapshot();
+        let mut changed = DeviceComponentProfile::default();
+        changed.bindings.push(ComponentBinding {
+            slot_id: "slot".to_owned(),
+            template_id: "new-template".to_owned(),
+            name: None,
+            enabled: true,
+            instances: 1,
+            led_offset: 0,
+        });
+        store.write().await.update("new-device", changed.clone());
+        assert!(
+            ComponentProfileStore::prepare_portable_replace(
+                Arc::clone(&store),
+                &expected,
+                HashMap::new()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(store.read().await.get("new-device"), Some(&changed));
+    }
+
+    #[tokio::test]
+    async fn portable_attachments_drop_without_persist_preserves_profiles() {
+        use super::*;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("attachments.json");
+        let store = Arc::new(RwLock::new(ComponentProfileStore::new(path.clone())));
+        let before = store.read().await.portable_snapshot();
+        let prepared = ComponentProfileStore::prepare_portable_replace(
+            Arc::clone(&store),
+            &before,
+            HashMap::from([("device".to_owned(), DeviceComponentProfile::default())]),
+        )
+        .await
+        .expect("prepare");
+        drop(prepared);
+        assert_eq!(store.read().await.portable_snapshot(), before);
+        AtomicFileWriter::new(&path)
+            .expect("writer")
+            .flush(std::time::Duration::from_secs(1))
+            .expect("no admitted intent");
+        assert!(!path.exists());
+    }
+
+    #[cfg(feature = "persistence-test-hooks")]
+    #[tokio::test]
+    async fn portable_attachments_wait_for_durability_before_publication() {
+        use super::*;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("attachments.json");
+        let store = Arc::new(RwLock::new(ComponentProfileStore::new(path.clone())));
+        let before = store.read().await.portable_snapshot();
+        let mut prepared = ComponentProfileStore::prepare_portable_replace(
+            Arc::clone(&store),
+            &before,
+            HashMap::from([("device".to_owned(), DeviceComponentProfile::default())]),
+        )
+        .await
+        .expect("prepare");
+        let writer = AtomicFileWriter::new(&path).expect("writer");
+        writer.set_injected_directory_sync_failures(1);
+        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert!(prepared.durable);
+        assert_eq!(prepared.store.portable_snapshot(), before);
+        assert!(store.try_write().is_err());
+        assert!(writer.holds_durable_bytes());
+        prepared.publish();
+        drop(prepared);
+        assert_ne!(store.read().await.portable_snapshot(), before);
+    }
 
     #[test]
     fn get_or_default_preserves_slot_ids_when_zone_names_change() {

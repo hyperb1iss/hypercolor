@@ -27,6 +27,9 @@ use crate::persistence::{
     AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
+mod portable;
+pub use portable::{LibraryPortableSnapshot, PreparedPortableLibrary};
+
 pub(crate) const LIBRARY_SCHEMA_VERSION: u32 = 2;
 pub(crate) const LEGACY_LIBRARY_SCHEMA_VERSION: u32 = 1;
 
@@ -115,6 +118,16 @@ pub enum JsonLibraryStoreOpenError {
 /// Persistence contract for saved effect library data.
 #[async_trait]
 pub trait LibraryStore: Send + Sync {
+    /// Read presets and playlists from one coherent library revision.
+    async fn portable_snapshot(&self) -> LibraryPortableSnapshot;
+
+    /// Reserve a bulk replacement while preserving account-owned favorites.
+    async fn prepare_portable_replace(
+        &self,
+        expected: &LibraryPortableSnapshot,
+        candidate: LibraryPortableSnapshot,
+    ) -> Result<PreparedPortableLibrary, LibraryStoreError>;
+
     async fn list_favorites(&self) -> Vec<FavoriteEffect>;
     async fn project_favorites(&self) -> Vec<ProjectedFavoriteState>;
     async fn upsert_favorite(
@@ -1060,6 +1073,19 @@ impl LibraryEffectIdMigrationPublication for JsonLibraryEffectIdMigrationPublica
 
 #[async_trait]
 impl LibraryStore for InMemoryLibraryStore {
+    async fn portable_snapshot(&self) -> LibraryPortableSnapshot {
+        LibraryPortableSnapshot::from_data(&*self.data.read().await)
+    }
+
+    async fn prepare_portable_replace(
+        &self,
+        expected: &LibraryPortableSnapshot,
+        candidate: LibraryPortableSnapshot,
+    ) -> Result<PreparedPortableLibrary, LibraryStoreError> {
+        PreparedPortableLibrary::prepare(&self.data, &self.mutation_gate, None, expected, candidate)
+            .await
+    }
+
     async fn list_favorites(&self) -> Vec<FavoriteEffect> {
         let data = self.data.read().await;
         let mut favorites: Vec<FavoriteEffect> = data.favorites.values().cloned().collect();
@@ -1240,6 +1266,25 @@ impl LibraryIdentityMigration for InMemoryLibraryStore {
 
 #[async_trait]
 impl LibraryStore for JsonLibraryStore {
+    async fn portable_snapshot(&self) -> LibraryPortableSnapshot {
+        LibraryPortableSnapshot::from_data(&*self.data.read().await)
+    }
+
+    async fn prepare_portable_replace(
+        &self,
+        expected: &LibraryPortableSnapshot,
+        candidate: LibraryPortableSnapshot,
+    ) -> Result<PreparedPortableLibrary, LibraryStoreError> {
+        PreparedPortableLibrary::prepare(
+            &self.data,
+            &self.mutation_gate,
+            Some(&self.writer),
+            expected,
+            candidate,
+        )
+        .await
+    }
+
     async fn list_favorites(&self) -> Vec<FavoriteEffect> {
         let data = self.data.read().await;
         let mut favorites: Vec<FavoriteEffect> = data.favorites.values().cloned().collect();
