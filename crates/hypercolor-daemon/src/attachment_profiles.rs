@@ -52,6 +52,10 @@ pub(crate) struct ComponentProfileBindingPublication {
 }
 
 impl ComponentProfileStore {
+    pub(crate) fn portable_snapshot(&self) -> HashMap<String, DeviceComponentProfile> {
+        self.profiles.clone()
+    }
+
     /// Create an empty attachment profile store for the given file path.
     #[must_use]
     pub fn new(path: PathBuf) -> Self {

@@ -21,6 +21,13 @@ use super::{
 };
 
 impl LayoutContext {
+    /// Capture authored layouts for portable projection without exposing stores.
+    pub(crate) async fn portable_snapshot(
+        &self,
+    ) -> std::collections::HashMap<String, SpatialLayout> {
+        self.catalog.entries().read().await.clone()
+    }
+
     /// List stored layouts in stable display order with bounded pagination.
     pub async fn list(&self, limit: usize, offset: usize, active_only: bool) -> LayoutListResponse {
         let active_layout_id = self.current().id;

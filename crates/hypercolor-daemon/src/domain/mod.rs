@@ -46,6 +46,7 @@ mod macos_screen_parity;
 pub mod openrgb_diagnostics;
 pub mod openrgb_setup;
 pub mod output;
+pub mod portable_setup;
 pub mod runtime_zone;
 pub mod scene;
 pub mod scene_activation;

@@ -167,6 +167,15 @@ impl AdmittedEffectControls {
 }
 
 impl EffectContext {
+    pub(crate) async fn portable_sources(&self) -> Vec<EffectEntry> {
+        self.registry
+            .read()
+            .await
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect()
+    }
+
     pub(crate) fn new(
         registry: Arc<RwLock<EffectRegistry>>,
         scene: SceneContext,
