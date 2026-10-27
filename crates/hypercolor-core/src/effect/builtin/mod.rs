@@ -134,3 +134,9 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
 pub(crate) fn builtin_effect_stable_id(name: &str) -> hypercolor_types::effect::EffectId {
     common::builtin_effect_id(name)
 }
+
+pub(super) fn is_reserved_effect_id(id: hypercolor_types::effect::EffectId) -> bool {
+    // Reserve optional native sources even in builds that cannot render them.
+    id == builtin_effect_stable_id("web_viewport")
+        || builtin_metadata().iter().any(|metadata| metadata.id == id)
+}
