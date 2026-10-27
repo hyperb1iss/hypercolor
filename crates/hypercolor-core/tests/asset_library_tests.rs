@@ -263,3 +263,57 @@ fn stream_url_hint_matches_mapped_ipv6_exact_allowlist_entries() {
         "application/vnd.hypercolor.stream-url"
     );
 }
+
+#[test]
+fn portable_import_preserves_ids_and_shared_content_across_reopen_and_removal() {
+    use hypercolor_types::asset::AssetId;
+    let root = TempDir::new().expect("tempdir");
+    let mut library = AssetLibrary::open(root.path()).expect("open library");
+    let bytes = png_bytes([30, 60, 90, 255]);
+    let a = AssetId::new();
+    let b = AssetId::new();
+    library
+        .import_bytes(a, &bytes, AssetUploadOptions::new("A"))
+        .expect("restore first identity");
+    library
+        .import_bytes(b, &bytes, AssetUploadOptions::new("B"))
+        .expect("restore second identity");
+    let repeated = library
+        .import_bytes(a, &bytes, AssetUploadOptions::new("A"))
+        .expect("repeat restore");
+    assert!(repeated.events.is_empty());
+    assert_eq!(library.records().len(), 2);
+    let object = library
+        .object_path_for_hash(&AssetLibrary::hash_bytes(&bytes))
+        .expect("object path");
+    drop(library);
+    let mut reopened = AssetLibrary::open(root.path()).expect("reopen");
+    reopened
+        .rebuild_index_from_objects()
+        .expect("reconcile aliases");
+    assert!(reopened.contains(a));
+    assert!(reopened.contains(b));
+    reopened.remove(a).expect("remove first identity");
+    assert!(object.exists());
+    assert!(reopened.contains(b));
+    reopened.remove(b).expect("remove last identity");
+    assert!(!object.exists());
+}
+
+#[test]
+fn portable_import_refuses_conflicting_identity_without_changing_content() {
+    use hypercolor_types::asset::AssetId;
+    let root = TempDir::new().expect("tempdir");
+    let mut library = AssetLibrary::open(root.path()).expect("open library");
+    let id = AssetId::new();
+    let bytes = png_bytes([30, 60, 90, 255]);
+    let first = library
+        .import_bytes(id, &bytes, AssetUploadOptions::new("Original"))
+        .expect("restore asset");
+    let other = png_bytes([250, 60, 90, 255]);
+    assert!(
+        matches!(library.import_bytes(id, &other, AssetUploadOptions::new("Conflict")), Err(hypercolor_core::asset::AssetLibraryError::IdentityConflict(conflict)) if conflict == id)
+    );
+    assert_eq!(library.get(id), Some(&first.record));
+    assert_eq!(library.records().len(), 1);
+}

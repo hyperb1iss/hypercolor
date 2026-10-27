@@ -317,6 +317,9 @@ fn asset_error(error: AssetLibraryError) -> DomainError {
             DomainError::Internal(anyhow::anyhow!(error.to_string()))
         }
         AssetLibraryError::NotFound(id) => DomainError::not_found(ResourceKind::Asset, id),
+        AssetLibraryError::IdentityConflict(id) => {
+            DomainError::conflict(format!("asset {id} already refers to different content"))
+        }
     }
 }
 
