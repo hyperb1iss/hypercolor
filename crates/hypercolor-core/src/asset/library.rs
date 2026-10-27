@@ -1,5 +1,7 @@
 //! Content-addressed user media asset storage.
 
+pub mod portable;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
