@@ -1,5 +1,7 @@
 //! Persisted device attachment profile store.
 
+pub(crate) mod resolution;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};

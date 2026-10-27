@@ -1,6 +1,5 @@
 //! Device attachment endpoints — `/api/v1/devices/{id}/attachments`.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -8,15 +7,16 @@ use axum::response::{IntoResponse, Response};
 use tracing::debug;
 
 use hypercolor_core::attachment::{effective_attachment_slots, normalize_attachment_profile_slots};
-use hypercolor_types::attachment::{
-    ComponentBinding, ComponentSlot, ComponentSuggestedZone, ComponentTemplate,
-    DeviceComponentProfile,
-};
+use hypercolor_types::attachment::{ComponentBinding, ComponentTemplate, DeviceComponentProfile};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use crate::api::envelope;
 use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
+use crate::attachment_profiles::resolution::{
+    ResolvedComponentBinding, resolve_profile_bindings, suggested_attachment_zones,
+    validate_attachment_bindings,
+};
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 
@@ -26,15 +26,6 @@ pub use hypercolor_types::api::devices::{
     ComponentBindingSummary, DeleteAttachmentsResponse, DeviceComponentsResponse,
     DeviceComponentsUpdateResponse, UpdateAttachmentsRequest,
 };
-
-#[derive(Debug, Clone)]
-pub(super) struct ResolvedComponentBinding {
-    pub(super) index: usize,
-    pub(super) binding: ComponentBinding,
-    pub(super) slot: ComponentSlot,
-    pub(super) template: ComponentTemplate,
-    pub(super) effective_led_count: u32,
-}
 
 /// `GET /api/v1/devices/{id}/attachments` — Get a device attachment profile.
 pub async fn get_attachments(
@@ -244,260 +235,6 @@ fn summarize_resolved_bindings(
             effective_led_count: binding.effective_led_count,
         })
         .collect()
-}
-
-pub(super) fn suggested_attachment_zones(
-    bindings: &[ResolvedComponentBinding],
-) -> Vec<ComponentSuggestedZone> {
-    let mut zones = Vec::new();
-
-    for binding in bindings {
-        let template_led_count = binding.template.led_count();
-        for instance in 0..binding.binding.instances {
-            let led_start = binding
-                .slot
-                .led_start
-                .saturating_add(binding.binding.led_offset)
-                .saturating_add(instance.saturating_mul(template_led_count));
-            zones.push(ComponentSuggestedZone {
-                slot_id: binding.binding.slot_id.clone(),
-                template_id: binding.binding.template_id.clone(),
-                template_name: binding.template.name.clone(),
-                name: attachment_zone_name(binding, instance),
-                instance,
-                led_start,
-                led_count: template_led_count,
-                category: binding.template.category.clone(),
-                default_size: binding.template.default_size,
-                topology: binding.template.topology.clone(),
-                led_mapping: binding.template.led_mapping.clone(),
-            });
-        }
-    }
-
-    disambiguate_attachment_zone_names(&mut zones);
-    zones
-}
-
-fn attachment_zone_name(binding: &ResolvedComponentBinding, instance: u32) -> String {
-    match binding.binding.name.as_deref() {
-        Some(name) if binding.binding.instances > 1 => {
-            format!("{name} - {} {}", binding.template.name, instance + 1)
-        }
-        Some(name) => name.to_owned(),
-        None if binding.binding.instances > 1 => {
-            format!("{} {}", binding.template.name, instance + 1)
-        }
-        None => binding.template.name.clone(),
-    }
-}
-
-trait NamedComponentZone {
-    fn slot_id(&self) -> &str;
-    fn name(&self) -> &str;
-    fn name_mut(&mut self) -> &mut String;
-}
-
-impl NamedComponentZone for ComponentSuggestedZone {
-    fn slot_id(&self) -> &str {
-        &self.slot_id
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
-}
-
-fn disambiguate_attachment_zone_names<T: NamedComponentZone>(zones: &mut [T]) {
-    let mut totals = HashMap::<(String, String), usize>::new();
-    for zone in &*zones {
-        *totals
-            .entry((zone.slot_id().to_owned(), zone.name().to_owned()))
-            .or_insert(0) += 1;
-    }
-
-    let mut seen = HashMap::<(String, String), usize>::new();
-    for zone in zones {
-        let base_name = zone.name().to_owned();
-        let key = (zone.slot_id().to_owned(), base_name.clone());
-        if totals.get(&key).copied().unwrap_or(0) <= 1 {
-            continue;
-        }
-
-        let index = seen.entry(key).or_insert(0);
-        *index += 1;
-        *zone.name_mut() = format!("{base_name} {index}");
-    }
-}
-
-fn resolve_profile_bindings(
-    device: &DeviceInfo,
-    profile: &DeviceComponentProfile,
-    registry: &hypercolor_core::attachment::ComponentRegistry,
-) -> Option<Vec<ResolvedComponentBinding>> {
-    validate_attachment_bindings(device, &profile.slots, &profile.bindings, registry).ok()
-}
-
-fn validate_attachment_bindings(
-    device: &DeviceInfo,
-    slots: &[ComponentSlot],
-    bindings: &[ComponentBinding],
-    registry: &hypercolor_core::attachment::ComponentRegistry,
-) -> Result<Vec<ResolvedComponentBinding>, DomainError> {
-    let slot_index = slots
-        .iter()
-        .map(|slot| (slot.id.as_str(), slot))
-        .collect::<HashMap<_, _>>();
-    let mut resolved = Vec::with_capacity(bindings.len());
-
-    for (index, binding) in bindings.iter().enumerate() {
-        let slot_id = binding.slot_id.trim();
-        if slot_id.is_empty() {
-            return Err(DomainError::validation(format!(
-                "binding {index} has an empty slot_id"
-            )));
-        }
-
-        let template_id = binding.template_id.trim();
-        if template_id.is_empty() {
-            return Err(DomainError::validation(format!(
-                "binding {index} has an empty template_id"
-            )));
-        }
-
-        if binding.instances == 0 {
-            return Err(DomainError::validation(format!(
-                "binding {index} must set instances to at least 1"
-            )));
-        }
-
-        let Some(slot) = slot_index.get(slot_id).copied() else {
-            return Err(DomainError::validation(format!(
-                "binding {index} targets unknown slot '{slot_id}'"
-            )));
-        };
-        let Some(template) = registry.get(template_id) else {
-            return Err(DomainError::validation(format!(
-                "binding {index} references unknown template '{template_id}'"
-            )));
-        };
-
-        if !slot.supports_template(template) {
-            return Err(DomainError::validation(format!(
-                "template '{template_id}' is not allowed for slot '{slot_id}'"
-            )));
-        }
-        if !template_supports_device_slot(template, device, slot_id) {
-            return Err(DomainError::validation(format!(
-                "template '{template_id}' is not compatible with {} slot '{slot_id}'",
-                device.name
-            )));
-        }
-
-        let effective_led_count = binding.effective_led_count(template);
-        let Some(binding_end) = binding.led_offset.checked_add(effective_led_count) else {
-            return Err(DomainError::validation(format!(
-                "binding {index} exceeds slot '{slot_id}' LED range"
-            )));
-        };
-        if binding_end > slot.led_count {
-            return Err(DomainError::validation(format!(
-                "binding {index} exceeds slot '{slot_id}' capacity: {binding_end} > {}",
-                slot.led_count
-            )));
-        }
-
-        resolved.push(ResolvedComponentBinding {
-            index,
-            binding: ComponentBinding {
-                slot_id: slot_id.to_owned(),
-                template_id: template_id.to_owned(),
-                name: normalize_attachment_binding_name(binding.name.as_deref()),
-                enabled: binding.enabled,
-                instances: binding.instances,
-                led_offset: binding.led_offset,
-            },
-            slot: slot.clone(),
-            template: template.clone(),
-            effective_led_count,
-        });
-    }
-
-    validate_attachment_overlaps(&resolved)?;
-    Ok(resolved)
-}
-
-fn template_supports_device_slot(
-    template: &ComponentTemplate,
-    device: &DeviceInfo,
-    slot_id: &str,
-) -> bool {
-    device_attachment_compatibility_ids(device)
-        .iter()
-        .any(|controller_id| {
-            template.supports_slot(controller_id, device.model.as_deref(), slot_id)
-        })
-}
-
-fn device_attachment_compatibility_ids(device: &DeviceInfo) -> Vec<String> {
-    let mut ids = Vec::with_capacity(2);
-    push_unique_id(&mut ids, device.driver_id().to_owned());
-    if let Some(protocol_id) = device.origin.protocol_id.as_deref() {
-        push_unique_id(&mut ids, protocol_id.to_owned());
-    }
-    ids
-}
-
-fn push_unique_id(ids: &mut Vec<String>, id: String) {
-    if !ids.iter().any(|existing| existing == &id) {
-        ids.push(id);
-    }
-}
-
-fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result<(), DomainError> {
-    let mut enabled = bindings
-        .iter()
-        .filter(|binding| binding.binding.enabled)
-        .collect::<Vec<_>>();
-    enabled.sort_by(|left, right| {
-        left.binding
-            .slot_id
-            .cmp(&right.binding.slot_id)
-            .then_with(|| left.binding.led_offset.cmp(&right.binding.led_offset))
-            .then_with(|| left.index.cmp(&right.index))
-    });
-
-    for pair in enabled.windows(2) {
-        let [current, next] = pair else {
-            continue;
-        };
-        if current.binding.slot_id != next.binding.slot_id {
-            continue;
-        }
-
-        let current_end = current
-            .binding
-            .led_offset
-            .saturating_add(current.effective_led_count);
-        if next.binding.led_offset < current_end {
-            return Err(DomainError::validation(format!(
-                "bindings {} and {} overlap within slot '{}'",
-                current.index, next.index, current.binding.slot_id
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-fn normalize_attachment_binding_name(raw: Option<&str>) -> Option<String> {
-    raw.map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 async fn active_layout_targets_device(
