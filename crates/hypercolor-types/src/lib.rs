@@ -28,6 +28,7 @@ pub mod motherboard;
 pub mod net;
 pub mod pairing;
 pub mod portable;
+pub mod portable_setup;
 pub mod scene;
 pub mod sensor;
 pub mod server;
