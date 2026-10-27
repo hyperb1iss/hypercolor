@@ -35,6 +35,36 @@ fn id() -> EffectId {
 }
 
 #[test]
+fn bundle_lookup_preserves_the_resource_root_of_a_nested_entrypoint() {
+    let temp = TempDir::new().expect("isolated bundle fixture");
+    let expected = id();
+    bundle(temp.path(), expected, "content/main.html");
+    bundle(&temp.path().join("content/resources"), id(), "iframe.html");
+    for relative in [
+        "content/main.html",
+        "content/resources/iframe.html",
+        HTML_EFFECT_BUNDLE_MANIFEST,
+    ] {
+        let found = hypercolor_core::effect::html_effect_bundle(&temp.path().join(relative))
+            .expect("valid owning manifest")
+            .expect("bundle exists");
+        assert_eq!(found.manifest.id, expected);
+        assert_eq!(found.manifest.entrypoint, "content/main.html");
+        assert_eq!(
+            found.root,
+            fs::canonicalize(temp.path()).expect("canonical root")
+        );
+        assert_eq!(found.entrypoint, found.root.join("content/main.html"));
+    }
+    let loose = TempDir::new().expect("isolated loose effect fixture");
+    assert!(
+        hypercolor_core::effect::html_effect_bundle(&loose.path().join("loose.html"))
+            .expect("no manifest is valid")
+            .is_none()
+    );
+}
+
+#[test]
 fn identity_survives_different_installation_paths() {
     let temp = TempDir::new().expect("valid test fixture");
     let expected = id();
