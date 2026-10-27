@@ -223,7 +223,7 @@ pub fn DevicePane() -> impl IntoView {
             on:touchmove=move |ev| drag.on_touch_move(&ev)
         >
             <PaneSearch search=search on_screens=on_screens />
-            <div class="scrollbar-none flex-1 overflow-y-auto px-3 pb-3" data-pane-scroll="">
+            <div class="studio-zone-content scrollbar-none flex-1 overflow-y-auto px-3 pb-3" data-pane-scroll="">
                 {move || {
                     if on_screens.get() {
                         return view! { <ScreenList query=query /> }.into_any();
@@ -514,7 +514,13 @@ fn OtherZoneRow(
                     {count}
                 </span>
             </button>
-            <Show when=move || expanded.get()>
+            <div
+                class="studio-disclosure"
+                data-open=move || expanded.get().to_string()
+                inert=move || (!expanded.get()).then_some("")
+                aria-hidden=move || (!expanded.get()).to_string()
+            >
+                <div class="min-h-0 overflow-hidden">
                 <div
                     id=list_id.clone()
                     class="space-y-0.5 border-t border-edge-subtle/40 bg-surface-sunken/50 px-1.5 py-1.5"
@@ -539,7 +545,8 @@ fn OtherZoneRow(
                             .into_any()
                     }}
                 </div>
-            </Show>
+                </div>
+            </div>
         </div>
     }
 }

@@ -45,7 +45,7 @@ use crate::style_utils::device_accent_colors;
 use super::StudioContext;
 use super::drag_model::{
     CANCELLED_ANNOUNCEMENT, DragSource, DropTarget, MovePayload, SpringLoad, SpringPhase,
-    action_hint, opened_announcement, resolve_drop, springs,
+    action_hint, ghost_position, opened_announcement, resolve_drop, springs,
 };
 use super::move_menu::{MoveMenuAnchor, MoveMenuHost};
 use super::moves::{canvas_payload, perform, zone_name};
@@ -810,11 +810,9 @@ impl DragController {
     }
 }
 
-/// Where the ghost sits for a pointer at `(x, y)`: below and right of it,
-/// flipping to the other side near the window's right or bottom edge.
+/// The preview follows the pointer directly, then holds against the viewport
+/// edge. Its fixed footprint keeps target hints from shifting its position.
 fn ghost_transform((x, y): (f64, f64)) -> String {
-    const ROOM_X: f64 = 290.0;
-    const ROOM_Y: f64 = 72.0;
     let window = window();
     let extent = |value: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>| {
         value
@@ -823,17 +821,8 @@ fn ghost_transform((x, y): (f64, f64)) -> String {
             .unwrap_or(f64::MAX)
     };
     let (width, height) = (extent(window.inner_width()), extent(window.inner_height()));
-    let (dx, shift_x) = if x + ROOM_X > width {
-        (x - 14.0, "-100%")
-    } else {
-        (x + 14.0, "0")
-    };
-    let (dy, shift_y) = if y + ROOM_Y > height {
-        (y - 12.0, "-100%")
-    } else {
-        (y + 12.0, "0")
-    };
-    format!("transform: translate({dx:.0}px, {dy:.0}px) translate({shift_x}, {shift_y})")
+    let (left, top) = ghost_position((x, y), (width, height), (240.0, 48.0));
+    format!("transform: translate3d({left:.2}px, {top:.2}px, 0)")
 }
 
 /// The device pane's scrolling list.
@@ -861,12 +850,12 @@ pub(crate) fn DragLayer() -> impl IntoView {
             })
             .map(|action| action_hint(&action, |id| zone_name(studio, id)))
     });
-    // The ghost mounts once per drag; only its hint line follows the
-    // target, so it does not replay its entrance on every target change.
-    let ghost = Memo::new(move |_| {
-        let payload = drag.payload.get()?;
-        // A box dragged on its own canvas is its own ghost.
-        (payload.source != DragSource::Canvas || hint.with(Option::is_some)).then_some(payload)
+    let ghost_visible = Memo::new(move |_| {
+        drag.payload.with(|payload| {
+            payload.as_ref().is_some_and(|payload| {
+                payload.source != DragSource::Canvas || hint.with(Option::is_some)
+            })
+        })
     });
     let canvas_look = Memo::new(move |_| {
         let rect = drag.canvas_rect.get()?;
@@ -881,44 +870,34 @@ pub(crate) fn DragLayer() -> impl IntoView {
         <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
             {move || drag.announcement.get()}
         </div>
-        {move || {
-            canvas_look
-                .get()
-                .map(|((left, top, width, height), look)| {
-                    let over = look == DropLook::Over;
-                    view! {
-                        <div
-                            class="pointer-events-none fixed z-[60] rounded-lg border-2 transition-colors duration-150"
-                            class=("border-accent", over)
-                            class=("bg-accent/10", over)
-                            class=("border-accent/50", !over)
-                            class=("border-dashed", !over)
-                            style=format!(
-                                "left: {left:.0}px; top: {top:.0}px; width: {width:.0}px; height: {height:.0}px",
-                            )
-                        >
-                            {move || {
-                                drag.canvas_point
-                                    .get()
-                                    .map(|point| {
-                                        view! {
-                                            <span
-                                                class="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent bg-surface-base"
-                                                style=format!(
-                                                    "left: {:.2}%; top: {:.2}%",
-                                                    point.x * 100.0,
-                                                    point.y * 100.0,
-                                                )
-                                            />
-                                        }
-                                    })
-                            }}
-                        </div>
-                    }
+        <Show when=move || canvas_look.with(Option::is_some)>
+            <div
+                data-studio-drop-preview=""
+                class="pointer-events-none fixed z-[60] rounded-lg border-2 transition-colors duration-150 motion-reduce:transition-none"
+                class=("border-accent", move || canvas_look.with(|look| look.is_some_and(|(_, look)| look == DropLook::Over)))
+                class=("bg-accent/10", move || canvas_look.with(|look| look.is_some_and(|(_, look)| look == DropLook::Over)))
+                class=("border-accent/40", move || canvas_look.with(|look| look.is_some_and(|(_, look)| look != DropLook::Over)))
+                class=("border-dashed", move || canvas_look.with(|look| look.is_some_and(|(_, look)| look != DropLook::Over)))
+                style=move || canvas_look.with(|look| {
+                    look.map(|((left, top, width, height), _)| format!(
+                        "left: {left:.2}px; top: {top:.2}px; width: {width:.2}px; height: {height:.2}px",
+                    )).unwrap_or_default()
                 })
-        }}
+                aria-hidden="true"
+            >
+                <span
+                    data-studio-drop-point=""
+                    class="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent bg-surface-base transition-opacity duration-150 motion-reduce:transition-none"
+                    class=("opacity-0", move || drag.canvas_point.with(Option::is_none))
+                    style=move || {
+                        let point = drag.canvas_point.get().unwrap_or(NormalizedPosition::new(0.5, 0.5));
+                        format!("left: {:.2}%; top: {:.2}%", point.x * 100.0, point.y * 100.0)
+                    }
+                />
+            </div>
+        </Show>
         {move || {
-            ghost
+            drag.payload
                 .get()
                 .map(|payload| {
                     let (primary, secondary) = device_accent_colors(&payload.device_id);
@@ -927,27 +906,25 @@ pub(crate) fn DragLayer() -> impl IntoView {
                     );
                     view! {
                         <div
-                            class="pointer-events-none fixed left-0 top-0 z-[80]"
+                            data-studio-drag-ghost=""
+                            class="pointer-events-none fixed left-0 top-0 z-[80] h-12 w-[240px] max-w-[calc(100vw-16px)] transition-opacity duration-150 motion-reduce:transition-none"
+                            class=("opacity-0", move || !ghost_visible.get())
                             style=move || ghost_transform(drag.pointer.get())
                             aria-hidden="true"
                         >
-                            <div class="flex max-w-[260px] items-center gap-2 rounded-lg border border-edge-subtle bg-surface-overlay/98 py-1.5 pl-2 pr-2.5 backdrop-blur-xl dropdown-glow animate-enter-scale">
+                            <div class="flex h-full items-center gap-2 rounded-lg border border-edge-subtle bg-surface-overlay py-1.5 pl-2 pr-2.5 dropdown-glow animate-enter-fade">
                                 <span class="h-7 w-1 shrink-0 rounded-full" style=strip />
-                                <div class="min-w-0">
+                                <div class="min-w-0 flex-1">
                                     <div class="truncate text-[12px] font-medium text-fg-primary">
                                         {payload.label.clone()}
                                     </div>
-                                    {move || {
-                                        hint.get()
-                                            .map(|hint| {
-                                                view! {
-                                                    <div class="flex items-center gap-1 text-[10px] text-fg-tertiary">
-                                                        <Icon icon=LuChevronRight width="10px" height="10px" />
-                                                        <span class="truncate">{hint}</span>
-                                                    </div>
-                                                }
-                                            })
-                                    }}
+                                    <div
+                                        class="flex h-4 items-center gap-1 text-[10px] text-fg-tertiary transition-opacity duration-150 motion-reduce:transition-none"
+                                        class=("opacity-0", move || hint.with(Option::is_none))
+                                    >
+                                        <Icon icon=LuChevronRight width="10px" height="10px" />
+                                        <span class="truncate">{move || hint.get().unwrap_or_default()}</span>
+                                    </div>
                                 </div>
                                 {payload.badge().map(|count| {
                                     view! {

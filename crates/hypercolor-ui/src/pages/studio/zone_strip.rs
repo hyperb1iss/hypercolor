@@ -392,13 +392,57 @@ pub fn ZoneStrip() -> impl IntoView {
 
     let has_screens = Memo::new(move |_| !screen_ids.with(Vec::is_empty));
     let screen_count = Memo::new(move |_| screen_ids.with(Vec::len));
+    let indicator = RwSignal::new(None::<(f64, f64)>);
+    Effect::new(move |_| {
+        studio.selected_surface_id.track();
+        on_screens.track();
+        visible_ids.track();
+        lights.track();
+        strip_width.track();
+        strip_ref.track();
+        // Measure after keyed tabs and overflow have committed their DOM.
+        request_animation_frame(move || {
+            let Some(strip) = strip_ref.try_get_untracked().flatten() else {
+                return;
+            };
+            let Some(selected) = studio.selected_surface_id.try_get_untracked() else {
+                return;
+            };
+            let dom_id = active_tab_dom_id(
+                selected.as_deref(),
+                on_screens.try_get_untracked().unwrap_or(false),
+            );
+            let geometry = dom_id
+                .and_then(|id| document().get_element_by_id(&id))
+                .and_then(|tab| tab.parent_element())
+                .map(|tab| {
+                    let rect = tab.get_bounding_client_rect();
+                    let origin = strip.get_bounding_client_rect();
+                    (
+                        rect.left() - origin.left() + 8.0,
+                        (rect.width() - 16.0).max(0.0),
+                    )
+                });
+            indicator.try_set(geometry);
+        });
+    });
 
     view! {
         <div
             node_ref=strip_ref
-            class="flex h-full min-w-0 flex-1 items-end gap-1 self-stretch"
+            class="relative flex h-full min-w-0 flex-1 items-end gap-1 self-stretch"
             on:keydown=on_keydown
         >
+            <Show when=move || indicator.with(Option::is_some)>
+                <span
+                    class="studio-tab-indicator pointer-events-none absolute bottom-0 left-0 z-10 h-0.5 rounded-full bg-accent"
+                    aria-hidden="true"
+                    style=move || {
+                        let (left, width) = indicator.get().unwrap_or_default();
+                        format!("transform: translateX({left}px); width: {width}px")
+                    }
+                />
+            </Show>
             <div
                 node_ref=handles.tabs_ref
                 role="tablist"
@@ -450,9 +494,6 @@ pub fn ZoneStrip() -> impl IntoView {
                     class=("hover:bg-surface-hover/30", move || !on_screens.get())
                     class=("hover:text-fg-secondary", move || !on_screens.get())
                 >
-                    <Show when=move || on_screens.get()>
-                        <span class="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent" />
-                    </Show>
                     <button
                         type="button"
                         role="tab"
@@ -728,9 +769,6 @@ fn ZoneTab(zone_id: String, handles: StripHandles) -> impl IntoView {
             class=("ring-accent", move || drop_look.get() == DropLook::Over)
             class=("bg-accent/10", move || drop_look.get() == DropLook::Over)
         >
-            <Show when=move || is_active.get()>
-                <span class="pointer-events-none absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent" />
-            </Show>
             {tab_view}
             // Holding a drag here opens the tab when the ring fills.
             <Show when=move || springing.get()>
