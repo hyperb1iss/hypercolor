@@ -530,6 +530,18 @@ pub fn StudioPage() -> impl IntoView {
     }));
     on_cleanup(move || history.attach_announcer(None));
     let dragging = Memo::new(move |_| drag.payload.with(Option::is_some));
+    // Restart the short content settle only for a different tab. Scene
+    // refreshes and repeated clicks keep the live canvas undisturbed.
+    let content_switch = RwSignal::new(0_u8);
+    Effect::new(move |previous: Option<Option<String>>| {
+        let selected = selected_surface_id.get();
+        if dragging.get() {
+            content_switch.set(0);
+        } else if previous.is_some_and(|previous| previous != selected) {
+            content_switch.update(|phase| *phase = if *phase == 1 { 2 } else { 1 });
+        }
+        selected
+    });
 
     let on_screens = Memo::new(move |_| {
         let selected = selected_surface_id.get();
@@ -551,7 +563,9 @@ pub fn StudioPage() -> impl IntoView {
     view! {
         <div
             node_ref=root_ref
-            class="flex h-full flex-col overflow-hidden"
+            class="studio-workspace flex h-full flex-col overflow-hidden"
+            data-switch=move || content_switch.get().to_string()
+            data-dragging=move || dragging.get().to_string()
             class=("cursor-grabbing", move || dragging.get())
             class=("select-none", move || dragging.get())
             on:pointermove=move |ev| drag.on_move(&ev)
@@ -603,7 +617,7 @@ pub fn StudioPage() -> impl IntoView {
                     // deliberately covers the bar instead of stacking above
                     // it. Keep bracket class syntax out of comments; the
                     // Tailwind scanner reads them and emits dead rules.
-                    class="w-80 shrink-0 overflow-hidden lg:w-[var(--pane-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-[45] max-lg:border-r max-lg:border-edge-subtle/70 max-lg:transition-transform max-lg:duration-200 max-md:pb-[env(safe-area-inset-bottom)]"
+                    class="studio-device-drawer w-80 shrink-0 overflow-hidden lg:w-[var(--pane-w)] max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-[45] max-lg:border-r max-lg:border-edge-subtle/70 max-md:pb-[env(safe-area-inset-bottom)]"
                     class=("max-lg:-translate-x-full", move || !pane_drawer.get())
                     style:--pane-w=move || format!("{}px", pane_width.get())
                 >
@@ -622,7 +636,7 @@ pub fn StudioPage() -> impl IntoView {
                         on_drag_end=Callback::new(|()| {})
                     />
                 </div>
-                <div class="relative min-w-0 flex-1">
+                <div class="relative min-w-0 flex-1 overflow-hidden">
                     <ZoneLayoutProvider
                         selected_zone_id=selected_surface_id
                         refresh_scene=refresh_scene

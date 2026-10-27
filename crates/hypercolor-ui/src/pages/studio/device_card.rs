@@ -281,6 +281,7 @@ pub fn StudioDeviceCard(
         .collect();
     let show_components = total_components > 1;
     let channels_open = RwSignal::new(mode == CardMode::Placed);
+    let channels_id = format!("studio-channels-{zone_key}-{row_device_id}");
 
     // What the card moves as a whole, then each channel it lists, for the
     // drag and its "Move to" menu.
@@ -566,6 +567,7 @@ pub fn StudioDeviceCard(
                                         class="flex w-full items-center gap-1.5 border-t px-2.5 py-1 text-left text-[10px] text-fg-tertiary/80 transition-colors hover:text-fg-secondary"
                                         style=list_style.clone()
                                         aria-expanded=move || channels_open.get().to_string()
+                                        aria-controls=channels_id.clone()
                                         on:click=move |_| channels_open.update(|open| *open = !*open)
                                     >
                                         <Icon
@@ -573,6 +575,7 @@ pub fn StudioDeviceCard(
                                             width="10px"
                                             height="10px"
                                             {..}
+                                            class="transition-transform duration-200"
                                             class=("rotate-90", move || channels_open.get())
                                         />
                                         {format!("{channel_count} channels")}
@@ -580,10 +583,14 @@ pub fn StudioDeviceCard(
                                 }
                             })}
                         <div
-                            class="space-y-0.5 border-t px-1.5 py-1.5"
-                            class=("hidden", move || !channels_open.get())
-                            style=list_style.clone()
+                            id=channels_id.clone()
+                            class="studio-disclosure"
+                            data-open=move || channels_open.get().to_string()
+                            inert=move || (!channels_open.get()).then_some("")
+                            aria-hidden=move || (!channels_open.get()).to_string()
                         >
+                            <div class="min-h-0 overflow-hidden">
+                                <div class="space-y-0.5 border-t px-1.5 py-1.5" style=list_style.clone()>
                             {component_rows
                                 .into_iter()
                                 .map(|row| {
@@ -598,6 +605,8 @@ pub fn StudioDeviceCard(
                                     )
                                 })
                                 .collect_view()}
+                                </div>
+                            </div>
                         </div>
                     }
                 })}

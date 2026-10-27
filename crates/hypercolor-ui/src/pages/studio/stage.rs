@@ -27,6 +27,7 @@ use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 use crate::ws::messages::zone_has_degraded_layer;
 
+use super::composition_panel::{COMPOSITION_PANEL_ID, COMPOSITION_TRIGGER_ID};
 use super::surface::{Surface, SurfaceKind, layer_label, now_playing, surfaces_from_zones};
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -183,7 +184,7 @@ pub fn Stage() -> impl IntoView {
         Signal::derive(move || selected_display.get().map(|display| display.rotation));
 
     view! {
-        <div class="flex h-full flex-col bg-surface-sunken/20">
+        <div class="studio-zone-content flex h-full flex-col bg-surface-sunken/20">
             <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/60 px-5 py-3">
                 <NowPlayingChip surface=selected_surface />
                 {move || {
@@ -420,23 +421,26 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
     view! {
         <button
             type="button"
+            id=COMPOSITION_TRIGGER_ID
+            aria-controls=COMPOSITION_PANEL_ID
+            aria-expanded=move || studio.composition_open.get().to_string()
             class="group flex items-center gap-2 rounded-lg border border-edge-subtle/60 bg-surface-overlay/40 px-3 py-1.5 transition-colors hover:border-accent-muted hover:bg-surface-overlay/70"
-            title="Open the composition panel"
+            title=move || if studio.composition_open.get() { "Close the composition panel" } else { "Open the composition panel" }
             on:click=move |_| studio.composition_open.update(|open| *open = !*open)
         >
             <Icon
                 icon=LuLayers
                 width="13px"
                 height="13px"
-                style="color: rgba(225, 53, 255, 0.75)"
+                {..}
+                class="text-accent/75"
             />
             <span class="max-w-[200px] truncate text-[12px] font-medium text-fg-secondary group-hover:text-fg-primary">
                 {label}
             </span>
             <Show when=is_default_face>
                 <span
-                    class="rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-[0.14em]"
-                    style="border-color: rgba(225, 53, 255, 0.35); color: rgba(225, 53, 255, 0.85)"
+                    class="rounded-full border border-accent/35 px-1.5 py-px text-[9px] font-semibold uppercase tracking-[0.14em] text-accent/85"
                     title="The display's default face, shown in every scene without its own face layer"
                 >
                     "Default"
@@ -446,7 +450,9 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
                 icon=LuChevronRight
                 width="12px"
                 height="12px"
-                style="color: rgba(139, 133, 160, 0.55)"
+                {..}
+                class="text-fg-tertiary/55 transition-transform duration-200"
+                class=("rotate-180", move || studio.composition_open.get())
             />
         </button>
     }

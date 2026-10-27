@@ -9,6 +9,7 @@ use hypercolor_leptos_ext::events::target_is_text_entry;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::components::layer_panel::LayerPanel;
@@ -17,6 +18,9 @@ use crate::icons::*;
 use super::StudioContext;
 use super::face_composition::{DefaultFaceCard, ScreenCompositionSection};
 use super::surface::selected_screen_device_id;
+
+pub(super) const COMPOSITION_PANEL_ID: &str = "studio-composition-panel";
+pub(super) const COMPOSITION_TRIGGER_ID: &str = "studio-composition-trigger";
 
 /// The right-edge composition slide-over. Stays mounted and animates via
 /// a transform; `inert` while closed keeps its controls out of the tab
@@ -33,6 +37,43 @@ pub fn CompositionPanel(
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let open = studio.composition_open;
+    let panel_ref = NodeRef::<leptos::html::Aside>::new();
+    let close_ref = NodeRef::<leptos::html::Button>::new();
+
+    // Focus follows the disclosure without stealing it back from a control
+    // elsewhere in Studio when the panel closes.
+    Effect::new(move |previous: Option<bool>| {
+        let is_open = open.get();
+        if is_open && previous == Some(false) {
+            request_animation_frame(move || {
+                if open.try_get_untracked() == Some(true)
+                    && let Some(button) = close_ref.try_get_untracked().flatten()
+                {
+                    let options = web_sys::FocusOptions::new();
+                    options.set_prevent_scroll(true);
+                    let _ = button.focus_with_options(&options);
+                }
+            });
+        }
+        is_open
+    });
+    let close = move || {
+        let focused_in_panel = panel_ref.get_untracked().is_some_and(|panel| {
+            document()
+                .active_element()
+                .is_some_and(|active| panel.contains(Some(&active)))
+        });
+        if focused_in_panel
+            && let Some(trigger) = document()
+                .get_element_by_id(COMPOSITION_TRIGGER_ID)
+                .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let options = web_sys::FocusOptions::new();
+            options.set_prevent_scroll(true);
+            let _ = trigger.focus_with_options(&options);
+        }
+        open.set(false);
+    };
 
     // A Screen surface's backing display device — present only while the
     // selection is a display-role zone with a bound target. Drives the
@@ -49,32 +90,36 @@ pub fn CompositionPanel(
     let keydown = window_event_listener(ev::keydown, move |event| {
         if open.get_untracked() && event.key() == "Escape" && !target_is_text_entry(event.target())
         {
-            open.set(false);
+            close();
         }
     });
     on_cleanup(move || keydown.remove());
 
     view! {
         <div
-            class="absolute inset-0 z-30 bg-black/45 backdrop-blur-sm transition-opacity duration-200 ease-out"
+            class="studio-composition-scrim absolute inset-0 z-30 bg-black/45"
             class=("opacity-0", move || !open.get())
             class=("pointer-events-none", move || !open.get())
-            on:click=move |_| open.set(false)
+            on:click=move |_| close()
+            aria-hidden="true"
         />
         <aside
-            class="absolute inset-y-0 right-0 z-40 flex w-[420px] max-w-[88%] flex-col
-                   border-l border-edge-subtle bg-surface-base/95 backdrop-blur-md
-                   transition-transform duration-200 ease-out"
+            node_ref=panel_ref
+            id=COMPOSITION_PANEL_ID
+            aria-label="Composition"
+            aria-hidden=move || (!open.get()).to_string()
+            class="studio-composition-panel absolute inset-y-0 right-0 z-40 flex w-[420px] max-w-[88%] flex-col
+                   border-l border-edge-subtle bg-surface-base"
             class=("translate-x-full", move || !open.get())
-            style="box-shadow: -20px 0 52px -28px rgba(0, 0, 0, 0.75)"
-            inert=move || !open.get()
+            inert=move || (!open.get()).then_some("")
         >
             <div class="flex shrink-0 justify-end border-b border-edge-subtle/55 px-3 py-2">
                 <button
+                    node_ref=close_ref
                     type="button"
-                    class="flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary transition-all btn-press hover:bg-surface-hover/40 hover:text-fg-primary"
+                    class="flex h-6 w-6 items-center justify-center rounded-md text-fg-tertiary btn-press hover:bg-surface-hover/40 hover:text-fg-primary"
                     title="Close the composition panel"
-                    on:click=move |_| open.set(false)
+                    on:click=move |_| close()
                 >
                     <Icon icon=LuX width="14px" height="14px" />
                 </button>

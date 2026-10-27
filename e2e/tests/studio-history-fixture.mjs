@@ -66,6 +66,12 @@ export async function openHistory(page, { placedStand = false, offline = false, 
       if (path === "/api/v1/layouts") {
         return route.fulfill({ json: envelope({ items: [], total: 0 }), headers: daemonHeaders(scene) });
       }
+      if (path === "/api/v1/layouts/active") {
+        return route.fulfill({ json: envelope({
+          id: "fixture-rig", name: "Fixture rig", description: null,
+          canvas_width: 640, canvas_height: 480, zones: [], version: 1,
+        }), headers: daemonHeaders(scene) });
+      }
       return route.continue();
     }
     const body = request.postDataJSON();

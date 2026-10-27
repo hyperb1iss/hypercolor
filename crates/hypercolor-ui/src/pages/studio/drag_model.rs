@@ -9,6 +9,22 @@
 
 use hypercolor_types::spatial::NormalizedPosition;
 
+/// Place a drag preview near the pointer while keeping it inside the viewport.
+/// Clamping instead of flipping sides keeps its travel continuous at an edge.
+#[must_use]
+pub fn ghost_position(pointer: (f64, f64), viewport: (f64, f64), size: (f64, f64)) -> (f64, f64) {
+    const INSET: f64 = 8.0;
+    let axis = |pointer: f64, extent: f64, size: f64, offset: f64| {
+        let available = (extent - INSET * 2.0).max(0.0);
+        let end = (extent - size.min(available) - INSET).max(INSET);
+        (pointer + offset).clamp(INSET, end)
+    };
+    (
+        axis(pointer.0, viewport.0, size.0, 14.0),
+        axis(pointer.1, viewport.1, size.1, 12.0),
+    )
+}
+
 /// Where the moving outputs live before the move.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
