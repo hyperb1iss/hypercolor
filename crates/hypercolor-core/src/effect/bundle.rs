@@ -20,6 +20,14 @@ pub struct HtmlEffectBundleManifest {
     pub entrypoint: String,
 }
 
+/// A validated bundle and the directory that owns all its resource paths.
+#[derive(Debug, Clone)]
+pub struct HtmlEffectBundle {
+    pub manifest: HtmlEffectBundleManifest,
+    pub root: PathBuf,
+    pub entrypoint: PathBuf,
+}
+
 impl HtmlEffectBundleManifest {
     /// Validate identity and resolve an existing HTML entrypoint inside `root`.
     pub fn resolve_entrypoint(&self, root: &Path) -> Result<PathBuf, HtmlDiscoveryError> {
@@ -63,10 +71,9 @@ pub(super) fn is_manifest(path: &Path) -> bool {
         .is_some_and(|name| name == HTML_EFFECT_BUNDLE_MANIFEST)
 }
 
-/// The outer bundle owns all descendants, including nested HTML documents.
-pub(super) fn containing_bundle(
-    path: &Path,
-) -> Result<Option<(HtmlEffectBundleManifest, PathBuf)>, HtmlDiscoveryError> {
+/// Find the outer bundle owning a source or resource, validating its entrypoint.
+/// Exporters use `root` to preserve sibling resources of nested entrypoints.
+pub fn html_effect_bundle(path: &Path) -> Result<Option<HtmlEffectBundle>, HtmlDiscoveryError> {
     let absolute = std::path::absolute(path).map_err(|error| HtmlDiscoveryError {
         path: path.to_owned(),
         message: error.to_string(),
@@ -87,7 +94,12 @@ pub(super) fn containing_bundle(
     let bytes = fs::read(&manifest_path).map_err(|error| fail(error.to_string()))?;
     let manifest: HtmlEffectBundleManifest = serde_json::from_slice(&bytes)
         .map_err(|error| fail(format!("invalid effect bundle manifest: {error}")))?;
-    let entrypoint =
-        manifest.resolve_entrypoint(manifest_path.parent().expect("manifest parent"))?;
-    Ok(Some((manifest, entrypoint)))
+    let root = fs::canonicalize(manifest_path.parent().expect("manifest parent"))
+        .map_err(|error| fail(error.to_string()))?;
+    let entrypoint = manifest.resolve_entrypoint(&root)?;
+    Ok(Some(HtmlEffectBundle {
+        manifest,
+        root,
+        entrypoint,
+    }))
 }

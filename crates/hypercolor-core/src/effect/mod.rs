@@ -23,7 +23,9 @@ mod servo_bootstrap;
 mod traits;
 pub mod watcher;
 
-pub use bundle::{HTML_EFFECT_BUNDLE_MANIFEST, HtmlEffectBundleManifest};
+pub use bundle::{
+    HTML_EFFECT_BUNDLE_MANIFEST, HtmlEffectBundle, HtmlEffectBundleManifest, html_effect_bundle,
+};
 pub use factory::{
     EffectRendererAccelerationResolution, create_renderer_for_metadata,
     create_renderer_for_metadata_with_effect_acceleration,

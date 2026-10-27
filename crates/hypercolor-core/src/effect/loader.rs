@@ -162,8 +162,8 @@ fn register_html_effect_file(
     report.scanned_files += 1;
 
     let normalized = if super::bundle::is_manifest(file) {
-        match super::bundle::containing_bundle(file) {
-            Ok(Some((_, entrypoint))) => entrypoint,
+        match super::bundle::html_effect_bundle(file) {
+            Ok(Some(bundle)) => bundle.entrypoint,
             Ok(None) => normalize_path(file),
             Err(error) => {
                 report.errors.push(error);
@@ -222,8 +222,8 @@ pub(super) fn validate_imported_identity(
     if imported
         && registry.get(&entry.metadata.id).is_some_and(|existing| {
             normalize_path(&existing.source_path) != entry.source_path
-                && !super::bundle::containing_bundle(&existing.source_path).is_ok_and(|bundle| {
-                    bundle.is_some_and(|(_, entrypoint)| entrypoint == entry.source_path)
+                && !super::bundle::html_effect_bundle(&existing.source_path).is_ok_and(|bundle| {
+                    bundle.is_some_and(|bundle| bundle.entrypoint == entry.source_path)
                 })
         })
     {
@@ -252,7 +252,7 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
 
 pub(super) fn inspect_html_effect_file(file: &Path) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
     let bundle_entrypoint = if super::bundle::is_manifest(file) {
-        super::bundle::containing_bundle(file)?.map(|(_, entrypoint)| entrypoint)
+        super::bundle::html_effect_bundle(file)?.map(|bundle| bundle.entrypoint)
     } else {
         None
     };
@@ -277,10 +277,10 @@ pub(super) fn inspect_html_effect_source(
 ) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
     let parsed = parse_html_effect_metadata(raw_html);
     let source_path = normalize_path(file);
-    let bundle = super::bundle::containing_bundle(file)?;
+    let bundle = super::bundle::html_effect_bundle(file)?;
     let imported = bundle.is_some();
-    if let Some((_, entrypoint)) = &bundle {
-        if *entrypoint != source_path {
+    if let Some(bundle) = &bundle {
+        if bundle.entrypoint != source_path {
             return Ok(HtmlEffectFile {
                 entry: None,
                 legacy_effect_ids: Vec::new(),
@@ -296,7 +296,7 @@ pub(super) fn inspect_html_effect_source(
     }
     let canonical_id = bundle.map_or_else(
         || html_effect_id(&source_path, &parsed),
-        |(manifest, _)| manifest.id,
+        |bundle| bundle.manifest.id,
     );
     let legacy_effect_ids = html_effect_id_migrations(&source_path, canonical_id)
         .into_iter()
