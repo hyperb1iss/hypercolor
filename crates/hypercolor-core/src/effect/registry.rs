@@ -283,6 +283,9 @@ impl EffectRegistry {
     /// If `path` no longer exists, the effect is removed from the registry.
     /// Returns a diff summary.
     pub fn reload_single(&mut self, path: &std::path::Path) -> RescanReport {
+        if super::bundle::is_manifest(path) {
+            return self.rescan();
+        }
         if !is_html_file(path) {
             return RescanReport::default();
         }
@@ -324,6 +327,9 @@ impl EffectRegistry {
         modified: SystemTime,
     ) -> Result<(RescanReport, Option<EffectId>), super::HtmlDiscoveryError> {
         let loaded = super::loader::inspect_html_effect_source(path, raw_html, modified)?;
+        if let Some(entry) = &loaded.entry {
+            super::loader::validate_imported_identity(self, entry, loaded.imported)?;
+        }
         let effect_id = loaded.entry.as_ref().map(|entry| entry.metadata.id);
         Ok((self.apply_loaded_file(path, loaded), effect_id))
     }
@@ -333,6 +339,13 @@ impl EffectRegistry {
         path: &Path,
         loaded: super::loader::HtmlEffectFile,
     ) -> RescanReport {
+        if let Some(entry) = &loaded.entry
+            && let Err(error) =
+                super::loader::validate_imported_identity(self, entry, loaded.imported)
+        {
+            warn!(path = %error.path.display(), error = %error.message, "Failed to reload HTML effect");
+            return RescanReport::default();
+        }
         let legacy_effect_ids = loaded.legacy_effect_ids;
         let Some(entry) = loaded.entry else {
             let removed_count = self.remove_by_source_path(path);
@@ -368,13 +381,13 @@ impl EffectRegistry {
 
     /// Remove all effects whose source path matches the given path.
     /// Returns the count of removed effects.
-    fn remove_by_source_path(&mut self, path: &std::path::Path) -> usize {
+    pub(super) fn remove_by_source_path(&mut self, path: &std::path::Path) -> usize {
         self.remove_by_source_path_except(path, None)
     }
 
     /// Remove effects whose source path matches the given path, except one id.
     /// Returns the count of removed effects.
-    fn remove_by_source_path_except(
+    pub(super) fn remove_by_source_path_except(
         &mut self,
         path: &std::path::Path,
         keep_id: Option<EffectId>,

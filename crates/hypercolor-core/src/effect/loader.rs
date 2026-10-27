@@ -30,6 +30,7 @@ const NATIVE_SCREEN_CAST_BUILTIN_ID: &str = "screen_cast";
 pub(super) struct HtmlEffectFile {
     pub(super) entry: Option<EffectEntry>,
     pub(super) legacy_effect_ids: Vec<(EffectId, EffectId)>,
+    pub(super) imported: bool,
 }
 
 /// Discovery error for a single file/path during HTML scanning.
@@ -160,7 +161,18 @@ fn register_html_effect_file(
 ) {
     report.scanned_files += 1;
 
-    let normalized = normalize_path(file);
+    let normalized = if super::bundle::is_manifest(file) {
+        match super::bundle::containing_bundle(file) {
+            Ok(Some((_, entrypoint))) => entrypoint,
+            Ok(None) => normalize_path(file),
+            Err(error) => {
+                report.errors.push(error);
+                return;
+            }
+        }
+    } else {
+        normalize_path(file)
+    };
     if !visited_files.insert(normalized) {
         report.skipped_files += 1;
         return;
@@ -175,6 +187,7 @@ fn register_html_effect_file(
     };
 
     let Some(entry) = loaded.entry else {
+        registry.remove_by_source_path(file);
         report
             .legacy_effect_ids
             .extend(registered_migrations(registry, loaded.legacy_effect_ids));
@@ -182,17 +195,44 @@ fn register_html_effect_file(
         return;
     };
 
+    if let Err(error) = validate_imported_identity(registry, &entry, loaded.imported) {
+        report.errors.push(error);
+        return;
+    }
+
     let canonical_id = entry.metadata.id;
     for (legacy_id, migration_target) in loaded.legacy_effect_ids {
         debug_assert_eq!(migration_target, canonical_id);
         report.legacy_effect_ids.insert(legacy_id, migration_target);
     }
 
+    registry.remove_by_source_path_except(&entry.source_path, Some(canonical_id));
     if registry.register(entry).is_some() {
         report.replaced_effects += 1;
     } else {
         report.loaded_effects += 1;
     }
+}
+
+pub(super) fn validate_imported_identity(
+    registry: &EffectRegistry,
+    entry: &EffectEntry,
+    imported: bool,
+) -> Result<(), HtmlDiscoveryError> {
+    if imported
+        && registry.get(&entry.metadata.id).is_some_and(|existing| {
+            normalize_path(&existing.source_path) != entry.source_path
+                && !super::bundle::containing_bundle(&existing.source_path).is_ok_and(|bundle| {
+                    bundle.is_some_and(|(_, entrypoint)| entrypoint == entry.source_path)
+                })
+        })
+    {
+        return Err(HtmlDiscoveryError {
+            path: entry.source_path.clone(),
+            message: "imported effect identity is already owned by another source".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn registered_migrations(
@@ -211,6 +251,12 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
 }
 
 pub(super) fn inspect_html_effect_file(file: &Path) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
+    let bundle_entrypoint = if super::bundle::is_manifest(file) {
+        super::bundle::containing_bundle(file)?.map(|(_, entrypoint)| entrypoint)
+    } else {
+        None
+    };
+    let file = bundle_entrypoint.as_deref().unwrap_or(file);
     let raw_html = fs::read_to_string(file).map_err(|error| HtmlDiscoveryError {
         path: file.to_path_buf(),
         message: format!("failed to read file: {error}"),
@@ -231,7 +277,27 @@ pub(super) fn inspect_html_effect_source(
 ) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
     let parsed = parse_html_effect_metadata(raw_html);
     let source_path = normalize_path(file);
-    let canonical_id = html_effect_id(&source_path, &parsed);
+    let bundle = super::bundle::containing_bundle(file)?;
+    let imported = bundle.is_some();
+    if let Some((_, entrypoint)) = &bundle {
+        if *entrypoint != source_path {
+            return Ok(HtmlEffectFile {
+                entry: None,
+                legacy_effect_ids: Vec::new(),
+                imported,
+            });
+        }
+        if parsed.builtin_id.is_some() {
+            return Err(HtmlDiscoveryError {
+                path: source_path,
+                message: "custom bundles cannot declare a native builtin identity".to_owned(),
+            });
+        }
+    }
+    let canonical_id = bundle.map_or_else(
+        || html_effect_id(&source_path, &parsed),
+        |(manifest, _)| manifest.id,
+    );
     let legacy_effect_ids = html_effect_id_migrations(&source_path, canonical_id)
         .into_iter()
         .map(|legacy_id| (legacy_id, canonical_id))
@@ -241,6 +307,7 @@ pub(super) fn inspect_html_effect_source(
         return Ok(HtmlEffectFile {
             entry: None,
             legacy_effect_ids,
+            imported,
         });
     }
 
@@ -300,6 +367,7 @@ pub(super) fn inspect_html_effect_source(
             state: EffectState::Loading,
         }),
         legacy_effect_ids,
+        imported,
     })
 }
 
@@ -318,7 +386,7 @@ fn collect_html_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
                 continue;
             }
 
-            if file_type.is_file() && is_html_file(&path) {
+            if file_type.is_file() && (is_html_file(&path) || super::bundle::is_manifest(&path)) {
                 html_files.push(path);
             }
         }
