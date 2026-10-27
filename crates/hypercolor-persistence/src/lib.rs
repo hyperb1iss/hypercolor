@@ -1017,6 +1017,42 @@ impl AtomicWriteReservation {
 }
 
 impl AdmittedAtomicWrite {
+    /// Attempt a write and retain the caller until this exact admitted
+    /// generation is durable or a newer admission supersedes it. Transaction
+    /// owners use this on a blocking worker while retaining their store guards;
+    /// returning a transient failure would release those guards while the retry
+    /// supervisor still owns the old bytes.
+    ///
+    /// A persistent storage failure keeps this call pending. The destination's
+    /// normal failure status remains available to diagnostics during the wait.
+    #[must_use]
+    pub fn commit_and_wait_durable(self) -> AtomicWriteOutcome {
+        let destination = Arc::clone(&self.destination);
+        let generation = self.generation;
+        match self.commit_stage_aware() {
+            AtomicWriteCommitResult::DurableWritten => return AtomicWriteOutcome::Written,
+            AtomicWriteCommitResult::Superseded => return AtomicWriteOutcome::Superseded,
+            AtomicWriteCommitResult::FailedBeforeReplacement(_)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(_) => {}
+        }
+        let mut state = destination
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if state.latest_admitted_generation != generation {
+                return AtomicWriteOutcome::Superseded;
+            }
+            if state.pending.is_none() && state.active_generation.is_none() {
+                return AtomicWriteOutcome::Written;
+            }
+            state = destination
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
     /// Attempt the admitted replacement. Failures remain retained by the
     /// shared retry supervisor.
     ///
@@ -1670,5 +1706,38 @@ mod tests {
         writer
             .flush(Duration::from_secs(5))
             .expect("nothing is left pending");
+    }
+}
+
+#[cfg(test)]
+mod transaction_wait_tests {
+    use super::{AtomicFileWriter, AtomicWriteOutcome};
+
+    #[test]
+    fn transaction_waits_for_retry_to_make_its_generation_durable() {
+        let directory = tempfile::tempdir().expect("transaction directory");
+        let path = directory.path().join("transaction.json");
+        let writer = AtomicFileWriter::new(&path).expect("transaction writer");
+        writer.set_injected_replace_failures(1);
+        let write = writer.reserve().admit(b"candidate".to_vec());
+        assert_eq!(write.commit_and_wait_durable(), AtomicWriteOutcome::Written);
+        assert_eq!(std::fs::read(path).expect("durable candidate"), b"candidate");
+        assert!(writer.pending_failure().is_none());
+        assert!(writer.holds_durable_bytes());
+    }
+
+    #[test]
+    fn transaction_wait_never_mistakes_a_newer_generation_for_its_own() {
+        let directory = tempfile::tempdir().expect("transaction directory");
+        let path = directory.path().join("transaction.json");
+        let writer = AtomicFileWriter::new(&path).expect("transaction writer");
+        let old = writer.reserve().admit(b"old".to_vec());
+        let new = writer.reserve().admit(b"new".to_vec());
+        assert_eq!(
+            old.commit_and_wait_durable(),
+            AtomicWriteOutcome::Superseded
+        );
+        assert_eq!(new.commit_and_wait_durable(), AtomicWriteOutcome::Written);
+        assert_eq!(std::fs::read(path).expect("durable successor"), b"new");
     }
 }
