@@ -113,7 +113,7 @@ fn ambiguous_and_missing_hardware_remains_offline_without_guessing() {
             bindings.local_output(binding),
             format!("portable:{binding}")
         );
-        assert_eq!(bindings.local_device(binding), DeviceId::from_uuid(binding));
+        assert_eq!(bindings.local_device(binding), None);
     }
 }
 
@@ -249,4 +249,70 @@ fn missing_selection_and_invalid_render_values_fail_before_restore() {
     manifest.output.brightness = 1.0;
     manifest.output.canvas_width = 0;
     assert!(manifest.validate().is_err());
+}
+
+#[test]
+fn bundle_rejects_reserved_identity_metadata_and_file_directory_collisions() {
+    for files in [
+        BTreeMap::from([
+            ("index.html".into(), blob()),
+            ("HyPeRcOlOr-EfFeCt.JsOn".into(), blob()),
+        ]),
+        BTreeMap::from([
+            ("index.html".into(), blob()),
+            ("textures".into(), blob()),
+            ("textures/image.png".into(), blob()),
+        ]),
+    ] {
+        let mut manifest = setup();
+        manifest.effects.insert(
+            Uuid::now_v7(),
+            PortableEffect {
+                name: "Effect".into(),
+                entrypoint: "index.html".into(),
+                files,
+            },
+        );
+        assert!(manifest.validate().is_err());
+    }
+}
+
+#[test]
+fn builtin_presets_are_checked_against_the_destination_catalog() {
+    use hypercolor_types::effect::EffectId;
+    use hypercolor_types::library::{
+        EffectPlaylist, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget, PresetId,
+    };
+    let mut manifest = setup();
+    let preset = PresetId::new();
+    let playlist = PlaylistId::new();
+    let effect = EffectId::new(Uuid::now_v7());
+    manifest.playlists.insert(
+        playlist.0,
+        EffectPlaylist {
+            id: playlist,
+            name: "Playlist".into(),
+            description: None,
+            items: vec![PlaylistItem {
+                id: PlaylistItemId::new(),
+                target: PlaylistItemTarget::Preset { preset_id: preset },
+                duration_ms: None,
+                transition_ms: None,
+            }],
+            loop_enabled: true,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        },
+    );
+    assert!(
+        manifest
+            .validate_with_catalog(&PortableReferenceCatalog::default())
+            .is_err()
+    );
+    let mut catalog = PortableReferenceCatalog::default();
+    catalog.presets.insert(preset, effect);
+    catalog.effects.insert(effect);
+    manifest
+        .validate_with_catalog(&catalog)
+        .expect("builtin catalog satisfies reference");
 }

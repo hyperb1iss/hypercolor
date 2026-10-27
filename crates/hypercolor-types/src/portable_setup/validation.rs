@@ -1,6 +1,9 @@
 use super::{PortableBlob, PortableLayout, PortableSetupV1};
 use crate::control::ControlValue;
+use crate::effect::EffectId;
 use crate::layer::LayerSource;
+use crate::library::PlaylistItemTarget;
+use crate::library::PresetId;
 use std::collections::{BTreeMap, HashSet};
 use uuid::Uuid;
 
@@ -10,6 +13,14 @@ use uuid::Uuid;
 pub struct PortableSetupError {
     pub path: String,
     pub message: String,
+}
+
+/// Built-in and already-installed references accepted by a restore target.
+#[derive(Debug, Default)]
+pub struct PortableReferenceCatalog {
+    pub effects: HashSet<EffectId>,
+    pub presets: std::collections::HashMap<PresetId, EffectId>,
+    pub attachment_templates: HashSet<String>,
 }
 
 fn error(path: impl Into<String>, message: impl Into<String>) -> PortableSetupError {
@@ -79,6 +90,98 @@ impl PortableBlob {
 }
 
 impl PortableSetupV1 {
+    /// Check references against both the incoming manifest and the target's
+    /// catalog. Built-in presets/effects/templates do not need bundled copies.
+    pub fn validate_with_catalog(
+        &self,
+        catalog: &PortableReferenceCatalog,
+    ) -> Result<(), PortableSetupError> {
+        self.validate()?;
+        let effect = |id: EffectId| {
+            if self.effects.contains_key(&id.0) || catalog.effects.contains(&id) {
+                Ok(())
+            } else {
+                Err(error("effect reference", format!("effect {id} is absent")))
+            }
+        };
+        let preset = |id: PresetId| {
+            self.presets
+                .get(&id.0)
+                .map(|preset| preset.effect_id)
+                .or_else(|| catalog.presets.get(&id).copied())
+                .ok_or_else(|| error("preset reference", format!("preset {id} is absent")))
+        };
+        let template = |id: &str| {
+            if self.attachment_templates.contains_key(id)
+                || catalog.attachment_templates.contains(id)
+            {
+                Ok(())
+            } else {
+                Err(error(
+                    "attachment reference",
+                    format!("template {id} is absent"),
+                ))
+            }
+        };
+        for scene in self.scenes.values() {
+            for zone in &scene.zones {
+                for layer in &zone.layers {
+                    if let LayerSource::Effect {
+                        effect_id,
+                        preset_id,
+                        ..
+                    } = layer.source
+                    {
+                        effect(effect_id)?;
+                        if let Some(id) = preset_id
+                            && preset(id)? != effect_id
+                        {
+                            return Err(error(
+                                "layer.preset_id",
+                                "preset belongs to another effect",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for saved in self.presets.values() {
+            effect(saved.effect_id)?;
+        }
+        for playlist in self.playlists.values() {
+            for item in &playlist.items {
+                match item.target {
+                    PlaylistItemTarget::Effect { effect_id } => effect(effect_id)?,
+                    PlaylistItemTarget::Preset { preset_id } => {
+                        effect(preset(preset_id)?)?;
+                    }
+                }
+            }
+        }
+        for face in self.display_faces.values() {
+            effect(face.effect_id)?;
+        }
+        for profile in self.attachments.values() {
+            for binding in &profile.bindings {
+                template(&binding.template_id)?;
+                if !profile.slots.iter().any(|slot| slot.id == binding.slot_id) {
+                    return Err(error("attachment binding", "referenced slot is absent"));
+                }
+            }
+        }
+        for layout in self.layouts.values().chain(
+            self.scenes
+                .values()
+                .flat_map(|scene| scene.zones.iter().map(|zone| &zone.layout)),
+        ) {
+            for output in &layout.zones {
+                if let Some(attachment) = &output.attachment {
+                    template(&attachment.template_id)?;
+                }
+            }
+        }
+        Ok(())
+    }
     /// Validate the document graph and every file destination before restore.
     /// Missing physical devices are valid: presence belongs to local discovery.
     pub fn validate(&self) -> Result<(), PortableSetupError> {
@@ -107,6 +210,12 @@ impl PortableSetupV1 {
             }
         }
         for (id, logical) in &self.logical_devices {
+            if id.is_nil() {
+                return Err(error(
+                    format!("logical_devices.{id}"),
+                    "logical identity must not be nil",
+                ));
+            }
             self.require_device(logical.device, &format!("logical_devices.{id}.device"))?;
             if logical.led_count == 0 || logical.led_start.checked_add(logical.led_count).is_none()
             {
@@ -117,6 +226,14 @@ impl PortableSetupV1 {
             }
         }
         for (id, scene) in &self.scenes {
+            if let Some(layout_id) = &scene.layout_id
+                && !self.layouts.contains_key(layout_id.as_str())
+            {
+                return Err(error(
+                    format!("scenes.{id}.layout_id"),
+                    "referenced layout is absent",
+                ));
+            }
             let mut zones = HashSet::new();
             for zone in &scene.zones {
                 let path = format!("scenes.{id}.zones.{}", zone.id);
@@ -192,6 +309,14 @@ impl PortableSetupV1 {
                 ));
             }
         }
+        for (id, template) in &self.attachment_templates {
+            if id != &template.id {
+                return Err(error(
+                    format!("attachment_templates.{id}"),
+                    "map key does not match template identity",
+                ));
+            }
+        }
         for id in self
             .attachments
             .keys()
@@ -238,7 +363,19 @@ impl PortableSetupV1 {
             }
             let mut paths = HashSet::new();
             for (path, blob) in &effect.files {
-                if !is_portable_bundle_path(path) || !paths.insert(path.to_lowercase()) {
+                let canonical = path.to_lowercase();
+                let conflicts_with_directory = paths.iter().any(|existing: &String| {
+                    canonical.starts_with(&format!("{existing}/"))
+                        || existing.starts_with(&format!("{canonical}/"))
+                });
+                if !is_portable_bundle_path(path)
+                    || path
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("hypercolor-effect.json"))
+                    || conflicts_with_directory
+                    || !paths.insert(canonical)
+                {
                     return Err(error(
                         format!("effects.{id}.files.{path}"),
                         "invalid or case-colliding portable path",

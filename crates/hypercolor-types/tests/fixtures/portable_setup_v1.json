@@ -1,0 +1,374 @@
+{
+  "schema_version": 1,
+  "setup_id": "019a0000-0000-7000-8000-000000000001",
+  "name": "Studio",
+  "devices": {
+    "019a0000-0000-7000-8000-000000000002": {
+      "name": "Controller",
+      "portable_key": null,
+      "driver_id": "lian_li",
+      "vendor_id": 3314,
+      "product_id": 41217,
+      "model": "case",
+      "led_count": 16,
+      "binding_hint": {
+        "class": {
+          "kind": "claimless_usb",
+          "owner": "lian_li",
+          "vendor_id": 3314,
+          "product_id": 41217
+        },
+        "segments": [
+          {
+            "name": "strip",
+            "led_count": 16
+          }
+        ]
+      }
+    }
+  },
+  "logical_devices": {
+    "019a0000-0000-7000-8000-000000000003": {
+      "device": "019a0000-0000-7000-8000-000000000002",
+      "name": "Front strip",
+      "led_start": 0,
+      "led_count": 16,
+      "enabled": true
+    }
+  },
+  "scenes": {
+    "019a0000-0000-7000-8000-000000000009": {
+      "name": "Studio scene",
+      "description": null,
+      "zones": [
+        {
+          "id": "019a0000-0000-7000-8000-00000000000a",
+          "name": "Primary",
+          "description": null,
+          "layers": [
+            {
+              "id": "019a0000-0000-7000-8000-000000000006",
+              "source": {
+                "type": "effect",
+                "effect_id": "019a0000-0000-7000-8000-000000000004",
+                "controls": {},
+                "preset_id": "019a0000-0000-7000-8000-000000000005"
+              },
+              "blend": "replace",
+              "opacity": 1.0,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            },
+            {
+              "id": "019a0000-0000-7000-8000-000000000007",
+              "source": {
+                "type": "media",
+                "asset_id": "019a0000-0000-7000-8000-000000000008",
+                "playback": {
+                  "speed": 1.0,
+                  "loop_mode": "loop",
+                  "start_offset_secs": 0.0,
+                  "auto_play": true
+                }
+              },
+              "blend": "replace",
+              "opacity": 1.0,
+              "transform": {
+                "anchor": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "scale": [
+                  1.0,
+                  1.0
+                ],
+                "rotation": 0.0,
+                "fit": "cover"
+              },
+              "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ],
+                "tint_strength": 0.0,
+                "contrast": 0.0
+              },
+              "enabled": true
+            }
+          ],
+          "layout": {
+            "id": "case",
+            "name": "Case",
+            "description": null,
+            "zones": [
+              {
+                "id": "front",
+                "name": "Front",
+                "device": "019a0000-0000-7000-8000-000000000003",
+                "zone_name": "strip",
+                "position": {
+                  "x": 0.5,
+                  "y": 0.5
+                },
+                "size": {
+                  "x": 0.4,
+                  "y": 0.8
+                },
+                "rotation": 0.0,
+                "scale": 1.0,
+                "display_order": 0,
+                "orientation": null,
+                "topology": {
+                  "type": "strip",
+                  "count": 16,
+                  "direction": "left_to_right"
+                },
+                "led_mapping": null,
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null,
+                "attachment": null,
+                "brightness": 0.75
+              }
+            ],
+            "default_sampling_mode": {
+              "type": "bilinear"
+            },
+            "default_edge_behavior": "clamp",
+            "version": 1
+          },
+          "brightness": 1.0,
+          "enabled": true,
+          "color": null,
+          "display_target": {
+            "device": "019a0000-0000-7000-8000-000000000002",
+            "blend_mode": "alpha",
+            "opacity": 1.0
+          },
+          "role": "primary"
+        }
+      ],
+      "transition": {
+        "duration_ms": 500,
+        "easing": "EaseInOut",
+        "color_interpolation": "Oklab"
+      },
+      "priority": 50,
+      "enabled": true,
+      "metadata": {},
+      "unassigned_behavior": "off",
+      "layout_id": "case",
+      "activation_brightness": null,
+      "kind": "named",
+      "mutation_mode": "live"
+    }
+  },
+  "layouts": {
+    "case": {
+      "id": "case",
+      "name": "Case",
+      "description": null,
+      "zones": [
+        {
+          "id": "front",
+          "name": "Front",
+          "device": "019a0000-0000-7000-8000-000000000003",
+          "zone_name": "strip",
+          "position": {
+            "x": 0.5,
+            "y": 0.5
+          },
+          "size": {
+            "x": 0.4,
+            "y": 0.8
+          },
+          "rotation": 0.0,
+          "scale": 1.0,
+          "display_order": 0,
+          "orientation": null,
+          "topology": {
+            "type": "strip",
+            "count": 16,
+            "direction": "left_to_right"
+          },
+          "led_mapping": null,
+          "sampling_mode": null,
+          "edge_behavior": null,
+          "shape": null,
+          "shape_preset": null,
+          "attachment": null,
+          "brightness": 0.75
+        }
+      ],
+      "default_sampling_mode": {
+        "type": "bilinear"
+      },
+      "default_edge_behavior": "clamp",
+      "version": 1
+    }
+  },
+  "presets": {
+    "019a0000-0000-7000-8000-000000000005": {
+      "id": "019a0000-0000-7000-8000-000000000005",
+      "name": "Slow",
+      "description": null,
+      "effect_id": "019a0000-0000-7000-8000-000000000004",
+      "controls": {},
+      "tags": [],
+      "created_at_ms": 1,
+      "updated_at_ms": 1
+    }
+  },
+  "playlists": {
+    "019a0000-0000-7000-8000-00000000000b": {
+      "id": "019a0000-0000-7000-8000-00000000000b",
+      "name": "Evening",
+      "description": null,
+      "items": [
+        {
+          "id": "019a0000-0000-7000-8000-00000000000c",
+          "target": {
+            "type": "preset",
+            "preset_id": "019a0000-0000-7000-8000-000000000005"
+          },
+          "duration_ms": 10000,
+          "transition_ms": 500
+        }
+      ],
+      "loop_enabled": true,
+      "created_at_ms": 1,
+      "updated_at_ms": 1
+    }
+  },
+  "attachments": {
+    "019a0000-0000-7000-8000-000000000002": {
+      "slots": [
+        {
+          "id": "front",
+          "name": "Front",
+          "led_start": 0,
+          "led_count": 16,
+          "suggested_categories": [],
+          "allowed_templates": [
+            "user-strip"
+          ],
+          "allow_custom": true
+        }
+      ],
+      "bindings": [
+        {
+          "slot_id": "front",
+          "template_id": "user-strip",
+          "name": null,
+          "enabled": true,
+          "instances": 1,
+          "led_offset": 0
+        }
+      ]
+    }
+  },
+  "attachment_templates": {
+    "user-strip": {
+      "id": "user-strip",
+      "name": "Strip",
+      "category": "other",
+      "origin": "user",
+      "description": "",
+      "vendor": "",
+      "default_size": {
+        "width": 0.25,
+        "height": 0.25
+      },
+      "topology": {
+        "type": "point"
+      },
+      "compatible_slots": [],
+      "tags": [],
+      "led_names": null,
+      "led_mapping": null,
+      "image_url": null,
+      "physical_size_mm": null
+    }
+  },
+  "effects": {
+    "019a0000-0000-7000-8000-000000000004": {
+      "name": "Custom effect",
+      "entrypoint": "index.html",
+      "files": {
+        "index.html": {
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "byte_len": 4321
+        }
+      }
+    }
+  },
+  "assets": {
+    "019a0000-0000-7000-8000-000000000008": {
+      "name": "Animation",
+      "mime_type": "image/png",
+      "tags": [
+        "favorite"
+      ],
+      "content": {
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "byte_len": 1234
+      }
+    }
+  },
+  "display_faces": {
+    "019a0000-0000-7000-8000-000000000002": {
+      "effect_id": "019a0000-0000-7000-8000-000000000004",
+      "controls": {},
+      "blend_mode": "alpha",
+      "opacity": 1.0
+    }
+  },
+  "device_output": {
+    "019a0000-0000-7000-8000-000000000002": {
+      "disabled": false,
+      "brightness": 0.7,
+      "rotation": "deg0"
+    }
+  },
+  "selection": {
+    "active_scene_id": "019a0000-0000-7000-8000-000000000009",
+    "default_scene_id": "019a0000-0000-7000-8000-000000000009"
+  },
+  "output": {
+    "canvas_width": 640,
+    "canvas_height": 480,
+    "brightness": 0.8,
+    "enabled": true,
+    "paused": false
+  }
+}

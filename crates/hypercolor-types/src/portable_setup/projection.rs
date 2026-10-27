@@ -12,7 +12,7 @@ use uuid::Uuid;
 /// Export refuses unassociated references so a path cannot silently leak into
 /// the archive. Restore keeps unresolved references as inert portable IDs until
 /// discovery or the user supplies an unambiguous association.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SetupBindings {
     pub outputs: HashMap<String, Uuid>,
     pub devices: HashMap<DeviceId, Uuid>,
@@ -27,6 +27,11 @@ impl SetupBindings {
         self.outputs
             .get(local)
             .copied()
+            .or_else(|| {
+                local
+                    .strip_prefix("portable:")
+                    .and_then(|id| Uuid::parse_str(id).ok())
+            })
             .ok_or_else(|| UnmappedSetupReference(local.to_owned()))
     }
 
@@ -47,13 +52,15 @@ impl SetupBindings {
         }
     }
 
-    /// Destination physical identity, retaining an offline reference when unknown.
+    /// Resolve only an explicit, unambiguous physical association.
+    /// Unresolved display definitions stay in the durable portable manifest and
+    /// are omitted from runtime targets until hardware is associated.
     #[must_use]
-    pub fn local_device(&self, portable: Uuid) -> DeviceId {
+    pub fn local_device(&self, portable: Uuid) -> Option<DeviceId> {
         let mut matches = self.devices.iter().filter(|(_, id)| **id == portable);
         match (matches.next(), matches.next()) {
-            (Some((local, _)), None) => *local,
-            _ => DeviceId::from_uuid(portable),
+            (Some((local, _)), None) => Some(*local),
+            _ => None,
         }
     }
 }
@@ -236,14 +243,15 @@ impl PortableZone {
             color: self.color.clone(),
             role: self.role,
             layout: self.layout.materialize(bindings, canvas),
-            display_target: self
-                .display_target
-                .as_ref()
-                .map(|target| DisplayFaceTarget {
-                    device_id: bindings.local_device(target.device),
-                    blend_mode: target.blend_mode,
-                    opacity: target.opacity,
-                }),
+            display_target: self.display_target.as_ref().and_then(|target| {
+                bindings
+                    .local_device(target.device)
+                    .map(|device_id| DisplayFaceTarget {
+                        device_id,
+                        blend_mode: target.blend_mode,
+                        opacity: target.opacity,
+                    })
+            }),
             controls_version: 0,
             layers_version: 0,
         }

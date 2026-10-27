@@ -12,9 +12,11 @@ pub use projection::{SetupBindings, UnmappedSetupReference};
 pub use scene::{
     PortableDisplayTarget, PortableLayout, PortableOutput, PortableScene, PortableZone,
 };
-pub use validation::{PortableSetupError, is_portable_bundle_path};
+pub use validation::{PortableReferenceCatalog, PortableSetupError, is_portable_bundle_path};
 
-use crate::attachment::{ComponentTemplate, DeviceComponentProfile};
+use crate::attachment::{
+    ComponentBinding, ComponentSlot, ComponentTemplate, DeviceComponentProfile,
+};
 use crate::control::ControlValue;
 use crate::effect::EffectId;
 use crate::layer::BlendMode;
@@ -42,7 +44,7 @@ pub struct PortableSetupV1 {
     pub layouts: BTreeMap<String, PortableLayout>,
     pub presets: BTreeMap<Uuid, EffectPreset>,
     pub playlists: BTreeMap<Uuid, EffectPlaylist>,
-    pub attachments: BTreeMap<Uuid, DeviceComponentProfile>,
+    pub attachments: BTreeMap<Uuid, PortableAttachments>,
     pub attachment_templates: BTreeMap<String, ComponentTemplate>,
     pub effects: BTreeMap<Uuid, PortableEffect>,
     pub assets: BTreeMap<Uuid, PortableAsset>,
@@ -92,6 +94,38 @@ pub struct PortableDevice {
     pub product_id: Option<u16>,
     pub model: Option<String>,
     pub led_count: u32,
+    #[serde(default)]
+    pub binding_hint: Option<PortableBindingHint>,
+}
+
+/// Conservative device-class evidence shared with complete-sweep reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PortableBindingClass {
+    ClaimlessUsb {
+        owner: String,
+        vendor_id: u16,
+        product_id: u16,
+    },
+    SmBus {
+        owner: String,
+        protocol_or_model: String,
+        address: u16,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableSegmentShape {
+    pub name: String,
+    pub led_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableBindingHint {
+    pub class: PortableBindingClass,
+    pub segments: Vec<PortableSegmentShape>,
 }
 
 /// An authored segment of a setup device, independent of host discovery IDs.
@@ -103,6 +137,35 @@ pub struct PortableLogicalDevice {
     pub led_start: u32,
     pub led_count: u32,
     pub enabled: bool,
+}
+
+/// Authored attachment assignments; zone suggestions are regenerated locally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableAttachments {
+    pub slots: Vec<ComponentSlot>,
+    pub bindings: Vec<ComponentBinding>,
+}
+
+impl From<&DeviceComponentProfile> for PortableAttachments {
+    fn from(profile: &DeviceComponentProfile) -> Self {
+        Self {
+            slots: profile.slots.clone(),
+            bindings: profile.bindings.clone(),
+        }
+    }
+}
+
+impl PortableAttachments {
+    /// Reconstruct authored input for the attachment domain's template resolver.
+    #[must_use]
+    pub fn materialize(&self) -> DeviceComponentProfile {
+        DeviceComponentProfile {
+            slots: self.slots.clone(),
+            bindings: self.bindings.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 /// Content-addressed bytes. Paths and URLs are deliberately not part of a blob.
