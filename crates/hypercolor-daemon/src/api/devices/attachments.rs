@@ -104,8 +104,12 @@ pub async fn update_attachments(
             }
         }
         sync_usb_protocol_config(state.as_ref(), device_id, &tracked.info, &profile).await;
+        let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
+        state
+            .event_bus
+            .publish(hypercolor_types::event::HypercolorEvent::DeviceSettingsChanged { key: None });
 
-        ensure_default_logical_entry(&state, &tracked.info).await
+        layout_device_id
     };
     let needs_layout_update =
         active_layout_targets_device(&state, tracked.info.id, &layout_device_id).await;
@@ -146,6 +150,11 @@ pub async fn delete_attachments(
         deleted
     };
     state.usb_protocol_configs.remove_device(device_id).await;
+    if deleted {
+        state
+            .event_bus
+            .publish(hypercolor_types::event::HypercolorEvent::DeviceSettingsChanged { key: None });
+    }
 
     envelope::ok(DeleteAttachmentsResponse {
         device_id: tracked.info.id.to_string(),

@@ -82,6 +82,11 @@ pub async fn create_template(
     if let Err(error) = register_and_persist_template(&mut registry, &template) {
         return error.into_response();
     }
+    drop(registry);
+    // Templates change the settings available to every matching device.
+    state
+        .event_bus
+        .publish(hypercolor_types::event::HypercolorEvent::DeviceSettingsChanged { key: None });
 
     envelope::created(template_detail(&template))
 }
