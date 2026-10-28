@@ -1,7 +1,7 @@
 //! Effect file watcher — hot-reload effects from the filesystem.
 //!
-//! Uses the `notify` crate to watch effect search paths for `.html` file
-//! changes. Events are debounced (300ms) and filtered to `.html` files,
+//! Uses the `notify` crate to watch effect search paths for HTML and bundle
+//! manifest changes. Events are debounced (300ms) and filtered to source files,
 //! then forwarded through a `tokio::sync::mpsc` channel.
 
 use std::collections::HashMap;
@@ -26,17 +26,17 @@ const HTML_EXTENSION: &str = "html";
 /// A filesystem change event for an effect source file.
 #[derive(Debug, Clone)]
 pub enum EffectWatchEvent {
-    /// A new `.html` file was created.
+    /// An HTML source or bundle manifest was created.
     Created(PathBuf),
-    /// An existing `.html` file was modified.
+    /// An HTML source or bundle manifest was modified.
     Modified(PathBuf),
-    /// An `.html` file was removed.
+    /// An HTML source or bundle manifest was removed.
     Removed(PathBuf),
 }
 
 // ── EffectWatcher ───────────────────────────────────────────────────────
 
-/// Watches effect directories for `.html` file changes and forwards
+/// Watches effect directories for HTML and bundle manifest changes and forwards
 /// debounced events through a tokio mpsc channel.
 pub struct EffectWatcher {
     /// Held to keep the watcher alive; dropped on `EffectWatcher` drop.
@@ -158,7 +158,7 @@ fn accumulate(last_seen: &mut HashMap<PathBuf, (Instant, EventKind)>, event: &no
         return;
     }
     for path in &event.paths {
-        if !is_html_file(path) {
+        if !is_html_file(path) && !super::bundle::is_manifest(path) {
             continue;
         }
         let retain_existing = last_seen
@@ -306,6 +306,17 @@ mod tests {
             ),
         );
         assert!(acc.is_empty());
+    }
+
+    #[test]
+    fn bundle_manifest_changes_are_forwarded() {
+        let mut acc = HashMap::new();
+        let path = "/tmp/custom/hypercolor-effect.json";
+        accumulate(
+            &mut acc,
+            &html_event(EventKind::Create(CreateKind::File), path),
+        );
+        assert!(acc.contains_key(&PathBuf::from(path)));
     }
 
     #[test]
