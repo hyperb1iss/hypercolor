@@ -9,6 +9,7 @@
 
 pub mod console;
 mod identity;
+pub(crate) mod portable;
 
 pub(crate) use identity::{
     EffectIdMigrations, EffectIdentityResources, remap_effect_id, remap_zones,
