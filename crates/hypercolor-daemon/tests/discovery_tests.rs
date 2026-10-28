@@ -2557,6 +2557,43 @@ async fn a_failing_scanner_does_not_keep_another_drivers_departure_connected() {
 }
 
 #[tokio::test]
+async fn shutdown_joins_discovery_while_restore_retains_registry_writer() {
+    use hypercolor_driver_api::DriverRuntimeActions;
+
+    let directory = tempfile::tempdir().expect("test directory");
+    let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&directory, &[&driver]);
+    let guard = runtime
+        .device_registry
+        .prepare_output_settings(&HashMap::new(), HashMap::new())
+        .await
+        .expect("restore holds registry writer");
+    runtime
+        .driver_host
+        .request_discovery(LANE_QUICK_DRIVER.id)
+        .await
+        .expect("schedule scan");
+    let target = DiscoveryTarget::driver(LANE_QUICK_DRIVER.id);
+    timeout(Duration::from_secs(2), async {
+        while !runtime.target_lanes.is_busy(&target) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("scan enters target lane");
+    timeout(Duration::from_secs(2), runtime.target_lanes.shut_down())
+        .await
+        .expect("shutdown joins workers before restore releases its writer");
+    assert_eq!(
+        driver.calls(),
+        0,
+        "scanner never passed the guarded snapshot"
+    );
+    drop(guard);
+    assert_eq!(runtime.device_registry.len().await, 0);
+}
+
+#[tokio::test]
 async fn shutdown_stops_an_active_driver_scoped_scan_and_refuses_new_ones() {
     use hypercolor_driver_api::DriverRuntimeActions;
 
