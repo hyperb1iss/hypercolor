@@ -53,6 +53,10 @@ async fn json<T: serde::de::DeserializeOwned>(response: Response) -> T {
 
 #[tokio::test]
 async fn backup_routes_export_preview_restore_and_replay_without_source_credentials() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR)
+        .with_test_writer()
+        .try_init();
     let source_dir = tempfile::tempdir().expect("source directory");
     let target_dir = tempfile::tempdir().expect("target directory");
     let source = state(source_dir.path(), "source-local-device", 0.31);
@@ -96,7 +100,7 @@ async fn backup_routes_export_preview_restore_and_replay_without_source_credenti
     let preview: BackupPreview = json(preview_response).await;
     assert_eq!(preview.favorites, 1);
     assert!(target.library_store().list_favorites().await.is_empty());
-    for _ in 0..2 {
+    for attempt in 1..=2 {
         let response = drive(
             &target,
             apply_archive(
@@ -107,7 +111,16 @@ async fn backup_routes_export_preview_restore_and_replay_without_source_credenti
             ),
         )
         .await;
-        assert_eq!(response.status(), 200);
+        let status = response.status();
+        if status != 200 {
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("failed apply response bytes");
+            panic!(
+                "backup apply attempt {attempt} returned {status}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
         let result: BackupApplyResponse = json(response).await;
         assert_eq!(result.operation_id, preview.operation_id);
     }

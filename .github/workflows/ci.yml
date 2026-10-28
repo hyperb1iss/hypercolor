@@ -946,6 +946,25 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Seed effect cover fixture
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force effects/screenshots/curated/rainbow | Out-Null
+          [IO.File]::WriteAllBytes(
+            "effects/screenshots/curated/rainbow/default.webp",
+            [Text.Encoding]::ASCII.GetBytes("RIFFtest-webp-fixture")
+          )
+
+      - name: Run Windows backup and daemon integration tests
+        shell: pwsh
+        run: |
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon --no-default-features --features builtin-drivers,persistence-test-hooks --lib --no-tests=fail -E 'test(=api::backups::tests::backup_routes_export_preview_restore_and_replay_without_source_credentials)'
+          $backupResult = $LASTEXITCODE
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon --no-default-features --features builtin-drivers,persistence-test-hooks --test-threads=1 --no-fail-fast
+          $suiteResult = $LASTEXITCODE
+          if ($backupResult -ne 0) { exit $backupResult }
+          exit $suiteResult
+
       - name: Clippy shared crates
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo clippy --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }} --all-targets
@@ -984,20 +1003,6 @@ jobs:
           --test screen_cpu_fanout_allocation_tests
           --test spatial_area_reuse_tests
           '--' -D warnings
-
-      - name: Seed effect cover fixture
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force effects/screenshots/curated/rainbow | Out-Null
-          [IO.File]::WriteAllBytes(
-            "effects/screenshots/curated/rainbow/default.webp",
-            [Text.Encoding]::ASCII.GetBytes("RIFFtest-webp-fixture")
-          )
-
-      - name: Run daemon input and capture integration tests
-        run: >-
-          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers,persistence-test-hooks --test-threads=1
 
       - name: Save Rust build caches
         if: always()
