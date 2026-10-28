@@ -955,15 +955,26 @@ jobs:
             [Text.Encoding]::ASCII.GetBytes("RIFFtest-webp-fixture")
           )
 
-      - name: Run Windows backup and daemon integration tests
-        shell: pwsh
-        run: |
-          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon --no-default-features --features builtin-drivers,persistence-test-hooks --lib --no-tests=fail -E 'test(=api::backups::tests::backup_routes_export_preview_restore_and_replay_without_source_credentials)'
-          $backupResult = $LASTEXITCODE
-          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon --no-default-features --features builtin-drivers,persistence-test-hooks --test-threads=1 --no-fail-fast
-          $suiteResult = $LASTEXITCODE
-          if ($backupResult -ne 0) { exit $backupResult }
-          exit $suiteResult
+      - name: Check Windows backup restore and replay
+        id: windows-backup
+        # Preserve this step's log while the full suite gathers other failures.
+        # The required-outcome step below keeps this failure fatal to the job.
+        continue-on-error: true
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon
+          --no-default-features --features builtin-drivers,persistence-test-hooks
+          --lib --no-tests=fail
+          -E 'test(=api::backups::tests::backup_routes_export_preview_restore_and_replay_without_source_credentials)'
+
+      - name: Run daemon input and capture integration tests
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon
+          --no-default-features --features builtin-drivers,persistence-test-hooks
+          --test-threads=1 --no-fail-fast
+
+      - name: Require Windows backup restore and replay
+        if: always() && steps.windows-backup.outcome == 'failure'
+        run: exit 1
 
       - name: Clippy shared crates
         run: >-
