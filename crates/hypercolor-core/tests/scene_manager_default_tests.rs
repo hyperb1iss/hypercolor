@@ -158,6 +158,15 @@ fn with_default_installs_default_scene_as_ephemeral() {
 }
 
 #[test]
+fn primary_zone_label_does_not_rename_the_supplied_layout() {
+    let mut layout = sample_layout("desk");
+    layout.description = Some("Authored desk geometry".to_owned());
+    let zone = hypercolor_core::scene::default_primary_zone(layout.clone());
+    assert_eq!(zone.name, "Main");
+    assert_eq!(zone.layout, layout);
+}
+
+#[test]
 fn default_scene_cannot_be_deleted() {
     let mut manager = SceneManager::with_default();
 

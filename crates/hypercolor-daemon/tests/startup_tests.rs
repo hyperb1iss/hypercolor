@@ -2382,6 +2382,56 @@ async fn default_scene_contents_restore_on_restart() {
 }
 
 #[tokio::test]
+async fn fresh_portable_setup_is_identical_after_graceful_restart() {
+    use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let _data_guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    let temp = temp_config_file();
+    let manager = config_manager_for(&config, temp.path());
+    let identity = SetupIdentity {
+        setup_id: uuid::Uuid::now_v7(),
+        name: "Fresh setup".into(),
+    };
+    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("first initialization");
+    first.start().await.expect("first startup");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first)))
+        .expect("first service");
+    let before = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("fresh projection");
+    first.shutdown().await.expect("graceful shutdown");
+    drop(service);
+    drop(first);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
+        .expect("restart initialization");
+    restarted.start().await.expect("restart");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+        .expect("restarted service");
+    let after = service
+        .export(identity, &SetupBindings::default())
+        .await
+        .expect("restarted projection");
+    assert_eq!(after.manifest, before.manifest);
+    assert_eq!(after.revision, before.revision);
+    restarted.shutdown().await.expect("final shutdown");
+}
+
+#[tokio::test]
 async fn explicitly_inactive_runtime_selection_survives_restart() {
     let _config_guard = TestConfigDirGuard::new().await;
     let guard = TestDataDirGuard::new().await;
