@@ -623,5 +623,5 @@ fn an_addressed_refusal_of_an_open_preview_sticks_until_the_preview_closes() {
     );
     // An ack that no longer lists it closes it for good.
     tracker.apply(update("closed"));
-    assert!(tracker.lifecycles().get("main").is_none());
+    assert!(!tracker.lifecycles().contains_key("main"));
 }

@@ -180,9 +180,7 @@ pub fn drag_target(
     if let Some(anchor) = others.get(slot) {
         return Some(ReorderTarget::Before((*anchor).clone()));
     }
-    let Some(last) = others.last() else {
-        return None;
-    };
+    let last = others.last()?;
     let rest: Vec<&String> = led_ids.iter().filter(|id| *id != dragged).collect();
     let after_last = rest.iter().position(|id| id == last)? + 1;
     Some(rest.get(after_last).map_or(ReorderTarget::AfterLast, |id| {

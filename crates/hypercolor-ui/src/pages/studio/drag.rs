@@ -110,6 +110,8 @@ impl DropLook {
     }
 }
 
+type TouchMoveGuard = (web_sys::Element, Closure<dyn FnMut(web_sys::TouchEvent)>);
+
 #[derive(Clone, Copy)]
 pub(crate) struct DragController {
     pub studio: StudioContext,
@@ -141,10 +143,7 @@ pub(crate) struct DragController {
     autoscroll: StoredValue<(f64, bool)>,
     /// The `touchmove` guard a touch press puts on its source, with the
     /// element it listens on.
-    touch_guard: StoredValue<
-        Option<(web_sys::Element, Closure<dyn FnMut(web_sys::TouchEvent)>)>,
-        LocalStorage,
-    >,
+    touch_guard: StoredValue<Option<TouchMoveGuard>, LocalStorage>,
     /// The open "Move to" menu.
     pub menu: RwSignal<Option<MoveMenuAnchor>>,
 }
