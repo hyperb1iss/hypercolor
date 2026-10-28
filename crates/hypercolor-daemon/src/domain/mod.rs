@@ -38,6 +38,7 @@ pub mod diagnostics;
 pub mod display;
 pub mod effect;
 pub mod hardware_broker_diagnostics;
+pub(crate) mod input_configuration;
 pub mod input_status;
 pub mod layer;
 pub mod layout;

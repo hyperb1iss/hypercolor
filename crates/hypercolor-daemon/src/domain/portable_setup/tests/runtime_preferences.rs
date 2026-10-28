@@ -23,7 +23,9 @@ async fn restored_processing_preferences_reconfigure_the_live_input_graph() {
         vec!["AudioInput(none)"]
     );
     let current = Arc::clone(&fixture.config.get());
-    assert!(crate::api::config::live::capture_runtime_matches(&fixture.state, &current).await);
+    assert!(
+        crate::domain::input_configuration::capture_runtime_matches(&fixture.state, &current).await
+    );
     assert_eq!(current.audio.device, "none");
     assert_eq!(current.audio.smoothing.to_bits(), 0.34_f32.to_bits());
 }

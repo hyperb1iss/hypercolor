@@ -212,7 +212,7 @@ const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration = std::time::Dura
 const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration =
     std::time::Duration::from_millis(500);
 
-pub(in crate::api::config) async fn validate_prepared_capture_status(
+pub(crate) async fn validate_prepared_capture_status(
     status: hypercolor_core::input::SourceStatusHandle,
 ) -> anyhow::Result<()> {
     let mut subscription = status.subscribe();
@@ -262,7 +262,7 @@ pub(crate) async fn capture_runtime_matches(
     capture_statuses_match(&expected_config.capture, &statuses)
 }
 
-pub(in crate::api::config) fn capture_statuses_match(
+pub(crate) fn capture_statuses_match(
     capture: &CaptureConfig,
     statuses: &[Arc<hypercolor_core::input::SourceStatus>],
 ) -> bool {

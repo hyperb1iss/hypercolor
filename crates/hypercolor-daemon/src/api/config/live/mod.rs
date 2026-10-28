@@ -7,17 +7,17 @@ use hypercolor_types::config_registry::{self, ApplyPolicy, LiveSection};
 use crate::app_state::AppState;
 
 mod audio;
-mod capture;
 mod input;
 mod render;
 
-use audio::apply_audio_config_change;
-pub(crate) use audio::reconfigure_input_manager;
-pub(crate) use capture::{
+pub(super) use crate::domain::input_configuration::{
     CaptureConfigTransactionError, apply_capture_config_transaction, capture_runtime_matches,
 };
 #[cfg(test)]
-pub(super) use capture::{capture_statuses_match, validate_prepared_capture_status};
+pub(super) use crate::domain::input_configuration::{
+    capture_statuses_match, validate_prepared_capture_status,
+};
+use audio::apply_audio_config_change;
 pub(super) use input::apply_input_config_change;
 use render::apply_render_config_change;
 

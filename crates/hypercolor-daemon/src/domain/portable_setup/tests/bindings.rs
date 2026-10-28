@@ -130,11 +130,7 @@ async fn changed_local_device_id_restores_saved_output_before_export() {
 
 #[tokio::test]
 async fn recovery_preserves_a_third_device_output_value_on_the_original_binding() {
-    use crate::api::extract::{ApiJson, ApiPath};
     use crate::domain::portable_setup::journal::{RestoreRecovery, RuntimeRestoreProof};
-    use axum::extract::State;
-    use hypercolor_types::api::devices::UpdateDeviceRequest;
-    use std::sync::Arc;
 
     let fixture = Fixture::new("local");
     let id = Uuid::now_v7();
@@ -161,18 +157,42 @@ async fn recovery_preserves_a_third_device_output_value_on_the_original_binding(
         .get_mut(&bindings.devices[&local])
         .expect("output")
         .brightness = 0.4;
-    let response = crate::api::devices::update_device(
-        State(Arc::clone(&fixture.state)),
-        ApiPath(local.to_string()),
-        ApiJson(UpdateDeviceRequest {
-            name: None,
-            enabled: None,
-            brightness: Some(70),
-            display_rotation: None,
-        }),
-    )
-    .await;
-    assert!(response.status().is_success());
+    let key = {
+        let _mutation = fixture.state.device_settings.begin_device_mutation().await;
+        let updated = fixture
+            .state
+            .device_registry
+            .update_user_settings(&local, None, None, Some(0.7), None)
+            .await
+            .expect("device");
+        let key = crate::device_settings::resolve_device_settings_key(
+            &fixture.state.device_registry,
+            &fixture.state.device_settings,
+            local,
+        )
+        .await;
+        fixture
+            .state
+            .device_settings
+            .persist_device_settings(
+                &key,
+                crate::device_settings::StoredDeviceSettings {
+                    name: updated.user_settings.name,
+                    disabled: !updated.user_settings.enabled,
+                    brightness: updated.user_settings.brightness,
+                    rotation: updated.user_settings.display_rotation,
+                },
+            )
+            .await
+            .expect("persist third value");
+        fixture
+            .state
+            .backend_manager
+            .lock()
+            .await
+            .set_device_output_brightness(local, updated.user_settings.brightness);
+        key
+    };
     let runtime = crate::runtime_state::snapshot_from_scene_manager(
         &fixture.state.scene_manager.snapshot().await,
     );
@@ -205,6 +225,16 @@ async fn recovery_preserves_a_third_device_output_value_on_the_original_binding(
             .await
             .expect("device")
             .user_settings
+            .brightness,
+        0.7
+    );
+    assert_eq!(
+        fixture
+            .state
+            .device_settings
+            .device_settings_for_key(&key)
+            .await
+            .expect("persisted device")
             .brightness,
         0.7
     );

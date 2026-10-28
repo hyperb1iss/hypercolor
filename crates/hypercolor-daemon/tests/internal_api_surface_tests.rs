@@ -174,6 +174,7 @@ fn scene_domain_source_uses_zone_vocabulary() {
     ];
     for relative in [
         "api/config/live/audio.rs",
+        "domain/input_configuration/audio.rs",
         "domain/layout/convergence.rs",
         "profile_import.rs",
         "api/ws/session.rs",

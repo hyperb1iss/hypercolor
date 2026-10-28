@@ -28,14 +28,15 @@ impl PortableSetupService {
             ));
         }
         if preferences.audio.is_some() {
-            crate::api::config::live::reconfigure_input_manager(&self.state)
+            crate::domain::input_configuration::reconfigure_input_manager(&self.state)
                 .await
                 .map_err(internal)?;
         }
         if preferences.capture.is_some()
-            && !crate::api::config::live::capture_runtime_matches(&self.state, &latest).await
+            && !crate::domain::input_configuration::capture_runtime_matches(&self.state, &latest)
+                .await
         {
-            crate::api::config::live::apply_capture_config_transaction(
+            crate::domain::input_configuration::apply_capture_config_transaction(
                 &self.state,
                 &latest,
                 latest.capture.clone(),
