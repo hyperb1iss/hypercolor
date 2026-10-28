@@ -2186,6 +2186,81 @@ async fn daemon_start_restores_named_active_scene_and_default_zones() {
 }
 
 #[tokio::test]
+async fn startup_preserves_snapshot_scene_primary_layout() {
+    let _config_guard = TestConfigDirGuard::new().await;
+    let guard = TestDataDirGuard::new().await;
+    let captured = SpatialLayout {
+        id: "default".into(),
+        name: "Captured desk".into(),
+        description: Some("Saved geometry before the catalog changed".into()),
+        canvas_width: 640,
+        canvas_height: 480,
+        zones: vec![test_zone("saved-strip", &DeviceId::new().to_string())],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    };
+    let mut scene = hypercolor_core::scene::make_scene("Captured lighting");
+    scene.mutation_mode = hypercolor_types::scene::SceneMutationMode::Snapshot;
+    scene.layout_id = Some(LayoutId::new("default").expect("layout identity"));
+    scene.zones = vec![hypercolor_core::scene::default_primary_zone(
+        captured.clone(),
+    )];
+    let scene_id = scene.id;
+    write_scene_store(&guard.scenes_path(), [scene]);
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(scene_id.to_string()),
+            active_layout_id: Some("default".into()),
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("saved runtime selection");
+    let mut config = default_config();
+    config.daemon.canvas_width = 832;
+    config.daemon.canvas_height = 468;
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialize snapshot setup");
+    state.start().await.expect("start snapshot setup");
+    let actual = state
+        .scene_manager
+        .snapshot()
+        .await
+        .get(&scene_id)
+        .expect("saved scene")
+        .primary_zone()
+        .expect("saved primary zone")
+        .layout
+        .clone();
+    let render_layout = state.spatial_engine.snapshot();
+    let render_dimensions = (
+        render_layout.layout().canvas_width,
+        render_layout.layout().canvas_height,
+    );
+    state.shutdown().await.expect("shutdown snapshot setup");
+    assert_eq!(render_dimensions, (832, 468));
+    assert_eq!(
+        actual, captured,
+        "startup must preserve snapshot-owned geometry"
+    );
+}
+
+#[tokio::test]
 async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot() {
     let guard = TestDataDirGuard::new().await;
     let selected_layout = SpatialLayout {

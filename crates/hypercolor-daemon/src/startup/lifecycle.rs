@@ -806,11 +806,10 @@ impl DaemonState {
                 }
             }
 
-            // Persisted zones carry a frozen layout snapshot that may pre-date
-            // the active layout restored just above. Re-align the primary zone
-            // so the render pipeline sees the current layout's zones.
+            // Follow the current catalog for live scenes while retaining
+            // the captured geometry of snapshot scenes.
             let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
-            mutation.sync_primary_layout(&active_layout);
+            mutation.realign_primary_layout(&active_layout);
             self.scene_manager.commit_mutation(mutation).await?;
         }
         if !snapshot.default_scene_zones.is_empty() || requested_active_scene_id.is_some() {
