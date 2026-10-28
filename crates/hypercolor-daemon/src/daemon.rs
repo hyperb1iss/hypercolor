@@ -222,24 +222,23 @@ impl PreparedDaemon {
             result = Box::pin(daemon_state.start()) => Some(result),
             () = wait_for_api_shutdown_signal(self.advertised_bind, api_shutdown_rx) => None,
         };
-        match started {
-            Some(result) => result?,
-            None => {
-                let server_result = server.join().await;
-                let shutdown_result = daemon_state.shutdown().await;
-                if let Some(record) = render_supervision.termination() {
-                    if let Err(error) = server_result {
-                        warn!(%error, "API shutdown failed after startup render failure");
-                    }
-                    if let Err(error) = shutdown_result {
-                        warn!(%error, "Startup rollback failed after render failure");
-                    }
-                    return Err(render_failure_exit_error(&record));
+        if let Some(result) = started {
+            result?;
+        } else {
+            let server_result = server.join().await;
+            let shutdown_result = daemon_state.shutdown().await;
+            if let Some(record) = render_supervision.termination() {
+                if let Err(error) = server_result {
+                    warn!(%error, "API shutdown failed after startup render failure");
                 }
-                server_result?;
-                shutdown_result?;
-                return Ok(());
+                if let Err(error) = shutdown_result {
+                    warn!(%error, "Startup rollback failed after render failure");
+                }
+                return Err(render_failure_exit_error(&record));
             }
+            server_result?;
+            shutdown_result?;
+            return Ok(());
         }
 
         progress.enter(DaemonStartupPhase::PreparingApi);

@@ -500,7 +500,7 @@ pub async fn execute_tool_response_with_state(
     state
         .domains
         .requests
-        .run(async {
+        .run(Box::pin(async {
             let params = validate_params(name, params)?;
             let response = match name {
                 "capture_canvas" => {
@@ -510,7 +510,7 @@ pub async fn execute_tool_response_with_state(
             };
             validate_result(name, &response.payload)?;
             Ok(response)
-        })
+        }))
         .await
         .unwrap_or_else(|| Err(ToolError::Conflict("Hypercolor is shutting down".into())))
 }
