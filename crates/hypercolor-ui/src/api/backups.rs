@@ -1,4 +1,4 @@
-//! Backup transfers retain browser-owned file handles and stream media chunks.
+//! Configuration backup transfers retain browser-owned file handles.
 
 use super::{ApiError, ApiResult, client};
 pub use hypercolor_types::api::backups::{BackupApplyRequest, BackupApplyResponse, BackupPreview};

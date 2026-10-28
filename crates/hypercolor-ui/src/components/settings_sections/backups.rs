@@ -140,14 +140,19 @@ pub fn BackupsSection() -> impl IntoView {
             match result {
                 Ok(Ok(report)) => {
                     preview.set(None);
-                    status.set(Some(if report.unresolved_devices.is_empty() {
+                    let mut message = if report.unresolved_devices.is_empty() {
                         "Backup restored.".into()
                     } else {
                         format!(
                             "Backup restored. Waiting for hardware: {}.",
                             report.unresolved_devices.join(", ")
                         )
-                    }));
+                    };
+                    if let Some(missing) = missing_resource_message(&report.missing_resources) {
+                        message.push(' ');
+                        message.push_str(&missing);
+                    }
+                    status.set(Some(message));
                     config.refresh.run(());
                 }
                 Ok(Err(problem)) => error.set(Some(problem.to_string())),
@@ -159,7 +164,7 @@ pub fn BackupsSection() -> impl IntoView {
     view! {
         <section id="section-backups">
             <SectionHeader title="Backup files" icon=LuSave />
-            <p class="text-sm text-fg-secondary mb-4">"Save your scenes, layouts, custom effects, media, favorites, and lighting settings in one file."</p>
+            <p class="text-sm text-fg-secondary mb-4">"Save your scenes, layouts, favorites, and lighting settings in one file. Installed effects and media stay on this computer."</p>
             <div class="flex flex-wrap gap-3">
                 <Show when=move || can_download.get()>
                     <button class="px-3 py-2 rounded-lg text-sm border border-[var(--border-default)] text-fg-primary bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)] disabled:opacity-50 disabled:cursor-not-allowed" disabled=move || busy.get() on:click=export.clone()>"Download backup"</button>
@@ -177,10 +182,13 @@ pub fn BackupsSection() -> impl IntoView {
             {move || preview.get().map(|candidate| view! {
                 <div class="mt-5 border border-[var(--border-default)] rounded-lg p-4 space-y-3" role="region" aria-label="Backup preview">
                     <h3 class="text-sm font-semibold text-fg-primary">{candidate.name}</h3>
-                    <p class="text-sm text-fg-secondary">{format!("{} scenes, {} layouts, {} custom effects, {} media files, {} favorites",candidate.scenes,candidate.layouts,candidate.effects,candidate.media,candidate.favorites)}</p>
-                    <p class="text-xs text-fg-tertiary">"Matching saved items will be updated. Other saved items stay in place."</p>
+                    <p class="text-sm text-fg-secondary">{format!("{} scenes, {} layouts, {} favorites",candidate.scenes,candidate.layouts,candidate.favorites)}</p>
+                    <p class="text-xs text-fg-tertiary">"Matching saved items will be updated. Other saved items stay in place. Effect and media files are not restored, including files in older backups."</p>
                     {(!candidate.unresolved_devices.is_empty()).then(|| view! {
                         <p class="text-sm text-fg-secondary">{format!("Waiting for hardware: {}", candidate.unresolved_devices.join(", "))}</p>
+                    })}
+                    {missing_resource_message(&candidate.missing_resources).map(|message| view! {
+                        <p class="text-sm text-fg-secondary">{message}</p>
                     })}
                     <div class="flex gap-3">
                         <button class="px-3 py-2 rounded-lg text-sm font-medium border border-[var(--accent)] text-[var(--accent)] disabled:opacity-50 disabled:cursor-not-allowed" disabled=move || busy.get() on:click=apply.clone()>"Restore backup"</button>
@@ -192,4 +200,18 @@ pub fn BackupsSection() -> impl IntoView {
             {move || error.get().map(|message| view! { <p role="alert" class="mt-3 text-sm text-[var(--status-error)]">{message}</p> })}
         </section>
     }
+}
+
+fn missing_resource_message(
+    missing: &hypercolor_types::portable_setup::MissingSetupResources,
+) -> Option<String> {
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} effects, {} presets, and {} media sources are unavailable here. Install the missing effects and presets and select local media for affected layers. Their saved settings are kept.",
+        missing.effects.len(),
+        missing.presets.len(),
+        missing.media.len(),
+    ))
 }

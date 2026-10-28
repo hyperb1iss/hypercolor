@@ -12,6 +12,7 @@ mod plan;
 pub(crate) mod prepared;
 mod reconcile;
 mod references;
+mod resources;
 mod restore;
 mod runtime_preferences;
 mod templates;
@@ -27,8 +28,8 @@ use std::sync::Arc;
 use hypercolor_core::portable_setup::{SetupBlob, SetupBlobStore};
 use hypercolor_types::portable_setup::PortableBlob;
 pub use hypercolor_types::portable_setup::{
-    BackupRestoreExpectation, PortableSetupSnapshot, RestoreMode, RestoreOptions, RestoreReceipt,
-    RestoreReport, SetupIdentity,
+    BackupRestoreExpectation, MissingSetupResources, PortableSetupSnapshot, RestoreMode,
+    RestoreOptions, RestoreReceipt, RestoreReport, SetupIdentity,
 };
 use serde::Serialize;
 

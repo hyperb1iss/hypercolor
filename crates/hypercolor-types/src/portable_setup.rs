@@ -3,7 +3,8 @@
 //!
 //! A setup is one physical rig. Its device references are stable setup-local
 //! UUIDs; account adapters associate those references with account device slots.
-//! Blob bytes travel separately from this manifest and are verified by SHA-256.
+//! New backups contain configuration only. Resource descriptors remain readable
+//! for historical archives; installed effects and media stay on their host.
 
 mod backup;
 mod projection;
@@ -20,8 +21,8 @@ pub use scene::{
     PortableDisplayTarget, PortableLayout, PortableOutput, PortableScene, PortableZone,
 };
 pub use service::{
-    BackupRestoreExpectation, PortableSetupSnapshot, RestoreMode, RestoreOptions, RestoreReceipt,
-    RestoreReport, SetupIdentity,
+    BackupRestoreExpectation, MissingSetupResources, PortableSetupSnapshot, RestoreMode,
+    RestoreOptions, RestoreReceipt, RestoreReport, SetupIdentity,
 };
 pub use validation::{PortableReferenceCatalog, PortableSetupError, is_portable_bundle_path};
 
@@ -66,6 +67,12 @@ pub struct PortableSetupV1 {
 }
 
 impl PortableSetupV1 {
+    /// Remove historical resource payload descriptors without changing authored references.
+    pub fn retain_configuration(&mut self) {
+        self.effects.clear();
+        self.assets.clear();
+    }
+
     /// Start a new manifest; callers populate it from owning domain snapshots.
     #[must_use]
     pub fn new(setup_id: Uuid, name: String, output: PortableOutputState) -> Self {

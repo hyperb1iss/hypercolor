@@ -106,8 +106,16 @@ pub(super) fn finalize(
     desired: &BTreeMap<Uuid, PortableAsset>,
     shutdown: &PersistenceShutdown,
 ) -> anyhow::Result<AtomicWriteWaitOutcome> {
-    let mut intent =
-        read(root)?.ok_or_else(|| anyhow::anyhow!("media restore intent is missing"))?;
+    let mut intent = match read(root)? {
+        Some(intent)
+            if desired.is_empty() && intent.completed && intent.operation_id != operation_id =>
+        {
+            return Ok(AtomicWriteWaitOutcome::Written);
+        }
+        Some(intent) => intent,
+        None if desired.is_empty() => return Ok(AtomicWriteWaitOutcome::Written),
+        None => anyhow::bail!("media restore intent is missing"),
+    };
     anyhow::ensure!(
         intent.operation_id == operation_id && intent.desired == *desired,
         "media restore completion differs from committed receipt"

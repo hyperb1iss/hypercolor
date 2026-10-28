@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
-use hypercolor_core::portable_setup::archive::{read_archive, write_archive};
+use hypercolor_core::portable_setup::archive::{read_configuration_archive, write_archive};
 use hypercolor_types::api::backups::{BackupApplyResponse, BackupPreview};
 use hypercolor_types::portable_setup::{PortableBackupV1, PortablePreferences};
 use serde::Serialize;
@@ -63,8 +63,7 @@ impl PortableSetupService {
     /// Validate an uploaded archive and pin the destination revision shown in
     /// the confirmation. No authored destination records change at this stage.
     pub async fn preview_archive(&self, source: File) -> Result<BackupPreview, DomainError> {
-        let blobs = self.blobs.clone();
-        let mut backup = tokio::task::spawn_blocking(move || read_archive(source, &blobs))
+        let mut backup = tokio::task::spawn_blocking(move || read_configuration_archive(source))
             .await
             .map_err(internal)?
             .map_err(|error| DomainError::validation(error.to_string()))?;
@@ -85,13 +84,26 @@ impl PortableSetupService {
             )
             .await?;
         let operation_id = Uuid::now_v7();
+        let mut missing_resources = self.missing_resources(&backup.setup).await;
+        let installed = self.state.domains.effects.portable_sources().await;
+        missing_resources.effects.extend(
+            backup
+                .favorites
+                .iter()
+                .map(|favorite| favorite.effect_id)
+                .filter(|id| !installed.iter().any(|entry| entry.metadata.id == *id)),
+        );
+        missing_resources.effects.sort_by_key(|id| id.0);
+        missing_resources.effects.dedup();
+        drop(installed);
         let preview = BackupPreview {
+            missing_resources,
             operation_id,
             name: backup.setup.name.clone(),
             scenes: backup.setup.scenes.len() as u64,
             layouts: backup.setup.layouts.len() as u64,
-            effects: backup.setup.effects.len() as u64,
-            media: backup.setup.assets.len() as u64,
+            effects: 0,
+            media: 0,
             favorites: backup.favorites.len() as u64,
             includes_preferences: backup.preferences.is_some() || backup.tui_preferences.is_some(),
             unresolved_devices: backup
@@ -156,6 +168,7 @@ impl PortableSetupService {
             .await?;
         Ok(BackupApplyResponse {
             operation_id,
+            missing_resources: report.missing_resources,
             unresolved_devices: report
                 .unresolved_bindings
                 .iter()

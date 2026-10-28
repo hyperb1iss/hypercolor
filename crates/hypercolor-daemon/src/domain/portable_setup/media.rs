@@ -47,6 +47,12 @@ async fn prepare(
     recovering: bool,
 ) -> Result<PreparedMedia, DomainError> {
     let guard = library.write_owned().await;
+    if before.is_empty() && desired.is_empty() {
+        return Ok(PreparedMedia {
+            guard,
+            replacement: None,
+        });
+    }
     if !recovering && guard.portable_snapshot() != *before {
         return Err(DomainError::conflict(
             "media changed during restore preparation",
@@ -72,22 +78,30 @@ async fn prepare(
 }
 
 impl PreparedMedia {
+    pub(super) fn available_ids(
+        &self,
+    ) -> std::collections::HashSet<hypercolor_types::asset::AssetId> {
+        self.guard
+            .records()
+            .iter()
+            .map(|record| record.id)
+            .collect()
+    }
+
     pub(super) fn persist(
         &mut self,
         shutdown: &PersistenceShutdown,
     ) -> Result<AtomicWriteWaitOutcome, DomainError> {
-        self.replacement
-            .as_mut()
-            .expect("unpublished media replacement")
-            .persist(shutdown)
-            .map_err(internal)
+        match self.replacement.as_mut() {
+            Some(replacement) => replacement.persist(shutdown).map_err(internal),
+            None => Ok(AtomicWriteWaitOutcome::Written),
+        }
     }
 
     pub(super) fn publish(&mut self) {
-        self.replacement
-            .take()
-            .expect("media published once")
-            .publish(&mut self.guard);
+        if let Some(replacement) = self.replacement.take() {
+            replacement.publish(&mut self.guard);
+        }
     }
 }
 

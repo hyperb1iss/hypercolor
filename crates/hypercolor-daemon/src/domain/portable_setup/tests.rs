@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 mod authority;
 mod bindings;
+mod configuration_only;
 mod cross_authority;
 mod fingerprint;
 mod offline_native;
@@ -202,7 +203,7 @@ fn authored(fixture: &Fixture, empty: &PortableSetupSnapshot) -> PortableSetupV1
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fresh_install_round_trip_preserves_identity_resources_and_local_endpoints() {
+async fn fresh_install_round_trip_preserves_configuration_and_local_endpoints() {
     let source = Fixture::new("linux-local-input");
     let identity = Uuid::now_v7();
     let empty = source.empty(identity).await;
@@ -215,7 +216,9 @@ async fn fresh_install_round_trip_preserves_identity_resources_and_local_endpoin
         ))
         .await
         .expect("portable fixture should be valid");
-    assert_eq!(report.applied.manifest, expected);
+    let mut configuration = expected.clone();
+    configuration.retain_configuration();
+    assert_eq!(report.applied.manifest, configuration);
     let exported = source
         .service
         .export(
@@ -227,26 +230,10 @@ async fn fresh_install_round_trip_preserves_identity_resources_and_local_endpoin
         )
         .await
         .expect("portable fixture should be valid");
+    let mut expected = expected;
+    expected.retain_configuration();
     assert_eq!(exported.manifest, expected);
     let target = Fixture::new("windows-local-input");
-    for blob in expected.assets.values().map(|asset| &asset.content).chain(
-        expected
-            .effects
-            .values()
-            .flat_map(|effect| effect.files.values()),
-    ) {
-        target
-            .service
-            .stage_blob(
-                blob,
-                source
-                    .service
-                    .export_blob(blob)
-                    .expect("portable fixture should be valid")
-                    .file,
-            )
-            .expect("portable fixture should be valid");
-    }
     let empty = target.empty(identity).await;
     let restored = target
         .drive(target.service.restore(
@@ -286,10 +273,16 @@ async fn fresh_install_round_trip_preserves_identity_resources_and_local_endpoin
     assert_eq!(output.manifest, expected);
     let reopened = AssetLibrary::open(target.directory.path().join("data/assets"))
         .expect("portable fixture should be valid");
-    assert_eq!(reopened.records().len(), 2);
-    assert_eq!(
-        reopened.records()[0].hash_sha256,
-        reopened.records()[1].hash_sha256
+    assert!(reopened.records().is_empty());
+    assert_eq!(restored.missing_resources.effects.len(), 1);
+    assert!(
+        target
+            .state
+            .domains
+            .effects
+            .portable_sources()
+            .await
+            .is_empty()
     );
 }
 
@@ -567,6 +560,15 @@ async fn missing_display_is_inert_and_survives_export_and_service_recreation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn caller_cancellation_retains_writers_until_shutdown_and_restart_recovers() {
+    interrupted_restore_recovery(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resource_inclusive_pending_journal_recovers_without_new_import_normalization() {
+    interrupted_restore_recovery(true).await;
+}
+
+async fn interrupted_restore_recovery(resource_inclusive: bool) {
     let fixture = Fixture::new("machine-local");
     let id = Uuid::now_v7();
     let local_device = bindings::register_device(&fixture).await;
@@ -618,6 +620,7 @@ async fn caller_cancellation_retains_writers_until_shutdown_and_restart_recovers
     });
     scene.zones.push(display_zone);
     let request = options(empty.revision);
+    let retry_request = request.clone();
     let operation_id = request.operation_id;
     let writer =
         crate::persistence::AtomicFileWriter::new(&fixture.state.data_dir.join("scenes.json"))
@@ -625,7 +628,34 @@ async fn caller_cancellation_retains_writers_until_shutdown_and_restart_recovers
     writer.set_injected_commit_failures(usize::MAX);
     let service = fixture.service.clone();
     let incoming = expected.clone();
-    let caller = tokio::spawn(async move { service.restore(&incoming, &bindings, request).await });
+    let raw_request = incoming.clone();
+    let caller = tokio::spawn(async move {
+        if resource_inclusive {
+            // Reproduce an operation admitted before configuration-only imports.
+            // Caller cancellation detaches its retained transaction worker.
+            tokio::spawn(async move {
+                let _gate = service.restore_runtime.gate.lock().await;
+                let active =
+                    super::restore::ActiveRestore::begin(Arc::clone(&service.restore_runtime));
+                let digest = super::fingerprint(&incoming).expect("raw admitted request");
+                Box::pin(service.apply_candidate(
+                    empty.manifest,
+                    incoming,
+                    digest,
+                    bindings,
+                    request,
+                    &active.shutdown,
+                    None,
+                    None,
+                ))
+                .await
+            })
+            .await
+            .expect("retained worker")
+        } else {
+            service.restore(&incoming, &bindings, request).await
+        }
+    });
     fixture
         .drive(async {
             while writer.pending_failure().is_none() {
@@ -706,7 +736,43 @@ async fn caller_cancellation_retains_writers_until_shutdown_and_restart_recovers
         .expect("portable fixture should be valid")
         .expect("portable fixture should be valid");
     assert_eq!(receipt.operation_id, operation_id);
+    if !resource_inclusive {
+        expected.retain_configuration();
+    }
     assert_eq!(receipt.applied.manifest, expected);
+    assert_eq!(
+        state.asset_library.read().await.records().len(),
+        if resource_inclusive { 2 } else { 0 }
+    );
+    assert_eq!(
+        state.domains.effects.portable_sources().await.len(),
+        usize::from(resource_inclusive)
+    );
+    let replay = service
+        .restore(
+            &raw_request,
+            &SetupBindings::default(),
+            retry_request.clone(),
+        )
+        .await
+        .expect("raw operation remains replayable after upgrade");
+    assert_eq!(replay.applied.manifest, receipt.applied.manifest);
+    assert_eq!(replay.applied.revision, receipt.applied.revision);
+    let mut changed_payload = raw_request;
+    changed_payload
+        .effects
+        .values_mut()
+        .next()
+        .expect("original resource descriptor")
+        .name
+        .push_str(" changed");
+    assert!(
+        service
+            .restore(&changed_payload, &SetupBindings::default(), retry_request)
+            .await
+            .is_err(),
+        "raw request identity remains strict even for ignored payload descriptors"
+    );
     assert_eq!(
         receipt
             .unresolved_bindings

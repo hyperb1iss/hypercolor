@@ -138,6 +138,17 @@ impl PreparedPortableLibrary {
         })
     }
 
+    pub(crate) fn favorite_effects(
+        &self,
+    ) -> impl Iterator<Item = hypercolor_types::effect::EffectId> + '_ {
+        self.merged
+            .as_ref()
+            .expect("prepared library retains its candidate")
+            .favorites
+            .keys()
+            .copied()
+    }
+
     #[cfg(test)]
     pub(crate) fn candidate(&self) -> &LibraryPortableSnapshot {
         self.candidate

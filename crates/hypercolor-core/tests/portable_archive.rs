@@ -1,6 +1,6 @@
 use hypercolor_core::portable_setup::{
     SetupBlobStore,
-    archive::{read_archive, write_archive},
+    archive::{read_archive, read_configuration_archive, write_archive},
 };
 use hypercolor_types::portable_setup::{
     PortableAsset, PortableBackupV1, PortableOutputState, PortablePreferences, PortableSetupV1,
@@ -79,6 +79,18 @@ fn large_media_streams_once_for_multiple_asset_aliases_and_round_trips() {
     archive
         .seek(SeekFrom::Start(0))
         .expect("portable backup fixture should be valid");
+    assert_eq!(
+        read_configuration_archive(BoundedRead(&mut archive))
+            .expect("old payloads verified and discarded"),
+        manifest
+    );
+    assert!(
+        destination.read(&descriptor).is_err(),
+        "configuration import stages nothing"
+    );
+    archive
+        .seek(SeekFrom::Start(0))
+        .expect("rewind for low-level resource recovery");
     let restored = read_archive(BoundedRead(archive), &destination)
         .expect("portable backup fixture should be valid");
     assert_eq!(restored, manifest);
@@ -136,6 +148,7 @@ fn missing_corrupt_duplicate_and_unreferenced_objects_never_return_a_manifest() 
             .into_inner()
             .expect("portable backup fixture should be valid");
         assert!(read_archive(bytes.as_slice(), &blobs).is_err());
+        assert!(read_configuration_archive(bytes.as_slice()).is_err());
     }
     let mut archive = tar::Builder::new(Vec::new());
     append(

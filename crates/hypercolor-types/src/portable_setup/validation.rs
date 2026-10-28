@@ -96,7 +96,7 @@ impl PortableSetupV1 {
         &self,
         catalog: &PortableReferenceCatalog,
     ) -> Result<(), PortableSetupError> {
-        self.validate_references(catalog, |_| true)
+        self.validate_references(catalog, |_| true, false)
     }
 
     /// Validate resources required by the current materialization. An unbound
@@ -108,28 +108,54 @@ impl PortableSetupV1 {
         catalog: &PortableReferenceCatalog,
         live_bindings: &SetupBindings,
     ) -> Result<(), PortableSetupError> {
-        self.validate_references(catalog, |id| live_bindings.local_device(id).is_some())
+        self.validate_references(
+            catalog,
+            |id| live_bindings.local_device(id).is_some(),
+            false,
+        )
+    }
+
+    /// Validate authored graph links while installed effects and media remain local.
+    pub fn validate_configuration_references(
+        &self,
+        catalog: &PortableReferenceCatalog,
+    ) -> Result<(), PortableSetupError> {
+        self.validate_references(catalog, |_| true, true)
     }
 
     fn validate_references(
         &self,
         catalog: &PortableReferenceCatalog,
         materializes_face: impl Fn(Uuid) -> bool,
+        allow_uninstalled_effects: bool,
     ) -> Result<(), PortableSetupError> {
         self.validate()?;
         let effect = |id: EffectId| {
-            if self.effects.contains_key(&id.0) || catalog.effects.contains(&id) {
+            if id.0.is_nil() {
+                return Err(error("effect reference", "effect identity must not be nil"));
+            }
+            if allow_uninstalled_effects
+                || self.effects.contains_key(&id.0)
+                || catalog.effects.contains(&id)
+            {
                 Ok(())
             } else {
                 Err(error("effect reference", format!("effect {id} is absent")))
             }
         };
         let preset = |id: PresetId| {
-            self.presets
+            if id.0.is_nil() {
+                return Err(error("preset reference", "preset identity must not be nil"));
+            }
+            let effect = self
+                .presets
                 .get(&id.0)
                 .map(|preset| preset.effect_id)
-                .or_else(|| catalog.presets.get(&id).copied())
-                .ok_or_else(|| error("preset reference", format!("preset {id} is absent")))
+                .or_else(|| catalog.presets.get(&id).copied());
+            if effect.is_none() && !allow_uninstalled_effects {
+                return Err(error("preset reference", format!("preset {id} is absent")));
+            }
+            Ok(effect)
         };
         let template = |id: &str| {
             if self.attachment_templates.contains_key(id)
@@ -154,7 +180,8 @@ impl PortableSetupV1 {
                     {
                         effect(effect_id)?;
                         if let Some(id) = preset_id
-                            && preset(id)? != effect_id
+                            && let Some(preset_effect) = preset(id)?
+                            && preset_effect != effect_id
                         {
                             return Err(error(
                                 "layer.preset_id",
@@ -173,7 +200,9 @@ impl PortableSetupV1 {
                 match item.target {
                     PlaylistItemTarget::Effect { effect_id } => effect(effect_id)?,
                     PlaylistItemTarget::Preset { preset_id } => {
-                        effect(preset(preset_id)?)?;
+                        if let Some(id) = preset(preset_id)? {
+                            effect(id)?;
+                        }
                     }
                 }
             }
@@ -298,10 +327,8 @@ impl PortableSetupV1 {
                         .validate()
                         .map_err(|errors| error(&path, errors.join(", ")))?;
                     match &layer.source {
-                        LayerSource::Media { asset_id, .. }
-                            if !self.assets.contains_key(&asset_id.0) =>
-                        {
-                            return Err(error(&path, "referenced media asset is absent"));
+                        LayerSource::Media { asset_id, .. } if asset_id.0.is_nil() => {
+                            return Err(error(&path, "referenced media identity must not be nil"));
                         }
                         LayerSource::Effect { controls, .. } => {
                             for value in controls.values() {

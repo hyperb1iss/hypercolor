@@ -100,6 +100,9 @@ async fn backup_routes_export_preview_restore_and_replay_without_source_credenti
     assert_eq!(preview_response.status(), 200);
     let preview: BackupPreview = json(preview_response).await;
     assert_eq!(preview.favorites, 1);
+    assert_eq!(preview.effects, 0);
+    assert_eq!(preview.media, 0);
+    assert_eq!(preview.missing_resources.effects, vec![effect]);
     assert!(target.library_store().list_favorites().await.is_empty());
     for attempt in 1..=2 {
         let response = drive(
@@ -124,6 +127,7 @@ async fn backup_routes_export_preview_restore_and_replay_without_source_credenti
         }
         let result: BackupApplyResponse = json(response).await;
         assert_eq!(result.operation_id, preview.operation_id);
+        assert_eq!(result.missing_resources.effects, vec![effect]);
     }
     let favorites = target.library_store().project_favorites().await;
     assert_eq!(favorites.len(), 1);

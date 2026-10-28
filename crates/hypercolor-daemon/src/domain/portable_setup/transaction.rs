@@ -297,18 +297,8 @@ impl PortableSetupService {
             catalog.attachment_templates.insert(template.id.clone());
         }
         candidate
-            .validate_materializable_references(&catalog, &bindings)
+            .validate_configuration_references(&catalog)
             .map_err(|error| DomainError::validation(error.to_string()))?;
-        if let Some(choices) = &ancillary {
-            for favorite in &choices.favorites {
-                if !catalog.effects.contains(&favorite.effect_id) {
-                    return Err(DomainError::validation(format!(
-                        "favorite effect {} is absent",
-                        favorite.effect_id
-                    )));
-                }
-            }
-        }
         let dimensions = (
             candidate.output.canvas_width,
             candidate.output.canvas_height,
@@ -405,6 +395,29 @@ impl PortableSetupService {
             )
             .await?
         };
+        let mut installed_media = media.available_ids();
+        installed_media.extend(
+            candidate
+                .assets
+                .keys()
+                .copied()
+                .map(hypercolor_types::asset::AssetId),
+        );
+        let mut missing_resources = super::resources::missing_resources(
+            &candidate,
+            &catalog.effects,
+            &installed_media,
+            &catalog.presets.keys().copied().collect(),
+        );
+        if ancillary.is_some() {
+            missing_resources.effects.extend(
+                library
+                    .favorite_effects()
+                    .filter(|id| !catalog.effects.contains(id)),
+            );
+            missing_resources.effects.sort_by_key(|id| id.0);
+            missing_resources.effects.dedup();
+        }
         let mut attachments = self
             .prepare_attachments(
                 &source,
@@ -517,6 +530,7 @@ impl PortableSetupService {
             },
             unresolved_bindings: unresolved_bindings.clone(),
             materialized_bindings: bindings.clone(),
+            missing_resources: missing_resources.clone(),
         };
         let reconnect_network_outputs = !before.output.enabled && candidate.output.enabled;
         let committed_ancillary = ancillary.clone();
@@ -579,7 +593,7 @@ impl PortableSetupService {
                 });
                 if let Some(config) = config.as_mut() { config.publish(); }
                 retry_step(&shutdown, || service.write_journal(candidate.setup_id, &RestoreJournal::Committed { schema_version:1, receipt: Box::new(receipt.clone()), finalized:false, reconnect_network_outputs, ancillary: committed_ancillary.clone() }, &shutdown))?;
-                Ok(RestoreReport { applied: receipt.applied.clone(), unresolved_bindings: unresolved_bindings.clone() })
+                Ok(RestoreReport { applied: receipt.applied.clone(), unresolved_bindings: unresolved_bindings.clone(), missing_resources: missing_resources.clone() })
             };
             match (config, config_source, config_candidate) {
                 (Some(manager), Some(source), Some(desired)) => manager.with_prepared_mutation(&source, |config| {

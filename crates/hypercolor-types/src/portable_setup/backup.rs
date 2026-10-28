@@ -6,8 +6,8 @@ use crate::library::FavoriteEffect;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
-/// The manifest inside a portable backup. Binary content travels in separate
-/// archive entries, deduplicated by SHA-256 across assets and effect files.
+/// The manifest inside a portable backup. New backups carry configuration only.
+/// Older resource descriptors remain readable without restoring their files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PortableBackupV1 {

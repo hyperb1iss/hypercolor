@@ -1,15 +1,9 @@
-use std::collections::BTreeMap;
-use std::path::Path;
-
 use hypercolor_core::attachment::TemplateFilter;
-use hypercolor_core::effect::{bundled_effects_root, html_effect_bundle};
 use hypercolor_types::attachment::ComponentOrigin;
-use hypercolor_types::effect::EffectSource;
 use hypercolor_types::portable_setup::{
-    PortableAsset, PortableBindingClass, PortableBlob, PortableDevice, PortableDeviceOutput,
-    PortableDisplayFace, PortableEffect, PortableLayout, PortableLogicalDevice,
-    PortableOutputState, PortableScene, PortableSelection, PortableSetupV1, SetupBindings,
-    is_portable_bundle_path,
+    PortableBindingClass, PortableDevice, PortableDeviceOutput, PortableDisplayFace,
+    PortableLayout, PortableLogicalDevice, PortableOutputState, PortableScene, PortableSelection,
+    PortableSetupV1, SetupBindings,
 };
 
 use super::{PortableSetupService, PortableSetupSnapshot, RestoreReceipt, SetupIdentity, internal};
@@ -107,7 +101,7 @@ impl PortableSetupService {
         &self,
         identity: SetupIdentity,
         bindings: &SetupBindings,
-        include_resources: bool,
+        validate_projection: bool,
     ) -> Result<PortableSetupV1, DomainError> {
         let projection_bindings = self.projection_bindings(identity.setup_id, bindings)?;
         let canvas = self.state.domains.layout.current();
@@ -305,85 +299,6 @@ impl PortableSetupService {
                 );
             }
         }
-        if include_resources {
-            let asset_sources = {
-                let assets = self.state.asset_library.read().await;
-                assets
-                    .records()
-                    .iter()
-                    .map(|asset| {
-                        assets
-                            .object_path_for_hash(&asset.hash_sha256)
-                            .map(|path| (asset.clone(), path))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(internal)?
-            };
-            let blobs = self.blobs.clone();
-            manifest.assets = tokio::task::spawn_blocking(move || {
-                asset_sources
-                    .into_iter()
-                    .map(|(asset, path)| {
-                        let content = blobs.capture(&path)?;
-                        if content.sha256 != asset.hash_sha256 || content.byte_len != asset.byte_len
-                        {
-                            return Err(
-                                hypercolor_core::portable_setup::SetupBlobError::ContentMismatch,
-                            );
-                        }
-                        Ok((
-                            asset.id.0,
-                            PortableAsset {
-                                name: asset.name,
-                                mime_type: asset.mime_type,
-                                tags: asset.tags,
-                                content,
-                            },
-                        ))
-                    })
-                    .collect::<Result<BTreeMap<_, _>, _>>()
-            })
-            .await
-            .map_err(internal)?
-            .map_err(internal)?;
-            let effect_sources = {
-                let bundled = bundled_effects_root();
-                self.state
-                    .domains
-                    .effects
-                    .portable_sources()
-                    .await
-                    .into_iter()
-                    .filter(|entry| {
-                        matches!(entry.metadata.source, EffectSource::Html { .. })
-                            && !entry.source_path.starts_with(&bundled)
-                    })
-                    .map(|entry| (entry.metadata.id.0, entry.metadata.name, entry.source_path))
-                    .collect::<Vec<_>>()
-            };
-            let blobs = self.blobs.clone();
-            manifest.effects = tokio::task::spawn_blocking(move || {
-                effect_sources
-                    .into_iter()
-                    .map(|(id, name, source)| {
-                        let (root, entrypoint) = effect_resource_root(&source)?;
-                        let mut files = BTreeMap::new();
-                        capture_files(&root, &root, &blobs, &mut files)?;
-                        Ok((
-                            id,
-                            PortableEffect {
-                                name,
-                                entrypoint,
-                                files,
-                            },
-                        ))
-                    })
-                    .collect::<anyhow::Result<BTreeMap<_, _>>>()
-            })
-            .await
-            .map_err(internal)?
-            .map_err(internal)?;
-        }
         self.authored_references().await.retain_definitions(
             &mut manifest,
             prior.as_ref(),
@@ -392,7 +307,7 @@ impl PortableSetupService {
         if let Some(prior) = prior {
             retain_unresolved(&mut manifest, &prior, bindings);
         }
-        if include_resources {
+        if validate_projection {
             manifest
                 .validate()
                 .map_err(|error| DomainError::validation(error.to_string()))?;
@@ -431,62 +346,6 @@ fn configured_start_scene(
             "configured startup scene has no unique portable identity",
         )),
     }
-}
-
-fn effect_resource_root(source: &Path) -> anyhow::Result<(std::path::PathBuf, String)> {
-    if let Some(bundle) =
-        html_effect_bundle(source).map_err(|error| anyhow::anyhow!(error.message))?
-    {
-        return Ok((bundle.root, bundle.manifest.entrypoint));
-    }
-    let root = source
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("effect has no bundle directory"))?;
-    let entrypoint = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("effect entrypoint is not UTF-8"))?
-        .to_owned();
-    Ok((root.to_owned(), entrypoint))
-}
-
-fn capture_files(
-    root: &Path,
-    directory: &Path,
-    blobs: &hypercolor_core::portable_setup::SetupBlobStore,
-    files: &mut BTreeMap<String, PortableBlob>,
-) -> anyhow::Result<()> {
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        let kind = entry.file_type()?;
-        anyhow::ensure!(
-            !kind.is_symlink(),
-            "effect resources must not contain symlinks"
-        );
-        if kind.is_dir() {
-            capture_files(root, &path, blobs, files)?;
-        } else if kind.is_file() {
-            let relative = path
-                .strip_prefix(root)?
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("effect resource path is not UTF-8"))?
-                .replace('\\', "/");
-            if relative
-                .rsplit('/')
-                .next()
-                .is_some_and(|name| name.eq_ignore_ascii_case("hypercolor-effect.json"))
-            {
-                continue;
-            }
-            anyhow::ensure!(
-                is_portable_bundle_path(&relative),
-                "effect resource path is not portable: {relative}"
-            );
-            files.insert(relative, blobs.capture(&path)?);
-        }
-    }
-    Ok(())
 }
 
 fn retain_unresolved(
@@ -553,52 +412,5 @@ fn retain_unresolved(
                 zone.display_target = Some(target.clone());
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{capture_files, effect_resource_root};
-    use hypercolor_core::effect::{HTML_EFFECT_BUNDLE_MANIFEST, HtmlEffectBundleManifest};
-    use hypercolor_core::portable_setup::SetupBlobStore;
-    use hypercolor_types::effect::EffectId;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn nested_entrypoint_keeps_resources_at_bundle_root() {
-        let directory = tempfile::tempdir().expect("portable fixture should be valid");
-        let root = directory.path().join("effect");
-        std::fs::create_dir_all(root.join("content")).expect("portable fixture should be valid");
-        std::fs::create_dir_all(root.join("shared")).expect("portable fixture should be valid");
-        std::fs::write(root.join("content/main.html"), "<html></html>")
-            .expect("portable fixture should be valid");
-        std::fs::write(root.join("shared/script.js"), "const color = 'violet'")
-            .expect("portable fixture should be valid");
-        let manifest = HtmlEffectBundleManifest {
-            schema_version: 1,
-            id: EffectId::new(uuid::Uuid::now_v7()),
-            entrypoint: "content/main.html".into(),
-        };
-        std::fs::write(
-            root.join(HTML_EFFECT_BUNDLE_MANIFEST),
-            serde_json::to_vec(&manifest).expect("portable fixture should be valid"),
-        )
-        .expect("portable fixture should be valid");
-        let (actual_root, entrypoint) = effect_resource_root(&root.join("content/main.html"))
-            .expect("portable fixture should be valid");
-        assert_eq!(
-            actual_root,
-            root.canonicalize()
-                .expect("portable fixture should be valid")
-        );
-        assert_eq!(entrypoint, "content/main.html");
-        let blobs = SetupBlobStore::open(directory.path().join("blobs"))
-            .expect("portable fixture should be valid");
-        let mut files = BTreeMap::new();
-        capture_files(&actual_root, &actual_root, &blobs, &mut files)
-            .expect("portable fixture should be valid");
-        assert!(files.contains_key("content/main.html"));
-        assert!(files.contains_key("shared/script.js"));
-        assert!(!files.contains_key(HTML_EFFECT_BUNDLE_MANIFEST));
     }
 }

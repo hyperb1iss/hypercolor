@@ -34,6 +34,25 @@ pub struct RestoreOptions {
     pub apply_selection: bool,
 }
 
+/// Referenced content that must be installed or imported on this computer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct MissingSetupResources {
+    #[serde(default)]
+    pub effects: Vec<crate::effect::EffectId>,
+    #[serde(default)]
+    pub media: Vec<crate::asset::AssetId>,
+    #[serde(default)]
+    pub presets: Vec<crate::library::PresetId>,
+}
+
+impl MissingSetupResources {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.effects.is_empty() && self.media.is_empty() && self.presets.is_empty()
+    }
+}
+
 /// Local choices captured when a manual backup confirmation is prepared.
 #[derive(Debug, Clone, Default)]
 pub struct BackupRestoreExpectation {
@@ -45,6 +64,8 @@ pub struct BackupRestoreExpectation {
 pub struct RestoreReport {
     pub applied: PortableSetupSnapshot,
     pub unresolved_bindings: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "MissingSetupResources::is_empty")]
+    pub missing_resources: MissingSetupResources,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,5 +75,7 @@ pub struct RestoreReceipt {
     pub requested_revision: String,
     pub applied: PortableSetupSnapshot,
     pub unresolved_bindings: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "MissingSetupResources::is_empty")]
+    pub missing_resources: MissingSetupResources,
     pub materialized_bindings: SetupBindings,
 }

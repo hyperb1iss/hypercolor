@@ -1,5 +1,5 @@
-//! Streaming manual backup container. Import admits verified immutable blobs
-//! only; applying the returned manifest remains a separate restore transaction.
+//! Streaming backup container. Configuration imports verify and discard old
+//! resource payloads; durable resource transactions retain a separate reader.
 
 use super::{SetupBlobError, SetupBlobStore};
 use hypercolor_types::portable_setup::{PortableBackupV1, PortableBlob, PortableSetupError};
@@ -70,6 +70,22 @@ pub fn read_archive(
     source: impl Read,
     blobs: &SetupBlobStore,
 ) -> Result<PortableBackupV1, BackupArchiveError> {
+    read_archive_impl(source, Some(blobs))
+}
+
+/// Validate old or new backups without retaining resource payloads. The raw
+/// manifest remains available for operation identity; restore applies only its
+/// configuration and preserves all destination-local resources.
+pub fn read_configuration_archive(
+    source: impl Read,
+) -> Result<PortableBackupV1, BackupArchiveError> {
+    read_archive_impl(source, None)
+}
+
+fn read_archive_impl(
+    source: impl Read,
+    blobs: Option<&SetupBlobStore>,
+) -> Result<PortableBackupV1, BackupArchiveError> {
     let mut archive = tar::Archive::new(source);
     let backup;
     {
@@ -101,7 +117,17 @@ pub fn read_archive(
             if entry.size() != descriptor.byte_len {
                 return Err(invalid("object size differs from the manifest"));
             }
-            blobs.stage(&descriptor, &mut entry)?;
+            if let Some(blobs) = blobs {
+                blobs.stage(&descriptor, &mut entry)?;
+            } else {
+                let mut source = CheckedReader {
+                    source: &mut entry,
+                    digest: Sha256::new(),
+                    bytes: 0,
+                };
+                io::copy(&mut source, &mut io::sink())?;
+                source.verify(&descriptor)?;
+            }
         }
         if !remaining.is_empty() {
             return Err(invalid("referenced objects are missing"));

@@ -160,6 +160,9 @@ impl PortableSetupService {
         options: RestoreOptions,
         ancillary: Option<BackupAncillary>,
     ) -> Result<RestoreReport, DomainError> {
+        manifest
+            .validate()
+            .map_err(|error| DomainError::validation(error.to_string()))?;
         let service = self.clone();
         let manifest = manifest.clone();
         let bindings = bindings.clone();
@@ -185,6 +188,7 @@ impl PortableSetupService {
                 return Ok(RestoreReport {
                     applied: receipt.applied,
                     unresolved_bindings: receipt.unresolved_bindings,
+                    missing_resources: receipt.missing_resources,
                 });
             }
             let current = service
@@ -201,9 +205,11 @@ impl PortableSetupService {
                     "lighting changed before setup restoration",
                 ));
             }
+            let mut configuration = manifest.clone();
+            configuration.retain_configuration();
             let candidate = super::plan::candidate(
                 &current.manifest,
-                &manifest,
+                &configuration,
                 &options.mode,
                 options.apply_selection,
             )?;

@@ -510,6 +510,7 @@ from .member_edit import MemberEdit
 from .member_placement import MemberPlacement
 from .member_placement_hint import MemberPlacementHint
 from .member_state import MemberState
+from .missing_setup_resources import MissingSetupResources
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
 from .open_rgb_endpoint_status import OpenRgbEndpointStatus
@@ -1147,6 +1148,7 @@ __all__ = (
     "MemberPlacement",
     "MemberPlacementHint",
     "MemberState",
+    "MissingSetupResources",
     "NormalizedPosition",
     "NormalizedRect",
     "OpenRgbEndpointStatus",

@@ -66,6 +66,7 @@ async fn changed_local_device_id_restores_saved_output_before_export() {
     // Simulate the durable receipt from the prior OS identity. Discovery has
     // already associated this rig's portable device with its new native ID.
     let receipt = RestoreReceipt {
+        missing_resources: super::super::MissingSetupResources::default(),
         operation_id: Uuid::now_v7(),
         setup_id: id,
         requested_revision: revision.clone(),
