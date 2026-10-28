@@ -369,10 +369,10 @@ impl PortableSetupV1 {
                         || existing.starts_with(&format!("{canonical}/"))
                 });
                 if !is_portable_bundle_path(path)
-                    || path
-                        .rsplit('/')
-                        .next()
-                        .is_some_and(|name| name.eq_ignore_ascii_case("hypercolor-effect.json"))
+                    || path.rsplit('/').next().is_some_and(|name| {
+                        name.eq_ignore_ascii_case("hypercolor-effect.json")
+                            || name.eq_ignore_ascii_case(".hypercolor-effect-pending")
+                    })
                     || conflicts_with_directory
                     || !paths.insert(canonical)
                 {

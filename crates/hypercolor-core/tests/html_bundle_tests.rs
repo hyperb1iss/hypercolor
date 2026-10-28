@@ -265,3 +265,58 @@ fn entrypoint_symlink_cannot_escape_the_bundle() {
     manifest(&root, id(), "main.html");
     assert!(load_html_effect_file(&root.join("main.html")).is_err());
 }
+
+#[test]
+fn pending_bundle_is_invisible_until_every_resource_is_committed() {
+    use hypercolor_core::effect::HTML_EFFECT_BUNDLE_PENDING;
+    let temp = TempDir::new().expect("isolated fixture");
+    let root = temp.path().join("pending");
+    fs::create_dir(&root).expect("bundle root");
+    fs::write(root.join(HTML_EFFECT_BUNDLE_PENDING), "operation").expect("pending marker");
+    let expected = id();
+    bundle(&root, expected, "content/main.html");
+    fs::write(
+        root.join("content/resource.html"),
+        "<title>Resource</title>",
+    )
+    .expect("resource");
+    let mut registry = EffectRegistry::new(vec![temp.path().to_owned()]);
+    assert_eq!(
+        register_html_effects(&mut registry, &[temp.path().to_owned()]).failed_files(),
+        0
+    );
+    assert!(registry.is_empty());
+    assert!(
+        load_html_effect_file(&root.join("content/main.html"))
+            .expect("pending source")
+            .is_none()
+    );
+    assert!(
+        registry
+            .reload_source(
+                &root.join("content/resource.html"),
+                "<title>Resource</title>",
+                SystemTime::now()
+            )
+            .expect("pending reload")
+            .1
+            .is_none()
+    );
+    fs::remove_file(root.join(HTML_EFFECT_BUNDLE_MANIFEST)).expect("simulate partial bundle");
+    assert_eq!(
+        register_html_effects(&mut registry, &[temp.path().to_owned()]).failed_files(),
+        0
+    );
+    assert!(
+        registry.is_empty(),
+        "resources remain hidden before manifest exists"
+    );
+    manifest(&root, expected, "content/main.html");
+    fs::remove_file(root.join(HTML_EFFECT_BUNDLE_PENDING)).expect("commit marker");
+    assert_eq!(
+        register_html_effects(&mut registry, &[temp.path().to_owned()]).failed_files(),
+        0
+    );
+    assert_eq!(registry.len(), 1);
+    assert!(registry.get(&expected).is_some());
+}

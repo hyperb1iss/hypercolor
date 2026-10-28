@@ -252,11 +252,15 @@ fn missing_selection_and_invalid_render_values_fail_before_restore() {
 }
 
 #[test]
-fn bundle_rejects_reserved_identity_metadata_and_file_directory_collisions() {
+fn bundle_rejects_reserved_metadata_and_file_directory_collisions() {
     for files in [
         BTreeMap::from([
             ("index.html".into(), blob()),
             ("HyPeRcOlOr-EfFeCt.JsOn".into(), blob()),
+        ]),
+        BTreeMap::from([
+            ("index.html".into(), blob()),
+            ("resources/.HyPeRcOlOr-EfFeCt-PeNdInG".into(), blob()),
         ]),
         BTreeMap::from([
             ("index.html".into(), blob()),

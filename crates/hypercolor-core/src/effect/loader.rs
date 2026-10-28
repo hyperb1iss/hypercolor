@@ -251,6 +251,13 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
 }
 
 pub(super) fn inspect_html_effect_file(file: &Path) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
+    if super::bundle::is_pending(file) {
+        return Ok(HtmlEffectFile {
+            entry: None,
+            legacy_effect_ids: Vec::new(),
+            imported: true,
+        });
+    }
     let bundle_entrypoint = if super::bundle::is_manifest(file) {
         super::bundle::html_effect_bundle(file)?.map(|bundle| bundle.entrypoint)
     } else {
@@ -275,6 +282,13 @@ pub(super) fn inspect_html_effect_source(
     raw_html: &str,
     modified: SystemTime,
 ) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
+    if super::bundle::is_pending(file) {
+        return Ok(HtmlEffectFile {
+            entry: None,
+            legacy_effect_ids: Vec::new(),
+            imported: true,
+        });
+    }
     let parsed = parse_html_effect_metadata(raw_html);
     let source_path = normalize_path(file);
     let bundle = super::bundle::html_effect_bundle(file)?;
@@ -376,6 +390,9 @@ fn collect_html_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
+        if super::bundle::is_pending(&dir) {
+            continue;
+        }
         for child in fs::read_dir(&dir)? {
             let child = child?;
             let file_type = child.file_type()?;

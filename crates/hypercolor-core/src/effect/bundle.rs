@@ -11,6 +11,14 @@ use super::HtmlDiscoveryError;
 /// Identity document written beside an imported effect's resources.
 pub const HTML_EFFECT_BUNDLE_MANIFEST: &str = "hypercolor-effect.json";
 
+/// Discovery fence retained while a setup restore fills a managed bundle.
+pub const HTML_EFFECT_BUNDLE_PENDING: &str = ".hypercolor-effect-pending";
+
+pub(super) fn is_pending(path: &Path) -> bool {
+    path.ancestors()
+        .any(|parent| parent.join(HTML_EFFECT_BUNDLE_PENDING).exists())
+}
+
 /// One custom effect, independent of its installation directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

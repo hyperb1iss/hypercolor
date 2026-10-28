@@ -24,7 +24,8 @@ mod traits;
 pub mod watcher;
 
 pub use bundle::{
-    HTML_EFFECT_BUNDLE_MANIFEST, HtmlEffectBundle, HtmlEffectBundleManifest, html_effect_bundle,
+    HTML_EFFECT_BUNDLE_MANIFEST, HTML_EFFECT_BUNDLE_PENDING, HtmlEffectBundle,
+    HtmlEffectBundleManifest, html_effect_bundle,
 };
 pub use factory::{
     EffectRendererAccelerationResolution, create_renderer_for_metadata,
