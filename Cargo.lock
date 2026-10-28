@@ -4538,6 +4538,7 @@ dependencies = [
  "stats_alloc",
  "surfman",
  "sysinfo",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

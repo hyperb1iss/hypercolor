@@ -118,6 +118,7 @@ strum = { version = "0.28", features = ["derive"] }
 
 # Config
 dirs = "7.0"
+tar = "0.4.46"
 notify = "8.2"
 sysinfo = "0.39.6"
 nvml-wrapper = "0.13.0"

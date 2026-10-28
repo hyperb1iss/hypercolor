@@ -1,5 +1,7 @@
 //! Streamed, content-addressed storage for portable setup archives and sync.
 
+pub mod archive;
+
 use hypercolor_platform_fs::FileChangeStamp;
 use std::collections::HashMap;
 use std::fmt::Write as _;

@@ -126,6 +126,7 @@ glow = { workspace = true, optional = true }
 surfman = { workspace = true, optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tempfile = { workspace = true }
+tar = { workspace = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 # Servo's global allocator; use-jemalloc restores jemalloc, which Servo 0.5

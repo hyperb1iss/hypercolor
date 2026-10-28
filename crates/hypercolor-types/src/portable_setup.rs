@@ -5,9 +5,14 @@
 //! UUIDs; account adapters associate those references with account device slots.
 //! Blob bytes travel separately from this manifest and are verified by SHA-256.
 
+mod backup;
 mod projection;
 mod scene;
 mod validation;
+pub use backup::{
+    PortableAudioPreferences, PortableBackupV1, PortableCapturePreferences, PortablePreferences,
+    PortableShutdownPreferences,
+};
 pub use projection::{SetupBindings, UnmappedSetupReference};
 pub use scene::{
     PortableDisplayTarget, PortableLayout, PortableOutput, PortableScene, PortableZone,
