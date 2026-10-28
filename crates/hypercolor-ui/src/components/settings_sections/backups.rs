@@ -13,6 +13,10 @@ use crate::{api, app::WsContext, config_state::ConfigContext, icons::*};
 pub fn BackupsSection() -> impl IntoView {
     let config = expect_context::<ConfigContext>();
     let connection = expect_context::<WsContext>().connection_generation;
+    let remote = crate::remote_bridge::is_available();
+    let access = use_context::<api::backups::BackupAccess>();
+    let can_download =
+        Memo::new(move |_| !remote || access.is_some_and(|access| access.download.get()));
     let busy = RwSignal::new(false);
     let preview = RwSignal::new(None::<api::backups::BackupPreview>);
     let error = RwSignal::new(None::<String>);
@@ -49,6 +53,9 @@ pub fn BackupsSection() -> impl IntoView {
     let export_generation = Arc::clone(&generation);
     let export_running = Arc::clone(&running);
     let export = move |_| {
+        if !can_download.get_untracked() {
+            return;
+        }
         let captured = export_generation.load(Ordering::Acquire);
         let epoch = Arc::clone(&export_generation);
         let (handle, registration) = AbortHandle::new_pair();
@@ -73,6 +80,9 @@ pub fn BackupsSection() -> impl IntoView {
     let upload_generation = Arc::clone(&generation);
     let upload_running = Arc::clone(&running);
     let upload = move |event: web_sys::Event| {
+        if remote {
+            return;
+        }
         let Some(file) = Change::from_event(event)
             .files()
             .and_then(|files| files.get(0))
@@ -106,6 +116,9 @@ pub fn BackupsSection() -> impl IntoView {
     };
 
     let apply = move |_| {
+        if remote {
+            return;
+        }
         let Some(candidate) = preview.get_untracked() else {
             return;
         };
@@ -145,13 +158,22 @@ pub fn BackupsSection() -> impl IntoView {
 
     view! {
         <section id="section-backups">
-            <SectionHeader title="Backups" icon=LuSave />
+            <SectionHeader title="Backup files" icon=LuSave />
             <p class="text-sm text-fg-secondary mb-4">"Save your scenes, layouts, custom effects, media, favorites, and lighting settings in one file."</p>
             <div class="flex flex-wrap gap-3">
-                <button class="px-3 py-2 rounded-lg text-sm border border-[var(--border-default)] text-fg-primary bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)] disabled:opacity-50 disabled:cursor-not-allowed" disabled=move || busy.get() on:click=export>"Download backup"</button>
-                <button class="px-3 py-2 rounded-lg text-sm border border-[var(--border-default)] text-fg-primary bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)] disabled:opacity-50 disabled:cursor-not-allowed" disabled=move || busy.get() on:click=move |_| { if let Some(input) = file_input.get() { input.click(); } }>"Import backup"</button>
-                <input node_ref=file_input type="file" class="hidden" accept=".hypercolor-backup,.tar,application/x-tar" on:change=upload />
+                <Show when=move || can_download.get()>
+                    <button class="px-3 py-2 rounded-lg text-sm border border-[var(--border-default)] text-fg-primary bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)] disabled:opacity-50 disabled:cursor-not-allowed" disabled=move || busy.get() on:click=export.clone()>"Download backup"</button>
+                </Show>
+                {(!remote).then(|| view! {
+                    <button class="px-3 py-2 rounded-lg text-sm border border-[var(--border-default)] text-fg-primary bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)] disabled:opacity-50 disabled:cursor-not-allowed" disabled=move || busy.get() on:click=move |_| { if let Some(input) = file_input.get() { input.click(); } }>"Import backup"</button>
+                    <input node_ref=file_input type="file" class="hidden" accept=".hypercolor-backup,.tar,application/x-tar" on:change=upload />
+                })}
             </div>
+            {remote.then(|| view! {
+                <Show when=move || !can_download.get()>
+                    <p class="mt-3 text-sm text-fg-secondary">"Manage backup files in Hypercolor on this computer."</p>
+                </Show>
+            })}
             {move || preview.get().map(|candidate| view! {
                 <div class="mt-5 border border-[var(--border-default)] rounded-lg p-4 space-y-3" role="region" aria-label="Backup preview">
                     <h3 class="text-sm font-semibold text-fg-primary">{candidate.name}</h3>

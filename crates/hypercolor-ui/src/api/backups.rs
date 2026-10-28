@@ -3,7 +3,23 @@
 use super::{ApiError, ApiResult, client};
 pub use hypercolor_types::api::backups::{BackupApplyRequest, BackupApplyResponse, BackupPreview};
 
+/// An embedding Remote app advertises downloads only after checking the peer.
+#[derive(Clone, Copy)]
+pub struct BackupAccess {
+    pub download: leptos::prelude::Signal<bool>,
+}
+
+fn require_local_restore() -> ApiResult<()> {
+    if crate::remote_bridge::is_available() {
+        return Err(ApiError::Network(
+            "Import backups from the app on this computer.".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn apply(operation_id: uuid::Uuid) -> ApiResult<BackupApplyResponse> {
+    require_local_restore()?;
     client::post_json(
         "/api/v1/backups/apply",
         &BackupApplyRequest { operation_id },
@@ -122,6 +138,7 @@ export async function saveBackupFile(stream, destination, signal) {
     }
 
     pub async fn preview(file: web_sys::File) -> ApiResult<BackupPreview> {
+        require_local_restore()?;
         let source = BrowserBlobSource::new(file.into()).map_err(stream_error)?;
         let response = client::send_stream(HttpStreamRequest {
             method: HttpMethod::Post,
