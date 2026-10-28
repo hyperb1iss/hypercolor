@@ -205,6 +205,9 @@ async fn handle_inactive_render_loop(
         runtime.render.sparkleflinger.end_gpu_frame();
     }
 
+    if state.scene_transactions.portable_restore_held() {
+        return runtime.frame_policy.inactive_loop_execution(loop_state);
+    }
     runtime.frame_loop.clear_input_demands();
     clear_inactive_render_zones(state, runtime).await;
     runtime.frame_policy.inactive_loop_execution(loop_state)

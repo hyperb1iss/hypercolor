@@ -27,14 +27,14 @@ const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(super) struct LayoutPublication {
-    spatial: SpatialService,
+    pub(super) spatial: SpatialService,
     scenes: SceneService,
-    transactions: LayoutTransactionAuthority,
+    pub(super) transactions: LayoutTransactionAuthority,
     runtime_state_path: PathBuf,
     runtime_projection: RuntimeSessionProjection,
     /// Every layout that goes active is put on this first, so no layout
     /// can change the render resolution.
-    render_canvas: RenderCanvas,
+    pub(super) render_canvas: RenderCanvas,
 }
 
 pub(super) struct ActiveLayoutBindingMigration {

@@ -73,6 +73,7 @@ pub(crate) async fn service_scene_transactions(
             LayoutActivationDecision::Commit => {
                 let PreparedLayoutActivation {
                     scene_fence,
+                    portable_snapshot,
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
@@ -135,6 +136,17 @@ pub(crate) async fn service_scene_transactions(
                             )
                             .await
                     }
+                    LayoutPublicationMode::PortableRestore => {
+                        if portable_snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.hold.is_active())
+                            && state.spatial_engine.has_layout(&expected_layout)
+                        {
+                            publish_renderer_state(spatial_engine)
+                        } else {
+                            Err(LayoutTransactionRejection::Superseded)
+                        }
+                    }
                 };
                 completion.complete(publication);
             }
@@ -143,6 +155,9 @@ pub(crate) async fn service_scene_transactions(
 
     for transaction in state.scene_transactions.drain() {
         match transaction {
+            SceneTransaction::BeginPortableRestore(request) => {
+                state.scene_transactions.accept_portable_restore(request);
+            }
             SceneTransaction::SetScreenCaptureConfigured(configured) => {
                 scene.render_state.set_screen_capture_configured(configured);
             }
@@ -156,6 +171,7 @@ pub(crate) async fn service_scene_transactions(
                     });
                     continue;
                 }
+                let portable_snapshot = transaction.portable_snapshot();
                 let spatial_engine = transaction.spatial_engine().clone();
                 let expected_layout = transaction.expected_layout().clone();
                 let layout = spatial_engine.layout();
@@ -182,22 +198,36 @@ pub(crate) async fn service_scene_transactions(
                         } else {
                             (state.zone_layout_previews.generation(), candidate_zones)
                         };
-                    let (display_target_fps, display_output_routes) =
-                        snapshot_display_zone_target_metadata(
-                            &state.device_registry,
-                            &mut scene.snapshot_cache,
-                            resolved_zones_revision,
-                            candidate_zones.as_ref(),
-                            state.face_fps_cap,
-                        )
-                        .await;
-                    let display_descriptors =
-                        display_descriptors_for_zones(&display_target_fps, &display_output_routes);
-                    let registry = state.effect_registry.read().await;
+                    let (registry, display_descriptors, device_generation) =
+                        if let Some(snapshot) = &portable_snapshot {
+                            if !snapshot.hold.is_active() {
+                                return Err(anyhow::anyhow!("portable renderer hold ended"));
+                            }
+                            (snapshot.effects.clone(), snapshot.displays.clone(), 0)
+                        } else {
+                            let (display_target_fps, display_output_routes) =
+                                snapshot_display_zone_target_metadata(
+                                    &state.device_registry,
+                                    &mut scene.snapshot_cache,
+                                    resolved_zones_revision,
+                                    candidate_zones.as_ref(),
+                                    state.face_fps_cap,
+                                )
+                                .await;
+                            let display_descriptors = display_descriptors_for_zones(
+                                &display_target_fps,
+                                &display_output_routes,
+                            );
+                            (
+                                state.effect_registry.read().await.clone(),
+                                display_descriptors,
+                                state.device_registry.generation(),
+                            )
+                        };
                     let dependency_key = scene_dependency_key(
                         resolved_zones_revision,
                         registry.generation(),
-                        state.device_registry.generation(),
+                        device_generation,
                         zone_layout_preview_generation,
                         &unassigned_behavior,
                     );
@@ -291,6 +321,7 @@ pub(crate) async fn service_scene_transactions(
                 };
                 render.pending_layout_activation = Some(PreparedLayoutActivation {
                     scene_fence: transaction.scene_fence(),
+                    portable_snapshot,
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
@@ -336,7 +367,9 @@ pub(crate) async fn execute_frame(
         // off the hot render future unless the control plane has work queued.
         Box::pin(service_scene_transactions(state, scene, frame_loop, render)).await;
     }
-    if render.pending_layout_activation.is_some() {
+    if render.pending_layout_activation.is_some()
+        || state.scene_transactions.portable_restore_held()
+    {
         render.sparkleflinger.end_gpu_frame();
         let mut render_loop = state.render_loop.write().await;
         return runtime
@@ -1481,3 +1514,6 @@ mod tests {
         assert_eq!(blended[2].colors[0][2], 0);
     }
 }
+
+#[cfg(test)]
+mod portable_tests;

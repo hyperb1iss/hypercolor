@@ -1,3 +1,5 @@
+pub(crate) mod portable;
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -83,6 +85,7 @@ impl PreparedLayoutUpdate {
 #[derive(Debug)]
 pub(crate) struct PrepareLayoutTransaction {
     scene_fence: Option<Arc<LayoutSceneFence>>,
+    portable_snapshot: Option<Arc<portable::PortableRendererSnapshot>>,
     spatial_engine: SpatialEngine,
     expected_layout: SpatialLayout,
     active_scene_id: Option<SceneId>,
@@ -96,6 +99,9 @@ pub(crate) struct PrepareLayoutTransaction {
 }
 
 impl PrepareLayoutTransaction {
+    pub(crate) fn portable_snapshot(&self) -> Option<Arc<portable::PortableRendererSnapshot>> {
+        self.portable_snapshot.clone()
+    }
     pub(crate) fn scene_fence(&self) -> Option<Arc<LayoutSceneFence>> {
         self.scene_fence.clone()
     }
@@ -169,6 +175,7 @@ impl PrepareLayoutTransaction {
         let expected_resolved_zones_revision = self.source_resolved_zones_revision;
         let publication_mode = self.publication_mode;
         let scene_fence = self.scene_fence.clone();
+        let portable_snapshot = self.portable_snapshot.clone();
         self.accept();
         while activation.decision() == LayoutActivationDecision::Pending {
             tokio::task::yield_now().await;
@@ -204,6 +211,16 @@ impl PrepareLayoutTransaction {
                     )
                     .await
             }
+            LayoutPublicationMode::PortableRestore => {
+                if portable_snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.hold.is_active())
+                {
+                    Ok(())
+                } else {
+                    Err(LayoutTransactionRejection::Superseded)
+                }
+            }
         };
         activation.complete(result.clone());
         result
@@ -225,6 +242,7 @@ pub(crate) enum LayoutActivationDecision {
 pub(crate) enum LayoutPublicationMode {
     AuthorityAndRenderer,
     RendererOnly,
+    PortableRestore,
 }
 
 const ACTIVATION_PENDING: u8 = 0;
@@ -331,6 +349,7 @@ impl LayoutActivationReceipt {
 pub(crate) enum SceneTransaction {
     PrepareLayout(PrepareLayoutTransaction),
     SetScreenCaptureConfigured(bool),
+    BeginPortableRestore(portable::BeginPortableRestore),
 }
 
 #[derive(Default)]
@@ -347,6 +366,7 @@ pub struct SceneTransactionQueue {
     queued: Arc<Notify>,
     scene_activation_lock: Arc<Mutex<()>>,
     layout_update_lock: Arc<Mutex<()>>,
+    portable_restore: Arc<StdMutex<Option<Arc<portable::PortableRenderHold>>>>,
 }
 
 impl Default for SceneTransactionQueue {
@@ -540,6 +560,7 @@ impl LayoutTransactionAuthority {
                 unassigned_behavior,
                 publication_mode,
                 scene_fence,
+                None,
             )?;
             submission.preparation.wait().await?;
             let commit_state = LayoutPersistenceState {
@@ -608,6 +629,7 @@ impl SceneTransactionQueue {
             queued: Arc::default(),
             scene_activation_lock: Arc::default(),
             layout_update_lock: Arc::default(),
+            portable_restore: Arc::default(),
         }
     }
 
@@ -648,11 +670,13 @@ impl SceneTransactionQueue {
         unassigned_behavior: UnassignedBehavior,
         publication_mode: LayoutPublicationMode,
         scene_fence: Option<Arc<LayoutSceneFence>>,
+        portable_snapshot: Option<Arc<portable::PortableRendererSnapshot>>,
     ) -> Result<PreparedLayoutSubmission, LayoutTransactionRejection> {
         let (acknowledgment, receipt) = oneshot::channel();
         let (activation, completion) = LayoutActivationControl::new();
         self.push(SceneTransaction::PrepareLayout(PrepareLayoutTransaction {
             scene_fence,
+            portable_snapshot,
             spatial_engine,
             expected_layout,
             active_scene_id,
@@ -693,7 +717,11 @@ impl SceneTransactionQueue {
             .position(|transaction| matches!(transaction, SceneTransaction::PrepareLayout(_)))?;
         match state.pending.remove(index) {
             Some(SceneTransaction::PrepareLayout(transaction)) => Some(transaction),
-            Some(SceneTransaction::SetScreenCaptureConfigured(_)) | None => {
+            Some(
+                SceneTransaction::SetScreenCaptureConfigured(_)
+                | SceneTransaction::BeginPortableRestore(_),
+            )
+            | None => {
                 unreachable!("selected queue entry should be a layout preparation")
             }
         }
@@ -744,6 +772,7 @@ impl SceneTransactionQueue {
     }
 
     pub(crate) fn close(&self) {
+        self.stop_portable_restore();
         let pending = {
             let mut state = self
                 .inner
@@ -758,6 +787,7 @@ impl SceneTransactionQueue {
                     transaction.reject(LayoutTransactionRejection::RendererStopped);
                 }
                 SceneTransaction::SetScreenCaptureConfigured(_) => {}
+                SceneTransaction::BeginPortableRestore(request) => request.reject(),
             }
         }
     }
@@ -805,6 +835,32 @@ impl LayoutPublicationTestExecutor {
         }
     }
 
+    /// Service the frame-boundary hold before a restore acquires store writers.
+    pub fn acknowledge_portable_restore(&self) -> bool {
+        let request = {
+            let mut state = self
+                .queue
+                .inner
+                .lock()
+                .expect("scene transaction queue should lock");
+            let index = state.pending.iter().position(|transaction| {
+                matches!(transaction, SceneTransaction::BeginPortableRestore(_))
+            });
+            index.and_then(|index| state.pending.remove(index))
+        };
+        if let Some(SceneTransaction::BeginPortableRestore(request)) = request {
+            self.queue.accept_portable_restore(request);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Model renderer teardown, completing pending preparation receipts.
+    pub fn close_renderer(&self) {
+        self.queue.close();
+    }
+
     pub async fn execute_next_layout_publication(
         &self,
     ) -> Result<Option<SpatialLayout>, LayoutTransactionRejection> {
@@ -847,6 +903,7 @@ impl LayoutPublicationTestExecutor {
         F: FnOnce() -> Fut,
         Fut: Future<Output = ()>,
     {
+        self.acknowledge_portable_restore();
         let Some(transaction) = self.queue.take_next_layout_preparation() else {
             return Ok(None);
         };

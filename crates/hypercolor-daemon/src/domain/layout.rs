@@ -5,6 +5,7 @@ mod catalog;
 mod convergence;
 mod exclusions;
 mod publication;
+pub(crate) mod portable_renderer;
 mod render_canvas;
 mod workflows;
 
