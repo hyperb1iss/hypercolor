@@ -1,6 +1,6 @@
 mod control_sync;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -33,6 +33,7 @@ use self::control_sync::{ActiveBindingState, apply_sensor_bindings, canonical_co
 
 pub struct EffectPool {
     slots: HashMap<EffectSlotKey, EffectSlot>,
+    unavailable: HashSet<EffectSlotKey>,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     generation: u64,
 }
@@ -40,6 +41,7 @@ pub struct EffectPool {
 /// Effect-pool changes with allocation and control validation completed.
 pub struct PreparedEffectPoolReconcile {
     slots: HashMap<EffectSlotKey, EffectSlot>,
+    unavailable: HashSet<EffectSlotKey>,
     reused_keys: Vec<EffectSlotKey>,
     control_updates: Vec<PreparedControlUpdate>,
     source_generation: u64,
@@ -83,6 +85,7 @@ impl EffectPool {
     pub fn new() -> Self {
         Self {
             slots: HashMap::new(),
+            unavailable: HashSet::new(),
             asset_library: None,
             generation: 0,
         }
@@ -91,6 +94,13 @@ impl EffectPool {
     #[must_use]
     pub fn slot_count(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Whether an admitted layer references an effect absent from the registry.
+    #[must_use]
+    pub fn layer_unavailable(&self, zone_id: ZoneId, layer_id: SceneLayerId) -> bool {
+        self.unavailable
+            .contains(&EffectSlotKey::new(zone_id, layer_id))
     }
 
     /// Provide the asset library used by asset-backed effect renderers.
@@ -112,17 +122,17 @@ impl EffectPool {
 
     /// Construct every replacement renderer before changing the live pool.
     ///
-    /// Every layer resolves and validates before any renderer is built. A
-    /// scene that fails to admit retries every frame, so a layer that cannot
-    /// admit (an effect that is not registered, or a control its metadata
-    /// rejects) fails the attempt before the layers ahead of it build
+    /// Available layers validate before any renderer is built. Missing effects
+    /// remain inactive until a registry change makes them available. A
+    /// scene that fails to admit retries every frame, so invalid controls
+    /// fail the attempt before the layers ahead of them build
     /// renderers the failure would throw away, such as one Servo page load
     /// per HTML layer.
     ///
     /// # Errors
     ///
-    /// Returns an error if an effect is unavailable, a layer's controls are
-    /// invalid, or a replacement renderer cannot be initialized. The live pool
+    /// Returns an error if a layer's controls are invalid or a replacement
+    /// renderer cannot be initialized. The live pool
     /// is unchanged on failure.
     pub fn prepare_reconcile(
         &self,
@@ -133,6 +143,8 @@ impl EffectPool {
         let desired_layers = desired_effect_layers(zones);
         let mut slots = HashMap::new();
         slots.try_reserve(desired_layers.len())?;
+        let mut unavailable = HashSet::new();
+        unavailable.try_reserve(desired_layers.len())?;
         let mut reused_keys = Vec::new();
         reused_keys.try_reserve(desired_layers.len())?;
         let mut control_updates = Vec::new();
@@ -146,7 +158,10 @@ impl EffectPool {
             };
             let key = EffectSlotKey::new(zone.id, layer.id);
 
-            let entry = lookup_effect_entry(registry, source.effect_id)?;
+            let Some(entry) = registry.get(&source.effect_id) else {
+                unavailable.insert(key);
+                continue;
+            };
 
             let display_descriptor = zone
                 .display_target
@@ -193,6 +208,7 @@ impl EffectPool {
 
         Ok(PreparedEffectPoolReconcile {
             slots,
+            unavailable,
             reused_keys,
             control_updates,
             source_generation: self.generation,
@@ -211,6 +227,7 @@ impl EffectPool {
     pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) -> Result<()> {
         let PreparedEffectPoolReconcile {
             mut slots,
+            unavailable,
             reused_keys,
             control_updates,
             source_generation,
@@ -242,14 +259,16 @@ impl EffectPool {
             slots.insert(key, slot);
         }
         self.slots = slots;
+        self.unavailable = unavailable;
         self.generation = next_generation;
         Ok(())
     }
 
     pub fn clear(&mut self) {
-        if !self.slots.is_empty() {
+        if !self.slots.is_empty() || !self.unavailable.is_empty() {
             let next_generation = self.next_generation();
             self.slots.clear();
+            self.unavailable.clear();
             self.generation = next_generation;
         }
     }
@@ -270,9 +289,12 @@ impl EffectPool {
     }
 
     pub fn remove_zone(&mut self, zone_id: ZoneId) {
-        if self.slots.keys().any(|key| key.zone_id == zone_id) {
+        if self.slots.keys().any(|key| key.zone_id == zone_id)
+            || self.unavailable.iter().any(|key| key.zone_id == zone_id)
+        {
             let next_generation = self.next_generation();
             self.slots.retain(|key, _| key.zone_id != zone_id);
+            self.unavailable.retain(|key| key.zone_id != zone_id);
             self.generation = next_generation;
         }
     }
@@ -339,6 +361,10 @@ impl EffectPool {
         }
 
         let key = EffectSlotKey::new(zone.id, layer.id);
+        if self.unavailable.contains(&key) {
+            target.fill(hypercolor_types::canvas::Rgba::TRANSPARENT);
+            return Ok(());
+        }
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
                 "zone '{}' layer '{}' is not reconciled before advancing",
@@ -414,6 +440,11 @@ impl EffectPool {
         }
 
         let key = EffectSlotKey::new(zone.id, layer.id);
+        if self.unavailable.contains(&key) {
+            let mut canvas = Canvas::try_new(zone.layout.canvas_width, zone.layout.canvas_height)?;
+            canvas.fill(hypercolor_types::canvas::Rgba::TRANSPARENT);
+            return Ok(EffectRenderOutput::Cpu(canvas));
+        }
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
                 "zone '{}' layer '{}' is not reconciled before rendering",
@@ -453,6 +484,9 @@ impl EffectPool {
         }
 
         let key = EffectSlotKey::new(zone.id, layer.id);
+        if self.unavailable.contains(&key) {
+            return Ok(());
+        }
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
                 "zone '{}' layer '{}' is not reconciled before rendering",
@@ -812,12 +846,6 @@ impl Drop for EffectSlot {
     fn drop(&mut self) {
         self.renderer.destroy();
     }
-}
-
-fn lookup_effect_entry(registry: &EffectRegistry, effect_id: EffectId) -> Result<&EffectEntry> {
-    registry
-        .get(&effect_id)
-        .ok_or_else(|| anyhow!("effect '{effect_id}' is not registered"))
 }
 
 fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
@@ -1962,13 +1990,11 @@ mod tests {
 
     /// A scene whose later layer cannot admit fails before the layers ahead of
     /// it build their renderers, attempt after attempt, so the per-frame retry
-    /// does no renderer construction. The retry still admits the scene once
-    /// the missing effect registers.
+    /// does no renderer construction.
     #[test]
     fn failing_admission_builds_no_renderer_ahead_of_the_failure() {
-        let mut registry = registry_with_builtins();
+        let registry = registry_with_builtins();
         let solid_id = builtin_effect_id(&registry, "solid_color");
-        let missing_id = EffectId::new(uuid::Uuid::from_u128(0xdead_beef));
         let mut invalid_controls = render_zone(ZoneId::new(), solid_id);
         let LayerSource::Effect { controls, .. } = &mut invalid_controls.layers[0].source else {
             panic!("test layer should be an effect");
@@ -1977,37 +2003,117 @@ mod tests {
         let pool = EffectPool::new();
         let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
 
-        for failing in [render_zone(ZoneId::new(), missing_id), invalid_controls] {
-            let zones = [render_zone(ZoneId::new(), solid_id), failing];
-            for attempt in 0..5 {
-                assert!(
-                    pool.prepare_reconcile(&zones, &registry, &HashMap::new())
-                        .is_err(),
-                    "attempt {attempt} should fail to admit"
-                );
-            }
+        let zones = [render_zone(ZoneId::new(), solid_id), invalid_controls];
+        for attempt in 0..5 {
+            assert!(
+                pool.prepare_reconcile(&zones, &registry, &HashMap::new())
+                    .is_err(),
+                "attempt {attempt} should fail to admit"
+            );
         }
         assert_eq!(
             SLOT_BUILDS.with(std::cell::Cell::get),
             builds_before,
             "a failing admission built renderers it then threw away"
         );
+    }
 
+    #[test]
+    fn unavailable_effect_stays_inactive_until_registration() {
+        let mut registry = registry_with_builtins();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let missing_id = EffectId::new(uuid::Uuid::from_u128(0xdead_beef));
+        let zones = [
+            render_zone(ZoneId::new(), solid_id),
+            render_zone(ZoneId::new(), missing_id),
+        ];
+        let authored = zones.clone();
+        let missing = &zones[1];
+        let layer = &missing.layers[0];
+        let mut pool = EffectPool::new();
+        pool.reconcile(&zones, &registry, &HashMap::new())
+            .expect("available effects should admit beside missing ones");
+        assert_eq!(pool.slot_count(), 1);
+        assert!(pool.layer_unavailable(missing.id, layer.id));
+        let audio = AudioData::silence();
+        let interaction = InteractionData::default();
+        let sensors = hypercolor_types::sensor::SystemSnapshot::empty();
+        let mut target = Canvas::new(32, 16);
+        pool.render_layer_into(
+            missing,
+            layer,
+            0.016,
+            &audio,
+            &interaction,
+            None,
+            &sensors,
+            FrameDataSources::default(),
+            &mut target,
+        )
+        .expect("missing layer should render transparently");
+        assert_eq!(
+            target.get_pixel(0, 0),
+            hypercolor_types::canvas::Rgba::TRANSPARENT
+        );
+        let output = pool
+            .render_layer_output(
+                missing,
+                layer,
+                0.016,
+                &audio,
+                &interaction,
+                None,
+                &sensors,
+                FrameDataSources::default(),
+            )
+            .expect("missing output");
+        let crate::effect::EffectRenderOutput::Cpu(canvas) = output else {
+            panic!("missing effect should produce transparent CPU pixels");
+        };
+        assert_eq!(
+            canvas.get_pixel(0, 0),
+            hypercolor_types::canvas::Rgba::TRANSPARENT
+        );
+        pool.advance_layer_output(
+            missing,
+            layer,
+            0.016,
+            &audio,
+            &interaction,
+            None,
+            &sensors,
+            FrameDataSources::default(),
+        )
+        .expect("missing advance is inactive");
         let mut late_entry = registry
             .get(&solid_id)
             .expect("solid color should be registered")
             .clone();
         late_entry.metadata.id = missing_id;
         registry.register(late_entry);
-        let zones = [
-            render_zone(ZoneId::new(), solid_id),
-            render_zone(ZoneId::new(), missing_id),
-        ];
-        let prepared = pool
-            .prepare_reconcile(&zones, &registry, &HashMap::new())
+        pool.reconcile(&zones, &registry, &HashMap::new())
             .expect("the scene should admit once its effect registers");
-        assert_eq!(prepared.slots.len(), 2);
-        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 2);
+        assert_eq!(pool.slot_count(), 2);
+        assert!(!pool.layer_unavailable(missing.id, layer.id));
+        assert_eq!(zones, authored);
+    }
+
+    #[test]
+    fn unavailable_effect_state_is_removed_with_its_zone_or_pool() {
+        let registry = EffectRegistry::new(Vec::new());
+        let zone = render_zone(ZoneId::new(), EffectId::new(uuid::Uuid::now_v7()));
+        let mut pool = EffectPool::new();
+        for clear_pool in [false, true] {
+            pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
+                .unwrap();
+            assert!(pool.layer_unavailable(zone.id, zone.layers[0].id));
+            if clear_pool {
+                pool.clear();
+            } else {
+                pool.remove_zone(zone.id);
+            }
+            assert!(!pool.layer_unavailable(zone.id, zone.layers[0].id));
+        }
     }
 
     #[test]

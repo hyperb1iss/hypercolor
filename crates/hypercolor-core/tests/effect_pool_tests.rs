@@ -179,7 +179,7 @@ fn effect_pool_reconciles_and_renders_zone_controls() {
 }
 
 #[test]
-fn failed_effect_pool_preparation_preserves_live_slots() {
+fn unavailable_effect_preparation_preserves_live_slots_until_commit() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let live_zone = render_zone(ZoneId::new(), solid_id);
@@ -193,7 +193,7 @@ fn failed_effect_pool_preparation_preserves_live_slots() {
 
     let result = pool.prepare_reconcile(&[missing_zone], &registry, &HashMap::new());
 
-    assert!(result.is_err());
+    let prepared = result.expect("missing effects admit inactive slots");
     assert_eq!(pool.slot_count(), 1);
     let mut canvas = Canvas::new(1, 1);
     pool.render_zone_into(
@@ -206,14 +206,16 @@ fn failed_effect_pool_preparation_preserves_live_slots() {
         hypercolor_core::effect::FrameDataSources::default(),
         &mut canvas,
     )
-    .expect("live slot should remain renderable after rejected preparation");
+    .expect("live slot should remain renderable before commit");
+    pool.commit_reconcile(prepared)
+        .expect("inactive state commits");
+    assert_eq!(pool.slot_count(), 0);
 }
 
-/// A scene with a valid layer ahead of one whose effect is not registered
-/// fails to admit without touching the live pool, and admits on the retry
-/// after the missing effect registers.
+/// Available effects keep rendering while another source is absent. Registering
+/// the missing effect activates its authored layer on the next reconciliation.
 #[test]
-fn failed_admission_retries_until_the_missing_effect_registers() {
+fn available_effects_render_until_the_missing_effect_registers() {
     let mut registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let missing_id = EffectId::new(uuid::Uuid::from_u128(0xfeed_beef));
@@ -223,12 +225,24 @@ fn failed_admission_retries_until_the_missing_effect_registers() {
     ];
     let mut pool = EffectPool::new();
 
-    for attempt in 0..3 {
-        assert!(
-            pool.reconcile(&zones, &registry, &HashMap::new()).is_err(),
-            "attempt {attempt} should fail to admit"
-        );
-        assert_eq!(pool.slot_count(), 0);
+    for _ in 0..3 {
+        pool.reconcile(&zones, &registry, &HashMap::new())
+            .expect("available effects should admit");
+        assert_eq!(pool.slot_count(), 1);
+        assert!(pool.layer_unavailable(zones[1].id, zones[1].layers[0].id));
+        let mut canvas = Canvas::new(1, 1);
+        pool.render_zone_into(
+            &zones[0],
+            0.016,
+            &AudioData::silence(),
+            &InteractionData::default(),
+            None,
+            &EMPTY_SENSORS,
+            hypercolor_core::effect::FrameDataSources::default(),
+            &mut canvas,
+        )
+        .expect("available effect renders");
+        assert_eq!(top_left(&canvas).a, 255);
     }
 
     let mut late_entry = registry
@@ -240,6 +254,7 @@ fn failed_admission_retries_until_the_missing_effect_registers() {
     pool.reconcile(&zones, &registry, &HashMap::new())
         .expect("the scene should admit once its effect registers");
     assert_eq!(pool.slot_count(), 2);
+    assert!(!pool.layer_unavailable(zones[1].id, zones[1].layers[0].id));
 }
 
 #[test]

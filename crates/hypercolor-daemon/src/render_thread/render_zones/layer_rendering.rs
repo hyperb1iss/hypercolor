@@ -45,8 +45,13 @@ impl ZoneRuntime {
         requirements: ZoneFrameRequirements,
     ) -> Result<Option<ProducerFrame>> {
         let mut layer_frames = Vec::new();
+        let mut unavailable_source = false;
         for layer in &zone.layers {
             if !layer.enabled {
+                continue;
+            }
+            if self.note_unavailable_effect(zone, layer, context) {
+                unavailable_source = true;
                 continue;
             }
             let layer_runtime = evaluate_layer_runtime(
@@ -107,11 +112,8 @@ impl ZoneRuntime {
                                 layer_runtime.id,
                                 LayerHealth::AssetMissing,
                             );
-                            Some(transparent_black_frame(
-                                &mut self.static_layer_surface_cache,
-                                zone.layout.canvas_width,
-                                zone.layout.canvas_height,
-                            )?)
+                            unavailable_source = true;
+                            continue;
                         }
                         MediaLayerFrame::Failed(reason) => {
                             self.layer_runtime.note_health(
@@ -218,6 +220,14 @@ impl ZoneRuntime {
         }
 
         if composition_layers.is_empty() {
+            if unavailable_source {
+                return transparent_black_frame(
+                    &mut self.static_layer_surface_cache,
+                    zone.layout.canvas_width,
+                    zone.layout.canvas_height,
+                )
+                .map(Some);
+            }
             return Ok(None);
         }
         if requirements.reuse_unchanged_composition
@@ -383,6 +393,15 @@ impl ZoneRuntime {
             return Ok(None);
         };
 
+        if self.note_unavailable_effect(zone, &layer, context) {
+            return transparent_black_frame(
+                &mut self.static_layer_surface_cache,
+                zone.layout.canvas_width,
+                zone.layout.canvas_height,
+            )
+            .map(Some);
+        }
+
         let frame = self.render_effect_layer_frame(zone, &layer, context)?;
         if frame.is_some() {
             self.layer_runtime.note_health(
@@ -411,6 +430,9 @@ impl ZoneRuntime {
             if !layer.enabled {
                 continue;
             }
+            if self.note_unavailable_effect(zone, layer, context) {
+                continue;
+            }
             let layer_runtime = evaluate_layer_runtime(
                 &layer,
                 context.inputs.audio,
@@ -431,6 +453,26 @@ impl ZoneRuntime {
         }
 
         Ok(())
+    }
+
+    fn note_unavailable_effect(
+        &mut self,
+        zone: &Zone,
+        layer: &SceneLayer,
+        context: ZoneFrameContext<'_>,
+    ) -> bool {
+        if !self.effect_pool.layer_unavailable(zone.id, layer.id) {
+            return false;
+        }
+        self.layer_runtime.note_health(
+            context.active_scene_id,
+            zone.id,
+            layer.id,
+            LayerHealth::Failed {
+                reason: "Effect is not installed".into(),
+            },
+        );
+        true
     }
 
     /// Stands in for one Servo render of `layer_id`: the next effect render
