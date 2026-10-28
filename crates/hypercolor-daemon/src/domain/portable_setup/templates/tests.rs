@@ -178,12 +178,15 @@ fn repeating_retirement_reestablishes_durability_without_reappearing_toml() {
     let source = temp.path().join("old.toml");
     let retired = temp.path().join("old.retired");
     save(&source, template("old", "Old"));
+    let original = fs::read(&source).expect("original template bytes");
     let proof = read_template_file(&source).expect("read").expect("proof");
     retire_template(&source, &retired, &proof).expect("first");
-    retire_template(&source, &retired, &proof).expect("repeat");
-    assert!(!source.exists());
-    assert!(retired.exists());
-    assert!(template_files(temp.path()).expect("files").is_empty());
+    for _ in 0..3 {
+        retire_template(&source, &retired, &proof).expect("repeat");
+        assert!(!source.exists());
+        assert_eq!(fs::read(&retired).expect("retired bytes"), original);
+        assert!(template_files(temp.path()).expect("files").is_empty());
+    }
 }
 
 #[tokio::test]

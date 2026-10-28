@@ -285,6 +285,8 @@ fn retire_template(
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         let mut old = hypercolor_platform_fs::open_no_follow(destination)?;
         std::io::copy(&mut old, temporary.as_file_mut())?;
+        // Windows cannot replace the destination while its data handle is open.
+        drop(old);
         temporary.as_file().sync_all()?;
         hypercolor_platform_fs::durable_replace(temporary.path(), destination)?;
     } else {
