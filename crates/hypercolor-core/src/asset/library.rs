@@ -188,6 +188,10 @@ pub struct AssetMetadataUpdate {
 /// Errors produced by the asset library.
 #[derive(Debug, thiserror::Error)]
 pub enum AssetLibraryError {
+    #[error("media reconciliation is deferred until the pending restore completes")]
+    RestorePending,
+    #[error("invalid pending media restore: {0}")]
+    InvalidRestoreIntent(String),
     #[error("asset {0} already refers to different content")]
     IdentityConflict(AssetId),
     #[error("asset file exceeds hard cap: {byte_len} bytes > {hard_cap_bytes} bytes")]
@@ -330,7 +334,10 @@ impl AssetLibrary {
             stream_url_policy,
         };
 
-        if !library.index_path.exists() || library.index.records().is_empty() {
+        if (!library.index_path.exists() || library.index.records().is_empty())
+            && !portable::has_pending_restore(&library.root)
+                .map_err(|error| AssetLibraryError::InvalidRestoreIntent(error.to_string()))?
+        {
             library.rebuild_index_from_objects()?;
         }
 
@@ -538,10 +545,12 @@ impl AssetLibrary {
     }
 
     pub fn rebuild_index_from_objects(&mut self) -> Result<Vec<AssetEvent>, AssetLibraryError> {
+        self.ensure_reconciliation_allowed()?;
         self.reconcile_from_disk(false)
     }
 
     pub fn refresh_from_disk(&mut self) -> Result<Vec<AssetEvent>, AssetLibraryError> {
+        self.ensure_reconciliation_allowed()?;
         let previous_index = self.index.clone();
         let mut events = Vec::new();
         if let Some(index) = load_index(&self.index_path)? {
@@ -550,6 +559,15 @@ impl AssetLibrary {
         }
         events.extend(self.reconcile_from_disk(true)?);
         Ok(events)
+    }
+
+    fn ensure_reconciliation_allowed(&self) -> Result<(), AssetLibraryError> {
+        if portable::has_pending_restore(&self.root)
+            .map_err(|error| AssetLibraryError::InvalidRestoreIntent(error.to_string()))?
+        {
+            return Err(AssetLibraryError::RestorePending);
+        }
+        Ok(())
     }
 
     #[must_use]

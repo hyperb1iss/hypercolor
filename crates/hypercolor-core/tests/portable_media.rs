@@ -44,8 +44,9 @@ fn fresh_restore_preserves_aliases_and_waits_for_publication() {
     let second = Uuid::new_v4();
     let desired = BTreeMap::from([(first, media.clone()), (second, media.clone())]);
     let before_index = std::fs::read(library.index_path()).expect("index");
+    let operation_id = Uuid::new_v4();
     let mut prepared = library
-        .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs)
+        .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs, operation_id)
         .expect("prepare");
     assert!(library.records().is_empty());
     assert_eq!(
@@ -66,6 +67,13 @@ fn fresh_restore_preserves_aliases_and_waits_for_publication() {
     );
     assert!(library.records().is_empty());
     prepared.publish(&mut library);
+    hypercolor_core::asset::library::portable::finalize_portable_restore(
+        library.root(),
+        operation_id,
+        &desired,
+        &PersistenceShutdown::default(),
+    )
+    .expect("global receipt finalization");
     assert_eq!(library.portable_snapshot(), desired);
     assert_eq!(
         library.get(AssetId(first)).expect("asset").intrinsic_width,
@@ -75,13 +83,21 @@ fn fresh_restore_preserves_aliases_and_waits_for_publication() {
     let reopened = AssetLibrary::open(library.root()).expect("reopen");
     assert_eq!(reopened.portable_snapshot(), desired);
     let remaining = BTreeMap::from([(second, media.clone())]);
+    let deletion_id = Uuid::new_v4();
     let mut deletion = library
-        .prepare_portable_replace(&desired, &remaining, &blobs)
+        .prepare_portable_replace(&desired, &remaining, &blobs, deletion_id)
         .expect("remove one alias");
     deletion
         .persist(&PersistenceShutdown::default())
         .expect("persist alias deletion");
     deletion.publish(&mut library);
+    hypercolor_core::asset::library::portable::finalize_portable_restore(
+        library.root(),
+        deletion_id,
+        &remaining,
+        &PersistenceShutdown::default(),
+    )
+    .expect("alias deletion receipt");
     assert!(
         library
             .object_path_for_hash(&media.content.sha256)
@@ -104,7 +120,7 @@ fn deleting_last_alias_does_not_resurrect_an_object_on_empty_index_restart() {
         .record;
     let before = library.portable_snapshot();
     let mut prepared = library
-        .prepare_portable_replace(&before, &BTreeMap::new(), &blobs)
+        .prepare_portable_replace(&before, &BTreeMap::new(), &blobs, Uuid::new_v4())
         .expect("prepare");
     prepared
         .persist(&PersistenceShutdown::default())
@@ -138,14 +154,14 @@ fn corruption_wrong_mime_and_stale_snapshot_are_rejected_before_admission() {
     let desired = BTreeMap::from([(id, media.clone())]);
     assert!(
         library
-            .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs)
+            .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs, Uuid::new_v4())
             .is_err()
     );
     media.mime_type = "image/png".into();
     let desired = BTreeMap::from([(id, media.clone())]);
     assert!(
         library
-            .prepare_portable_replace(&desired, &desired, &blobs)
+            .prepare_portable_replace(&desired, &desired, &blobs, Uuid::new_v4())
             .is_err()
     );
     std::fs::write(
@@ -155,7 +171,7 @@ fn corruption_wrong_mime_and_stale_snapshot_are_rejected_before_admission() {
     .expect("corrupt");
     assert!(
         library
-            .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs)
+            .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs, Uuid::new_v4())
             .is_err()
     );
     assert!(library.records().is_empty());
@@ -171,8 +187,9 @@ fn interrupted_file_step_retries_and_shutdown_never_publishes() {
         .stage(&media.content, Cursor::new(image_bytes()))
         .expect("stage");
     let desired = BTreeMap::from([(Uuid::new_v4(), media.clone())]);
+    let operation_id = Uuid::new_v4();
     let mut prepared = library
-        .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs)
+        .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs, operation_id)
         .expect("prepare");
     let path = library
         .object_path_for_hash(&media.content.sha256)
@@ -188,8 +205,15 @@ fn interrupted_file_step_retries_and_shutdown_never_publishes() {
         AtomicWriteWaitOutcome::Written
     );
     prepared.publish(&mut library);
+    hypercolor_core::asset::library::portable::finalize_portable_restore(
+        library.root(),
+        operation_id,
+        &desired,
+        &PersistenceShutdown::default(),
+    )
+    .expect("global receipt finalization");
     let mut deletion = library
-        .prepare_portable_replace(&desired, &BTreeMap::new(), &blobs)
+        .prepare_portable_replace(&desired, &BTreeMap::new(), &blobs, Uuid::new_v4())
         .expect("deletion");
     let shutdown = PersistenceShutdown::default();
     shutdown.writers_stopped();
@@ -218,12 +242,20 @@ fn large_video_is_scanned_and_copied_from_a_file() {
     };
     let desired = BTreeMap::from([(Uuid::new_v4(), media)]);
     let mut library = AssetLibrary::open(root.path().join("assets")).expect("library");
+    let operation_id = Uuid::new_v4();
     let mut prepared = library
-        .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs)
+        .prepare_portable_replace(&BTreeMap::new(), &desired, &blobs, operation_id)
         .expect("prepare");
     prepared
         .persist(&PersistenceShutdown::default())
         .expect("persist");
     prepared.publish(&mut library);
+    hypercolor_core::asset::library::portable::finalize_portable_restore(
+        library.root(),
+        operation_id,
+        &desired,
+        &PersistenceShutdown::default(),
+    )
+    .expect("global receipt finalization");
     assert_eq!(library.records()[0].byte_len, 136 * 1024 * 1024);
 }

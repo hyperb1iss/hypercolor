@@ -1,5 +1,7 @@
 //! Prepared media replacements keep content staging separate from publication.
 
+mod intent;
+
 use std::collections::BTreeMap;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
@@ -20,6 +22,8 @@ pub struct PreparedAssetReplacement {
     reservation: Option<AtomicWriteReservation>,
     payload: Vec<u8>,
     durable: bool,
+    intent: intent::MediaIntent,
+    intent_durable: bool,
 }
 
 struct StagedObject {
@@ -58,9 +62,63 @@ impl AssetLibrary {
         expected: &BTreeMap<Uuid, PortableAsset>,
         desired: &BTreeMap<Uuid, PortableAsset>,
         blobs: &SetupBlobStore,
+        operation_id: Uuid,
+    ) -> anyhow::Result<PreparedAssetReplacement> {
+        self.prepare_portable_impl(expected, desired, blobs, operation_id, false)
+    }
+
+    /// Resume only the operation proven by the durable media intent and the
+    /// coordinator's original journal. Ordinary replacements retain strict CAS.
+    pub fn prepare_portable_recovery(
+        &self,
+        expected: &BTreeMap<Uuid, PortableAsset>,
+        desired: &BTreeMap<Uuid, PortableAsset>,
+        blobs: &SetupBlobStore,
+        operation_id: Uuid,
+    ) -> anyhow::Result<PreparedAssetReplacement> {
+        let previous = intent::read(&self.root)?;
+        if previous.as_ref().is_none_or(|intent| intent.completed) {
+            // The global journal can be durable before this participant has
+            // admitted its own intent. Only the exact before image is safe.
+            return self.prepare_portable_impl(expected, desired, blobs, operation_id, false);
+        }
+        let intent = previous.expect("pending intent checked above");
+        anyhow::ensure!(
+            !intent.completed && intent.matches(operation_id, expected, desired),
+            "media recovery intent differs from global journal"
+        );
+        let current = self.portable_snapshot();
+        for (id, value) in &current {
+            anyhow::ensure!(
+                expected.get(id) == Some(value) || desired.get(id) == Some(value),
+                "media changed outside pending restore"
+            );
+        }
+        let already_desired = current == *desired;
+        for (id, old) in expected {
+            if !already_desired && !current.contains_key(id) {
+                let source = self.object_path_for_hash(&old.content.sha256)?;
+                let retired = source.with_extension(format!("retired-{operation_id}"));
+                let proof = blobs.capture(&retired)?;
+                anyhow::ensure!(
+                    proof == old.content,
+                    "missing media lacks exact operation retirement proof"
+                );
+            }
+        }
+        self.prepare_portable_impl(expected, desired, blobs, operation_id, true)
+    }
+
+    fn prepare_portable_impl(
+        &self,
+        expected: &BTreeMap<Uuid, PortableAsset>,
+        desired: &BTreeMap<Uuid, PortableAsset>,
+        blobs: &SetupBlobStore,
+        operation_id: Uuid,
+        recovering: bool,
     ) -> anyhow::Result<PreparedAssetReplacement> {
         anyhow::ensure!(
-            self.portable_snapshot() == *expected,
+            recovering || self.portable_snapshot() == *expected,
             "media changed during restore preparation"
         );
         let mut candidate = self.clone();
@@ -70,7 +128,7 @@ impl AssetLibrary {
         for (id, asset) in desired {
             asset.content.validate()?;
             let existing = self.get(AssetId(*id));
-            let mut record = if expected.get(id) == Some(asset) {
+            let mut record = if !recovering && expected.get(id) == Some(asset) {
                 existing
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("missing media identity"))?
@@ -162,7 +220,7 @@ impl AssetLibrary {
         {
             if !hashes.contains(hash) {
                 let path = self.object_path_for_hash(hash)?;
-                let destination = path.with_extension(format!("retired-{}", Uuid::new_v4()));
+                let destination = path.with_extension(format!("retired-{operation_id}"));
                 retired.push((path, destination));
             }
         }
@@ -174,6 +232,8 @@ impl AssetLibrary {
             reservation: Some(self.index_writer.reserve()),
             payload,
             durable: false,
+            intent: intent::MediaIntent::new(&self.root, operation_id, expected, desired)?,
+            intent_durable: false,
         })
     }
 }
@@ -187,6 +247,31 @@ impl PreparedAssetReplacement {
     ) -> anyhow::Result<AtomicWriteWaitOutcome> {
         if self.durable {
             return Ok(AtomicWriteWaitOutcome::Written);
+        }
+        let files = self.persist_files(shutdown)?;
+        if files != AtomicWriteWaitOutcome::Written {
+            return Ok(files);
+        }
+        let outcome = self
+            .reservation
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("media index already admitted"))?
+            .admit(std::mem::take(&mut self.payload))
+            .commit_and_wait_durable_or_shutdown(shutdown);
+        self.durable = outcome == AtomicWriteWaitOutcome::Written;
+        Ok(outcome)
+    }
+
+    fn persist_files(
+        &mut self,
+        shutdown: &PersistenceShutdown,
+    ) -> anyhow::Result<AtomicWriteWaitOutcome> {
+        if !self.intent_durable {
+            let outcome = self.intent.persist(&self.candidate.root, shutdown)?;
+            if outcome != AtomicWriteWaitOutcome::Written {
+                return Ok(outcome);
+            }
+            self.intent_durable = true;
         }
         for object in &mut self.objects {
             if shutdown.is_shutdown() {
@@ -217,14 +302,7 @@ impl PreparedAssetReplacement {
         if shutdown.is_shutdown() {
             return Ok(AtomicWriteWaitOutcome::ShutdownPending);
         }
-        let outcome = self
-            .reservation
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("media index already admitted"))?
-            .admit(std::mem::take(&mut self.payload))
-            .commit_and_wait_durable_or_shutdown(shutdown);
-        self.durable = outcome == AtomicWriteWaitOutcome::Written;
-        Ok(outcome)
+        Ok(AtomicWriteWaitOutcome::Written)
     }
 
     /// Publish only after all participants in the restore are durable.
@@ -341,3 +419,22 @@ fn digest_hex(digest: &[u8]) -> String {
     }
     result
 }
+
+/// Whether startup must defer object reconciliation to an unfinished restore.
+pub(super) fn has_pending_restore(root: &Path) -> anyhow::Result<bool> {
+    intent::pending(root)
+}
+
+/// Clear pending recovery authority only after the coordinator's committed
+/// receipt is durable. The receipt's desired assets must match exactly.
+pub fn finalize_portable_restore(
+    root: &Path,
+    operation_id: Uuid,
+    desired: &BTreeMap<Uuid, PortableAsset>,
+    shutdown: &PersistenceShutdown,
+) -> anyhow::Result<AtomicWriteWaitOutcome> {
+    intent::finalize(root, operation_id, desired, shutdown)
+}
+
+#[cfg(test)]
+mod recovery_tests;
