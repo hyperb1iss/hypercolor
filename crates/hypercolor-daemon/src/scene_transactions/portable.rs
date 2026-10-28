@@ -19,6 +19,7 @@ use tokio::sync::oneshot;
 #[derive(Debug)]
 pub(crate) struct PortableRenderHold {
     active: AtomicBool,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl PortableRenderHold {
@@ -53,6 +54,7 @@ impl PortableRenderBarrier {
 impl Drop for PortableRenderBarrier {
     fn drop(&mut self) {
         self.hold.active.store(false, Ordering::Release);
+        self.hold.changed.notify_waiters();
     }
 }
 
@@ -122,6 +124,7 @@ impl SceneTransactionQueue {
             .take()
         {
             hold.active.store(false, Ordering::Release);
+            hold.changed.notify_waiters();
         }
     }
 }
@@ -142,6 +145,7 @@ impl LayoutTransactionAuthority {
         let guard = self.acquire_layout_update_guard().await;
         let hold = Arc::new(PortableRenderHold {
             active: AtomicBool::new(true),
+            changed: Arc::clone(&self.scene_transactions.queued),
         });
         let barrier = PortableRenderBarrier {
             hold: Arc::clone(&hold),
@@ -199,12 +203,15 @@ impl LayoutTransactionAuthority {
             }
         }
         let _abort = AbortOnDrop(submission.activation.clone());
+        tracing::debug!("Portable renderer preparation submitted");
         submission.preparation.wait().await?;
+        tracing::debug!("Portable renderer preparation acknowledged");
         if !barrier.is_active() {
             return Err(LayoutTransactionRejection::RendererStopped.into());
         }
         submission.activation.commit();
         submission.completion.wait().await?;
+        tracing::debug!("Portable renderer activation acknowledged");
         Ok(())
     }
 }

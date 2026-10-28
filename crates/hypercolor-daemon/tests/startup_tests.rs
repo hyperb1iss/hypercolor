@@ -2782,33 +2782,44 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
     drop(daemon);
     let mut restarted = DaemonState::initialize(boot_config(&manager.get()), Arc::clone(&manager))
         .expect("restart initialization");
-    tokio::time::timeout(Duration::from_secs(10), restarted.start())
-        .await
-        .expect("public start completes recovery")
-        .expect("public recovery succeeds");
-    let restored = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
-        .expect("restarted service");
-    assert_eq!(
-        restored
-            .last_restore_receipt(identity.setup_id)
+    use futures_util::FutureExt as _;
+    let recovery = std::panic::AssertUnwindSafe(async {
+        tokio::time::timeout(Duration::from_secs(10), restarted.start())
             .await
-            .expect("receipt")
-            .expect("committed receipt")
-            .operation_id,
-        operation_id
-    );
-    assert_eq!(
-        restored
-            .export(identity, &SetupBindings::default())
-            .await
-            .expect("coherent public export")
-            .manifest,
-        desired
-    );
-    restarted
-        .shutdown()
-        .await
-        .expect("normal shutdown after recovery");
+            .expect("public start completes recovery")
+            .expect("public recovery succeeds");
+        let restored = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+            .expect("restarted service");
+        assert_eq!(
+            restored
+                .last_restore_receipt(identity.setup_id)
+                .await
+                .expect("receipt")
+                .expect("committed receipt")
+                .operation_id,
+            operation_id
+        );
+        assert_eq!(
+            restored
+                .export(identity, &SetupBindings::default())
+                .await
+                .expect("coherent public export")
+                .manifest,
+            desired
+        );
+    })
+    .catch_unwind()
+    .await;
+    // Recovery owns a detached worker. Close its writers before propagating
+    // any assertion panic, including the unchanged startup deadline.
+    let shutdown = restarted.shutdown().await;
+    if let Err(panic) = recovery {
+        if let Err(error) = &shutdown {
+            eprintln!("shutdown after recovery assertion failed: {error:#}");
+        }
+        std::panic::resume_unwind(panic);
+    }
+    shutdown.expect("normal shutdown after recovery");
 }
 
 #[tokio::test]

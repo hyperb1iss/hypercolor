@@ -252,6 +252,7 @@ const ACTIVATION_ABORT: u8 = 2;
 #[derive(Debug)]
 struct LayoutActivationState {
     decision: AtomicU8,
+    changed: Arc<Notify>,
     completion: StdMutex<Option<oneshot::Sender<Result<(), LayoutTransactionRejection>>>>,
     /// What the publication committed to the scene, recorded before it
     /// completes so the waiting caller can answer with its own result.
@@ -264,12 +265,13 @@ pub(crate) struct LayoutActivationControl {
 }
 
 impl LayoutActivationControl {
-    fn new() -> (Self, LayoutActivationReceipt) {
+    fn new(changed: Arc<Notify>) -> (Self, LayoutActivationReceipt) {
         let (completion, receipt) = oneshot::channel();
         (
             Self {
                 state: Arc::new(LayoutActivationState {
                     decision: AtomicU8::new(ACTIVATION_PENDING),
+                    changed,
                     completion: StdMutex::new(Some(completion)),
                     scene_commit: StdMutex::new(None),
                 }),
@@ -293,6 +295,7 @@ impl LayoutActivationControl {
             Ordering::Release,
             Ordering::Relaxed,
         );
+        self.state.changed.notify_waiters();
     }
 
     fn abort(&self) {
@@ -302,6 +305,7 @@ impl LayoutActivationControl {
             Ordering::Release,
             Ordering::Relaxed,
         );
+        self.state.changed.notify_waiters();
     }
 
     /// Record what the publication committed to the scene. Call it before
@@ -650,7 +654,7 @@ impl SceneTransactionQueue {
         Ok(())
     }
 
-    /// Future that resolves the next time a transaction is queued.
+    /// Future that resolves when queued work or a retained transaction changes.
     ///
     /// Pin it and call [`Notified::enable`] before checking
     /// [`Self::has_pending`], so a push that lands between the check and the
@@ -673,7 +677,7 @@ impl SceneTransactionQueue {
         portable_snapshot: Option<Arc<portable::PortableRendererSnapshot>>,
     ) -> Result<PreparedLayoutSubmission, LayoutTransactionRejection> {
         let (acknowledgment, receipt) = oneshot::channel();
-        let (activation, completion) = LayoutActivationControl::new();
+        let (activation, completion) = LayoutActivationControl::new(Arc::clone(&self.queued));
         self.push(SceneTransaction::PrepareLayout(PrepareLayoutTransaction {
             scene_fence,
             portable_snapshot,
@@ -790,6 +794,7 @@ impl SceneTransactionQueue {
                 SceneTransaction::BeginPortableRestore(request) => request.reject(),
             }
         }
+        self.queued.notify_waiters();
     }
 
     #[must_use]

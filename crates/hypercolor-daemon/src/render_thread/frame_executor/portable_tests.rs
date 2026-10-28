@@ -34,6 +34,21 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, watch};
 
+#[derive(Default)]
+struct ControlWakes(std::sync::atomic::AtomicUsize);
+
+impl std::task::Wake for ControlWakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl ControlWakes {
+    fn take(&self) -> usize {
+        self.0.swap(0, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 fn layout(width: u32, height: u32) -> SpatialLayout {
     SpatialLayout {
         id: "restore-test".into(),
@@ -260,4 +275,229 @@ async fn portable_renderer_teardown_completes_an_accepted_activation() {
             LayoutTransactionRejection::RendererStopped
         ))
     ));
+}
+
+#[tokio::test]
+async fn held_pipeline_yields_without_counting_synthetic_frames() {
+    let (_directory, state, mut runtime) = fixture();
+    let authority = authority(&state);
+    let barrier = begin(&authority, &state, &mut runtime).await;
+    state.render_loop.write().await.start();
+    let worker_state = state.clone();
+    let (sent, received) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("render executor");
+        let _entered = executor.enter();
+        let supervision = crate::render_thread::supervision::RenderSupervision::new(
+            crate::render_thread::supervision::RenderRestartPolicy::default(),
+            None,
+        );
+        let mut pipeline = Box::pin(crate::render_thread::pipeline_driver::run_pipeline(
+            worker_state,
+            *runtime,
+            supervision,
+        ));
+        let first = pipeline
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()));
+        sent.send(first.is_pending())
+            .expect("test awaits first poll");
+    });
+    let yielded = received.recv_timeout(Duration::from_millis(250));
+    let frames = state.render_loop.read().await.frame_number();
+    // Also release the old busy-loop implementation before asserting, so a
+    // failing regression cannot leave an OS render thread behind.
+    state.scene_transactions.close();
+    state.render_loop.write().await.stop();
+    drop(barrier);
+    worker.join().expect("render worker exits");
+    assert!(yielded.expect("held renderer must yield its first poll"));
+    assert_eq!(frames, 0, "waiting for persistence is not a rendered frame");
+}
+
+#[tokio::test]
+async fn held_renderer_wakes_for_queued_work_commit_and_release() {
+    let wakes = Arc::new(ControlWakes::default());
+    let waker = Waker::from(Arc::clone(&wakes));
+    let (_directory, state, mut runtime) = fixture();
+    let authority = authority(&state);
+    let barrier = begin(&authority, &state, &mut runtime).await;
+    let supervision = crate::render_thread::supervision::RenderSupervision::new(
+        crate::render_thread::supervision::RenderRestartPolicy::default(),
+        None,
+    );
+    let mut waiting = Box::pin(
+        crate::render_thread::pipeline_driver::wait_for_scene_control(
+            &state,
+            &runtime,
+            &supervision,
+        ),
+    );
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    let scenes = state.scene_manager.snapshot().await;
+    let snapshot = Arc::new(PortableRendererSnapshot::new(
+        &barrier,
+        EffectRegistry::default(),
+        HashMap::new(),
+    ));
+    let mut activation = Box::pin(authority.activate_portable_renderer(
+        &barrier,
+        SpatialEngine::new(layout(24, 18)),
+        &scenes,
+        snapshot,
+    ));
+    assert!(
+        activation
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(wakes.take() > 0, "queued work must wake the renderer");
+    waiting.await;
+    service(&state, &mut runtime).await;
+    let mut waiting = Box::pin(
+        crate::render_thread::pipeline_driver::wait_for_scene_control(
+            &state,
+            &runtime,
+            &supervision,
+        ),
+    );
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert!(
+        activation
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(wakes.take() > 0, "commit must wake the renderer");
+    waiting.await;
+    service(&state, &mut runtime).await;
+    activation.await.expect("committed activation");
+    let mut waiting = Box::pin(
+        crate::render_thread::pipeline_driver::wait_for_scene_control(
+            &state,
+            &runtime,
+            &supervision,
+        ),
+    );
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(barrier);
+    assert!(wakes.take() > 0, "hold release must wake the renderer");
+    waiting.await;
+}
+
+#[tokio::test]
+async fn held_renderer_wakes_for_abort_and_release_before_wait_registration() {
+    let wakes = Arc::new(ControlWakes::default());
+    let waker = Waker::from(Arc::clone(&wakes));
+    let (_directory, state, mut runtime) = fixture();
+    let authority = authority(&state);
+    let barrier = begin(&authority, &state, &mut runtime).await;
+    let supervision = crate::render_thread::supervision::RenderSupervision::new(
+        crate::render_thread::supervision::RenderRestartPolicy::default(),
+        None,
+    );
+    let scenes = state.scene_manager.snapshot().await;
+    let snapshot = Arc::new(PortableRendererSnapshot::new(
+        &barrier,
+        EffectRegistry::default(),
+        HashMap::new(),
+    ));
+    let mut activation = Box::pin(authority.activate_portable_renderer(
+        &barrier,
+        SpatialEngine::new(layout(24, 18)),
+        &scenes,
+        snapshot,
+    ));
+    assert!(
+        activation
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    service(&state, &mut runtime).await;
+    let mut waiting = Box::pin(
+        crate::render_thread::pipeline_driver::wait_for_scene_control(
+            &state,
+            &runtime,
+            &supervision,
+        ),
+    );
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(activation);
+    assert!(wakes.take() > 0, "abort must wake the renderer");
+    waiting.await;
+    service(&state, &mut runtime).await;
+    assert!(runtime.render.pending_layout_activation.is_none());
+    drop(barrier);
+    // A release before Notified::enable has no waiter; the state predicate
+    // must still let the renderer continue without another notification.
+    let mut waiting = Box::pin(
+        crate::render_thread::pipeline_driver::wait_for_scene_control(
+            &state,
+            &runtime,
+            &supervision,
+        ),
+    );
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
+}
+
+#[tokio::test]
+async fn held_pipeline_remains_cancellable_without_another_control_message() {
+    let (_directory, state, mut runtime) = fixture();
+    let authority = authority(&state);
+    let barrier = begin(&authority, &state, &mut runtime).await;
+    state.render_loop.write().await.start();
+    let supervision = crate::render_thread::supervision::RenderSupervision::new(
+        crate::render_thread::supervision::RenderRestartPolicy::default(),
+        None,
+    );
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut supervised = Box::pin(async {
+        tokio::select! {
+            () = crate::render_thread::pipeline_driver::run_pipeline(state.clone(), *runtime, supervision) => panic!("held pipeline unexpectedly exited"),
+            () = cancel.cancelled() => {},
+        }
+    });
+    assert!(
+        supervised
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    cancel.cancel();
+    supervised.await;
+    assert!(
+        barrier.is_active(),
+        "cancellation did not need owner publication"
+    );
+    assert_eq!(state.render_loop.read().await.frame_number(), 0);
 }
