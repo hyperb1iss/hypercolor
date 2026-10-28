@@ -15,8 +15,8 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::persistence::{
-    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation,
-    serialize_json_pretty, write_atomic,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteReservation, AtomicWriteWaitOutcome,
+    PersistenceShutdown, serialize_json_pretty, write_atomic,
 };
 
 /// Persistent attachment profile store keyed by physical device ID.
@@ -217,16 +217,18 @@ impl PreparedPortableAttachments {
             .expect("replacement has not published")
     }
 
-    pub(crate) fn persist(&mut self) -> MigrationPersistence {
+    pub(crate) fn persist(&mut self, shutdown: &PersistenceShutdown) -> AtomicWriteWaitOutcome {
+        if shutdown.is_shutdown() {
+            return AtomicWriteWaitOutcome::ShutdownPending;
+        }
         let (write, payload) = self
             .write
             .take()
             .expect("replacement persistence is attempted once");
-        let outcome = match write.admit(payload).commit_and_wait_durable() {
-            AtomicWriteOutcome::Written => MigrationPersistence::Durable,
-            AtomicWriteOutcome::Superseded => MigrationPersistence::Superseded,
-        };
-        self.durable = matches!(outcome, MigrationPersistence::Durable);
+        let outcome = write
+            .admit(payload)
+            .commit_and_wait_durable_or_shutdown(shutdown);
+        self.durable = matches!(outcome, AtomicWriteWaitOutcome::Written);
         outcome
     }
 
@@ -445,7 +447,10 @@ mod tests {
         .expect("derived hint does not conflict");
         assert_eq!(prepared.candidate(), &candidate);
         assert!(store.try_write().is_err());
-        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert!(matches!(
+            prepared.persist(&PersistenceShutdown::default()),
+            AtomicWriteWaitOutcome::Written
+        ));
         assert_eq!(
             ComponentProfileStore::load(&path)
                 .expect("reopen")
@@ -545,7 +550,10 @@ mod tests {
         .expect("prepare");
         let writer = AtomicFileWriter::new(&path).expect("writer");
         writer.set_injected_directory_sync_failures(1);
-        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert!(matches!(
+            prepared.persist(&PersistenceShutdown::default()),
+            AtomicWriteWaitOutcome::Written
+        ));
         assert!(prepared.durable);
         assert_eq!(prepared.store.portable_snapshot(), before);
         assert!(store.try_write().is_err());

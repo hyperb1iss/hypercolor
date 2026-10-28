@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use hypercolor_types::config::HypercolorConfig;
 
 use super::{ConfigManager, ConfigWriterState, normalize_config};
-use crate::persistence::{AtomicWriteOutcome, AtomicWriteReservation};
+use crate::persistence::{AtomicWriteReservation, AtomicWriteWaitOutcome, PersistenceShutdown};
 
 /// Scoped to a synchronous transaction callback on a blocking worker. The
 /// ordinary config writer lock stays held until the complete callback returns.
@@ -58,14 +58,17 @@ impl ConfigManager {
 
 impl PreparedConfigMutation<'_> {
     /// Admit only after the host's transaction journal is durable.
-    pub fn persist(&mut self) -> AtomicWriteOutcome {
+    pub fn persist(&mut self, shutdown: &PersistenceShutdown) -> AtomicWriteWaitOutcome {
+        if shutdown.is_shutdown() {
+            return AtomicWriteWaitOutcome::ShutdownPending;
+        }
         let outcome = self
             .reservation
             .take()
             .expect("config candidate persisted once")
             .admit(std::mem::take(&mut self.payload))
-            .commit_and_wait_durable();
-        self.durable = outcome == AtomicWriteOutcome::Written;
+            .commit_and_wait_durable_or_shutdown(shutdown);
+        self.durable = outcome == AtomicWriteWaitOutcome::Written;
         outcome
     }
 
@@ -82,7 +85,7 @@ impl PreparedConfigMutation<'_> {
 #[cfg(test)]
 mod tests {
     use super::ConfigManager;
-    use crate::persistence::AtomicWriteOutcome;
+    use crate::persistence::{AtomicWriteWaitOutcome, PersistenceShutdown};
     use std::sync::Arc;
 
     #[test]
@@ -119,7 +122,10 @@ mod tests {
                 &original,
                 |config| config.daemon.canvas_width = 800,
                 |prepared| {
-                    assert_eq!(prepared.persist(), AtomicWriteOutcome::Written);
+                    assert_eq!(
+                        prepared.persist(&PersistenceShutdown::default()),
+                        AtomicWriteWaitOutcome::Written
+                    );
                     assert!(manager.is_current(&original));
                     prepared.publish();
                     Ok(())

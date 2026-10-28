@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use super::{InMemoryLibraryData, LibrarySnapshot, LibraryStoreError, PreparedLibrarySnapshot};
-use crate::domain::device_binding::MigrationPersistence;
-use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome, serialize_json_pretty};
+use crate::persistence::{AtomicFileWriter, serialize_json_pretty};
+use crate::persistence::{AtomicWriteWaitOutcome, PersistenceShutdown};
 
 /// Setup-owned library records. Favorites retain their separate account scope.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -98,19 +98,22 @@ impl PreparedPortableLibrary {
             .expect("replacement has not published")
     }
 
-    pub(crate) fn persist(&mut self) -> MigrationPersistence {
+    pub(crate) fn persist(&mut self, shutdown: &PersistenceShutdown) -> AtomicWriteWaitOutcome {
+        if shutdown.is_shutdown() {
+            return AtomicWriteWaitOutcome::ShutdownPending;
+        }
         assert!(!self.attempted, "replacement persistence is attempted once");
         self.attempted = true;
         let outcome = self
             .write
             .take()
-            .map_or(MigrationPersistence::Durable, |write| {
-                match write.write.admit(write.payload).commit_and_wait_durable() {
-                    AtomicWriteOutcome::Written => MigrationPersistence::Durable,
-                    AtomicWriteOutcome::Superseded => MigrationPersistence::Superseded,
-                }
+            .map_or(AtomicWriteWaitOutcome::Written, |write| {
+                write
+                    .write
+                    .admit(write.payload)
+                    .commit_and_wait_durable_or_shutdown(shutdown)
             });
-        self.durable = matches!(outcome, MigrationPersistence::Durable);
+        self.durable = matches!(outcome, AtomicWriteWaitOutcome::Written);
         outcome
     }
 
@@ -174,7 +177,10 @@ mod tests {
         assert_eq!(prepared.candidate(), &candidate);
         assert!(store.data.try_read().is_err());
         assert!(store.mutation_gate.try_read().is_err());
-        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert!(matches!(
+            prepared.persist(&PersistenceShutdown::default()),
+            AtomicWriteWaitOutcome::Written
+        ));
         let reopened = JsonLibraryStore::open(path).expect("reopen durable file");
         assert_eq!(reopened.portable_snapshot().await, candidate);
         assert_eq!(reopened.project_favorites().await, favorite_before);
@@ -221,7 +227,10 @@ mod tests {
             .prepare_portable_replace(&expected, candidate())
             .await
             .expect("prepare");
-        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert!(matches!(
+            prepared.persist(&PersistenceShutdown::default()),
+            AtomicWriteWaitOutcome::Written
+        ));
         prepared.publish();
         drop(prepared);
         let expected = store.portable_snapshot().await;
@@ -231,7 +240,10 @@ mod tests {
             .prepare_portable_replace(&expected, LibraryPortableSnapshot::default())
             .await
             .expect("prepare delete");
-        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert!(matches!(
+            prepared.persist(&PersistenceShutdown::default()),
+            AtomicWriteWaitOutcome::Written
+        ));
         prepared.publish();
         drop(prepared);
         assert_eq!(
@@ -272,7 +284,10 @@ mod tests {
             .await
             .expect("prepare");
         store.writer.set_injected_directory_sync_failures(1);
-        assert!(matches!(prepared.persist(), MigrationPersistence::Durable));
+        assert!(matches!(
+            prepared.persist(&PersistenceShutdown::default()),
+            AtomicWriteWaitOutcome::Written
+        ));
         assert!(prepared.durable);
         assert_eq!(LibraryPortableSnapshot::from_data(&prepared.data), before);
         assert!(store.data.try_read().is_err());
