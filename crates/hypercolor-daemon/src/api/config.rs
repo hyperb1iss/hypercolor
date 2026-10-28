@@ -17,7 +17,7 @@ use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
-mod live;
+pub(crate) mod live;
 mod redaction;
 
 use live::{

@@ -12,7 +12,8 @@ mod input;
 mod render;
 
 use audio::apply_audio_config_change;
-pub(super) use capture::{
+pub(crate) use audio::reconfigure_input_manager;
+pub(crate) use capture::{
     CaptureConfigTransactionError, apply_capture_config_transaction, capture_runtime_matches,
 };
 #[cfg(test)]

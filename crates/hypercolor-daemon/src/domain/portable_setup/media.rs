@@ -1,7 +1,6 @@
 //! Media preparation holds the ordinary library writer through publication.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use hypercolor_core::asset::{AssetLibrary, library::portable::PreparedAssetReplacement};
@@ -17,9 +16,6 @@ use crate::persistence::{AtomicWriteWaitOutcome, PersistenceShutdown};
 pub(super) struct PreparedMedia {
     guard: OwnedRwLockWriteGuard<AssetLibrary>,
     replacement: Option<PreparedAssetReplacement>,
-    root: PathBuf,
-    operation_id: Uuid,
-    desired: BTreeMap<Uuid, PortableAsset>,
 }
 
 pub(super) async fn prepare_media(
@@ -60,7 +56,6 @@ async fn prepare(
     let desired = desired.clone();
     let blobs = blobs.clone();
     tokio::task::spawn_blocking(move || {
-        let root = guard.root().to_owned();
         let replacement = if recovering {
             guard.prepare_portable_recovery(&before, &desired, &blobs, operation_id)
         } else {
@@ -70,9 +65,6 @@ async fn prepare(
         Ok(PreparedMedia {
             guard,
             replacement: Some(replacement),
-            root,
-            operation_id,
-            desired,
         })
     })
     .await
@@ -89,19 +81,6 @@ impl PreparedMedia {
             .expect("unpublished media replacement")
             .persist(shutdown)
             .map_err(internal)
-    }
-
-    pub(super) fn finalize(
-        &self,
-        shutdown: &PersistenceShutdown,
-    ) -> Result<AtomicWriteWaitOutcome, DomainError> {
-        hypercolor_core::asset::library::portable::finalize_portable_restore(
-            &self.root,
-            self.operation_id,
-            &self.desired,
-            shutdown,
-        )
-        .map_err(internal)
     }
 
     pub(super) fn publish(&mut self) {

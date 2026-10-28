@@ -26,7 +26,7 @@ pub(super) async fn apply_audio_config_change(state: &Arc<AppState>, key: Option
     }
 }
 
-async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> {
+pub(crate) async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> {
     let Some(manager) = state.config_manager.as_ref() else {
         return Ok(());
     };

@@ -13,7 +13,7 @@ use crate::app_state::AppState;
 use crate::scene_transactions::SceneTransaction;
 
 #[derive(Debug, thiserror::Error)]
-pub(in crate::api::config) enum CaptureConfigTransactionError {
+pub(crate) enum CaptureConfigTransactionError {
     #[error("capture config identity changed during preparation")]
     Conflict,
     #[error(transparent)]
@@ -24,7 +24,7 @@ pub(in crate::api::config) enum CaptureConfigTransactionError {
     Commit(ScreenReconfigurationConflict),
 }
 
-pub(in crate::api::config) async fn apply_capture_config_transaction(
+pub(crate) async fn apply_capture_config_transaction(
     state: &Arc<AppState>,
     expected_config: &Arc<HypercolorConfig>,
     capture: CaptureConfig,
@@ -244,7 +244,7 @@ pub(in crate::api::config) async fn validate_prepared_capture_status(
     }
 }
 
-pub(in crate::api::config) async fn capture_runtime_matches(
+pub(crate) async fn capture_runtime_matches(
     state: &Arc<AppState>,
     expected_config: &Arc<HypercolorConfig>,
 ) -> bool {
