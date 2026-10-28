@@ -200,6 +200,11 @@ impl PortableScene {
             zones: self
                 .zones
                 .iter()
+                .filter(|zone| {
+                    zone.display_target
+                        .as_ref()
+                        .is_none_or(|target| bindings.local_device(target.device).is_some())
+                })
                 .map(|zone| zone.materialize(bindings, canvas))
                 .collect(),
         }

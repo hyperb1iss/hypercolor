@@ -127,7 +127,7 @@ fn main() {
             description: None,
             zones: vec![PortableZone {
                 id: ZoneId(id(10)),
-                name: "Primary".into(),
+                name: "Display face".into(),
                 description: None,
                 layers: vec![effect_layer, media_layer],
                 layout,
@@ -139,7 +139,7 @@ fn main() {
                     blend_mode: BlendMode::Alpha,
                     opacity: 1.0,
                 }),
-                role: ZoneRole::Primary,
+                role: ZoneRole::Display,
             }],
             transition: TransitionSpec {
                 duration_ms: 500,

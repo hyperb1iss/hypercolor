@@ -201,6 +201,12 @@ impl PortableSetupV1 {
             return Err(error("output", "render dimensions must be nonzero"));
         }
         unit(self.output.brightness, "output.brightness")?;
+        if !self.output.enabled && self.output.paused {
+            return Err(error(
+                "output",
+                "stopped output cannot also be manually paused",
+            ));
+        }
         for id in self.devices.keys() {
             if id.is_nil() || self.logical_devices.contains_key(id) {
                 return Err(error(
@@ -226,6 +232,18 @@ impl PortableSetupV1 {
             }
         }
         for (id, scene) in &self.scenes {
+            if id.is_nil() && scene.kind != crate::scene::SceneKind::Ephemeral {
+                return Err(error(
+                    format!("scenes.{id}.kind"),
+                    "the default identity requires the ephemeral scene kind",
+                ));
+            }
+            if !id.is_nil() && scene.kind != crate::scene::SceneKind::Named {
+                return Err(error(
+                    format!("scenes.{id}.kind"),
+                    "only named scenes have a portable persistence owner",
+                ));
+            }
             if let Some(layout_id) = &scene.layout_id
                 && !self.layouts.contains_key(layout_id.as_str())
             {
@@ -242,6 +260,9 @@ impl PortableSetupV1 {
                 }
                 unit(zone.brightness, &format!("{path}.brightness"))?;
                 self.validate_layout(&zone.layout, &path)?;
+                if (zone.role == crate::scene::ZoneRole::Display) != zone.display_target.is_some() {
+                    return Err(error(&path, "display role and display target must agree"));
+                }
                 if let Some(target) = &zone.display_target {
                     self.require_device(target.device, &path)?;
                     unit(target.opacity, &format!("{path}.display_target.opacity"))?;

@@ -320,3 +320,69 @@ fn builtin_presets_are_checked_against_the_destination_catalog() {
         .validate_with_catalog(&catalog)
         .expect("builtin catalog satisfies reference");
 }
+
+#[test]
+fn unresolved_display_zone_is_inert_and_materializes_after_explicit_binding() {
+    let manifest: PortableSetupV1 =
+        serde_json::from_str(include_str!("fixtures/portable_setup_v1.json"))
+            .expect("portable wire fixture");
+    let (id, portable) = manifest
+        .scenes
+        .iter()
+        .find(|(_, scene)| scene.zones.iter().any(|zone| zone.display_target.is_some()))
+        .expect("fixture includes a display scene");
+    let target = portable
+        .zones
+        .iter()
+        .find_map(|zone| zone.display_target.as_ref())
+        .expect("display target");
+    let missing = portable.materialize(SceneId(*id), &SetupBindings::default(), (800, 600));
+    assert!(
+        missing
+            .zones
+            .iter()
+            .all(|zone| zone.role != ZoneRole::Display)
+    );
+    missing
+        .validate()
+        .expect("missing hardware leaves a valid native scene");
+    let local = DeviceId::new();
+    let mut bindings = SetupBindings::default();
+    bindings.devices.insert(local, target.device);
+    let restored = portable.materialize(SceneId(*id), &bindings, (800, 600));
+    assert!(restored.zones.iter().any(|zone| {
+        zone.display_target
+            .as_ref()
+            .is_some_and(|target| target.device_id == local)
+    }));
+    restored
+        .validate()
+        .expect("explicit binding restores a valid native display zone");
+}
+
+#[test]
+fn portable_output_requires_one_representable_power_mode() {
+    let mut manifest = setup();
+    manifest.output.enabled = false;
+    manifest.output.paused = true;
+    assert!(manifest.validate().is_err());
+    manifest.output.paused = false;
+    manifest
+        .validate()
+        .expect("stopped output is representable");
+}
+
+#[test]
+fn default_scene_identity_requires_its_durable_scene_kind() {
+    let mut manifest: PortableSetupV1 = serde_json::from_str(include_str!("fixtures/portable_setup_v1.json"))
+        .expect("portable wire fixture");
+    let mut scene = manifest.scenes.values().next().expect("fixture scene").clone();
+    manifest.scenes.clear();
+    manifest.selection.active_scene_id = None;
+    manifest.selection.default_scene_id = None;
+    manifest.scenes.insert(Uuid::nil(), scene.clone());
+    assert!(manifest.validate().is_err());
+    scene.kind = SceneKind::Ephemeral;
+    manifest.scenes.insert(Uuid::nil(), scene);
+    manifest.validate().expect("default scene has its durable owner");
+}
