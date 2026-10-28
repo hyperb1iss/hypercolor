@@ -8,6 +8,7 @@ pub mod asset;
 pub mod attachment;
 pub mod audio;
 pub mod canvas;
+pub mod client_preferences;
 pub mod config;
 pub mod config_registry;
 pub mod control;

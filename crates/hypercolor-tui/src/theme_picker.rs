@@ -7,44 +7,17 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::event::KeyEvent;
+use hypercolor_core::client_preferences::TuiPreferenceStore;
+pub use hypercolor_types::client_preferences::TuiPreferences as TuiConfig;
 use opaline::Theme;
 use opaline::widgets::{ThemeSelector, ThemeSelectorAction, ThemeSelectorState};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::Clear;
-use serde::{Deserialize, Serialize};
 
 // ── Persistence ─────────────────────────────────────────────────────────
-
-/// File name for the TUI config within the Hypercolor config directory.
-const CONFIG_FILE_NAME: &str = "tui.toml";
-
-/// Persistent TUI preferences stored at `~/.config/hypercolor/tui.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TuiConfig {
-    /// Active opaline theme name (kebab-case).
-    #[serde(default)]
-    pub theme: Option<String>,
-
-    /// Show the "♥ Sponsor" link in the status bar (default: true).
-    #[serde(default = "default_show_donate")]
-    pub show_donate: bool,
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            theme: None,
-            show_donate: true,
-        }
-    }
-}
-
-fn default_show_donate() -> bool {
-    true
-}
 
 /// Locate the TUI config file path.
 ///
@@ -57,58 +30,24 @@ fn default_show_donate() -> bool {
 /// Guessing a relative location here would scatter config into whatever
 /// directory the TUI happened to launch from.
 pub fn config_path() -> PathBuf {
-    if let Ok(path) = std::env::var("HYPERCOLOR_TUI_CONFIG") {
-        return PathBuf::from(path);
-    }
-    resolve_config_path(Some(hypercolor_core::config::paths::config_dir()))
-        .expect("the shared config resolver always yields a directory")
-}
-
-/// Place the TUI config file inside a resolved platform config directory.
-///
-/// Split out from [`config_path`] because the environment-driven half cannot be
-/// exercised from a test: edition 2024 makes `std::env::set_var` unsafe and
-/// this crate forbids unsafe code.
-fn resolve_config_path(config_dir: Option<PathBuf>) -> Option<PathBuf> {
-    Some(config_dir?.join(CONFIG_FILE_NAME))
+    hypercolor_core::client_preferences::tui_config_path()
 }
 
 /// Load the TUI config from disk, returning defaults if missing.
 pub fn load_config() -> TuiConfig {
-    let path = config_path();
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| toml::from_str(&s).ok())
+    TuiPreferenceStore::new(config_path())
+        .load()
         .unwrap_or_default()
 }
 
-/// Save the full TUI config to disk.
+/// Save the full terminal preference document through the shared writer.
 pub fn save_config(config: &TuiConfig) -> Result<()> {
-    let path = config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let content = toml::to_string_pretty(config).context("failed to serialize TUI config")?;
-    std::fs::write(&path, content)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&path, perms).ok();
-    }
-
-    Ok(())
+    TuiPreferenceStore::new(config_path()).modify(|current| *current = config.clone())
 }
 
-/// Save the active theme to the TUI config.
+/// Change only the theme while retaining the latest other preferences.
 pub fn save_theme(name: &str) -> Result<()> {
-    let mut config = load_config();
-    config.theme = Some(name.to_string());
-    save_config(&config)
+    TuiPreferenceStore::new(config_path()).modify(|current| current.theme = Some(name.into()))
 }
 
 // ── Token derivation ────────────────────────────────────────────────────
@@ -162,21 +101,14 @@ impl ThemePicker {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::{config_path, resolve_config_path};
+    use super::config_path;
 
     #[test]
-    fn unresolvable_config_dir_yields_no_path() {
-        assert_eq!(resolve_config_path(None), None);
-    }
-
-    #[test]
-    fn resolved_path_nests_under_the_platform_config_dir() {
-        let resolved = resolve_config_path(Some(PathBuf::from("/xdg-config/hypercolor")))
-            .expect("a resolved config dir yields a path");
-        assert!(resolved.starts_with("/xdg-config"));
-        assert!(resolved.ends_with("hypercolor/tui.toml"));
+    fn terminal_and_backup_use_the_shared_path_resolver() {
+        assert_eq!(
+            config_path(),
+            hypercolor_core::client_preferences::tui_config_path()
+        );
     }
 
     #[test]

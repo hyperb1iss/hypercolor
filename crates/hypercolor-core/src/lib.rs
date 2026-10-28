@@ -6,6 +6,7 @@ pub mod asset;
 pub mod attachment;
 pub mod blend_math;
 pub mod bus;
+pub mod client_preferences;
 pub mod config;
 pub mod device;
 pub mod effect;
