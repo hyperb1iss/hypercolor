@@ -7,6 +7,7 @@
 
 mod backup;
 mod projection;
+mod remap;
 mod scene;
 mod validation;
 pub use backup::{
