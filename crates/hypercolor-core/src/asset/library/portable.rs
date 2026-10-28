@@ -406,6 +406,8 @@ fn retire_file(source: &Path, destination: &Path) -> std::io::Result<()> {
         let mut temporary = NamedTempFile::new_in(parent)?;
         let mut previous = hypercolor_platform_fs::open_no_follow(destination)?;
         std::io::copy(&mut previous, temporary.as_file_mut())?;
+        // Windows cannot replace the destination while its data handle is open.
+        drop(previous);
         temporary.as_file().sync_all()?;
         hypercolor_platform_fs::durable_replace(temporary.path(), destination)?;
     }

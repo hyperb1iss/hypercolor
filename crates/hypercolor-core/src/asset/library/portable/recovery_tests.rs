@@ -109,6 +109,12 @@ fn deletion_recovers_after_retirement_before_index_and_requires_exact_operation(
             .expect("path")
             .exists()
     );
+    assert_eq!(
+        prepared
+            .persist_files(&PersistenceShutdown::default())
+            .expect("repeat retirement durability barrier"),
+        AtomicWriteWaitOutcome::Written
+    );
     drop(prepared);
     drop(library);
     let mut restarted = AssetLibrary::open(&root).expect("restart");
