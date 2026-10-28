@@ -56,6 +56,7 @@ async fn changed_local_device_id_restores_saved_output_before_export() {
         .expect("initial projection");
     let portable = bindings.devices[&local];
     let mut saved = current.manifest;
+    saved.name = "Studio".into();
     saved
         .device_output
         .get_mut(&portable)
@@ -101,11 +102,27 @@ async fn changed_local_device_id_restores_saved_output_before_export() {
         "fresh discovery defaults must not overwrite saved authoring"
     );
     let report = fixture
-        .drive(fixture.service.reconcile_bindings(identity.clone()))
+        .drive(fixture.service.reconcile_projection(
+            super::super::export::ProjectionIdentity::CurrentNative(identity.clone()),
+        ))
         .await
         .expect("new identity reconciles")
         .expect("rematch needs materialization");
     assert!(report.unresolved_bindings.is_empty());
+    assert_eq!(report.applied.manifest.name, "Studio");
+    assert_eq!(
+        fixture
+            .service
+            .read_active_projection()
+            .expect("active record")
+            .expect("accepted setup")
+            .receipt
+            .applied
+            .manifest
+            .name,
+        "Studio",
+        "stale manual identity must not rename the accepted setup during reconciliation"
+    );
     assert_eq!(
         fixture
             .state

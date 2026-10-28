@@ -74,7 +74,17 @@ fn assert_offline_display(manifest: &PortableSetupV1) {
 #[tokio::test]
 async fn cloud_restore_survives_manual_archive_export() {
     let fixture = Fixture::new("local");
-    let empty = fixture.empty(Uuid::now_v7()).await;
+    let empty = fixture
+        .service
+        .export(
+            SetupIdentity {
+                setup_id: Uuid::now_v7(),
+                name: "Cloud studio".into(),
+            },
+            &SetupBindings::default(),
+        )
+        .await
+        .expect("cloud baseline");
     let desired = offline_display(empty.manifest);
     fixture
         .drive(fixture.service.restore(
@@ -91,13 +101,15 @@ async fn cloud_restore_survives_manual_archive_export() {
         .expect("manual export");
     let backup = read_archive(archive, &fixture.service.blobs).expect("manual archive");
     assert_ne!(backup.setup.setup_id, desired.setup_id);
+    assert_eq!(backup.setup.name, "Cloud studio");
     assert_offline_display(&backup.setup);
 }
 
 #[tokio::test]
 async fn manual_import_survives_first_cloud_association_export() {
     let fixture = Fixture::new("local");
-    let desired = offline_display(fixture.empty(Uuid::now_v7()).await.manifest);
+    let mut desired = offline_display(fixture.empty(Uuid::now_v7()).await.manifest);
+    desired.name = "Studio".into();
     let backup = PortableBackupV1 {
         tui_preferences: None,
         schema_version: 1,
@@ -117,6 +129,15 @@ async fn manual_import_survives_first_cloud_association_export() {
         .drive(fixture.service.apply_archive(preview.operation_id))
         .await
         .expect("manual restore");
+    let recreated = PortableSetupService::new(Arc::clone(&fixture.state)).expect("new service");
+    let exported = read_archive(
+        recreated.export_archive().await.expect("manual re-export"),
+        &fixture.service.blobs,
+    )
+    .expect("re-exported archive");
+    assert_eq!(preview.name, "Studio");
+    assert_eq!(exported.setup.name, "Studio");
+    assert_offline_display(&exported.setup);
     let cloud_id = Uuid::now_v7();
     let bindings = fixture
         .service
@@ -134,6 +155,7 @@ async fn manual_import_survives_first_cloud_association_export() {
         )
         .await
         .expect("cloud export");
+    assert_eq!(cloud.manifest.name, "Cloud rig");
     assert_offline_display(&cloud.manifest);
 }
 

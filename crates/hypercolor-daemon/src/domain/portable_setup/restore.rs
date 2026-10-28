@@ -51,10 +51,12 @@ impl PortableSetupService {
 
     pub(crate) async fn reconcile_active_bindings(&self) -> Result<(), DomainError> {
         if let Some(active) = self.read_active_projection()? {
-            self.reconcile_bindings(SetupIdentity {
-                setup_id: active.receipt.setup_id,
-                name: active.receipt.applied.manifest.name,
-            })
+            self.reconcile_projection(super::export::ProjectionIdentity::CurrentNative(
+                SetupIdentity {
+                    setup_id: active.receipt.setup_id,
+                    name: active.receipt.applied.manifest.name,
+                },
+            ))
             .await?;
         }
         Ok(())

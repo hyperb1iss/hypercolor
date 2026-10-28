@@ -10,6 +10,7 @@ use hypercolor_types::portable_setup::{PortableBackupV1, PortablePreferences};
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::export::ProjectionIdentity;
 use super::{PortableSetupService, RestoreMode, RestoreOptions, SetupIdentity, internal};
 use crate::domain::DomainError;
 use crate::portable_setup_state::StagedBackup;
@@ -23,12 +24,15 @@ impl PortableSetupService {
     /// Create a disk-backed download without retaining archive bytes in memory.
     pub async fn export_archive(&self) -> Result<File, DomainError> {
         let identity = self.archive_identity().await?;
-        self.reconcile_bindings(identity.clone()).await?;
+        self.reconcile_projection(ProjectionIdentity::CurrentNative(identity.clone()))
+            .await?;
         let bindings = self.assign_bindings(identity.setup_id, None).await?;
         let preferences = self.backup_preferences();
         let tui_preferences = Some(self.backup_tui_preferences().await?);
         let favorites = self.state.library_store().list_favorites().await;
-        let snapshot = self.export(identity, &bindings).await?;
+        let snapshot = self
+            .export_projection(ProjectionIdentity::CurrentNative(identity), &bindings)
+            .await?;
         if preferences != self.backup_preferences()
             || tui_preferences != Some(self.backup_tui_preferences().await?)
             || favorites != self.state.library_store().list_favorites().await
@@ -65,7 +69,8 @@ impl PortableSetupService {
             .map_err(internal)?
             .map_err(|error| DomainError::validation(error.to_string()))?;
         let identity = self.archive_identity().await?;
-        self.reconcile_bindings(identity.clone()).await?;
+        self.reconcile_projection(ProjectionIdentity::CurrentNative(identity.clone()))
+            .await?;
         backup.setup.setup_id = identity.setup_id;
         let bindings = self
             .assign_bindings(backup.setup.setup_id, Some(&backup.setup))

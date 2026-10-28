@@ -12,11 +12,38 @@ use hypercolor_types::portable_setup::{
     is_portable_bundle_path,
 };
 
-use super::{PortableSetupService, PortableSetupSnapshot, SetupIdentity, internal};
+use super::{PortableSetupService, PortableSetupSnapshot, RestoreReceipt, SetupIdentity, internal};
 use crate::domain::DomainError;
 use crate::domain::device_binding::CurrentBinding;
 use crate::logical_devices::LogicalDeviceKind;
 use crate::output_power::OutputOverride;
+
+/// Cloud callers own their selected setup's name. Manual projections instead
+/// retain the accepted native name, resolving it under the restore gate.
+pub(super) enum ProjectionIdentity {
+    Explicit(SetupIdentity),
+    CurrentNative(SetupIdentity),
+}
+
+impl ProjectionIdentity {
+    pub(super) fn setup_id(&self) -> uuid::Uuid {
+        match self {
+            Self::Explicit(identity) | Self::CurrentNative(identity) => identity.setup_id,
+        }
+    }
+
+    pub(super) fn resolve(self, accepted: Option<&RestoreReceipt>) -> SetupIdentity {
+        match self {
+            Self::Explicit(identity) => identity,
+            Self::CurrentNative(mut identity) => {
+                if let Some(receipt) = accepted {
+                    identity.name.clone_from(&receipt.applied.manifest.name);
+                }
+                identity
+            }
+        }
+    }
+}
 
 impl PortableSetupService {
     /// Project authored state through domain snapshots. The returned fingerprint
@@ -24,6 +51,15 @@ impl PortableSetupService {
     pub async fn export(
         &self,
         identity: SetupIdentity,
+        bindings: &SetupBindings,
+    ) -> Result<PortableSetupSnapshot, DomainError> {
+        self.export_projection(ProjectionIdentity::Explicit(identity), bindings)
+            .await
+    }
+
+    pub(super) async fn export_projection(
+        &self,
+        identity: ProjectionIdentity,
         bindings: &SetupBindings,
     ) -> Result<PortableSetupSnapshot, DomainError> {
         let _gate = self.restore_runtime.gate.lock().await;
@@ -34,7 +70,9 @@ impl PortableSetupService {
         {
             return Err(DomainError::conflict("setup restoration remains pending"));
         }
-        if let Some(receipt) = self.active_projection_receipt(identity.setup_id, bindings)?
+        let accepted = self.active_projection_receipt(identity.setup_id(), bindings)?;
+        let identity = identity.resolve(accepted.as_ref());
+        if let Some(receipt) = accepted
             && receipt.applied.manifest.devices.keys().any(|id| {
                 bindings.local_device(*id).is_some()
                     && (receipt.unresolved_bindings.contains(id)

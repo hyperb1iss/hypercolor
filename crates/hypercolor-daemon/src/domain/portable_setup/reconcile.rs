@@ -4,6 +4,7 @@ use hypercolor_types::portable_setup::PortableDeviceOutput;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use super::export::ProjectionIdentity;
 use super::restore::ActiveRestore;
 use super::{
     PortableSetupService, RestoreMode, RestoreOptions, RestoreReport, SetupIdentity, fingerprint,
@@ -16,19 +17,29 @@ impl PortableSetupService {
         &self,
         identity: SetupIdentity,
     ) -> Result<Option<RestoreReport>, DomainError> {
+        self.reconcile_projection(ProjectionIdentity::Explicit(identity))
+            .await
+    }
+
+    pub(super) async fn reconcile_projection(
+        &self,
+        identity: ProjectionIdentity,
+    ) -> Result<Option<RestoreReport>, DomainError> {
         let service = self.clone();
+        let setup_id = identity.setup_id();
         tokio::spawn(async move {
             let _gate = service.restore_runtime.gate.lock().await;
             service.ensure_restore_open()?;
             service.recover_pending_locked().await?;
-            service.recover_locked(identity.setup_id).await?;
+            service.recover_locked(setup_id).await?;
             let Some(receipt) = service.active_projection_receipt(
-                identity.setup_id,
+                setup_id,
                 &hypercolor_types::portable_setup::SetupBindings::default(),
             )?
             else {
                 return Ok(None);
             };
+            let identity = identity.resolve(Some(&receipt));
             let bindings = service
                 .assign_bindings(identity.setup_id, Some(&receipt.applied.manifest))
                 .await?;
