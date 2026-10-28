@@ -607,12 +607,33 @@ impl DaemonState {
             self.output_power.restore_manual_pause([0, 0, 0]).await;
         }
 
-        if !scene_mode.eq_ignore_ascii_case("last") {
-            self.activate_configured_start_scene(scene_mode).await;
-            return;
-        }
-
-        let Some(snapshot) = snapshot else {
+        let restore_last_selection = scene_mode.eq_ignore_ascii_case("last");
+        if let Some(snapshot) = snapshot {
+            // A configured startup scene changes selection, not the authored
+            // Default scene stored with the runtime session.
+            if restore_last_selection && let Some(layout_id) = &snapshot.active_layout_id {
+                match self.domains.layout.restore_startup_layout(layout_id).await {
+                    Ok(Some(layout)) => {
+                        info!(layout_id, layout_name = %layout.name, "Restored active layout");
+                    }
+                    Ok(None) => {
+                        debug!(
+                            layout_id,
+                            "Persisted active layout not found in store; using default"
+                        );
+                    }
+                    Err(error) => {
+                        warn!(layout_id, %error, "Rejected persisted active layout");
+                    }
+                }
+            }
+            if let Err(error) = self
+                .apply_runtime_session_snapshot(snapshot, restore_last_selection)
+                .await
+            {
+                warn!(%error, "Failed to restore runtime session snapshot");
+            }
+        } else if restore_last_selection {
             debug!(
                 path = %self.runtime_state_path.display(),
                 "No runtime session snapshot found to restore"
@@ -623,28 +644,10 @@ impl DaemonState {
             if seed_scene && !snapshot_unreadable {
                 crate::first_run::seed_scene(&self.domains.effects).await;
             }
-            return;
-        };
-        // Restore active layout if persisted.
-        if let Some(layout_id) = &snapshot.active_layout_id {
-            match self.domains.layout.restore_startup_layout(layout_id).await {
-                Ok(Some(layout)) => {
-                    info!(layout_id, layout_name = %layout.name, "Restored active layout");
-                }
-                Ok(None) => {
-                    debug!(
-                        layout_id,
-                        "Persisted active layout not found in store; using default"
-                    );
-                }
-                Err(error) => {
-                    warn!(layout_id, %error, "Rejected persisted active layout");
-                }
-            }
         }
 
-        if let Err(error) = self.apply_runtime_session_snapshot(snapshot).await {
-            warn!(%error, "Failed to restore runtime session snapshot");
+        if !restore_last_selection {
+            self.activate_configured_start_scene(scene_mode).await;
         }
     }
 
@@ -742,10 +745,11 @@ impl DaemonState {
     async fn apply_runtime_session_snapshot(
         &self,
         snapshot: RuntimeSessionSnapshot,
+        restore_last_selection: bool,
     ) -> anyhow::Result<()> {
-        let requested_active_scene_id = snapshot
-            .active_scene_id
-            .as_deref()
+        let requested_active_scene_id = restore_last_selection
+            .then_some(&snapshot)
+            .and_then(|snapshot| snapshot.active_scene_id.as_deref())
             .map(str::parse::<uuid::Uuid>)
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
@@ -753,7 +757,7 @@ impl DaemonState {
         // A member assigned in Studio was minted into the scene's primary
         // zone only; adopt those outputs into the active layout before the
         // zone is re-aligned to it, or every restart drops them.
-        {
+        if restore_last_selection {
             let mut active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
             let adopted = self
                 .domains
@@ -790,26 +794,28 @@ impl DaemonState {
                 mutation.restore_scene(default_scene)?;
             }
 
-            if requested_active_scene_id.is_none() {
-                mutation.restore_inactive_selection();
-            }
-            if let Some(scene_id) =
-                requested_active_scene_id.filter(|scene_id| !scene_id.is_default())
-            {
-                if mutation.scenes().get(&scene_id).is_some() {
-                    mutation.activate(scene_id, None, SceneChangeReason::DaemonStart)?;
-                } else {
-                    warn!(
-                        scene_id = %scene_id,
-                        "Persisted active scene was not found in the scene store"
-                    );
+            if restore_last_selection {
+                if requested_active_scene_id.is_none() {
+                    mutation.restore_inactive_selection();
                 }
-            }
+                if let Some(scene_id) =
+                    requested_active_scene_id.filter(|scene_id| !scene_id.is_default())
+                {
+                    if mutation.scenes().get(&scene_id).is_some() {
+                        mutation.activate(scene_id, None, SceneChangeReason::DaemonStart)?;
+                    } else {
+                        warn!(
+                            scene_id = %scene_id,
+                            "Persisted active scene was not found in the scene store"
+                        );
+                    }
+                }
 
-            // Follow the current catalog for live scenes while retaining
-            // the captured geometry of snapshot scenes.
-            let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
-            mutation.realign_primary_layout(&active_layout);
+                // Follow the current catalog for live scenes while retaining
+                // the captured geometry of snapshot scenes.
+                let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
+                mutation.realign_primary_layout(&active_layout);
+            }
             self.scene_manager.commit_mutation(mutation).await?;
         }
         if !snapshot.default_scene_zones.is_empty() || requested_active_scene_id.is_some() {

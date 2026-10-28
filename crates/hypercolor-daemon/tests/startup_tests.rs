@@ -2457,6 +2457,127 @@ async fn default_scene_contents_restore_on_restart() {
 }
 
 #[tokio::test]
+async fn named_startup_preserves_inactive_default_scene_across_restart() {
+    use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let data = TestDataDirGuard::new().await;
+    let named = hypercolor_core::scene::make_scene("Studio");
+    let selected = named.id;
+    write_scene_store(&data.scenes_path(), [named]);
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = selected.to_string();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    let temp = temp_config_file();
+    let manager = config_manager_for(&config, temp.path());
+    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("first initialization");
+    let mut saved = first
+        .scene_manager
+        .snapshot()
+        .await
+        .get(&SceneId::DEFAULT)
+        .expect("default scene")
+        .clone();
+    saved.description = Some("Saved inactive lighting".into());
+    saved.metadata.insert("room".into(), "Studio".into());
+    saved.zones[0].id = ZoneId::new();
+    saved.zones[0].name = "Saved inactive primary".into();
+    saved.zones[0].brightness = 0.37;
+    let effect_id = first
+        .effect_registry
+        .read()
+        .await
+        .iter()
+        .find_map(|(_, entry)| {
+            (entry.metadata.source.source_stem() == Some("breathing")).then_some(entry.metadata.id)
+        })
+        .expect("breathing effect");
+    saved.zones[0].layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        std::collections::HashMap::from([(
+            "speed".into(),
+            hypercolor_types::control::ControlValue::Float(4.5),
+        )]),
+        std::collections::HashMap::new(),
+        None,
+    )];
+    let saved_zone = saved.zones[0].id;
+    runtime_state::save(
+        &data.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_zones: saved.zones.clone(),
+            default_scene_settings: Some((&saved).into()),
+            active_layout_id: None,
+            manual_paused: false,
+            output_stopped: false,
+        },
+    )
+    .expect("saved default content");
+    first.start().await.expect("first startup");
+    let service =
+        PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first))).expect("service");
+    let identity = SetupIdentity {
+        setup_id: uuid::Uuid::now_v7(),
+        name: "Named startup".into(),
+    };
+    let before = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("first projection");
+    let active = first
+        .scene_manager
+        .snapshot()
+        .await
+        .active_scene_id()
+        .copied();
+    first.shutdown().await.expect("first shutdown");
+    drop(service);
+    drop(first);
+
+    assert_eq!(
+        active,
+        Some(selected),
+        "configured selection overrides last selection"
+    );
+    let default = before
+        .manifest
+        .scenes
+        .get(&SceneId::DEFAULT.0)
+        .expect("portable default");
+    assert_eq!(default.zones[0].id, saved_zone);
+    assert_eq!(default.zones[0].name, "Saved inactive primary");
+    assert_eq!(default.zones[0].brightness, 0.37);
+    assert_eq!(default.zones[0].layers, saved.zones[0].layers);
+    assert_eq!(default.description, saved.description);
+    assert_eq!(default.metadata, saved.metadata);
+
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
+        .expect("restart initialization");
+    restarted.start().await.expect("restart");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+        .expect("restarted service");
+    let after = service
+        .export(identity, &SetupBindings::default())
+        .await
+        .expect("restarted projection");
+    restarted.shutdown().await.expect("final shutdown");
+    assert_eq!(after.manifest, before.manifest);
+    assert_eq!(after.revision, before.revision);
+}
+
+#[tokio::test]
 async fn fresh_portable_setup_is_identical_after_graceful_restart() {
     use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
     use hypercolor_types::portable_setup::SetupBindings;
