@@ -1,6 +1,7 @@
 //! The latest authored native projection belongs to the installation, not a transport.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use hypercolor_types::portable_setup::{PortableSetupV1, SetupBindings};
 use uuid::Uuid;
@@ -19,10 +20,9 @@ impl PortableSetupService {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(internal(error)),
         };
-        let active: ActiveProjection = serde_json::from_slice(&bytes).map_err(internal)?;
-        if active.schema_version != 1
+        let mut active: ActiveProjection = serde_json::from_slice(&bytes).map_err(internal)?;
+        if !matches!(active.schema_version, 1 | 2)
             || active.receipt.setup_id != active.receipt.applied.manifest.setup_id
-            || fingerprint(&active.receipt.applied.manifest)? != active.receipt.applied.revision
         {
             return Err(DomainError::validation("invalid active setup projection"));
         }
@@ -32,7 +32,56 @@ impl PortableSetupService {
             .manifest
             .validate()
             .map_err(internal)?;
+        let revision = fingerprint(&active.receipt.applied.manifest)?;
+        if active.schema_version == 1 {
+            // Version 1 hashed randomized HashMap iteration, then decoded the
+            // committed journal before copying its receipt here. That decode
+            // discarded the original ordering; the old digest is unverifiable.
+            // Recover only from an identical, independently durable commit.
+            let Some(super::journal::RestoreJournal::Committed { receipt, .. }) =
+                self.read_journal(active.receipt.setup_id)?
+            else {
+                return Err(DomainError::validation(
+                    "legacy active setup projection has no committed receipt",
+                ));
+            };
+            if serde_json::to_value(&active.receipt).map_err(internal)?
+                != serde_json::to_value(&receipt).map_err(internal)?
+            {
+                return Err(DomainError::validation(
+                    "legacy active setup projection differs from its committed receipt",
+                ));
+            }
+            active.receipt.applied.revision = revision;
+        } else if revision != active.receipt.applied.revision {
+            return Err(DomainError::validation("invalid active setup projection"));
+        }
         Ok(Some(active))
+    }
+
+    /// The caller holds restore admission, so no successor can replace the
+    /// journal that proves a legacy projection before its replacement is durable.
+    pub(super) async fn migrate_active_projection(&self) -> Result<(), DomainError> {
+        let Some(mut active) = self.read_active_projection()? else {
+            return Ok(());
+        };
+        if active.schema_version == 2 {
+            return Ok(());
+        }
+        active.schema_version = 2;
+        let writer =
+            AtomicFileWriter::new(&self.root.join("active-projection.json")).map_err(internal)?;
+        let payload = serialize_json_pretty(&active).map_err(internal)?;
+        let restore = super::restore::ActiveRestore::begin(Arc::clone(&self.restore_runtime));
+        tokio::task::spawn_blocking(move || {
+            let outcome = writer
+                .reserve()
+                .admit(payload)
+                .commit_and_wait_durable_or_shutdown(&restore.shutdown);
+            super::transaction::written(outcome)
+        })
+        .await
+        .map_err(internal)?
     }
 
     /// Publish a complete record before finalizing the restore journal. A pointer
@@ -42,10 +91,12 @@ impl PortableSetupService {
         receipt: &RestoreReceipt,
         shutdown: &PersistenceShutdown,
     ) -> Result<AtomicWriteWaitOutcome, DomainError> {
+        let mut receipt = receipt.clone();
+        receipt.applied.revision = fingerprint(&receipt.applied.manifest)?;
         let active = ActiveProjection {
-            schema_version: 1,
-            receipt: receipt.clone(),
+            schema_version: 2,
             aliases: self.projection_bindings(receipt.setup_id, &receipt.materialized_bindings)?,
+            receipt,
         };
         let writer =
             AtomicFileWriter::new(&self.root.join("active-projection.json")).map_err(internal)?;

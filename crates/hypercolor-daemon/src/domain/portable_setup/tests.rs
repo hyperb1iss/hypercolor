@@ -14,6 +14,7 @@ use uuid::Uuid;
 mod authority;
 mod bindings;
 mod cross_authority;
+mod fingerprint;
 mod offline_native;
 mod output_reconnect;
 mod recovery;

@@ -86,7 +86,10 @@ impl PortableSetupService {
             service.recover_pending_locked().await?;
             service.recover_locked(setup_id).await?;
             match service.read_journal(setup_id)? {
-                Some(RestoreJournal::Committed { receipt, .. }) => Ok(Some(*receipt)),
+                Some(RestoreJournal::Committed { mut receipt, .. }) => {
+                    receipt.applied.revision = super::setup_revision(&receipt.applied.manifest)?;
+                    Ok(Some(*receipt))
+                }
                 None => Ok(None),
                 Some(RestoreJournal::Pending { .. }) => {
                     Err(DomainError::conflict("setup restoration remains pending"))
@@ -169,7 +172,7 @@ impl PortableSetupService {
             service.ensure_restore_open()?;
             service.recover_pending_locked().await?;
             service.recover_locked(manifest.setup_id).await?;
-            if let Some(RestoreJournal::Committed { receipt, .. }) =
+            if let Some(RestoreJournal::Committed { mut receipt, .. }) =
                 service.read_journal(manifest.setup_id)?
                 && receipt.operation_id == options.operation_id
             {
@@ -178,6 +181,7 @@ impl PortableSetupService {
                         "restore operation identity was reused for different content",
                     ));
                 }
+                receipt.applied.revision = super::setup_revision(&receipt.applied.manifest)?;
                 return Ok(RestoreReport {
                     applied: receipt.applied,
                     unresolved_bindings: receipt.unresolved_bindings,
@@ -397,6 +401,7 @@ impl PortableSetupService {
                 self.recover_locked(setup_id).await?;
             }
         }
+        self.migrate_active_projection().await?;
         self.restore_runtime.pending.store(false, Ordering::Release);
         Ok(())
     }

@@ -97,9 +97,17 @@ impl PortableSetupService {
     }
 }
 
+/// Fingerprint authored setup content independently of map iteration order.
+pub fn setup_revision(
+    manifest: &hypercolor_types::portable_setup::PortableSetupV1,
+) -> Result<String, DomainError> {
+    fingerprint(manifest)
+}
+
 fn fingerprint(value: &impl Serialize) -> Result<String, DomainError> {
-    let bytes =
-        serde_json::to_vec(&serde_json::to_value(value).map_err(internal)?).map_err(internal)?;
+    let mut value = serde_json::to_value(value).map_err(internal)?;
+    value.sort_all_objects();
+    let bytes = serde_json::to_vec(&value).map_err(internal)?;
     Ok(hypercolor_core::asset::AssetLibrary::hash_bytes(&bytes))
 }
 
