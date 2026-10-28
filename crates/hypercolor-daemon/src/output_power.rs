@@ -129,6 +129,7 @@ struct OutputPowerInner {
     state: watch::Sender<OutputPowerState>,
     transition: Mutex<()>,
     settings: Arc<RwLock<DeviceSettingsStore>>,
+    device_mutations: Arc<RwLock<()>>,
     brightness_authority: BrightnessMutationAuthority,
 }
 
@@ -152,6 +153,7 @@ impl OutputPower {
                 state,
                 transition: Mutex::new(()),
                 settings: Arc::new(RwLock::new(settings)),
+                device_mutations: Arc::new(RwLock::new(())),
                 brightness_authority: BrightnessMutationAuthority(()),
             }),
         }
@@ -174,7 +176,10 @@ impl OutputPower {
 
     #[must_use]
     pub fn device_settings(&self) -> DeviceSettingsAccess {
-        DeviceSettingsAccess::new(Arc::clone(&self.inner.settings))
+        DeviceSettingsAccess::new(
+            Arc::clone(&self.inner.settings),
+            Arc::clone(&self.inner.device_mutations),
+        )
     }
 
     /// Persist global brightness before publishing it to live consumers.

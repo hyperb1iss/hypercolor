@@ -20,6 +20,7 @@ pub(crate) async fn apply_persisted_device_settings(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
 ) -> DeviceUserSettings {
+    let _mutation = runtime.device_settings.begin_device_mutation().await;
     let fallback_settings = runtime
         .device_registry
         .get(&device_id)
