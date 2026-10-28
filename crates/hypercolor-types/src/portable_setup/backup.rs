@@ -14,6 +14,8 @@ pub struct PortableBackupV1 {
     pub schema_version: u32,
     pub setup: PortableSetupV1,
     pub preferences: Option<PortablePreferences>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tui_preferences: Option<crate::client_preferences::TuiPreferences>,
     pub favorites: Vec<FavoriteEffect>,
 }
 

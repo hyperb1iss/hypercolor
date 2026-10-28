@@ -6,6 +6,7 @@
 pub mod access_log;
 pub mod assets;
 pub mod attachments;
+pub mod backups;
 pub mod canvas;
 pub mod capture;
 pub mod config;

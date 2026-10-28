@@ -2,6 +2,7 @@
 
 mod assets;
 mod attachments;
+mod backups;
 mod canvas;
 mod capture;
 mod config;
@@ -31,6 +32,7 @@ pub(super) fn versioned(asset_upload_body_limit: usize) -> OpenApiRouter<Arc<App
     OpenApiRouter::new()
         .merge(assets::router(asset_upload_body_limit))
         .merge(attachments::router())
+        .merge(backups::router())
         .merge(canvas::router())
         .merge(capture::router())
         .merge(config::router())

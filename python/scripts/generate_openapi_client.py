@@ -253,7 +253,7 @@ def normalize_binary_response_media_types(spec: dict[str, object]) -> None:
                     continue
                 content_by_media_type = cast(dict[str, object], content)
                 for media_type in list(content_by_media_type):
-                    if media_type.startswith("image/"):
+                    if media_type.startswith("image/") or media_type == "application/x-tar":
                         content_by_media_type["application/octet-stream"] = (
                             content_by_media_type.pop(media_type)
                         )

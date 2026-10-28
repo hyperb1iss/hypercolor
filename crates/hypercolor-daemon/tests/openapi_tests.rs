@@ -759,3 +759,23 @@ async fn swagger_ui_is_served() {
     assert!(content_type.starts_with("text/html"));
     assert!(!body.is_empty());
 }
+
+#[test]
+fn backups_declare_streamed_binary_upload_and_typed_confirmation() {
+    let document = openapi_document();
+    assert_eq!(
+        document["paths"]["/api/v1/backups/import"]["post"]["requestBody"]["content"]["application/octet-stream"]
+            ["schema"],
+        serde_json::json!({"type":"string","format":"binary"})
+    );
+    assert_eq!(
+        document["paths"]["/api/v1/backups/export"]["get"]["responses"]["200"]["content"]["application/x-tar"]
+            ["schema"]["format"],
+        "binary"
+    );
+    assert_eq!(
+        document["paths"]["/api/v1/backups/apply"]["post"]["requestBody"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/BackupApplyRequest"
+    );
+}

@@ -124,6 +124,7 @@ pub(crate) struct OperationDoc {
     success: ResponseShape,
     request: Option<(SchemaName, bool)>,
     request_media_type: &'static str,
+    request_binary: bool,
     response_schema: SchemaRegistrar,
     request_schema: Option<SchemaRegistrar>,
     additional_schemas: Vec<SchemaRegistrar>,
@@ -212,6 +213,7 @@ impl OperationDoc {
             success: ResponseShape::Enveloped(schema_name::<T>),
             request: None,
             request_media_type: "application/json",
+            request_binary: false,
             response_schema: register_schema::<T>,
             request_schema: None,
             additional_schemas: Vec::new(),
@@ -265,6 +267,14 @@ impl OperationDoc {
     pub(crate) fn multipart_body<T: utoipa::ToSchema>(mut self) -> Self {
         self = self.body::<T>();
         self.request_media_type = "multipart/form-data";
+        self
+    }
+
+    /// A streamed archive body, kept outside JSON and multipart buffering.
+    pub(crate) fn binary_body(mut self) -> Self {
+        self = self.body::<String>();
+        self.request_media_type = "application/octet-stream";
+        self.request_binary = true;
         self
     }
 
@@ -441,6 +451,15 @@ fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Opera
     }
 
     if let Some((schema, required)) = document.request {
+        let content = if document.request_binary {
+            Content::new(Some(ObjectBuilder::new().schema_type(Type::String).format(
+                Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                    utoipa::openapi::KnownFormat::Binary,
+                )),
+            )))
+        } else {
+            Content::new(Some(Ref::from_schema_name(schema())))
+        };
         builder = builder.request_body(Some(
             RequestBodyBuilder::new()
                 .required(Some(if required {
@@ -448,10 +467,7 @@ fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Opera
                 } else {
                     Required::False
                 }))
-                .content(
-                    document.request_media_type,
-                    Content::new(Some(Ref::from_schema_name(schema()))),
-                )
+                .content(document.request_media_type, content)
                 .build(),
         ));
     }

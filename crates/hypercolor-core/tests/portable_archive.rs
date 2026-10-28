@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 fn backup() -> PortableBackupV1 {
     PortableBackupV1 {
+        tui_preferences: None,
         schema_version: 1,
         setup: PortableSetupV1::new(
             Uuid::now_v7(),

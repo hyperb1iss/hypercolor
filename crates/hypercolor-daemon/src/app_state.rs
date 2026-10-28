@@ -244,6 +244,7 @@ pub struct AppState {
     /// Persistent trail of state-changing requests. Isolated test states
     /// leave it unset, so their requests reach tracing only.
     pub audit_log: Option<Arc<crate::audit_log::AuditLog>>,
+    pub(crate) tui_preferences: hypercolor_core::client_preferences::TuiPreferenceStore,
 
     // Drop the fixture directory after its state-owned stores.
     _temporary_directory: Option<tempfile::TempDir>,
@@ -666,6 +667,9 @@ impl AppState {
         }
 
         Self {
+            tui_preferences: hypercolor_core::client_preferences::TuiPreferenceStore::new(
+                data_dir.join("tui.toml"),
+            ),
             domains,
             device_registry,
             scene_manager,
@@ -770,6 +774,7 @@ impl AppState {
         let domains = daemon.domains.clone();
 
         Self {
+            tui_preferences: hypercolor_core::client_preferences::TuiPreferenceStore::canonical(),
             domains,
             device_registry: daemon.device_registry.clone(),
             scene_manager: daemon.scene_manager.clone(),
