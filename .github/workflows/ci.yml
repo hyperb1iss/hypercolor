@@ -966,6 +966,17 @@ jobs:
           --lib --no-tests=fail
           -E 'test(=api::backups::tests::backup_routes_export_preview_restore_and_replay_without_source_credentials)'
 
+      - name: Check Windows interrupted setup startup
+        id: windows-startup
+        # Keep lifecycle diagnostics visible before the complete suite runs.
+        # Its original result remains required below.
+        continue-on-error: true
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-daemon
+          --no-default-features --features builtin-drivers,persistence-test-hooks
+          --test startup_tests public_startup_recovers_interrupted_setup_without_private_extensions
+          '--' --exact --nocapture
+
       - name: Run daemon input and capture integration tests
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon
@@ -974,6 +985,10 @@ jobs:
 
       - name: Require Windows backup restore and replay
         if: always() && steps.windows-backup.outcome == 'failure'
+        run: exit 1
+
+      - name: Require Windows interrupted setup startup
+        if: always() && steps.windows-startup.outcome == 'failure'
         run: exit 1
 
       - name: Clippy shared crates

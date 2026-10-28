@@ -2675,6 +2675,18 @@ async fn explicitly_inactive_runtime_selection_survives_restart() {
 }
 
 #[cfg(feature = "persistence-test-hooks")]
+// Unwinding an assertion must not strand the detached restore worker in a
+// permanently failing write while Tokio waits for its blocking tasks to exit.
+struct InjectedStartupCommitFailure(hypercolor_daemon::persistence::AtomicFileWriter);
+
+#[cfg(feature = "persistence-test-hooks")]
+impl Drop for InjectedStartupCommitFailure {
+    fn drop(&mut self) {
+        self.0.set_injected_commit_failures(0);
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn public_startup_recovers_interrupted_setup_without_private_extensions() {
     use uuid::Uuid;
@@ -2726,6 +2738,7 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
     let operation_id = Uuid::now_v7();
     let writer = hypercolor_daemon::persistence::AtomicFileWriter::new(&guard.scenes_path())
         .expect("scene writer");
+    let failure_cleanup = InjectedStartupCommitFailure(writer.clone());
     writer.set_injected_commit_failures(usize::MAX);
     let restore_service = service.clone();
     let incoming = desired.clone();
@@ -2761,7 +2774,7 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
         .await
         .expect("public shutdown releases pending guards")
         .expect("shutdown preserves pending intent");
-    writer.set_injected_commit_failures(0);
+    drop(failure_cleanup);
     writer
         .flush(Duration::from_secs(3))
         .expect("retained write converges");
