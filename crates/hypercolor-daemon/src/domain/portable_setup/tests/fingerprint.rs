@@ -1,7 +1,7 @@
 use super::{Fixture, PortableSetupService, SetupBindings, options};
 use crate::domain::portable_setup::{fingerprint, setup_revision};
+use crate::portable_setup_state::{ActiveProjection, RestoreJournal};
 use hypercolor_types::portable_setup::PortableSetupV1;
-use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -36,7 +36,7 @@ async fn revisions_survive_hash_map_recreation_and_json_roundtrips() {
         updated_at_ms: 0,
     };
     manifest.presets.insert(preset.id.0, preset);
-    let value = serde_json::json!({"z": 1, "a": 2});
+    let value = serde_json::to_value(&manifest).expect("typed manifest value");
     assert_eq!(
         value
             .as_object()
@@ -44,7 +44,7 @@ async fn revisions_survive_hash_map_recreation_and_json_roundtrips() {
             .keys()
             .next()
             .expect("key"),
-        "z",
+        "schema_version",
         "the regression must exercise serde_json/preserve_order"
     );
     let expected = setup_revision(&manifest).expect("revision");
@@ -84,19 +84,19 @@ async fn legacy_fixture() -> (
         .service
         .root
         .join(format!("{}.transaction.json", manifest.setup_id));
-    let mut active: Value =
+    let mut active: ActiveProjection =
         serde_json::from_slice(&std::fs::read(&active_path).expect("active")).expect("decode");
-    let mut journal: Value =
+    let mut journal: RestoreJournal =
         serde_json::from_slice(&std::fs::read(&journal_path).expect("journal")).expect("decode");
     let old = hypercolor_core::asset::AssetLibrary::hash_bytes(
         &serde_json::to_vec(&serde_json::to_value(&manifest).expect("value"))
             .expect("old hash bytes"),
     );
     assert_ne!(old, setup_revision(&manifest).expect("canonical"));
-    active["schema_version"] = 1.into();
-    for record in [&mut active, &mut journal] {
-        record["receipt"]["applied"]["revision"] = old.clone().into();
-        record["receipt"]["requested_revision"] = old.clone().into();
+    active.schema_version = 1;
+    for receipt in [&mut active.receipt, committed_receipt(&mut journal)] {
+        receipt.applied.revision.clone_from(&old);
+        receipt.requested_revision.clone_from(&old);
     }
     std::fs::write(
         active_path,
@@ -111,6 +111,15 @@ async fn legacy_fixture() -> (
     (fixture, manifest, request)
 }
 
+fn committed_receipt(
+    journal: &mut RestoreJournal,
+) -> &mut crate::domain::portable_setup::RestoreReceipt {
+    let RestoreJournal::Committed { receipt, .. } = journal else {
+        panic!("fixture must contain a committed journal")
+    };
+    receipt
+}
+
 #[tokio::test]
 async fn matching_legacy_commit_migrates_before_successor_restore_and_restart() {
     let (fixture, manifest, request) = legacy_fixture().await;
@@ -119,11 +128,11 @@ async fn matching_legacy_commit_migrates_before_successor_restore_and_restart() 
         .recover()
         .await
         .expect("legacy authority recovery");
-    let active: Value = serde_json::from_slice(
+    let active: ActiveProjection = serde_json::from_slice(
         &std::fs::read(fixture.service.root.join("active-projection.json")).expect("active"),
     )
     .expect("decode");
-    assert_eq!(active["schema_version"], 2);
+    assert_eq!(active.schema_version, 2);
     let receipt = fixture
         .service
         .last_restore_receipt(manifest.setup_id)
@@ -194,12 +203,12 @@ async fn legacy_projection_requires_an_identical_committed_receipt() {
     let original = std::fs::read(&path).expect("journal");
     std::fs::remove_file(&path).expect("remove fixture journal");
     assert!(fixture.service.read_active_projection().is_err());
-    let mut journal: Value = serde_json::from_slice(&original).expect("decode");
-    journal["receipt"]["operation_id"] = Uuid::now_v7().to_string().into();
+    let mut journal: RestoreJournal = serde_json::from_slice(&original).expect("decode");
+    committed_receipt(&mut journal).operation_id = Uuid::now_v7();
     std::fs::write(&path, serde_json::to_vec(&journal).expect("encode")).expect("write");
     assert!(fixture.service.read_active_projection().is_err());
-    let mut journal: Value = serde_json::from_slice(&original).expect("decode");
-    journal["receipt"]["applied"]["manifest"]["name"] = "different".into();
+    let mut journal: RestoreJournal = serde_json::from_slice(&original).expect("decode");
+    committed_receipt(&mut journal).applied.manifest.name = "different".into();
     std::fs::write(&path, serde_json::to_vec(&journal).expect("encode")).expect("write");
     assert!(fixture.service.read_active_projection().is_err());
 }
@@ -209,21 +218,21 @@ async fn canonical_projection_rejects_content_changes_even_with_matching_journal
     let (fixture, manifest, _) = legacy_fixture().await;
     fixture.service.recover().await.expect("migration");
     let active_path = fixture.service.root.join("active-projection.json");
-    let mut active: Value =
+    let mut active: ActiveProjection =
         serde_json::from_slice(&std::fs::read(&active_path).expect("active")).expect("decode");
-    active["receipt"]["applied"]["manifest"]["name"] = "tampered".into();
+    active.receipt.applied.manifest.name = "tampered".into();
     std::fs::write(&active_path, serde_json::to_vec(&active).expect("encode")).expect("write");
     let path = fixture
         .service
         .root
         .join(format!("{}.transaction.json", manifest.setup_id));
-    let mut journal: Value =
+    let mut journal: RestoreJournal =
         serde_json::from_slice(&std::fs::read(&path).expect("journal")).expect("decode");
-    journal["receipt"] = active["receipt"].clone();
+    committed_receipt(&mut journal).clone_from(&active.receipt);
     std::fs::write(path, serde_json::to_vec(&journal).expect("encode")).expect("write");
     assert!(fixture.service.read_active_projection().is_err());
     assert_ne!(
-        fingerprint(&active["receipt"]["applied"]["manifest"]).expect("digest"),
-        active["receipt"]["applied"]["revision"]
+        fingerprint(&active.receipt.applied.manifest).expect("digest"),
+        active.receipt.applied.revision
     );
 }
