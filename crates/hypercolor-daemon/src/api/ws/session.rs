@@ -487,6 +487,8 @@ async fn handle_socket(
         tokio::select! {
             () = wait_for_shutdown(shutdown.as_ref()) => break,
 
+            () = state.domains.requests.cancelled() => break,
+
             () = wait_for_shutdown(revocation.as_ref()) => break,
 
             // Outbound JSON: bounded queue (drop under pressure in producer tasks).
@@ -728,17 +730,15 @@ async fn handle_socket(
 
     // However the loop ended, a revoked session tells its peer why, once.
     socket.close_if_revoked().await;
-    // Everything the session read still runs, in the order it was read, as
-    // it did when commands ran inline, unless the credential was revoked. A
-    // command joins the lane, and any other message waits for the commands
-    // ahead of it, so a release or unsubscribe still lands between the
-    // commands it was sent between. A peer that closed or vanished, or a
-    // shutdown, only loses the replies.
+    // On an ordinary disconnect, messages still run in their received order;
+    // only replies are discarded. Revocation stops queued commands. Process
+    // shutdown also cancels admitted handlers before stores shut down.
     socket.closing = true;
     let revoked = || {
-        revocation
-            .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
+        state.domains.requests.is_closed()
+            || revocation
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
     };
     while let Some(next) = inbound.pop_front() {
         if revoked() {

@@ -45,6 +45,7 @@ use crate::runtime_state::{self, RuntimeSessionSnapshot};
 /// Complete daemon domain graph assembled once by the composition root.
 #[derive(Clone)]
 pub struct DomainContexts {
+    pub(crate) requests: crate::request_lifetime::RequestLifetime,
     /// Runtime-session snapshot and persistence authority.
     pub runtime_session: RuntimeSessionService,
     /// Device lifecycle and discovery reconciliation authority.
@@ -130,6 +131,7 @@ impl DomainContexts {
             resources.spatial,
         );
         Self {
+            requests: crate::request_lifetime::RequestLifetime::default(),
             runtime_session,
             devices,
             scene,

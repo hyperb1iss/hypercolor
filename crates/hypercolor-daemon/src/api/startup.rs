@@ -40,6 +40,7 @@ const STARTING_MESSAGE: &str = "Hypercolor daemon is starting";
 pub struct ApiHandoff {
     full: Arc<OnceLock<Router>>,
     startup: Router,
+    pub(crate) requests: crate::request_lifetime::RequestLifetime,
 }
 
 impl ApiHandoff {
@@ -58,7 +59,11 @@ impl ApiHandoff {
                 version: version.into(),
                 full: Arc::clone(&full),
             });
-        Self { full, startup }
+        Self {
+            full,
+            startup,
+            requests: crate::request_lifetime::RequestLifetime::default(),
+        }
     }
 
     /// Serve `router` from the first connection.
@@ -69,6 +74,7 @@ impl ApiHandoff {
         Self {
             full,
             startup: Router::new(),
+            requests: crate::request_lifetime::RequestLifetime::default(),
         }
     }
 
@@ -90,6 +96,10 @@ impl ApiHandoff {
         self.full
             .get()
             .map_or_else(|| self.startup.clone(), Router::clone)
+            .layer(axum::middleware::from_fn_with_state(
+                self.requests.clone(),
+                crate::request_lifetime::guard_http,
+            ))
     }
 
     /// Per-connection service factory for `axum::serve`.
