@@ -136,7 +136,7 @@ impl PortableSetupService {
         };
         let claims = self.state.device_registry.claims_snapshot().await;
         for device in self.state.device_registry.list().await {
-            let Some(portable) = bindings.devices.get(&device.info.id).copied() else {
+            let Some(portable) = projection_bindings.devices.get(&device.info.id).copied() else {
                 continue;
             };
             let fingerprint = self
@@ -163,9 +163,17 @@ impl PortableSetupService {
                 }) => (Some(*vendor_id), Some(*product_id)),
                 _ => (None, None),
             };
+            let accepted_device = if bindings.devices.contains_key(&device.info.id) {
+                None
+            } else {
+                prior
+                    .as_ref()
+                    .and_then(|prior| prior.devices.get(&portable))
+                    .cloned()
+            };
             manifest.devices.insert(
                 portable,
-                PortableDevice {
+                accepted_device.unwrap_or(PortableDevice {
                     name: device.observed_info().name,
                     portable_key: claims.get(&device.info.id).map(|claim| claim.key().clone()),
                     driver_id: device.info.driver_id().to_owned(),
@@ -174,27 +182,36 @@ impl PortableSetupService {
                     model: device.info.model.clone(),
                     led_count: device.info.total_led_count(),
                     binding_hint: hint,
-                },
+                }),
             );
+            let output = if bindings.devices.contains_key(&device.info.id) {
+                None
+            } else {
+                prior
+                    .as_ref()
+                    .and_then(|prior| prior.device_output.get(&portable))
+                    .cloned()
+            };
             manifest.device_output.insert(
                 portable,
-                PortableDeviceOutput {
+                output.unwrap_or(PortableDeviceOutput {
                     disabled: !device.user_settings.enabled,
                     brightness: device.user_settings.brightness,
                     rotation: device.user_settings.display_rotation,
-                },
+                }),
             );
         }
         for logical in self.state.logical_devices.read().await.values() {
             if logical.kind == LogicalDeviceKind::Default {
                 continue;
             }
-            let Some(id) = bindings.outputs.get(&logical.id) else {
+            let Some(id) = projection_bindings.outputs.get(&logical.id) else {
                 return Err(DomainError::conflict(
                     "logical device has no setup association",
                 ));
             };
-            let Some(physical) = bindings.devices.get(&logical.physical_device_id) else {
+            let Some(physical) = projection_bindings.devices.get(&logical.physical_device_id)
+            else {
                 continue;
             };
             manifest.logical_devices.insert(
@@ -219,6 +236,7 @@ impl PortableSetupService {
             active_scene_id: scenes.active_scene_id().copied(),
             default_scene_id: configured_start_scene(&self.state, &scenes)?,
         };
+        drop(scenes);
         let mut layouts = self.state.domains.layout.portable_snapshot().await;
         layouts.entry(canvas.id.clone()).or_insert(canvas);
         for (id, layout) in layouts {
@@ -250,12 +268,16 @@ impl PortableSetupService {
             .await
             .portable_snapshot()
         {
-            let portable = bindings.outputs.get(&local).copied().or_else(|| {
-                local
-                    .parse()
-                    .ok()
-                    .and_then(|id| bindings.devices.get(&id).copied())
-            });
+            let portable = projection_bindings
+                .outputs
+                .get(&local)
+                .copied()
+                .or_else(|| {
+                    local
+                        .parse()
+                        .ok()
+                        .and_then(|id| projection_bindings.devices.get(&id).copied())
+                });
             if let Some(portable) = portable {
                 manifest.attachments.insert(portable, (&profile).into());
             }
@@ -271,7 +293,7 @@ impl PortableSetupService {
         }
         drop(templates);
         for (id, face) in self.state.domains.display.preferences().read().await.iter() {
-            if let Some(portable) = bindings.devices.get(&id) {
+            if let Some(portable) = projection_bindings.devices.get(&id) {
                 manifest.display_faces.insert(
                     *portable,
                     PortableDisplayFace {
@@ -362,6 +384,11 @@ impl PortableSetupService {
             .map_err(internal)?
             .map_err(internal)?;
         }
+        self.authored_references().await.retain_definitions(
+            &mut manifest,
+            prior.as_ref(),
+            &projection_bindings,
+        );
         if let Some(prior) = prior {
             retain_unresolved(&mut manifest, &prior, bindings);
         }

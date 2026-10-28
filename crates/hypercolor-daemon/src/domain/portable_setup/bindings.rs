@@ -79,12 +79,6 @@ impl PortableSetupService {
             .list()
             .await
             .into_iter()
-            .filter(|device| {
-                !matches!(
-                    device.state,
-                    hypercolor_types::device::DeviceState::Reconnecting
-                )
-            })
             .collect::<Vec<_>>();
         let claims = self.state.device_registry.claims_snapshot().await;
         let quarantined = self.state.device_registry.quarantined_portable_keys().await;
@@ -107,11 +101,19 @@ impl PortableSetupService {
                     claims.contains_key(&device.info.id),
                 )
             });
-            current.push((device.info.id, layout_id, hint));
+            let live = !matches!(
+                device.state,
+                hypercolor_types::device::DeviceState::Reconnecting
+            );
+            current.push((device.info.id, layout_id, hint, live));
         }
         let mut assigned = HashMap::new();
-        for (device_id, _, _) in &current {
-            if let Some(portable) = durable.devices.get(device_id) {
+        for (device_id, layout_id, _, _) in &current {
+            if let Some(portable) = durable
+                .devices
+                .get(device_id)
+                .or_else(|| durable.outputs.get(layout_id))
+            {
                 // An explicit association is valid only within its original setup.
                 if manifest.is_none_or(|manifest| manifest.devices.contains_key(portable)) {
                     assigned.insert(*device_id, *portable);
@@ -129,7 +131,7 @@ impl PortableSetupService {
                 }
                 let matches = current
                     .iter()
-                    .filter(|(device_id, _, hint)| {
+                    .filter(|(device_id, _, hint, _)| {
                         if assigned.contains_key(device_id) {
                             return false;
                         }
@@ -145,7 +147,7 @@ impl PortableSetupService {
                             })
                         }
                     })
-                    .map(|(id, _, _)| *id)
+                    .map(|(id, _, _, _)| *id)
                     .collect::<Vec<_>>();
                 candidates.insert(*portable_id, matches);
             }
@@ -164,12 +166,14 @@ impl PortableSetupService {
             }
         }
         let mut result = SetupBindings::default();
-        for (device_id, layout_id, _) in current {
+        for (device_id, layout_id, _, live) in current {
             let portable = *assigned.entry(device_id).or_insert_with(Uuid::now_v7);
             durable.devices.insert(device_id, portable);
             durable.outputs.insert(layout_id.clone(), portable);
-            result.devices.insert(device_id, portable);
-            result.outputs.insert(layout_id, portable);
+            if live {
+                result.devices.insert(device_id, portable);
+                result.outputs.insert(layout_id, portable);
+            }
         }
         for logical in self.state.logical_devices.read().await.values() {
             if logical.kind == LogicalDeviceKind::Default {
@@ -190,6 +194,9 @@ impl PortableSetupService {
                 }
             }
         }
+        self.authored_references()
+            .await
+            .assign_aliases(&mut durable);
         let bytes = crate::persistence::serialize_json_pretty(&durable).map_err(internal)?;
         if self.state.discovery_in_progress.load(Ordering::Acquire)
             || self.state.device_registry.generation() != device_generation

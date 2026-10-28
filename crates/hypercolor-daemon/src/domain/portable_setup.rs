@@ -11,6 +11,7 @@ mod media;
 mod plan;
 pub(crate) mod prepared;
 mod reconcile;
+mod references;
 mod restore;
 mod runtime_preferences;
 mod templates;

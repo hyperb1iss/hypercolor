@@ -257,3 +257,80 @@ async fn recovery_preserves_a_third_device_output_value_on_the_original_binding(
     );
     assert!(fixture.service.read_journal(id).expect("journal").is_none());
 }
+
+#[tokio::test]
+async fn reconnecting_device_keeps_authored_definition_without_live_binding() {
+    let fixture = Fixture::new("local");
+    let setup_id = Uuid::now_v7();
+    let local = register_device(&fixture).await;
+    let bindings = fixture
+        .service
+        .assign_bindings(setup_id, None)
+        .await
+        .expect("initial association");
+    let portable = bindings.devices[&local];
+    let identity = SetupIdentity {
+        setup_id,
+        name: "Reconnect setup".into(),
+    };
+    let before = fixture
+        .service
+        .export(identity.clone(), &bindings)
+        .await
+        .expect("initial export");
+    let report = fixture
+        .drive(fixture.service.restore(
+            &before.manifest,
+            &bindings,
+            super::options(before.revision),
+        ))
+        .await
+        .expect("accept initial authored state");
+    let tracked = fixture
+        .state
+        .device_registry
+        .get(&local)
+        .await
+        .expect("device");
+    let original_state = tracked.state.clone();
+    let mut changed_info = tracked.info;
+    changed_info.name = "Temporary reconnect metadata".into();
+    fixture
+        .state
+        .device_registry
+        .update_info(&local, changed_info)
+        .await
+        .expect("metadata");
+    fixture
+        .state
+        .device_registry
+        .set_state(&local, hypercolor_types::device::DeviceState::Reconnecting)
+        .await;
+    let offline = fixture
+        .service
+        .assign_bindings(setup_id, None)
+        .await
+        .expect("offline projection aliases");
+    assert!(offline.devices.is_empty());
+    let exported = fixture
+        .service
+        .export(identity.clone(), &offline)
+        .await
+        .expect("reconnecting export");
+    assert_eq!(exported.manifest.devices, report.applied.manifest.devices);
+    assert_eq!(
+        exported.manifest.device_output,
+        report.applied.manifest.device_output
+    );
+    fixture
+        .state
+        .device_registry
+        .set_state(&local, original_state)
+        .await;
+    let returned = fixture
+        .service
+        .assign_bindings(setup_id, None)
+        .await
+        .expect("returned device");
+    assert_eq!(returned.devices[&local], portable);
+}
