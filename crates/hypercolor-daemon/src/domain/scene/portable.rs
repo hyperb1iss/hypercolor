@@ -195,23 +195,7 @@ impl PreparedPortableScenes {
                 candidate.invalidate_resolved_zones();
             }
         }
-        for (id, info) in devices {
-            let Some(preference) = preferences.get(*id) else {
-                candidate.remove_default_display_zone(*id);
-                continue;
-            };
-            let Some(surface) = crate::domain::display::display_surface_info(info) else {
-                continue;
-            };
-            let layout = crate::domain::display::display_face_layout(*id, &info.name, surface);
-            candidate.set_default_display_zone(crate::domain::display::build_default_display_zone(
-                *id,
-                &info.name,
-                preference.effect_id,
-                preference,
-                layout,
-            ));
-        }
+        crate::domain::display::restore_preference_overlays(candidate, preferences, devices);
         Ok(())
     }
 
