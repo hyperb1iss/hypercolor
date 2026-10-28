@@ -1,56 +1,20 @@
 //! Durable restore authority, separate from any transport acknowledgment.
 
-use hypercolor_types::portable_setup::{PortablePreferences, PortableSetupV1, SetupBindings};
-use serde::{Deserialize, Serialize};
+use hypercolor_types::portable_setup::SetupBindings;
 use uuid::Uuid;
 
-use super::{PortableSetupService, RestoreOptions, RestoreReceipt, internal};
+use super::{PortableSetupService, internal};
 use crate::domain::DomainError;
 use crate::persistence::{
     AtomicFileWriter, AtomicWriteWaitOutcome, PersistenceShutdown, serialize_json_pretty,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct RuntimeRestoreProof {
-    pub before: Option<crate::runtime_state::RuntimeSessionSnapshot>,
-    pub candidate: crate::runtime_state::RuntimeSessionSnapshot,
-}
+pub(super) use crate::portable_setup_state::{
+    BackupAncillary, RestoreJournal, RuntimeRestoreProof,
+};
 
 pub(super) struct RestoreRecovery {
     pub runtime: RuntimeRestoreProof,
     pub bindings: SetupBindings,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct BackupAncillary {
-    pub expected_preferences: Option<PortablePreferences>,
-    pub preferences: Option<PortablePreferences>,
-    pub favorites: Vec<hypercolor_types::library::FavoriteEffect>,
-    pub tui_preferences: Option<hypercolor_types::client_preferences::TuiPreferences>,
-    pub expected_tui_preferences: Option<hypercolor_types::client_preferences::TuiPreferences>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum RestoreJournal {
-    Pending {
-        schema_version: u32,
-        before: Box<PortableSetupV1>,
-        candidate: Box<PortableSetupV1>,
-        requested_revision: String,
-        bindings: SetupBindings,
-        options: RestoreOptions,
-        runtime: RuntimeRestoreProof,
-        ancillary: Option<BackupAncillary>,
-    },
-    Committed {
-        schema_version: u32,
-        receipt: Box<RestoreReceipt>,
-        finalized: bool,
-        #[serde(default)]
-        reconnect_network_outputs: bool,
-        ancillary: Option<BackupAncillary>,
-    },
 }
 
 /// Detect recovery authority before startup loaders or background writers run.

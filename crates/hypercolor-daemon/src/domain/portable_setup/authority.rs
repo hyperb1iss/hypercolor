@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 
 use hypercolor_types::portable_setup::{PortableSetupV1, SetupBindings};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{PortableSetupService, RestoreReceipt, fingerprint, internal};
@@ -11,14 +10,7 @@ use crate::domain::DomainError;
 use crate::persistence::{
     AtomicFileWriter, AtomicWriteWaitOutcome, PersistenceShutdown, serialize_json_pretty,
 };
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ActiveProjection {
-    schema_version: u32,
-    pub receipt: RestoreReceipt,
-    pub aliases: SetupBindings,
-}
+use crate::portable_setup_state::ActiveProjection;
 
 impl PortableSetupService {
     pub(super) fn read_active_projection(&self) -> Result<Option<ActiveProjection>, DomainError> {

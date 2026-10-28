@@ -52,6 +52,7 @@ pub mod performance;
 pub mod release_notifications;
 pub use hypercolor_core::persistence;
 pub mod playlist_runtime;
+mod portable_setup_state;
 pub mod preview_runtime;
 pub mod process;
 pub(crate) mod profile_import;

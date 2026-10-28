@@ -6,21 +6,13 @@ use std::sync::Arc;
 
 use hypercolor_core::portable_setup::archive::{read_archive, write_archive};
 use hypercolor_types::api::backups::{BackupApplyResponse, BackupPreview};
-use hypercolor_types::portable_setup::{PortableBackupV1, PortablePreferences, SetupBindings};
-use serde::{Deserialize, Serialize};
+use hypercolor_types::portable_setup::{PortableBackupV1, PortablePreferences};
+use serde::Serialize;
 use uuid::Uuid;
 
 use super::{PortableSetupService, RestoreMode, RestoreOptions, SetupIdentity, internal};
 use crate::domain::DomainError;
-
-#[derive(Serialize, Deserialize)]
-struct StagedBackup {
-    backup: PortableBackupV1,
-    bindings: SetupBindings,
-    expected_revision: String,
-    expected_preferences: Option<PortablePreferences>,
-    expected_tui_preferences: Option<hypercolor_types::client_preferences::TuiPreferences>,
-}
+use crate::portable_setup_state::StagedBackup;
 
 impl PortableSetupService {
     /// Spool transfers beside setup data, avoiding memory-backed system temp directories.

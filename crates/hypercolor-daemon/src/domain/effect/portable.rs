@@ -14,13 +14,13 @@ use hypercolor_core::effect::{
 use hypercolor_core::portable_setup::SetupBlobStore;
 use hypercolor_types::effect::{EffectId, EffectSource};
 use hypercolor_types::portable_setup::{PortableBlob, PortableEffect, is_portable_bundle_path};
-use serde::{Deserialize, Serialize};
 use tokio::sync::OwnedRwLockWriteGuard;
 use uuid::Uuid;
 
 use super::EffectContext;
 use crate::domain::DomainError;
 use crate::persistence::{AtomicWriteWaitOutcome, PersistenceShutdown};
+use crate::portable_setup_state::{EffectPlan, RetiredEffect};
 
 pub(crate) struct PortableEffectsRestore<'a> {
     pub(crate) before: &'a BTreeMap<Uuid, PortableEffect>,
@@ -29,23 +29,6 @@ pub(crate) struct PortableEffectsRestore<'a> {
     pub(crate) managed_root: &'a Path,
     pub(crate) staging_root: &'a Path,
     pub(crate) operation_id: Uuid,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EffectPlan {
-    schema_version: u32,
-    operation_id: Uuid,
-    input_hash: String,
-    retired: BTreeMap<Uuid, RetiredEffect>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RetiredEffect {
-    root: PathBuf,
-    bundled: bool,
-    files: BTreeMap<String, PortableBlob>,
 }
 
 /// All live catalog mutation is excluded until the coordinator publishes.

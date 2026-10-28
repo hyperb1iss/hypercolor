@@ -9,6 +9,7 @@ mod backup;
 mod projection;
 mod remap;
 mod scene;
+mod service;
 mod validation;
 pub use backup::{
     PortableAudioPreferences, PortableBackupV1, PortableCapturePreferences, PortablePreferences,
@@ -17,6 +18,10 @@ pub use backup::{
 pub use projection::{SetupBindings, UnmappedSetupReference};
 pub use scene::{
     PortableDisplayTarget, PortableLayout, PortableOutput, PortableScene, PortableZone,
+};
+pub use service::{
+    BackupRestoreExpectation, PortableSetupSnapshot, RestoreMode, RestoreOptions, RestoreReceipt,
+    RestoreReport, SetupIdentity,
 };
 pub use validation::{PortableReferenceCatalog, PortableSetupError, is_portable_bundle_path};
 

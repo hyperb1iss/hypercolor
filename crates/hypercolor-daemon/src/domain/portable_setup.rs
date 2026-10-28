@@ -24,64 +24,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hypercolor_core::portable_setup::{SetupBlob, SetupBlobStore};
-use hypercolor_types::portable_setup::{PortableBlob, PortableSetupV1, SetupBindings};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use hypercolor_types::portable_setup::PortableBlob;
+pub use hypercolor_types::portable_setup::{
+    BackupRestoreExpectation, PortableSetupSnapshot, RestoreMode, RestoreOptions, RestoreReceipt,
+    RestoreReport, SetupIdentity,
+};
+use serde::Serialize;
 
 use crate::app_state::AppState;
 use crate::domain::DomainError;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupIdentity {
-    pub setup_id: Uuid,
-    pub name: String,
-}
-
-/// The revision fingerprints authored state, not runtime counters or host paths.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortableSetupSnapshot {
-    pub manifest: PortableSetupV1,
-    pub revision: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RestoreMode {
-    /// Upsert supplied members and leave missing members untouched.
-    Merge,
-    /// Delete only members explicitly removed from the previously accepted setup.
-    Synchronize { previous: Box<PortableSetupV1> },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestoreOptions {
-    pub operation_id: Uuid,
-    pub expected_revision: String,
-    pub mode: RestoreMode,
-    pub apply_selection: bool,
-}
-
-/// Local choices captured when a manual backup confirmation is prepared.
-#[derive(Debug, Clone, Default)]
-pub struct BackupRestoreExpectation {
-    pub preferences: Option<hypercolor_types::portable_setup::PortablePreferences>,
-    pub tui_preferences: Option<hypercolor_types::client_preferences::TuiPreferences>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestoreReport {
-    pub applied: PortableSetupSnapshot,
-    pub unresolved_bindings: Vec<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RestoreReceipt {
-    pub operation_id: Uuid,
-    pub setup_id: Uuid,
-    pub requested_revision: String,
-    pub applied: PortableSetupSnapshot,
-    pub unresolved_bindings: Vec<Uuid>,
-    pub materialized_bindings: SetupBindings,
-}
 
 #[derive(Default)]
 struct RestoreRuntime {
