@@ -2480,7 +2480,7 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
     let operation_id = Uuid::now_v7();
     let writer = hypercolor_daemon::persistence::AtomicFileWriter::new(&guard.scenes_path())
         .expect("scene writer");
-    writer.set_injected_directory_sync_failures(usize::MAX);
+    writer.set_injected_commit_failures(usize::MAX);
     let restore_service = service.clone();
     let incoming = desired.clone();
     let caller = tokio::spawn(async move {
@@ -2515,7 +2515,7 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
         .await
         .expect("public shutdown releases pending guards")
         .expect("shutdown preserves pending intent");
-    writer.set_injected_directory_sync_failures(0);
+    writer.set_injected_commit_failures(0);
     writer
         .flush(Duration::from_secs(3))
         .expect("retained write converges");

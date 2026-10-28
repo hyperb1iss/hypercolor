@@ -430,7 +430,7 @@ mod tests {
             .prepare_portable_replace(&before, candidate())
             .await
             .expect("prepare");
-        store.writer.set_injected_directory_sync_failures(1);
+        store.writer.set_injected_commit_failures(1);
         assert!(matches!(
             prepared.persist(&PersistenceShutdown::default()),
             AtomicWriteWaitOutcome::Written

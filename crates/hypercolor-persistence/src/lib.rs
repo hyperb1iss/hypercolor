@@ -893,6 +893,18 @@ impl AtomicFileWriter {
             .store(stale, Ordering::Release);
     }
 
+    /// Inject failures at the platform's last independent commit boundary.
+    ///
+    /// Unix can fail its directory barrier after replacement. Other platforms
+    /// include durability in the replacement operation, so fail that operation.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    pub fn set_injected_commit_failures(&self, count: usize) {
+        #[cfg(unix)]
+        self.set_injected_directory_sync_failures(count);
+        #[cfg(not(unix))]
+        self.set_injected_replace_failures(count);
+    }
+
     /// Inject post-replacement directory-sync failures for deterministic tests.
     #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
     pub fn set_injected_directory_sync_failures(&self, count: usize) {
@@ -1799,8 +1811,39 @@ mod tests {
 #[cfg(test)]
 mod transaction_wait_tests {
     use super::{
-        AtomicFileWriter, AtomicWriteOutcome, AtomicWriteWaitOutcome, PersistenceShutdown,
+        AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome, AtomicWriteWaitOutcome,
+        PersistenceShutdown,
     };
+
+    #[test]
+    fn commit_fault_uses_the_platform_durability_boundary() {
+        let directory = tempfile::tempdir().expect("transaction directory");
+        let path = directory.path().join("transaction.json");
+        let writer = AtomicFileWriter::new(&path).expect("transaction writer");
+        writer.set_injected_commit_failures(1);
+        let outcome = writer
+            .reserve()
+            .admit(b"candidate".to_vec())
+            .commit_stage_aware();
+        #[cfg(unix)]
+        assert!(matches!(
+            outcome,
+            AtomicWriteCommitResult::ReplacementVisibleButNotDurable(_)
+        ));
+        #[cfg(not(unix))]
+        assert!(matches!(
+            outcome,
+            AtomicWriteCommitResult::FailedBeforeReplacement(_)
+        ));
+        writer
+            .flush(std::time::Duration::from_secs(2))
+            .expect("retry converges");
+        assert_eq!(
+            std::fs::read(path).expect("durable candidate"),
+            b"candidate"
+        );
+        assert!(writer.holds_durable_bytes());
+    }
 
     #[test]
     fn transaction_waits_for_retry_to_make_its_generation_durable() {

@@ -593,7 +593,7 @@ async fn caller_cancellation_retains_writers_until_shutdown_and_restart_recovers
     let writer =
         crate::persistence::AtomicFileWriter::new(&fixture.state.data_dir.join("scenes.json"))
             .expect("portable fixture should be valid");
-    writer.set_injected_directory_sync_failures(usize::MAX);
+    writer.set_injected_commit_failures(usize::MAX);
     let service = fixture.service.clone();
     let incoming = expected.clone();
     let caller = tokio::spawn(async move { service.restore(&incoming, &bindings, request).await });
@@ -634,7 +634,7 @@ async fn caller_cancellation_retains_writers_until_shutdown_and_restart_recovers
             .expect("portable fixture should be valid"),
         crate::extensions::ShutdownPersistenceDisposition::PreservePendingTransaction
     );
-    writer.set_injected_directory_sync_failures(0);
+    writer.set_injected_commit_failures(0);
     writer
         .flush(Duration::from_secs(3))
         .expect("portable fixture should be valid");

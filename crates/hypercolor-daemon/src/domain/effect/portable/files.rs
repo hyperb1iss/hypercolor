@@ -1,7 +1,9 @@
 //! Verified file staging and resumable publication for one restore operation.
 
 use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
