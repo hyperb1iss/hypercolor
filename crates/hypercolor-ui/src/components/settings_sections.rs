@@ -23,6 +23,7 @@ use crate::{
 
 mod about;
 mod audio;
+mod backups;
 mod developer;
 mod discovery;
 mod input;
@@ -33,6 +34,7 @@ use input::MacosSystemSettingsButton;
 
 pub use about::AboutSection;
 pub use audio::AudioSection;
+pub use backups::BackupsSection;
 pub use developer::DeveloperSection;
 pub use discovery::DiscoverySection;
 pub use input::InputSection;

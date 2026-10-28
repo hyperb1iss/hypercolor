@@ -18,6 +18,7 @@
 
 pub mod assets;
 pub mod attachments;
+pub mod backups;
 pub mod capture;
 pub mod config;
 pub mod controls;
