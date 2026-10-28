@@ -128,6 +128,22 @@ pub trait LibraryStore: Send + Sync {
         candidate: LibraryPortableSnapshot,
     ) -> Result<PreparedPortableLibrary, LibraryStoreError>;
 
+    /// Merge archived favorites in the same transaction as setup library data.
+    /// Stores without backup support reject nonempty favorites explicitly.
+    async fn prepare_portable_backup_replace(
+        &self,
+        expected: &LibraryPortableSnapshot,
+        candidate: LibraryPortableSnapshot,
+        favorites: &[FavoriteEffect],
+    ) -> Result<PreparedPortableLibrary, LibraryStoreError> {
+        if !favorites.is_empty() {
+            return Err(LibraryStoreError::Persistence(
+                "this library store cannot restore favorites".into(),
+            ));
+        }
+        self.prepare_portable_replace(expected, candidate).await
+    }
+
     async fn list_favorites(&self) -> Vec<FavoriteEffect>;
     async fn project_favorites(&self) -> Vec<ProjectedFavoriteState>;
     async fn upsert_favorite(
@@ -1086,6 +1102,24 @@ impl LibraryStore for InMemoryLibraryStore {
             .await
     }
 
+    async fn prepare_portable_backup_replace(
+        &self,
+        expected: &LibraryPortableSnapshot,
+        candidate: LibraryPortableSnapshot,
+        favorites: &[FavoriteEffect],
+    ) -> Result<PreparedPortableLibrary, LibraryStoreError> {
+        PreparedPortableLibrary::prepare_backup(
+            &self.data,
+            &self.mutation_gate,
+            None,
+            expected,
+            candidate,
+            favorites,
+            None,
+        )
+        .await
+    }
+
     async fn list_favorites(&self) -> Vec<FavoriteEffect> {
         let data = self.data.read().await;
         let mut favorites: Vec<FavoriteEffect> = data.favorites.values().cloned().collect();
@@ -1281,6 +1315,24 @@ impl LibraryStore for JsonLibraryStore {
             Some(&self.writer),
             expected,
             candidate,
+        )
+        .await
+    }
+
+    async fn prepare_portable_backup_replace(
+        &self,
+        expected: &LibraryPortableSnapshot,
+        candidate: LibraryPortableSnapshot,
+        favorites: &[FavoriteEffect],
+    ) -> Result<PreparedPortableLibrary, LibraryStoreError> {
+        PreparedPortableLibrary::prepare_backup(
+            &self.data,
+            &self.mutation_gate,
+            Some(&self.writer),
+            expected,
+            candidate,
+            favorites,
+            Some(Arc::clone(&self.uncertain_favorites)),
         )
         .await
     }

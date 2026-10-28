@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_types::library::{EffectPlaylist, EffectPreset, PlaylistId, PresetId};
+use hypercolor_types::library::{
+    EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PresetId,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
@@ -47,6 +49,14 @@ pub struct PreparedPortableLibrary {
     _mutation_guard: OwnedRwLockWriteGuard<()>,
     candidate: Option<LibraryPortableSnapshot>,
     write: Option<PreparedLibrarySnapshot>,
+    merged: Option<InMemoryLibraryData>,
+    uncertain: Option<
+        Arc<
+            std::sync::Mutex<
+                HashMap<hypercolor_types::effect::EffectId, super::UncertainFavoriteChange>,
+            >,
+        >,
+    >,
     durable: bool,
     attempted: bool,
 }
@@ -59,7 +69,33 @@ impl PreparedPortableLibrary {
         expected: &LibraryPortableSnapshot,
         candidate: LibraryPortableSnapshot,
     ) -> Result<Self, LibraryStoreError> {
+        Self::prepare_backup(data, mutation_gate, writer, expected, candidate, &[], None).await
+    }
+
+    pub(super) async fn prepare_backup(
+        data: &Arc<RwLock<InMemoryLibraryData>>,
+        mutation_gate: &Arc<RwLock<()>>,
+        writer: Option<&AtomicFileWriter>,
+        expected: &LibraryPortableSnapshot,
+        candidate: LibraryPortableSnapshot,
+        favorites: &[FavoriteEffect],
+        uncertain: Option<
+            Arc<
+                std::sync::Mutex<
+                    HashMap<hypercolor_types::effect::EffectId, super::UncertainFavoriteChange>,
+                >,
+            >,
+        >,
+    ) -> Result<Self, LibraryStoreError> {
         candidate.validate_keys()?;
+        let mut identities = std::collections::HashSet::new();
+        for favorite in favorites {
+            if favorite.effect_id.0.is_nil() || !identities.insert(favorite.effect_id) {
+                return Err(LibraryStoreError::Persistence(
+                    "invalid archived favorite identity".into(),
+                ));
+            }
+        }
         // The gate waits for prior admitted writes, including persistence after
         // a mutation has released the data lock. Both guards stay held.
         let mutation_guard = Arc::clone(mutation_gate).write_owned().await;
@@ -69,10 +105,18 @@ impl PreparedPortableLibrary {
                 "portable library replacement was superseded by a local edit".to_owned(),
             ));
         }
+        let mut merged = data.clone();
+        merged.presets.clone_from(&candidate.presets);
+        merged.playlists.clone_from(&candidate.playlists);
+        for favorite in favorites {
+            if !merged.favorites.contains_key(&favorite.effect_id) {
+                merged.apply_favorite_change(
+                    favorite.effect_id,
+                    &super::FavoriteChange::Upsert(favorite.clone()),
+                )?;
+            }
+        }
         let write = if let Some(writer) = writer {
-            let mut merged = data.clone();
-            merged.presets.clone_from(&candidate.presets);
-            merged.playlists.clone_from(&candidate.playlists);
             let payload = serialize_json_pretty(&LibrarySnapshot::from_data(&merged))
                 .map_err(|error| LibraryStoreError::Persistence(error.to_string()))?;
             Some(PreparedLibrarySnapshot {
@@ -86,12 +130,15 @@ impl PreparedPortableLibrary {
             data,
             _mutation_guard: mutation_guard,
             candidate: Some(candidate),
+            merged: Some(merged),
+            uncertain,
             write,
             durable: false,
             attempted: false,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn candidate(&self) -> &LibraryPortableSnapshot {
         self.candidate
             .as_ref()
@@ -122,9 +169,23 @@ impl PreparedPortableLibrary {
             self.durable,
             "replacement must be durable before publication"
         );
-        let candidate = self.candidate.take().expect("replacement publishes once");
-        self.data.presets = candidate.presets;
-        self.data.playlists = candidate.playlists;
+        self.candidate.take().expect("replacement publishes once");
+        *self.data = self.merged.take().expect("replacement publishes once");
+        if let Some(uncertain) = &self.uncertain {
+            uncertain
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|effect_id, pending| {
+                    if super::JsonLibraryStore::favorite_change_is_visible(
+                        &self.data, *effect_id, pending,
+                    ) {
+                        pending.durable = true;
+                        true
+                    } else {
+                        false
+                    }
+                });
+        }
     }
 }
 
@@ -158,6 +219,92 @@ mod tests {
             presets: HashMap::from([(preset.id, preset)]),
             playlists: HashMap::from([(playlist.id, playlist)]),
         }
+    }
+
+    #[tokio::test]
+    async fn manual_backup_merges_favorites_once_and_keeps_local_values() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("library.json");
+        let store = JsonLibraryStore::open(path.clone()).expect("open");
+        let existing = EffectId::new(uuid::Uuid::now_v7());
+        let incoming = EffectId::new(uuid::Uuid::now_v7());
+        store.upsert_favorite(existing, 7).await.expect("favorite");
+        let favorites = [
+            FavoriteEffect {
+                effect_id: existing,
+                added_at_ms: 99,
+            },
+            FavoriteEffect {
+                effect_id: incoming,
+                added_at_ms: 11,
+            },
+        ];
+        let candidate = candidate();
+        for expected in [LibraryPortableSnapshot::default(), candidate.clone()] {
+            let mut prepared = store
+                .prepare_portable_backup_replace(&expected, candidate.clone(), &favorites)
+                .await
+                .expect("prepare");
+            assert!(store.data.try_read().is_err());
+            assert!(matches!(
+                prepared.persist(&PersistenceShutdown::default()),
+                AtomicWriteWaitOutcome::Written
+            ));
+            let disk = JsonLibraryStore::open(path.clone()).expect("reopen");
+            let projected = disk.project_favorites().await;
+            assert_eq!(
+                projected
+                    .iter()
+                    .find(|p| p.effect_id == existing)
+                    .expect("existing")
+                    .added_at_ms,
+                Some(7)
+            );
+            assert_eq!(
+                projected
+                    .iter()
+                    .find(|p| p.effect_id == incoming)
+                    .expect("incoming")
+                    .revision,
+                1
+            );
+            assert_eq!(disk.portable_snapshot().await, candidate);
+            prepared.publish();
+            drop(prepared);
+            assert_eq!(store.project_favorites().await, projected);
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_backup_does_not_publish_on_abort_or_revision_exhaustion() {
+        let store = InMemoryLibraryStore::new();
+        let effect = EffectId::new(uuid::Uuid::now_v7());
+        let before = store.portable_snapshot().await;
+        let favorites = [FavoriteEffect {
+            effect_id: effect,
+            added_at_ms: 1,
+        }];
+        let prepared = store
+            .prepare_portable_backup_replace(&before, candidate(), &favorites)
+            .await
+            .expect("prepare");
+        drop(prepared);
+        assert!(store.list_favorites().await.is_empty());
+        assert_eq!(store.portable_snapshot().await, before);
+        store
+            .data
+            .write()
+            .await
+            .favorite_revisions
+            .insert(effect, u64::MAX);
+        assert!(
+            store
+                .prepare_portable_backup_replace(&before, candidate(), &favorites)
+                .await
+                .is_err()
+        );
+        assert!(store.list_favorites().await.is_empty());
+        assert_eq!(store.portable_snapshot().await, before);
     }
 
     #[tokio::test]
