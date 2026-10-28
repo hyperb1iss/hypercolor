@@ -52,6 +52,7 @@ impl Fixture {
     ) -> Self {
         let directory = tempfile::tempdir().expect("portable fixture should be valid");
         let mut config = HypercolorConfig::default();
+        config.capture.enabled = false;
         config.audio.device = audio_device.into();
         config.daemon.start_scene = "last".into();
         let config = Arc::new(ConfigManager::from_config_unchecked(
@@ -398,6 +399,7 @@ async fn manual_backup_restores_preferences_and_favorites_under_one_receipt() {
         .await
         .expect("manual archive restores all participants");
     assert_eq!(fixture.config.get().audio.smoothing, 0.61);
+    assert!(!fixture.config.get().capture.enabled);
     assert_eq!(
         fixture.config.get().audio.device,
         "keep-this-local-endpoint"

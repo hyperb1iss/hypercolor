@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 fn state(directory: &std::path::Path, device: &str, smoothing: f32) -> Arc<AppState> {
     let mut config = HypercolorConfig::default();
+    config.capture.enabled = false;
     config.audio.device = device.into();
     config.audio.smoothing = smoothing;
     Arc::new(
@@ -134,6 +135,7 @@ async fn backup_routes_export_preview_restore_and_replay_without_source_credenti
         .expect("config fixture")
         .get();
     assert_eq!(config.audio.device, "target-local-device");
+    assert!(!config.capture.enabled);
     assert_eq!(config.audio.smoothing.to_bits(), 0.31_f32.to_bits());
     let terminal = target
         .tui_preferences
