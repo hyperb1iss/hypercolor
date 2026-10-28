@@ -3,6 +3,8 @@
 //! A physical controller can expose one or more logical devices, each mapped to
 //! a contiguous LED range. Layout zones target these logical IDs.
 
+pub(crate) mod portable;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};

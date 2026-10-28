@@ -26,38 +26,76 @@ impl PortableSetupService {
         identity: SetupIdentity,
         bindings: &SetupBindings,
     ) -> Result<PortableSetupSnapshot, DomainError> {
-        let manifest = self.project_once(identity.clone(), bindings).await?;
-        let observed = self.project_once(identity, bindings).await?;
+        let _gate = self.restore_runtime.gate.lock().await;
+        if self
+            .restore_runtime
+            .pending
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(DomainError::conflict("setup restoration remains pending"));
+        }
+        if let Some(receipt) = self.active_projection_receipt(identity.setup_id, bindings)?
+            && receipt.applied.manifest.devices.keys().any(|id| {
+                bindings.local_device(*id).is_some()
+                    && (receipt.unresolved_bindings.contains(id)
+                        || bindings.local_device(*id)
+                            != receipt.materialized_bindings.local_device(*id))
+            })
+        {
+            return Err(DomainError::conflict(
+                "newly connected devices need saved setup reconciliation",
+            ));
+        }
+        self.export_raw(identity, bindings).await
+    }
+
+    pub(super) async fn export_raw(
+        &self,
+        identity: SetupIdentity,
+        bindings: &SetupBindings,
+    ) -> Result<PortableSetupSnapshot, DomainError> {
+        let manifest = self.project_once(identity.clone(), bindings, true).await?;
+        let observed = self.project_once(identity, bindings, true).await?;
         if manifest != observed {
             return Err(DomainError::conflict(
                 "lighting changed while the setup was exported",
             ));
         }
-        let bytes = serde_json::to_vec(&serde_json::to_value(&manifest).map_err(internal)?)
-            .map_err(internal)?;
-        let revision = hypercolor_core::asset::AssetLibrary::hash_bytes(&bytes);
+        let revision = super::fingerprint(&manifest)?;
         Ok(PortableSetupSnapshot { manifest, revision })
     }
 
-    async fn project_once(
+    pub(super) async fn project_once(
         &self,
         identity: SetupIdentity,
         bindings: &SetupBindings,
+        include_resources: bool,
     ) -> Result<PortableSetupV1, DomainError> {
+        let projection_bindings = self.projection_bindings(identity.setup_id, bindings)?;
         let canvas = self.state.domains.layout.current();
+        let dimensions = self.state.config_manager.as_ref().map_or(
+            (canvas.canvas_width, canvas.canvas_height),
+            |manager| {
+                let config = manager.get();
+                (config.daemon.canvas_width, config.daemon.canvas_height)
+            },
+        );
         let power = self.state.output_power.snapshot();
         let mut manifest = PortableSetupV1::new(
             identity.setup_id,
             identity.name,
             PortableOutputState {
-                canvas_width: canvas.canvas_width,
-                canvas_height: canvas.canvas_height,
+                canvas_width: dimensions.0,
+                canvas_height: dimensions.1,
                 brightness: power.global_brightness,
                 enabled: power.output_override != OutputOverride::Stopped,
                 paused: power.manually_paused(),
             },
         );
-        let prior = self.prior_projection(identity.setup_id)?;
+        let prior = match self.active_projection_receipt(identity.setup_id, bindings)? {
+            Some(receipt) => Some(receipt.applied.manifest),
+            None => self.prior_projection(identity.setup_id)?,
+        };
         let claims = self.state.device_registry.claims_snapshot().await;
         for device in self.state.device_registry.list().await {
             let Some(portable) = bindings.devices.get(&device.info.id).copied() else {
@@ -136,23 +174,19 @@ impl PortableSetupService {
         for scene in scenes.list() {
             manifest.scenes.insert(
                 scene.id.0,
-                PortableScene::project(scene, bindings).map_err(internal)?,
+                PortableScene::project(scene, &projection_bindings).map_err(internal)?,
             );
         }
         manifest.selection = PortableSelection {
             active_scene_id: scenes.active_scene_id().copied(),
-            default_scene_id: scenes
-                .list()
-                .iter()
-                .find(|scene| scene.id.is_default())
-                .map(|scene| scene.id),
+            default_scene_id: configured_start_scene(&self.state, &scenes)?,
         };
         let mut layouts = self.state.domains.layout.portable_snapshot().await;
         layouts.entry(canvas.id.clone()).or_insert(canvas);
         for (id, layout) in layouts {
             manifest.layouts.insert(
                 id,
-                PortableLayout::project(&layout, bindings).map_err(internal)?,
+                PortableLayout::project(&layout, &projection_bindings).map_err(internal)?,
             );
         }
         manifest.presets = self
@@ -211,89 +245,126 @@ impl PortableSetupService {
                 );
             }
         }
-        let asset_sources = {
-            let assets = self.state.asset_library.read().await;
-            assets
-                .records()
-                .iter()
-                .map(|asset| {
-                    assets
-                        .object_path_for_hash(&asset.hash_sha256)
-                        .map(|path| (asset.clone(), path))
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(internal)?
-        };
-        let blobs = self.blobs.clone();
-        manifest.assets = tokio::task::spawn_blocking(move || {
-            asset_sources
-                .into_iter()
-                .map(|(asset, path)| {
-                    let content = blobs.capture(&path)?;
-                    if content.sha256 != asset.hash_sha256 || content.byte_len != asset.byte_len {
-                        return Err(
-                            hypercolor_core::portable_setup::SetupBlobError::ContentMismatch,
-                        );
-                    }
-                    Ok((
-                        asset.id.0,
-                        PortableAsset {
-                            name: asset.name,
-                            mime_type: asset.mime_type,
-                            tags: asset.tags,
-                            content,
-                        },
-                    ))
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()
-        })
-        .await
-        .map_err(internal)?
-        .map_err(internal)?;
-        let effect_sources = {
-            let bundled = bundled_effects_root();
-            self.state
-                .domains
-                .effects
-                .portable_sources()
-                .await
-                .into_iter()
-                .filter(|entry| {
-                    matches!(entry.metadata.source, EffectSource::Html { .. })
-                        && !entry.source_path.starts_with(&bundled)
-                })
-                .map(|entry| (entry.metadata.id.0, entry.metadata.name, entry.source_path))
-                .collect::<Vec<_>>()
-        };
-        let blobs = self.blobs.clone();
-        manifest.effects = tokio::task::spawn_blocking(move || {
-            effect_sources
-                .into_iter()
-                .map(|(id, name, source)| {
-                    let (root, entrypoint) = effect_resource_root(&source)?;
-                    let mut files = BTreeMap::new();
-                    capture_files(&root, &root, &blobs, &mut files)?;
-                    Ok((
-                        id,
-                        PortableEffect {
-                            name,
-                            entrypoint,
-                            files,
-                        },
-                    ))
-                })
-                .collect::<anyhow::Result<BTreeMap<_, _>>>()
-        })
-        .await
-        .map_err(internal)?
-        .map_err(internal)?;
+        if include_resources {
+            let asset_sources = {
+                let assets = self.state.asset_library.read().await;
+                assets
+                    .records()
+                    .iter()
+                    .map(|asset| {
+                        assets
+                            .object_path_for_hash(&asset.hash_sha256)
+                            .map(|path| (asset.clone(), path))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(internal)?
+            };
+            let blobs = self.blobs.clone();
+            manifest.assets = tokio::task::spawn_blocking(move || {
+                asset_sources
+                    .into_iter()
+                    .map(|(asset, path)| {
+                        let content = blobs.capture(&path)?;
+                        if content.sha256 != asset.hash_sha256 || content.byte_len != asset.byte_len
+                        {
+                            return Err(
+                                hypercolor_core::portable_setup::SetupBlobError::ContentMismatch,
+                            );
+                        }
+                        Ok((
+                            asset.id.0,
+                            PortableAsset {
+                                name: asset.name,
+                                mime_type: asset.mime_type,
+                                tags: asset.tags,
+                                content,
+                            },
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>()
+            })
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+            let effect_sources = {
+                let bundled = bundled_effects_root();
+                self.state
+                    .domains
+                    .effects
+                    .portable_sources()
+                    .await
+                    .into_iter()
+                    .filter(|entry| {
+                        matches!(entry.metadata.source, EffectSource::Html { .. })
+                            && !entry.source_path.starts_with(&bundled)
+                    })
+                    .map(|entry| (entry.metadata.id.0, entry.metadata.name, entry.source_path))
+                    .collect::<Vec<_>>()
+            };
+            let blobs = self.blobs.clone();
+            manifest.effects = tokio::task::spawn_blocking(move || {
+                effect_sources
+                    .into_iter()
+                    .map(|(id, name, source)| {
+                        let (root, entrypoint) = effect_resource_root(&source)?;
+                        let mut files = BTreeMap::new();
+                        capture_files(&root, &root, &blobs, &mut files)?;
+                        Ok((
+                            id,
+                            PortableEffect {
+                                name,
+                                entrypoint,
+                                files,
+                            },
+                        ))
+                    })
+                    .collect::<anyhow::Result<BTreeMap<_, _>>>()
+            })
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+        }
         if let Some(prior) = prior {
             retain_unresolved(&mut manifest, &prior, bindings);
         }
-        manifest
-            .validate()
-            .map_err(|error| DomainError::validation(error.to_string()))?;
+        if include_resources {
+            manifest
+                .validate()
+                .map_err(|error| DomainError::validation(error.to_string()))?;
+        }
         Ok(manifest)
+    }
+}
+
+fn configured_start_scene(
+    state: &crate::app_state::AppState,
+    scenes: &hypercolor_core::scene::SceneManager,
+) -> Result<Option<hypercolor_types::scene::SceneId>, DomainError> {
+    use hypercolor_types::scene::SceneId;
+    let Some(manager) = &state.config_manager else {
+        return Ok(None);
+    };
+    let config = manager.get();
+    let selector = config.daemon.start_scene.trim();
+    if selector.eq_ignore_ascii_case("last") {
+        return Ok(None);
+    }
+    if selector.is_empty() || selector.eq_ignore_ascii_case("default") {
+        return Ok(Some(SceneId::DEFAULT));
+    }
+    let matches = scenes
+        .list()
+        .into_iter()
+        .filter(|scene| {
+            scene.name.eq_ignore_ascii_case(selector) || scene.id.to_string() == selector
+        })
+        .map(|scene| scene.id)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [id] => Ok(Some(*id)),
+        _ => Err(DomainError::conflict(
+            "configured startup scene has no unique portable identity",
+        )),
     }
 }
 
@@ -393,6 +464,18 @@ fn retain_unresolved(
         let Some(previous) = prior.scenes.get(id) else {
             continue;
         };
+        for (index, old) in previous.zones.iter().enumerate() {
+            if old
+                .display_target
+                .as_ref()
+                .is_some_and(|target| bindings.local_device(target.device).is_none())
+                && !scene.zones.iter().any(|zone| zone.id == old.id)
+            {
+                scene
+                    .zones
+                    .insert(index.min(scene.zones.len()), old.clone());
+            }
+        }
         for zone in &mut scene.zones {
             if zone.display_target.is_none()
                 && let Some(target) = previous
@@ -418,12 +501,14 @@ mod tests {
 
     #[test]
     fn nested_entrypoint_keeps_resources_at_bundle_root() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().expect("portable fixture should be valid");
         let root = directory.path().join("effect");
-        std::fs::create_dir_all(root.join("content")).unwrap();
-        std::fs::create_dir_all(root.join("shared")).unwrap();
-        std::fs::write(root.join("content/main.html"), "<html></html>").unwrap();
-        std::fs::write(root.join("shared/script.js"), "const color = 'violet'").unwrap();
+        std::fs::create_dir_all(root.join("content")).expect("portable fixture should be valid");
+        std::fs::create_dir_all(root.join("shared")).expect("portable fixture should be valid");
+        std::fs::write(root.join("content/main.html"), "<html></html>")
+            .expect("portable fixture should be valid");
+        std::fs::write(root.join("shared/script.js"), "const color = 'violet'")
+            .expect("portable fixture should be valid");
         let manifest = HtmlEffectBundleManifest {
             schema_version: 1,
             id: EffectId::new(uuid::Uuid::now_v7()),
@@ -431,16 +516,22 @@ mod tests {
         };
         std::fs::write(
             root.join(HTML_EFFECT_BUNDLE_MANIFEST),
-            serde_json::to_vec(&manifest).unwrap(),
+            serde_json::to_vec(&manifest).expect("portable fixture should be valid"),
         )
-        .unwrap();
-        let (actual_root, entrypoint) =
-            effect_resource_root(&root.join("content/main.html")).unwrap();
-        assert_eq!(actual_root, root.canonicalize().unwrap());
+        .expect("portable fixture should be valid");
+        let (actual_root, entrypoint) = effect_resource_root(&root.join("content/main.html"))
+            .expect("portable fixture should be valid");
+        assert_eq!(
+            actual_root,
+            root.canonicalize()
+                .expect("portable fixture should be valid")
+        );
         assert_eq!(entrypoint, "content/main.html");
-        let blobs = SetupBlobStore::open(directory.path().join("blobs")).unwrap();
+        let blobs = SetupBlobStore::open(directory.path().join("blobs"))
+            .expect("portable fixture should be valid");
         let mut files = BTreeMap::new();
-        capture_files(&actual_root, &actual_root, &blobs, &mut files).unwrap();
+        capture_files(&actual_root, &actual_root, &blobs, &mut files)
+            .expect("portable fixture should be valid");
         assert!(files.contains_key("content/main.html"));
         assert!(files.contains_key("shared/script.js"));
         assert!(!files.contains_key(HTML_EFFECT_BUNDLE_MANIFEST));

@@ -42,6 +42,10 @@ pub(super) struct LayoutCatalogBindingPublication {
 }
 
 impl LayoutCatalog {
+    pub(super) fn owned_entries(&self) -> Arc<RwLock<HashMap<String, SpatialLayout>>> {
+        Arc::clone(&self.entries)
+    }
+
     pub(super) fn new(entries: HashMap<String, SpatialLayout>, path: PathBuf) -> Self {
         Self {
             entries: Arc::new(RwLock::new(entries)),

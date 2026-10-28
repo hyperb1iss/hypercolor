@@ -1034,7 +1034,7 @@ impl DisplayContext {
 }
 
 /// Build the runtime-only default zone a preference materializes into.
-fn build_default_display_zone(
+pub(crate) fn build_default_display_zone(
     device_id: DeviceId,
     device_name: &str,
     effect_id: EffectId,

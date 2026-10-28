@@ -11,6 +11,44 @@ use crate::domain::device_binding::CurrentBinding;
 use crate::logical_devices::LogicalDeviceKind;
 
 impl PortableSetupService {
+    /// Historical aliases interpret existing authored references only. They
+    /// never grant a destination permission to drive absent hardware.
+    pub(super) fn projection_bindings(
+        &self,
+        setup_id: Uuid,
+        live: &SetupBindings,
+    ) -> Result<SetupBindings, DomainError> {
+        let mut result = self.saved_bindings(setup_id)?;
+        if let Some(active) = self.active_projection_for(setup_id, live)? {
+            result.devices.extend(active.aliases.devices);
+            result.outputs.extend(active.aliases.outputs);
+        }
+        result.devices.extend(live.devices.clone());
+        result.outputs.extend(live.outputs.clone());
+        Ok(result)
+    }
+
+    pub(super) fn saved_bindings(&self, setup_id: Uuid) -> Result<SetupBindings, DomainError> {
+        let path = self.root.join(format!("{setup_id}.bindings.json"));
+        let mut result: SetupBindings = match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(internal)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SetupBindings::default(),
+            Err(error) => return Err(internal(error)),
+        };
+        let prior = match self.read_journal(setup_id)? {
+            Some(super::journal::RestoreJournal::Pending { bindings, .. }) => Some(bindings),
+            Some(super::journal::RestoreJournal::Committed { receipt, .. }) => {
+                Some(receipt.materialized_bindings)
+            }
+            None => None,
+        };
+        if let Some(prior) = prior {
+            result.devices.extend(prior.devices);
+            result.outputs.extend(prior.outputs);
+        }
+        Ok(result)
+    }
+
     /// Assign installation-local associations once, then reuse them across boots.
     /// Cross-OS matching uses the existing conservative device class/shape
     /// evidence and requires a unique match in both directions after discovery.
@@ -32,11 +70,7 @@ impl PortableSetupService {
         }
         let device_generation = self.state.device_registry.generation();
         let path = self.root.join(format!("{setup_id}.bindings.json"));
-        let mut durable: SetupBindings = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(internal)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SetupBindings::default(),
-            Err(error) => return Err(internal(error)),
-        };
+        let mut durable = self.projection_bindings(setup_id, &SetupBindings::default())?;
         let prior = self.prior_projection(setup_id)?;
         let manifest = incoming.or(prior.as_ref());
         let devices = self
@@ -146,6 +180,15 @@ impl PortableSetupService {
                 .entry(logical.id.clone())
                 .or_insert_with(Uuid::now_v7);
             result.outputs.insert(logical.id.clone(), portable);
+        }
+        if let Some(manifest) = manifest {
+            for id in manifest.logical_devices.keys() {
+                if !result.outputs.values().any(|assigned| assigned == id) {
+                    let local = format!("portable:{id}");
+                    result.outputs.insert(local.clone(), *id);
+                    durable.outputs.insert(local, *id);
+                }
+            }
         }
         let bytes = crate::persistence::serialize_json_pretty(&durable).map_err(internal)?;
         if self.state.discovery_in_progress.load(Ordering::Acquire)

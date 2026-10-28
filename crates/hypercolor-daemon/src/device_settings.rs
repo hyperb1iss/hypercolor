@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod admission_tests;
 mod migration;
+mod portable;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;

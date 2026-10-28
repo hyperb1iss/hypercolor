@@ -1,5 +1,7 @@
 //! Canonical global output power and brightness authority.
 
+pub(crate) mod portable;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -127,7 +129,7 @@ pub struct OutputPower {
 
 struct OutputPowerInner {
     state: watch::Sender<OutputPowerState>,
-    transition: Mutex<()>,
+    transition: Arc<Mutex<()>>,
     settings: Arc<RwLock<DeviceSettingsStore>>,
     device_mutations: Arc<RwLock<()>>,
     brightness_authority: BrightnessMutationAuthority,
@@ -151,7 +153,7 @@ impl OutputPower {
         Self {
             inner: Arc::new(OutputPowerInner {
                 state,
-                transition: Mutex::new(()),
+                transition: Arc::new(Mutex::new(())),
                 settings: Arc::new(RwLock::new(settings)),
                 device_mutations: Arc::new(RwLock::new(())),
                 brightness_authority: BrightnessMutationAuthority(()),

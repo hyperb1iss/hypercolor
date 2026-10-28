@@ -4,8 +4,9 @@ mod auto_layout;
 mod catalog;
 mod convergence;
 mod exclusions;
-mod publication;
+pub(crate) mod portable;
 pub(crate) mod portable_renderer;
+mod publication;
 mod render_canvas;
 mod workflows;
 

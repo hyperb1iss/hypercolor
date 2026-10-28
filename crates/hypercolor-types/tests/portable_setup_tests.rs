@@ -374,9 +374,15 @@ fn portable_output_requires_one_representable_power_mode() {
 
 #[test]
 fn default_scene_identity_requires_its_durable_scene_kind() {
-    let mut manifest: PortableSetupV1 = serde_json::from_str(include_str!("fixtures/portable_setup_v1.json"))
-        .expect("portable wire fixture");
-    let mut scene = manifest.scenes.values().next().expect("fixture scene").clone();
+    let mut manifest: PortableSetupV1 =
+        serde_json::from_str(include_str!("fixtures/portable_setup_v1.json"))
+            .expect("portable wire fixture");
+    let mut scene = manifest
+        .scenes
+        .values()
+        .next()
+        .expect("fixture scene")
+        .clone();
     manifest.scenes.clear();
     manifest.selection.active_scene_id = None;
     manifest.selection.default_scene_id = None;
@@ -384,5 +390,7 @@ fn default_scene_identity_requires_its_durable_scene_kind() {
     assert!(manifest.validate().is_err());
     scene.kind = SceneKind::Ephemeral;
     manifest.scenes.insert(Uuid::nil(), scene);
-    manifest.validate().expect("default scene has its durable owner");
+    manifest
+        .validate()
+        .expect("default scene has its durable owner");
 }
