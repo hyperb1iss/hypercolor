@@ -150,6 +150,16 @@ async fn portable_effect_prepare_is_private_and_publication_preserves_identity()
 #[tokio::test]
 async fn portable_effect_restart_resumes_partial_retirement_without_resource_effects() {
     let fixture = Fixture::new();
+    #[cfg(unix)]
+    let fixture = {
+        let mut fixture = fixture;
+        let state = fixture.temp.path().join("state");
+        fs::create_dir(&state).expect("create staging parent");
+        let alias = fixture.temp.path().join("state-alias");
+        std::os::unix::fs::symlink(&state, &alias).expect("alias staging parent");
+        fixture.staging = alias.join("operation");
+        fixture
+    };
     let id = Uuid::now_v7();
     let old = fixture.effect("Before");
     let original = fixture.install(id, &old).await;
@@ -162,8 +172,17 @@ async fn portable_effect_restart_resumes_partial_retirement_without_resource_eff
     prepared
         .persist_bundle(id, &desired[&id], &PersistenceShutdown::default())
         .expect("valid isolated effect fixture");
-    let archive = files::nested_directory(&fixture.staging, Path::new(&format!("retired/{id}")))
-        .expect("valid isolated effect fixture");
+    assert_eq!(
+        prepared.staging_root,
+        fixture
+            .staging
+            .canonicalize()
+            .expect("canonical staging root")
+    );
+    // Fault injection uses the same normalized authority as production retirement.
+    let archive =
+        files::nested_directory(&prepared.staging_root, Path::new(&format!("retired/{id}")))
+            .expect("valid isolated effect fixture");
     files::copy_blob(
         &fixture.blobs,
         &old.files[&old.entrypoint],
