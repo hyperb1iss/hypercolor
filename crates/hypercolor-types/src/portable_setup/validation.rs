@@ -1,4 +1,4 @@
-use super::{PortableBlob, PortableLayout, PortableSetupV1};
+use super::{PortableBlob, PortableLayout, PortableSetupV1, SetupBindings};
 use crate::control::ControlValue;
 use crate::effect::EffectId;
 use crate::layer::LayerSource;
@@ -96,6 +96,26 @@ impl PortableSetupV1 {
         &self,
         catalog: &PortableReferenceCatalog,
     ) -> Result<(), PortableSetupError> {
+        self.validate_references(catalog, |_| true)
+    }
+
+    /// Validate resources required by the current materialization. An unbound
+    /// default face remains authored state until its target can be resolved;
+    /// validate again with the new bindings before publishing that face.
+    /// Scene, preset, playlist, and attachment references remain strict.
+    pub fn validate_materializable_references(
+        &self,
+        catalog: &PortableReferenceCatalog,
+        live_bindings: &SetupBindings,
+    ) -> Result<(), PortableSetupError> {
+        self.validate_references(catalog, |id| live_bindings.local_device(id).is_some())
+    }
+
+    fn validate_references(
+        &self,
+        catalog: &PortableReferenceCatalog,
+        materializes_face: impl Fn(Uuid) -> bool,
+    ) -> Result<(), PortableSetupError> {
         self.validate()?;
         let effect = |id: EffectId| {
             if self.effects.contains_key(&id.0) || catalog.effects.contains(&id) {
@@ -158,8 +178,10 @@ impl PortableSetupV1 {
                 }
             }
         }
-        for face in self.display_faces.values() {
-            effect(face.effect_id)?;
+        for (device, face) in &self.display_faces {
+            if materializes_face(*device) {
+                effect(face.effect_id)?;
+            }
         }
         for profile in self.attachments.values() {
             for binding in &profile.bindings {
@@ -350,6 +372,9 @@ impl PortableSetupV1 {
             unit(output.brightness, "device_output.brightness")?;
         }
         for face in self.display_faces.values() {
+            if face.effect_id.0.is_nil() {
+                return Err(error("display_faces.effect_id", "effect identity is empty"));
+            }
             unit(face.opacity, "display_faces.opacity")?;
             for value in face.controls.values() {
                 portable_control(value, "display_faces.controls")?;

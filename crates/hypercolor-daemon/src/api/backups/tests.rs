@@ -5,7 +5,6 @@ use hypercolor_types::api::{
     backups::{BackupApplyResponse, BackupPreview},
 };
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::effect::EffectId;
 use std::future::Future;
 use std::time::Duration;
 use uuid::Uuid;
@@ -65,7 +64,14 @@ async fn backup_routes_export_preview_restore_and_replay_without_source_credenti
             prefs.show_donate = false;
         })
         .expect("source terminal preferences");
-    let effect = EffectId::new(Uuid::now_v7());
+    let effect_path = source.data_dir.join("effects/user/favorite.html");
+    std::fs::create_dir_all(effect_path.parent().expect("effect directory")).expect("directory");
+    std::fs::write(&effect_path, "<title>Favorite effect</title>").expect("effect source");
+    let entry = hypercolor_core::effect::load_html_effect_file(&effect_path)
+        .expect("load effect")
+        .expect("runnable HTML");
+    let effect = entry.metadata.id;
+    source.domains.effects.register(entry).await;
     source
         .library_store()
         .upsert_favorite(effect, 17)
@@ -107,6 +113,7 @@ async fn backup_routes_export_preview_restore_and_replay_without_source_credenti
     }
     let favorites = target.library_store().project_favorites().await;
     assert_eq!(favorites.len(), 1);
+    assert_eq!(favorites[0].effect_id, effect);
     assert_eq!(favorites[0].revision, 1);
     let config = target
         .config_manager

@@ -297,8 +297,18 @@ impl PortableSetupService {
             catalog.attachment_templates.insert(template.id.clone());
         }
         candidate
-            .validate_with_catalog(&catalog)
+            .validate_materializable_references(&catalog, &bindings)
             .map_err(|error| DomainError::validation(error.to_string()))?;
+        if let Some(choices) = &ancillary {
+            for favorite in &choices.favorites {
+                if !catalog.effects.contains(&favorite.effect_id) {
+                    return Err(DomainError::validation(format!(
+                        "favorite effect {} is absent",
+                        favorite.effect_id
+                    )));
+                }
+            }
+        }
         let dimensions = (
             candidate.output.canvas_width,
             candidate.output.canvas_height,

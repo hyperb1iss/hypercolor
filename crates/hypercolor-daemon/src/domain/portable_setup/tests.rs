@@ -18,6 +18,7 @@ mod offline_native;
 mod output_reconnect;
 mod recovery;
 mod runtime_preferences;
+mod unavailable_faces;
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::config::ConfigManager;
@@ -367,9 +368,21 @@ async fn manual_backup_restores_preferences_and_favorites_under_one_receipt() {
         effect_id: EffectId::new(Uuid::now_v7()),
         added_at_ms: 123,
     };
+    let mut setup = empty.manifest;
+    setup.effects.insert(
+        favorite.effect_id.0,
+        PortableEffect {
+            name: "Favorite effect".into(),
+            entrypoint: "index.html".into(),
+            files: BTreeMap::from([(
+                "index.html".into(),
+                fixture.stage(b"<title>Favorite effect</title>"),
+            )]),
+        },
+    );
     let backup = PortableBackupV1 {
         schema_version: 1,
-        setup: empty.manifest,
+        setup,
         preferences: Some(PortablePreferences::from_config(&portable_config)),
         tui_preferences: None,
         favorites: vec![favorite.clone()],

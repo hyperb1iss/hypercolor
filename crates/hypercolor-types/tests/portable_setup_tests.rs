@@ -394,3 +394,82 @@ fn default_scene_identity_requires_its_durable_scene_kind() {
         .validate()
         .expect("default scene has its durable owner");
 }
+
+#[test]
+fn unavailable_face_deferral_preserves_structural_and_bound_resource_validation() {
+    let mut manifest = setup();
+    let target = Uuid::now_v7();
+    manifest.devices.insert(
+        target,
+        PortableDevice {
+            name: "Offline display".into(),
+            portable_key: None,
+            driver_id: "test".into(),
+            vendor_id: None,
+            product_id: None,
+            model: None,
+            led_count: 0,
+            binding_hint: None,
+        },
+    );
+    manifest.display_faces.insert(
+        target,
+        PortableDisplayFace {
+            effect_id: hypercolor_types::effect::EffectId::new(Uuid::now_v7()),
+            controls: HashMap::new(),
+            blend_mode: hypercolor_types::layer::BlendMode::Alpha,
+            opacity: 1.0,
+        },
+    );
+    let catalog = PortableReferenceCatalog::default();
+    assert!(manifest.validate_with_catalog(&catalog).is_err());
+    manifest
+        .validate_materializable_references(&catalog, &SetupBindings::default())
+        .expect("only missing unbound default-face resources may be deferred");
+    let bindings = SetupBindings {
+        devices: HashMap::from([(DeviceId::new(), target)]),
+        outputs: HashMap::new(),
+    };
+    assert!(
+        manifest
+            .validate_materializable_references(&catalog, &bindings)
+            .is_err()
+    );
+    manifest
+        .display_faces
+        .get_mut(&target)
+        .expect("face")
+        .opacity = 1.5;
+    assert!(
+        manifest
+            .validate_materializable_references(&catalog, &SetupBindings::default())
+            .is_err()
+    );
+    manifest
+        .display_faces
+        .get_mut(&target)
+        .expect("face")
+        .opacity = 1.0;
+    let original = manifest.display_faces[&target].effect_id;
+    manifest
+        .display_faces
+        .get_mut(&target)
+        .expect("face")
+        .effect_id = hypercolor_types::effect::EffectId::new(Uuid::nil());
+    assert!(
+        manifest
+            .validate_materializable_references(&catalog, &SetupBindings::default())
+            .is_err()
+    );
+    manifest
+        .display_faces
+        .get_mut(&target)
+        .expect("face")
+        .effect_id = original;
+    manifest.devices.clear();
+    assert!(
+        manifest
+            .validate_materializable_references(&catalog, &SetupBindings::default())
+            .is_err()
+    );
+}

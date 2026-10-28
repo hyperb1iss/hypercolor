@@ -3261,3 +3261,96 @@ fn browser_e2e_config_disables_every_compiled_driver() {
         );
     }
 }
+
+#[tokio::test]
+async fn unavailable_offline_default_face_survives_real_restart() {
+    use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let _data_guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    let temp = temp_config_file();
+    let manager = config_manager_for(&config, temp.path());
+    let identity = SetupIdentity {
+        setup_id: uuid::Uuid::now_v7(),
+        name: "Fresh setup".into(),
+    };
+    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("first initialization");
+    first.start().await.expect("first startup");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first)))
+        .expect("first service");
+    let before = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("fresh projection");
+    let target = uuid::Uuid::now_v7();
+    let mut desired = before.manifest;
+    desired.devices.insert(
+        target,
+        hypercolor_types::portable_setup::PortableDevice {
+            name: "Unplugged panel".into(),
+            portable_key: None,
+            driver_id: "test".into(),
+            vendor_id: None,
+            product_id: None,
+            model: None,
+            led_count: 0,
+            binding_hint: None,
+        },
+    );
+    desired.display_faces.insert(
+        target,
+        hypercolor_types::portable_setup::PortableDisplayFace {
+            effect_id: hypercolor_types::effect::EffectId::new(uuid::Uuid::now_v7()),
+            controls: std::collections::HashMap::new(),
+            blend_mode: hypercolor_types::layer::BlendMode::Alpha,
+            opacity: 0.65,
+        },
+    );
+    let accepted = service
+        .restore(
+            &desired,
+            &SetupBindings::default(),
+            hypercolor_daemon::domain::portable_setup::RestoreOptions {
+                operation_id: uuid::Uuid::now_v7(),
+                expected_revision: before.revision,
+                mode: hypercolor_daemon::domain::portable_setup::RestoreMode::Merge,
+                apply_selection: true,
+            },
+        )
+        .await
+        .expect("offline resource restore");
+    assert_eq!(accepted.unresolved_bindings, vec![target]);
+    let exported = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("immediate export");
+    assert_eq!(exported.manifest, desired);
+    first.shutdown().await.expect("graceful shutdown");
+    drop(service);
+    drop(first);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
+        .expect("restart initialization");
+    restarted.start().await.expect("restart");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+        .expect("restarted service");
+    let after = service
+        .export(identity, &SetupBindings::default())
+        .await
+        .expect("restarted projection");
+    assert_eq!(after.manifest, desired);
+    assert_eq!(after.revision, accepted.applied.revision);
+    restarted.shutdown().await.expect("final shutdown");
+}
