@@ -5,6 +5,25 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-10-28
+
+### Fixed
+
+- Accept dimension-free layout responses in the Python client, restoring Home Assistant snapshot loading against the updated daemon API.
+- Keep configured canvas resolution authoritative when loading saved layouts.
+- Preserve fractional preview cadence and publish preview state before notifying viewers.
+- Withdraw stale frames when a preview targets an absent zone.
+
+### Changed
+
+- Preserve manifest identities and sibling resources in imported HTML effect bundles.
+- Size effect preview requests to their visible box and release UI compositor layers after entrance animations.
+
+### Upgrade notes
+
+- Use Python client 0.8.1 with the dimension-free layout API. Home Assistant integrations must raise the dependency floor to replace installed client 0.8.0.
+- Configure canvas resolution through daemon settings instead of layout fields.
+
 ## [0.8.0] - 2026-10-26
 
 ### Added
