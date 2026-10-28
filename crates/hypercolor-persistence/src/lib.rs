@@ -12,6 +12,7 @@ use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -19,8 +20,6 @@ use std::time::{Duration, Instant};
 use std::cell::Cell;
 #[cfg(any(test, feature = "persistence-test-hooks"))]
 use std::sync::atomic::AtomicUsize;
-#[cfg(any(unix, test, feature = "persistence-test-hooks"))]
-use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};

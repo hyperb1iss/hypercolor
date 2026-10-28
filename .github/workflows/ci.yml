@@ -930,6 +930,11 @@ jobs:
           # cache. Seeding from failed runs is what breaks back out.
           cache-on-failure: "true"
 
+      - name: Check Windows production persistence
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo check --locked -p hypercolor-persistence
+          --lib --no-default-features
+
       - name: Download generated effects
         uses: actions/download-artifact@v8
         with:
