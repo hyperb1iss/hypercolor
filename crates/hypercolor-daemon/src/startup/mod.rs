@@ -259,6 +259,8 @@ pub struct DaemonState {
 
     pub(super) startup_device_aliases: Option<crate::device_aliases::DeviceAliasFile>,
     pub(super) startup_runtime_snapshot: Option<crate::runtime_state::RuntimeSessionSnapshot>,
+    pub(super) portable_setup: Option<crate::domain::portable_setup::PortableSetupService>,
+    pub(super) portable_binding_task: Option<JoinHandle<()>>,
 
     /// Whether initialization found no runtime session, named-scene store,
     /// or library store, so the first start applies the first-run defaults.

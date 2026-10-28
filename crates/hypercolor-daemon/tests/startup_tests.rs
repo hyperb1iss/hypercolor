@@ -156,6 +156,8 @@ async fn seed_effect_identity_stores(
             default_scene_zones: named_scene.zones.clone(),
             active_layout_id: None,
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
         },
     )
     .expect("runtime identity should persist");
@@ -1897,6 +1899,8 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             default_scene_zones: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
         },
     )
     .expect("runtime state should save");
@@ -2153,6 +2157,8 @@ async fn daemon_start_restores_named_active_scene_and_default_zones() {
             default_scene_zones: vec![default_zone.clone()],
             active_layout_id: None,
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
         },
     )
     .expect("runtime state should save");
@@ -2256,8 +2262,12 @@ async fn daemon_start_activates_configured_scene_id() {
 
 #[tokio::test]
 async fn default_scene_contents_restore_on_restart() {
+    let _config_guard = TestConfigDirGuard::new().await;
     let guard = TestDataDirGuard::new().await;
     let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
     config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
@@ -2280,6 +2290,18 @@ async fn default_scene_contents_restore_on_restart() {
         "speed".to_owned(),
         hypercolor_types::control::ControlValue::Float(4.5),
     )]);
+    let mut default_settings = runtime_state::RuntimeDefaultSceneSettings::from(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&SceneId::DEFAULT)
+            .expect("synthesized default scene"),
+    );
+    default_settings.description = Some("My saved default lighting".to_owned());
+    default_settings
+        .metadata
+        .insert("room".to_owned(), "Studio".to_owned());
 
     runtime_state::save(
         &guard.runtime_state_path(),
@@ -2317,6 +2339,8 @@ async fn default_scene_contents_restore_on_restart() {
             }],
             active_layout_id: None,
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: Some(default_settings),
         },
     )
     .expect("runtime state should save");
@@ -2329,6 +2353,14 @@ async fn default_scene_contents_restore_on_restart() {
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
     assert_eq!(default_scene.zones.len(), 1);
+    assert_eq!(
+        default_scene.description.as_deref(),
+        Some("My saved default lighting")
+    );
+    assert_eq!(
+        default_scene.metadata.get("room").map(String::as_str),
+        Some("Studio")
+    );
     assert_eq!(default_scene.zones[0].name, "Saved Default Zone");
     assert!(matches!(
         default_scene.zones[0]
@@ -2347,6 +2379,177 @@ async fn default_scene_contents_restore_on_restart() {
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn explicitly_inactive_runtime_selection_survives_restart() {
+    let _config_guard = TestConfigDirGuard::new().await;
+    let guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    let temp = temp_config_file();
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: None,
+            output_stopped: true,
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("save inactive session");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialize isolated runtime");
+    state.start().await.expect("start isolated runtime");
+    assert!(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene_id()
+            .is_none()
+    );
+    assert_eq!(
+        state.output_power.snapshot().output_override,
+        hypercolor_daemon::output_power::OutputOverride::Stopped
+    );
+    state.shutdown().await.expect("shutdown isolated runtime");
+    assert!(
+        runtime_state::load(&guard.runtime_state_path())
+            .expect("saved runtime")
+            .expect("runtime exists")
+            .active_scene_id
+            .is_none()
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_startup_recovers_interrupted_setup_without_private_extensions() {
+    use uuid::Uuid;
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::DEBUG)
+        .try_init();
+    use hypercolor_daemon::domain::portable_setup::{
+        PortableSetupService, RestoreMode, RestoreOptions, SetupIdentity,
+    };
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    config.effect_engine.watch_effects = false;
+    let temp = temp_config_file();
+    let manager = config_manager_for(&config, temp.path());
+    let mut daemon = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("initial daemon");
+    daemon.start().await.expect("initial start");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&daemon)))
+        .expect("public setup service");
+    let identity = SetupIdentity {
+        setup_id: Uuid::now_v7(),
+        name: "Recovered lighting".into(),
+    };
+    let before = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("initial setup");
+    let mut desired = before.manifest;
+    desired.output.canvas_width = 800;
+    desired.output.canvas_height = 600;
+    desired
+        .scenes
+        .get_mut(&Uuid::nil())
+        .expect("default scene")
+        .description = Some("Recovered before startup authoring".into());
+    let operation_id = Uuid::now_v7();
+    let writer = hypercolor_daemon::persistence::AtomicFileWriter::new(&guard.scenes_path())
+        .expect("scene writer");
+    writer.set_injected_directory_sync_failures(usize::MAX);
+    let restore_service = service.clone();
+    let incoming = desired.clone();
+    let caller = tokio::spawn(async move {
+        restore_service
+            .restore(
+                &incoming,
+                &SetupBindings::default(),
+                RestoreOptions {
+                    operation_id,
+                    expected_revision: before.revision,
+                    mode: RestoreMode::Merge,
+                    apply_selection: true,
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while writer.pending_failure().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restore reaches injected durability failure");
+    caller.abort();
+    assert!(
+        caller
+            .await
+            .expect_err("caller cancellation")
+            .is_cancelled()
+    );
+    tokio::time::timeout(Duration::from_secs(12), daemon.shutdown())
+        .await
+        .expect("public shutdown releases pending guards")
+        .expect("shutdown preserves pending intent");
+    writer.set_injected_directory_sync_failures(0);
+    writer
+        .flush(Duration::from_secs(3))
+        .expect("retained write converges");
+    drop(service);
+    drop(daemon);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), Arc::clone(&manager))
+        .expect("restart initialization");
+    tokio::time::timeout(Duration::from_secs(10), restarted.start())
+        .await
+        .expect("public start completes recovery")
+        .expect("public recovery succeeds");
+    let restored = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+        .expect("restarted service");
+    assert_eq!(
+        restored
+            .last_restore_receipt(identity.setup_id)
+            .await
+            .expect("receipt")
+            .expect("committed receipt")
+            .operation_id,
+        operation_id
+    );
+    assert_eq!(
+        restored
+            .export(identity, &SetupBindings::default())
+            .await
+            .expect("coherent public export")
+            .manifest,
+        desired
+    );
+    restarted
+        .shutdown()
+        .await
+        .expect("normal shutdown after recovery");
 }
 
 #[tokio::test]
