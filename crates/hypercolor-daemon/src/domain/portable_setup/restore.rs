@@ -331,6 +331,7 @@ impl PortableSetupService {
         let Some(RestoreJournal::Committed {
             receipt,
             finalized: false,
+            reconnect_network_outputs,
             ancillary,
             ..
         }) = self.read_journal(setup_id)?
@@ -353,7 +354,7 @@ impl PortableSetupService {
                     self.reconcile_runtime_preferences(preferences).await?;
                 }
                 let devices = receipt.materialized_bindings.devices.keys().copied().collect::<Vec<_>>();
-                self.reconcile_runtime_outputs(&devices).await
+                self.reconcile_runtime_outputs(&devices, reconnect_network_outputs).await
             } => result?,
         }
         let service = self.clone();
@@ -366,6 +367,7 @@ impl PortableSetupService {
                     schema_version: 1,
                     receipt,
                     finalized: true,
+                    reconnect_network_outputs,
                     ancillary,
                 },
                 &shutdown,

@@ -508,6 +508,7 @@ impl PortableSetupService {
             unresolved_bindings: unresolved_bindings.clone(),
             materialized_bindings: bindings.clone(),
         };
+        let reconnect_network_outputs = !before.output.enabled && candidate.output.enabled;
         let committed_ancillary = ancillary.clone();
         let intent = RestoreJournal::Pending {
             schema_version: 1,
@@ -567,7 +568,7 @@ impl PortableSetupService {
                     }
                 });
                 if let Some(config) = config.as_mut() { config.publish(); }
-                retry_step(&shutdown, || service.write_journal(candidate.setup_id, &RestoreJournal::Committed { schema_version:1, receipt: Box::new(receipt.clone()), finalized:false, ancillary: committed_ancillary.clone() }, &shutdown))?;
+                retry_step(&shutdown, || service.write_journal(candidate.setup_id, &RestoreJournal::Committed { schema_version:1, receipt: Box::new(receipt.clone()), finalized:false, reconnect_network_outputs, ancillary: committed_ancillary.clone() }, &shutdown))?;
                 Ok(RestoreReport { applied: receipt.applied.clone(), unresolved_bindings: unresolved_bindings.clone() })
             };
             match (config, config_source, config_candidate) {

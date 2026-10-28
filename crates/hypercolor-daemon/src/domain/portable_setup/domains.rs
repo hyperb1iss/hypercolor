@@ -172,6 +172,7 @@ impl PortableSetupService {
     pub(super) async fn reconcile_runtime_outputs(
         &self,
         changed_enabled: &[DeviceId],
+        reconnect_network_outputs: bool,
     ) -> Result<(), DomainError> {
         let runtime = self.state.domains.devices.discovery_runtime();
         for id in changed_enabled {
@@ -216,7 +217,9 @@ impl PortableSetupService {
                 .devices
                 .release_renderable_network_devices()
                 .await;
-        } else if !self.state.output_power.snapshot().session_release_active() {
+        } else if reconnect_network_outputs
+            && !self.state.output_power.snapshot().session_release_active()
+        {
             self.state.domains.devices.schedule_output_reconnect(true);
         }
         self.state.domains.output.reconcile_static_hold().await;

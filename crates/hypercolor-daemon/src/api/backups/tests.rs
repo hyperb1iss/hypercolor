@@ -16,6 +16,7 @@ fn state(directory: &std::path::Path, device: &str, smoothing: f32) -> Arc<AppSt
     config.audio.smoothing = smoothing;
     Arc::new(
         crate::app_state::AppStateBuilder::new(directory.join("data"))
+            .with_driver_registry(Arc::new(hypercolor_network::DriverModuleRegistry::new()))
             .with_config_manager(Arc::new(ConfigManager::from_config_unchecked(
                 directory.join("config.toml"),
                 config,

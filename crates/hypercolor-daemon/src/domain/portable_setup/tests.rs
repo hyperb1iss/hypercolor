@@ -14,6 +14,7 @@ use uuid::Uuid;
 mod authority;
 mod bindings;
 mod cross_authority;
+mod output_reconnect;
 mod recovery;
 mod runtime_preferences;
 
@@ -36,6 +37,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(audio_device: &str) -> Self {
+        Self::with_driver_registry(
+            audio_device,
+            hypercolor_network::DriverModuleRegistry::new(),
+        )
+    }
+
+    fn with_driver_registry(
+        audio_device: &str,
+        registry: hypercolor_network::DriverModuleRegistry,
+    ) -> Self {
         let directory = tempfile::tempdir().expect("portable fixture should be valid");
         let mut config = HypercolorConfig::default();
         config.audio.device = audio_device.into();
@@ -47,6 +58,7 @@ impl Fixture {
         let state = Arc::new(
             crate::app_state::AppStateBuilder::new(directory.path().join("data"))
                 .with_config_manager(Arc::clone(&config))
+                .with_driver_registry(Arc::new(registry))
                 .with_library(Arc::new(
                     crate::library::JsonLibraryStore::open(
                         directory.path().join("data/library.json"),

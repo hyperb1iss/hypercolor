@@ -86,6 +86,7 @@ async fn changed_local_device_id_restores_saved_output_before_export() {
                 schema_version: 1,
                 receipt: Box::new(receipt),
                 finalized: true,
+                reconnect_network_outputs: false,
                 ancillary: None,
             },
             &PersistenceShutdown::default(),

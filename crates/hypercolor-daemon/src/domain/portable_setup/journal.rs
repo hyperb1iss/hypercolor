@@ -47,6 +47,8 @@ pub(super) enum RestoreJournal {
         schema_version: u32,
         receipt: Box<RestoreReceipt>,
         finalized: bool,
+        #[serde(default)]
+        reconnect_network_outputs: bool,
         ancillary: Option<BackupAncillary>,
     },
 }
