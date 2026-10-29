@@ -909,6 +909,7 @@ pub fn initial_subscription_admission(message: &serde_json::Value) -> InitialSub
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_json_message(
     msg: &serde_json::Value,
+    fps_target: StoredValue<super::fps::FpsTarget>,
     _set_active: &WriteSignal<Option<String>>,
     set_output_paused: &WriteSignal<bool>,
     output_power_reconciler: StoredValue<OutputPowerReconciler>,
@@ -934,6 +935,12 @@ pub(super) fn handle_json_message(
     set_last_backpressure_at_ms: &WriteSignal<Option<f64>>,
     set_metrics_tick: &WriteSignal<u64>,
 ) {
+    let next_target = fps_target
+        .try_update_value(|state| state.observe(msg))
+        .flatten();
+    if let Some(target) = next_target {
+        set_engine_preview_target.set(target.min(60));
+    }
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match msg_type {
@@ -976,18 +983,11 @@ pub(super) fn handle_json_message(
                         *metrics = Some(next);
                     });
                 }
-
-                if target > 0 {
-                    set_engine_preview_target.set(target.min(60));
-                }
             }
         }
         "metrics" => {
             if let Ok(message) = MetricsMessage::deserialize(msg) {
                 set_metrics_tick.update(|tick| *tick = tick.saturating_add(1));
-                if message.data.fps.target > 0 {
-                    set_engine_preview_target.set(message.data.fps.target.min(60));
-                }
                 // Gate on equality — skip notification when data hasn't changed
                 if metrics.get_untracked().as_ref() != Some(&message.data) {
                     set_metrics.set(Some(message.data));

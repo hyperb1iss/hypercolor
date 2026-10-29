@@ -3,10 +3,12 @@
 //! Handles both JSON events and binary preview frames.
 
 mod connection;
+pub mod fps;
 pub mod input;
 pub mod interactive_preview;
 pub mod messages;
 mod preview;
+pub mod telemetry;
 pub mod transport;
 
 pub use connection::WsManager;

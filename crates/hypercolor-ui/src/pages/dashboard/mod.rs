@@ -144,6 +144,8 @@ impl MetricsSample {
 /// Dashboard landing page.
 #[component]
 pub fn DashboardPage() -> impl IntoView {
+    crate::ws::telemetry::use_telemetry(crate::ws::telemetry::TelemetryTopic::Metrics);
+    crate::ws::telemetry::use_telemetry(crate::ws::telemetry::TelemetryTopic::Sensors);
     let ws = expect_context::<WsContext>();
     let preview_telemetry = expect_context::<PreviewTelemetryContext>();
     let fullscreenchange_listener: StoredValue<Option<EventHandle>, LocalStorage> =

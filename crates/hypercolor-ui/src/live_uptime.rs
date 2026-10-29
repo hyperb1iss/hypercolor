@@ -2,22 +2,28 @@
 //!
 //! The status snapshot carries the daemon's uptime as of the fetch and is
 //! refetched only when the websocket reconnects, so views anchor it to the
-//! moment it arrived and advance it locally. Metrics messages arrive a few
-//! times a second, which makes their tick the clock for that advance.
+//! moment it arrived and advance it with a view-owned display clock.
 
-use hypercolor_leptos_ext::prelude::now_ms;
+use std::time::Duration;
+
+use hypercolor_leptos_ext::prelude::{now_ms, set_interval};
 use leptos::prelude::*;
 
-use crate::app::WsContext;
-
 /// Live daemon uptime in seconds, anchored to `fetched_uptime_seconds` as of
-/// this call and re-derived on every metrics message.
+/// this call and advanced locally once a second. No network reads are needed.
 pub fn use_live_uptime(fetched_uptime_seconds: u64) -> Signal<u64> {
     let fetched_at_ms = now_ms();
-    let metrics_tick = expect_context::<WsContext>().metrics_tick;
+    let now = RwSignal::new(fetched_at_ms);
+    let timer = StoredValue::new_local(Some(set_interval(Duration::from_secs(1), move || {
+        now.set(now_ms());
+    })));
+    on_cleanup(move || {
+        timer.update_value(|timer| {
+            timer.take();
+        });
+    });
     Signal::derive(move || {
-        metrics_tick.track();
-        advanced_uptime_seconds(fetched_uptime_seconds, fetched_at_ms, now_ms())
+        advanced_uptime_seconds(fetched_uptime_seconds, fetched_at_ms, now.get())
     })
 }
 
