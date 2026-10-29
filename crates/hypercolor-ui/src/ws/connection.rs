@@ -308,6 +308,7 @@ impl Default for WsManager {
 
 impl WsManager {
     pub fn new() -> Self {
+        let effect_registry = super::effect_registry::EffectRegistryChanges::install();
         let (canvas_frame, set_canvas_frame) = signal(None::<CanvasFrame>);
         let (screen_canvas_frame, set_screen_canvas_frame) = signal(None::<CanvasFrame>);
         let (web_viewport_canvas_frame, set_web_viewport_canvas_frame) =
@@ -740,6 +741,7 @@ impl WsManager {
                                     .with_value(InteractivePreviewLifecycleTracker::lifecycles),
                             );
                         }
+                        effect_registry.observe(&msg);
                         handle_json_message(
                             &msg,
                             fps_target,

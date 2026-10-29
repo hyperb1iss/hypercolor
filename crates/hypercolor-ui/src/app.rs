@@ -220,6 +220,7 @@ pub struct EffectsContext {
     pub apply_generation: StoredValue<u64>,
     active_refresh: StoredValue<effect_refresh::PrimaryEffectRefresh>,
     connection_generation: ReadSignal<u64>,
+    effect_registry_generation: ReadSignal<u64>,
     /// The shared zone state. Effect applies land in its target zone.
     pub zones: crate::zones::ZonesContext,
     /// Refresh hook for the shared active-scene resource (crate::zones).
@@ -275,9 +276,10 @@ impl EffectsContext {
 
     fn refresh_primary_effect(&self, invalidate_metadata: bool) {
         let ctx = *self;
+        let registry_generation = ctx.effect_registry_generation.get_untracked();
         let Some((generation, metadata)) = ctx
             .active_refresh
-            .try_update_value(|refresh| refresh.begin(invalidate_metadata))
+            .try_update_value(|refresh| refresh.begin(invalidate_metadata, registry_generation))
         else {
             return;
         };
@@ -287,12 +289,15 @@ impl EffectsContext {
             let Ok(active) = api::fetch_primary_effect_view_with_metadata(metadata).await else {
                 return;
             };
+            let Some(registry_generation) = ctx.effect_registry_generation.try_get_untracked()
+            else {
+                return;
+            };
             if ctx.connection_generation.try_get_untracked() != Some(connection)
                 || ctx.apply_generation.try_get_value() != Some(apply_generation)
-                || ctx
-                    .active_refresh
-                    .try_update_value(|refresh| refresh.finish(generation, active.as_ref()))
-                    != Some(true)
+                || ctx.active_refresh.try_update_value(|refresh| {
+                    refresh.finish(generation, registry_generation, active.as_ref())
+                }) != Some(true)
             {
                 return;
             }
@@ -372,7 +377,7 @@ impl EffectsContext {
         let generation = self.apply_generation.get_value().saturating_add(1);
         self.apply_generation.set_value(generation);
         self.active_refresh.update_value(|refresh| {
-            refresh.begin(true);
+            refresh.begin(true, self.effect_registry_generation.get_untracked());
         });
         self.set_last_effect_error.set(None);
 
@@ -716,7 +721,11 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
 
     // Global effects state — shared between sidebar player + effects page
-    let effects_resource = api::daemon_resource(api::fetch_effects);
+    let effect_registry = expect_context::<crate::ws::effect_registry::EffectRegistryChanges>();
+    let effects_resource = api::daemon_resource(move || {
+        effect_registry.generation.track();
+        api::fetch_effects()
+    });
     let effects_index: Memo<Vec<IndexedEffect>> = Memo::new(move |_| {
         effects_resource
             .get()
@@ -843,6 +852,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         apply_generation: StoredValue::new(0),
         active_refresh: StoredValue::new(effect_refresh::PrimaryEffectRefresh::default()),
         connection_generation: ws_ctx.connection_generation,
+        effect_registry_generation: effect_registry.generation,
         zones: zones_ctx,
         scene_refresh: zones_ctx.refresh,
         zone_effects,
@@ -949,6 +959,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     // shares the same generation fence so an older response cannot win later.
     Effect::new(move |_| {
         ws_ctx.connection_generation.track();
+        effect_registry.generation.track();
         effects_ctx.refresh_active_effect();
     });
 

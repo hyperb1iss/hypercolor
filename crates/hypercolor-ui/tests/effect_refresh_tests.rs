@@ -11,6 +11,8 @@ use hypercolor_ui::api::http_transport::{
 };
 use hypercolor_ui::api::{PrimaryEffectView, fetch_primary_effect_view_with_metadata};
 use hypercolor_ui::app::effect_refresh::PrimaryEffectRefresh;
+use hypercolor_ui::ws::effect_registry::EffectRegistryChanges;
+use leptos::prelude::*;
 use serde_json::{Value, json};
 
 const EFFECT: &str = "00000000-0000-4000-8000-000000000001";
@@ -87,9 +89,9 @@ fn ready<F: Future>(future: F) -> F::Output {
 }
 
 fn reconcile(state: &mut PrimaryEffectRefresh, full: bool) -> Option<PrimaryEffectView> {
-    let (generation, metadata) = state.begin(full);
+    let (generation, metadata) = state.begin(full, 0);
     let view = ready(fetch_primary_effect_view_with_metadata(metadata)).expect("snapshot fetched");
-    assert!(state.finish(generation, view.as_ref()));
+    assert!(state.finish(generation, 0, view.as_ref()));
     view
 }
 
@@ -145,7 +147,7 @@ fn control_reconciliation_fetches_live_values_and_reuses_only_matching_metadata(
     fixture.scene.borrow_mut()["zones"] = json!([]);
     assert!(reconcile(&mut state, false).is_none());
     assert!(
-        state.begin(false).1.is_none(),
+        state.begin(false, 0).1.is_none(),
         "stopped effect retires its definition"
     );
 }
@@ -166,15 +168,15 @@ fn snapshot(name: &str) -> PrimaryEffectView {
 #[test]
 fn late_control_snapshot_cannot_overwrite_a_newer_full_refresh_or_its_metadata() {
     let mut state = PrimaryEffectRefresh::default();
-    let first = state.begin(true).0;
-    assert!(state.finish(first, Some(&snapshot("original"))));
-    let old_control = state.begin(false).0;
-    let (new_full, metadata) = state.begin(true);
+    let first = state.begin(true, 0).0;
+    assert!(state.finish(first, 0, Some(&snapshot("original"))));
+    let old_control = state.begin(false, 0).0;
+    let (new_full, metadata) = state.begin(true, 0);
     assert!(metadata.is_none());
-    assert!(state.finish(new_full, Some(&snapshot("new definition"))));
-    assert!(!state.finish(old_control, Some(&snapshot("stale"))));
+    assert!(state.finish(new_full, 0, Some(&snapshot("new definition"))));
+    assert!(!state.finish(old_control, 0, Some(&snapshot("stale"))));
     assert_eq!(
-        state.begin(false).1.expect("current metadata").name,
+        state.begin(false, 0).1.expect("current metadata").name,
         "new definition"
     );
 }
@@ -182,18 +184,18 @@ fn late_control_snapshot_cannot_overwrite_a_newer_full_refresh_or_its_metadata()
 #[test]
 fn controls_during_a_pending_full_refresh_do_not_reuse_invalidated_definitions() {
     let mut state = PrimaryEffectRefresh::default();
-    let first = state.begin(true).0;
-    assert!(state.finish(first, Some(&snapshot("original"))));
-    let old_full = state.begin(true).0;
-    let (new_control, metadata) = state.begin(false);
+    let first = state.begin(true, 0).0;
+    assert!(state.finish(first, 0, Some(&snapshot("original"))));
+    let old_full = state.begin(true, 0).0;
+    let (new_control, metadata) = state.begin(false, 0);
     assert!(
         metadata.is_none(),
         "the newer request must fetch the definition itself"
     );
-    assert!(!state.finish(old_full, Some(&snapshot("outdated full response"))));
-    assert!(state.finish(new_control, Some(&snapshot("current"))));
+    assert!(!state.finish(old_full, 0, Some(&snapshot("outdated full response"))));
+    assert!(state.finish(new_control, 0, Some(&snapshot("current"))));
     assert_eq!(
-        state.begin(false).1.expect("current metadata").name,
+        state.begin(false, 0).1.expect("current metadata").name,
         "current"
     );
 }
@@ -201,9 +203,91 @@ fn controls_during_a_pending_full_refresh_do_not_reuse_invalidated_definitions()
 #[test]
 fn a_newer_empty_snapshot_prevents_old_responses_from_restoring_a_stopped_effect() {
     let mut state = PrimaryEffectRefresh::default();
-    let old = state.begin(true).0;
-    let newer = state.begin(false).0;
-    assert!(state.finish(newer, None));
-    assert!(!state.finish(old, Some(&snapshot("stopped"))));
-    assert!(state.begin(false).1.is_none());
+    let old = state.begin(true, 0).0;
+    let newer = state.begin(false, 0).0;
+    assert!(state.finish(newer, 0, None));
+    assert!(!state.finish(old, 0, Some(&snapshot("stopped"))));
+    assert!(state.begin(false, 0).1.is_none());
+}
+
+#[test]
+fn registry_event_refreshes_same_id_metadata_before_catalog_completion() {
+    let owner = Owner::new();
+    let registry = owner.with(EffectRegistryChanges::install);
+    let fixture = Rc::new(Fixture {
+        scene: RefCell::new(scene(EFFECT, LAYER, 0.8, Some(PRESET), 1)),
+        definition_name: RefCell::new("Before external edit".to_owned()),
+        requests: RefCell::new(Vec::new()),
+    });
+    install_verified_daemon_connection("http://127.0.0.1:9420", None);
+    install_http_transport(fixture.clone()).expect("fixture installed");
+    let mut state = PrimaryEffectRefresh::default();
+    let original = reconcile(&mut state, true).expect("original effect");
+    let (pending, _) = state.begin(false, registry.generation.get_untracked());
+
+    // The watcher changes metadata without touching the scene or effect identity.
+    *fixture.definition_name.borrow_mut() = "After external edit".to_owned();
+    registry.observe(&json!({
+        "type": "event", "event": "effect_registry_updated",
+        "data": {"added": 0, "updated": 1, "removed": 0, "total": 1}
+    }));
+    registry.observe(&json!({
+        "type": "event", "event": "effect_control_changed", "data": {"zone_id": ZONE}
+    }));
+    let epoch = registry.generation.get_untracked();
+    assert_eq!(
+        epoch, 1,
+        "a later control hint cannot erase registry invalidation"
+    );
+    assert!(
+        !state.finish(pending, epoch, Some(&original)),
+        "even before a replacement fetch starts, old metadata cannot be accepted"
+    );
+
+    // A racing control refresh uses the registry epoch directly, without waiting
+    // for the catalog resource or its reactive refresh effect to finish.
+    let (generation, metadata) = state.begin(false, epoch);
+    assert!(metadata.is_none());
+    let edited = ready(fetch_primary_effect_view_with_metadata(metadata))
+        .expect("refreshed effect")
+        .expect("active effect");
+    assert!(state.finish(
+        generation,
+        registry.generation.get_untracked(),
+        Some(&edited)
+    ));
+    assert_eq!(edited.name, "After external edit");
+    assert_eq!(edited.controls[0].name, "After external edit");
+    assert_eq!(edited.control_values, original.control_values);
+    assert_eq!(edited.active_preset_id, original.active_preset_id);
+    assert_eq!(edited.target(), original.target());
+    assert_eq!(
+        fixture.requests.borrow().as_slice(),
+        [
+            "/api/v1/scene",
+            &format!("/api/v1/effects/{EFFECT}"),
+            "/api/v1/scene",
+            &format!("/api/v1/effects/{EFFECT}"),
+        ]
+    );
+}
+
+#[test]
+fn registry_invalidation_requires_a_real_registry_event_and_preserves_other_messages() {
+    let owner = Owner::new();
+    owner.with(|| {
+        let registry = EffectRegistryChanges::install();
+        let from_context = expect_context::<EffectRegistryChanges>();
+        for event in [
+            json!({"type": "hello", "event": "effect_registry_updated"}),
+            json!({"type": "event", "event": "zone_changed"}),
+            json!({"type": "event", "event": "effect_control_changed"}),
+        ] {
+            registry.observe(&event);
+        }
+        assert_eq!(from_context.generation.get_untracked(), 0);
+        registry.observe(&json!({"type": "event", "event": "effect_registry_updated"}));
+        registry.observe(&json!({"type": "event", "event": "effect_registry_updated"}));
+        assert_eq!(from_context.generation.get_untracked(), 2);
+    });
 }

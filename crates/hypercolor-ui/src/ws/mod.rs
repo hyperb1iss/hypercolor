@@ -3,6 +3,7 @@
 //! Handles both JSON events and binary preview frames.
 
 mod connection;
+pub mod effect_registry;
 pub mod fps;
 pub mod input;
 pub mod interactive_preview;
