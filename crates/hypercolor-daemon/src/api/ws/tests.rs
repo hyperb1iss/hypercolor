@@ -4176,7 +4176,10 @@ async fn every_server_message_with_a_wall_timestamp_carries_mono_us() {
                 capabilities: ws_capabilities(),
                 subscriptions: SubscriptionState::default().projection(),
             },
-            "subscribed" => ServerMessage::Subscribed { topics: Vec::new() },
+            "subscribed" => ServerMessage::Subscribed {
+                topics: Vec::new(),
+                fps: None,
+            },
             "unsubscribed" => ServerMessage::Unsubscribed { topics: Vec::new() },
             "input_injected" => ServerMessage::InputInjected {
                 preview_id: "preview".to_owned(),
@@ -5535,6 +5538,64 @@ fn ws_capabilities_include_commands() {
     assert!(capabilities.contains(&"interactive_previews".to_owned()));
     assert!(capabilities.contains(&"wide_preview_frames".to_owned()));
     assert!(capabilities.contains(&"preview_chunking".to_owned()));
+    assert!(capabilities.contains(&"fps_events".to_owned()));
+}
+
+#[tokio::test]
+async fn fps_events_and_admission_snapshot_share_the_render_target_revision() {
+    let state = AppState::default();
+    assert!(
+        ws_capabilities()
+            .iter()
+            .any(|capability| capability == "fps_events")
+    );
+    // The target changed before this connection subscribed to events.
+    state
+        .render_loop
+        .write()
+        .await
+        .set_tier(hypercolor_core::engine::FpsTier::High);
+    let snapshot = super::session::event_subscription_fps(&state).await;
+    assert_eq!(snapshot.target, 45);
+    assert_eq!(snapshot.revision, 1);
+
+    let subscriptions = SubscriptionState::default()
+        .subscribed_unkeyed(&["events"], serde_json::Value::Null)
+        .expect("events subscribe applies");
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let relay = tokio::spawn(relay_events(
+        state.event_bus.subscribe_all(),
+        *state.event_bus.clock(),
+        json_tx,
+        subscriptions_rx,
+    ));
+    state
+        .render_loop
+        .write()
+        .await
+        .set_tier(hypercolor_core::engine::FpsTier::Medium);
+    let json = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
+        .await
+        .expect("FPS event is relayed")
+        .expect("relay remains open");
+    let wire: serde_json::Value = serde_json::from_str(json.as_str()).expect("event JSON");
+    assert_eq!(wire["event"], "fps_changed");
+    assert_eq!(wire["data"]["new_target"], 30);
+    assert_eq!(wire["data"]["revision"], 2);
+    let snapshot = super::session::event_subscription_fps(&state).await;
+    assert_eq!(snapshot.target, 30);
+    assert_eq!(snapshot.revision, 2);
+    let ack = serde_json::to_value(ServerMessage::Subscribed {
+        topics: Vec::new(),
+        fps: Some(snapshot),
+    })
+    .expect("subscription acknowledgment");
+    assert_eq!(
+        ack["fps"],
+        serde_json::json!({ "target": 30, "revision": 2 })
+    );
+    relay.abort();
 }
 
 #[test]

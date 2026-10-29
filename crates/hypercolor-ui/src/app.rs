@@ -46,6 +46,7 @@ use crate::ws::{
     PreviewCounterHandle, SceneEventHint, ScreenZonesFrame, ServiceIdentityEventHint, WsManager,
 };
 
+pub mod effect_refresh;
 mod effect_state;
 
 use effect_state::{
@@ -217,6 +218,9 @@ pub struct EffectsContext {
     /// depend on the reactive owner being live.
     pub preferences: PreferencesStore,
     pub apply_generation: StoredValue<u64>,
+    active_refresh: StoredValue<effect_refresh::PrimaryEffectRefresh>,
+    connection_generation: ReadSignal<u64>,
+    effect_registry_generation: ReadSignal<u64>,
     /// The shared zone state. Effect applies land in its target zone.
     pub zones: crate::zones::ZonesContext,
     /// Refresh hook for the shared active-scene resource (crate::zones).
@@ -267,14 +271,39 @@ impl EffectsContext {
     }
 
     pub fn refresh_active_effect(&self) {
+        self.refresh_primary_effect(true);
+    }
+
+    fn refresh_primary_effect(&self, invalidate_metadata: bool) {
         let ctx = *self;
+        let registry_generation = ctx.effect_registry_generation.get_untracked();
+        let Some((generation, metadata)) = ctx
+            .active_refresh
+            .try_update_value(|refresh| refresh.begin(invalidate_metadata, registry_generation))
+        else {
+            return;
+        };
+        let connection = ctx.connection_generation.get_untracked();
+        let apply_generation = ctx.apply_generation.get_value();
         leptos::task::spawn_local(async move {
-            match api::fetch_primary_effect_view().await {
-                Ok(Some(active)) => {
-                    apply_active_effect_snapshot(&ctx, active);
-                }
-                Ok(None) => ctx.set_is_playing.set(false),
-                Err(_) => {}
+            let Ok(active) = api::fetch_primary_effect_view_with_metadata(metadata).await else {
+                return;
+            };
+            let Some(registry_generation) = ctx.effect_registry_generation.try_get_untracked()
+            else {
+                return;
+            };
+            if ctx.connection_generation.try_get_untracked() != Some(connection)
+                || ctx.apply_generation.try_get_value() != Some(apply_generation)
+                || ctx.active_refresh.try_update_value(|refresh| {
+                    refresh.finish(generation, registry_generation, active.as_ref())
+                }) != Some(true)
+            {
+                return;
+            }
+            match active {
+                Some(active) => apply_active_effect_snapshot(&ctx, active),
+                None => ctx.set_is_playing.set(false),
             }
         });
     }
@@ -347,6 +376,9 @@ impl EffectsContext {
 
         let generation = self.apply_generation.get_value().saturating_add(1);
         self.apply_generation.set_value(generation);
+        self.active_refresh.update_value(|refresh| {
+            refresh.begin(true, self.effect_registry_generation.get_untracked());
+        });
         self.set_last_effect_error.set(None);
 
         let previous = capture_active_effect_state(self);
@@ -689,7 +721,11 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
 
     // Global effects state — shared between sidebar player + effects page
-    let effects_resource = api::daemon_resource(api::fetch_effects);
+    let effect_registry = expect_context::<crate::ws::effect_registry::EffectRegistryChanges>();
+    let effects_resource = api::daemon_resource(move || {
+        effect_registry.generation.track();
+        api::fetch_effects()
+    });
     let effects_index: Memo<Vec<IndexedEffect>> = Memo::new(move |_| {
         effects_resource
             .get()
@@ -757,7 +793,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         })
     });
 
-    let active_resource = api::daemon_resource(api::fetch_primary_effect_view);
     let favorites_resource = api::daemon_resource(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
     let (active_effect_target, set_active_effect_target) = signal(None::<api::EffectLayerTarget>);
@@ -815,6 +850,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         apply_generation: StoredValue::new(0),
+        active_refresh: StoredValue::new(effect_refresh::PrimaryEffectRefresh::default()),
+        connection_generation: ws_ctx.connection_generation,
+        effect_registry_generation: effect_registry.generation,
         zones: zones_ctx,
         scene_refresh: zones_ctx.refresh,
         zone_effects,
@@ -917,12 +955,18 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         }
     });
 
-    // Initialize active effect from API on load
+    // Reconnects invalidate definitions as well as live controls. Every refresh
+    // shares the same generation fence so an older response cannot win later.
     Effect::new(move |_| {
-        if let Some(Ok(Some(active))) = active_resource.get() {
-            apply_active_effect_snapshot(&effects_ctx, active);
-        } else if let Some(Ok(None)) = active_resource.get() {
-            effects_ctx.set_is_playing.set(false);
+        ws_ctx.connection_generation.track();
+        effect_registry.generation.track();
+        effects_ctx.refresh_active_effect();
+    });
+
+    // A refreshed library can replace a definition without changing its id.
+    Effect::new(move |_| {
+        if effects_resource.get().is_some_and(|result| result.is_ok()) {
+            effects_ctx.refresh_active_effect();
         }
     });
 
@@ -1021,7 +1065,14 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                     target.as_ref().map(|target| target.zone_id.as_str()),
                 )
             }) {
-                effects_ctx.refresh_active_effect();
+                let invalidate_metadata = current_scene_event.as_ref().is_none_or(|current| {
+                    current.active_effect_generation
+                        != previous_scene_event
+                            .as_ref()
+                            .and_then(Option::as_ref)
+                            .map_or(0, |previous| previous.active_effect_generation)
+                });
+                effects_ctx.refresh_primary_effect(invalidate_metadata);
             }
 
             current_scene_event

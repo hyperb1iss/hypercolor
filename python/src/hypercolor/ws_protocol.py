@@ -47,6 +47,7 @@ WS_CAPABILITIES: Final = (
     "interactive_previews",
     "wide_preview_frames",
     "preview_chunking",
+    "fps_events",
 )
 
 PREVIEW_TRANSPORT: Final = MappingProxyType(

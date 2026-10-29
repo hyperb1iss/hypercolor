@@ -488,7 +488,8 @@ impl DaemonState {
         );
 
         // ── Render Loop ─────────────────────────────────────────────────
-        let render_loop = RenderLoop::new(config.daemon.target_fps);
+        let render_loop =
+            RenderLoop::new(config.daemon.target_fps).with_event_bus(Arc::clone(&event_bus));
         let render_loop = Arc::new(RwLock::new(render_loop));
         let configured_max_fps_tier =
             ConfiguredFpsTier::new(FpsTier::from_fps(config.daemon.target_fps));

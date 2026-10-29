@@ -399,7 +399,10 @@ that subscription's config patch.
 
 `capabilities` is abridged here. The daemon advertises every topic name plus
 `commands`, `canvas_format_jpeg`, `interactive_previews`, `wide_preview_frames`,
-and `preview_chunking`; `protocol/websocket-v1.json` carries the current list.
+`preview_chunking`, and `fps_events`; `protocol/websocket-v1.json` carries the
+current list. With `fps_events`, the events subscription acknowledgment includes
+an authoritative FPS target and revision. Later `fps_changed` events carry newer
+revisions; clients without this capability use metrics for target updates.
 
 **Event:**
 

@@ -957,6 +957,9 @@ pub enum HypercolorEvent {
         old_target: u32,
         new_target: u32,
         measured: f32,
+        /// Monotonic target revision within this render loop's lifetime.
+        #[serde(default)]
+        revision: u64,
     },
 
     /// A collection in the persisted effect library changed.

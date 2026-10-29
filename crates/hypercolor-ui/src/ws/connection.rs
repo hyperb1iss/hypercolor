@@ -19,6 +19,7 @@ use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 
+use super::fps::{FpsTarget, events_supported};
 use super::input::InputInjectEdge;
 use super::interactive_preview::{
     InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker, InteractivePreviewRequest,
@@ -41,6 +42,7 @@ use super::preview::{
     send_main_preview_unsubscribe, send_screen_canvas_unsubscribe, send_screen_zones_subscribe,
     send_screen_zones_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
+use super::telemetry::TelemetryDemand;
 use super::transport::{
     WebSocketConnectRequest, WebSocketConnection, WebSocketEvent, WebSocketMessage,
     connect as connect_websocket, send_json,
@@ -125,9 +127,7 @@ fn initial_subscription_message() -> serde_json::Value {
     serde_json::json!({
         "type": "subscribe",
         "topics": [
-            { "topic": "events" },
-            { "topic": "metrics", "config": { "fps": 2.0 } },
-            { "topic": "sensors" }
+            { "topic": "events" }
         ]
     })
 }
@@ -204,7 +204,8 @@ impl ConnectionEventGate {
 /// Reactive WebSocket connection to the daemon.
 ///
 /// Returns signals for canvas data, preview FPS, and daemon performance
-/// metrics. Canvas streaming is subscribed on demand.
+/// metrics. Events stay subscribed; mounted views request canvas and diagnostic
+/// streams. Older servers also supply target FPS through metrics.
 pub struct WsManager {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
@@ -307,6 +308,7 @@ impl Default for WsManager {
 
 impl WsManager {
     pub fn new() -> Self {
+        let effect_registry = super::effect_registry::EffectRegistryChanges::install();
         let (canvas_frame, set_canvas_frame) = signal(None::<CanvasFrame>);
         let (screen_canvas_frame, set_screen_canvas_frame) = signal(None::<CanvasFrame>);
         let (web_viewport_canvas_frame, set_web_viewport_canvas_frame) =
@@ -327,6 +329,9 @@ impl WsManager {
         let (preview_fps, set_preview_fps) = signal(0.0_f32);
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
         let (sensors, set_sensors) = signal(None::<SystemSnapshot>);
+        let telemetry = TelemetryDemand::install();
+        let (fps_events_supported, set_fps_events_supported) = signal(false);
+        let fps_target = StoredValue::new(FpsTarget::default());
         let (device_metrics, set_device_metrics) = signal(None::<DeviceMetricsSnapshot>);
         let (device_metrics_consumers, set_device_metrics_consumers) = signal(0_u32);
         let device_metrics_requested: StoredValue<bool> = StoredValue::new(false);
@@ -470,6 +475,7 @@ impl WsManager {
             dispose_existing_socket(ws_handle, socket_generation);
             set_connection_state.set(ConnectionState::Connecting);
             set_backpressure_notice.set(None);
+            set_fps_events_supported.set(false);
             set_interactive_preview_available.set(false);
             set_interactive_preview_frames.set(HashMap::new());
             interactive_preview_tracker.update_value(InteractivePreviewLifecycleTracker::clear);
@@ -709,6 +715,7 @@ impl WsManager {
                             set_run_epoch.set(Some(run));
                         }
                         if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
+                            set_fps_events_supported.set(events_supported(&msg));
                             schedule_preview_expiry(
                                 &event_preview_decoder,
                                 &event_preview_expiry_timeout,
@@ -734,8 +741,10 @@ impl WsManager {
                                     .with_value(InteractivePreviewLifecycleTracker::lifecycles),
                             );
                         }
+                        effect_registry.observe(&msg);
                         handle_json_message(
                             &msg,
+                            fps_target,
                             &set_active_effect,
                             &set_output_paused,
                             output_power_reconciler,
@@ -1007,23 +1016,68 @@ impl WsManager {
             }
         });
 
+        for (topic, consumers) in [
+            ("metrics", telemetry.metrics),
+            ("sensors", telemetry.sensors),
+        ] {
+            let requested = StoredValue::new(false);
+            Effect::new(move |_| {
+                let state = connection_state.get();
+                let wanted =
+                    consumers.get() > 0 || (topic == "metrics" && !fps_events_supported.get());
+                let clear = || {
+                    if topic == "metrics" {
+                        set_metrics.set(None);
+                    } else {
+                        set_sensors.set(None);
+                    }
+                };
+                if state != ConnectionState::Connected {
+                    requested.set_value(false);
+                    clear();
+                    return;
+                }
+                if wanted == requested.get_value() {
+                    return;
+                }
+                let Some(ws) = ws_handle.get_value() else {
+                    return;
+                };
+                let mut selector = serde_json::json!({ "topic": topic });
+                if wanted && topic == "metrics" {
+                    selector["config"] = serde_json::json!({ "fps": 2.0 });
+                }
+                let message = serde_json::json!({
+                    "type": if wanted { "subscribe" } else { "unsubscribe" },
+                    "topics": [selector]
+                });
+                if send_json(ws.as_ref(), &message).is_ok() {
+                    requested.set_value(wanted);
+                    if !wanted {
+                        clear();
+                    }
+                }
+            });
+        }
+
+        let backpressure_recovery = StoredValue::new_local(None::<BrowserTimeoutHandle>);
+        on_cleanup(move || clear_timeout(backpressure_recovery));
         Effect::new(move |_| {
-            let _probe = metrics_tick.get();
-            let Some(last_backpressure_at_ms) = last_backpressure_at_ms.get() else {
+            clear_timeout(backpressure_recovery);
+            let Some(last_at) = last_backpressure_at_ms.get() else {
                 return;
             };
-            if now_ms() - last_backpressure_at_ms < BACKPRESSURE_RECOVERY_MS {
-                return;
-            }
-
-            let page_cap = preview_page_cap.get_untracked();
-            if preview_backpressure_cap.get_untracked() != page_cap {
-                set_preview_backpressure_cap.set(page_cap);
-            }
-            if backpressure_notice.get_untracked().is_some() {
-                set_backpressure_notice.set(None);
-            }
-            set_last_backpressure_at_ms.set(None);
+            let remaining = (BACKPRESSURE_RECOVERY_MS - (now_ms() - last_at)).max(0.0);
+            let timer =
+                browser_set_timeout(Duration::from_secs_f64(remaining / 1000.0), move || {
+                    if last_backpressure_at_ms.get_untracked() != Some(last_at) {
+                        return;
+                    }
+                    set_preview_backpressure_cap.set(preview_page_cap.get_untracked());
+                    set_backpressure_notice.set(None);
+                    set_last_backpressure_at_ms.set(None);
+                });
+            backpressure_recovery.set_value(Some(timer));
         });
 
         // Display-preview subscription effect.
