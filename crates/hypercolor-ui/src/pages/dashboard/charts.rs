@@ -289,7 +289,7 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
             </div>
 
             // Scrollable list
-            <div class="flex-1 overflow-y-auto min-h-0 px-2 pb-2 pt-0.5">
+            <div class="ambient-scroll flex-1 overflow-y-auto min-h-0 px-2 pb-2 pt-0.5" style:--ambient-hue=crate::ambient::hue_style()>
                 {move || {
                     let effects = favorite_effects.get();
                     if effects.is_empty() {

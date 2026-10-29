@@ -1284,6 +1284,7 @@ fn OverflowMenu(
                 .collect::<Vec<_>>()
         })
     });
+    let ambient_hue = crate::ambient::hue_style();
     view! {
         <Show when=move || anchor.get().is_some()>
             <Portal>
@@ -1292,12 +1293,13 @@ fn OverflowMenu(
                     node_ref=menu_ref
                     role="menu"
                     aria-label="More zones"
-                    class="fixed z-[71] max-h-80 w-56 overflow-y-auto rounded-lg border border-edge-subtle bg-surface-overlay/98 p-1 backdrop-blur-xl dropdown-glow animate-enter-down"
+                    class="ambient-scroll fixed z-[71] max-h-80 w-56 overflow-y-auto rounded-lg border border-edge-subtle bg-surface-overlay/98 p-1 backdrop-blur-xl dropdown-glow animate-enter-down"
                     style=move || {
-                        anchor
+                        let position = anchor
                             .get()
                             .map(|(x, y)| menu_position(x, y, 224.0, 320.0))
-                            .unwrap_or_default()
+                            .unwrap_or_default();
+                        format!("{position}; --ambient-hue: {}", ambient_hue())
                     }
                     on:keydown=move |ev: web_sys::KeyboardEvent| {
                         match ev.key().as_str() {

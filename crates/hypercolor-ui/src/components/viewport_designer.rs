@@ -253,7 +253,7 @@ pub fn ViewportDesignerModal(
 
                 // Body — scrolls internally if the panel is smaller than
                 // the viewport. Padding matches the existing ModalBackdrop.
-                <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div class="ambient-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4" style:--ambient-hue=crate::ambient::hue_style()>
                     {move || match mode {
                         ViewportDesignerMode::WebViewport => view! {
                             <WebViewportPaneStub draft=draft set_draft=set_draft />

@@ -154,7 +154,7 @@ pub fn AddLayerPicker(
                         })
                 }}
 
-                <div class="flex-1 overflow-y-auto px-5 py-4">
+                <div class="ambient-scroll flex-1 overflow-y-auto px-5 py-4" style:--ambient-hue=crate::ambient::hue_style()>
                     <div class:hidden=move || tab.get() != LayerSourceKind::Effect>
                         <EffectTab effects=effects mode=effect_mode on_pick=emit />
                     </div>

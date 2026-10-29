@@ -144,6 +144,7 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
         perform(drag, payload, action, Some(anchor.focus));
     };
     let busy = move || studio.history.busy.get();
+    let ambient_hue = crate::ambient::hue_style();
 
     view! {
         <Show when=move || menu.with(Option::is_some)>
@@ -160,15 +161,16 @@ pub(crate) fn MoveMenuHost() -> impl IntoView {
                     node_ref=menu_ref
                     role="menu"
                     aria-label="Move to"
-                    class="fixed z-[71] max-h-96 w-60 overflow-y-auto rounded-lg border border-edge-subtle bg-surface-overlay/98 p-1 backdrop-blur-xl dropdown-glow animate-enter-down"
+                    class="ambient-scroll fixed z-[71] max-h-96 w-60 overflow-y-auto rounded-lg border border-edge-subtle bg-surface-overlay/98 p-1 backdrop-blur-xl dropdown-glow animate-enter-down"
                     style=move || {
                         let (width, height) = size.get();
-                        menu.with(|anchor| {
+                        let position = menu.with(|anchor| {
                             anchor
                                 .as_ref()
                                 .map(|anchor| menu_position(anchor.x, anchor.y, width, height))
                                 .unwrap_or_default()
-                        })
+                        });
+                        format!("{position}; --ambient-hue: {}", ambient_hue())
                     }
                     on:keydown=move |ev: web_sys::KeyboardEvent| {
                         match ev.key().as_str() {

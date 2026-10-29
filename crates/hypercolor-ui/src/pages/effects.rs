@@ -697,12 +697,12 @@ pub fn EffectsPage() -> impl IntoView {
             // Desktop: pane row (grid | handle | detail) with independent
             // inner scrolls. Phone: one flowing page scroll — detail first
             // like a now-playing card, full-width grid below, no splitter.
-            <div class="flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4">
+            <div class="ambient-scroll flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4" style:--ambient-hue=crate::ambient::hue_style()>
                 // Left column — effect grid, independent from the detail panels
                 <div class="flex-1 min-w-0 flex flex-col max-md:flex-none" style="min-width: 120px">
 
                 // Effect grid — independently scrollable, below the locked header
-                <div class="flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible">
+                <div class="ambient-scroll flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible" style:--ambient-hue=crate::ambient::hue_style()>
                     <Suspense fallback=move || view! { <LoadingSkeleton /> }>
                         {move || {
                             let effects = filtered_effects.get();
@@ -817,7 +817,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 {move || (!controls_detached.get()).then(|| {
                                     view! {
                                         <div
-                                            class="flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible"
+                                            class="ambient-scroll flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible" style:--ambient-hue=crate::ambient::hue_style()
                                             style="overscroll-behavior: contain"
                                         >
                                             <div class="space-y-3">
@@ -894,7 +894,7 @@ pub fn EffectsPage() -> impl IntoView {
                                             style=move || format!("width: {}px", controls_width.get())
                                         >
                                             <div
-                                                class="flex-1 min-h-0 overflow-y-auto"
+                                                class="ambient-scroll flex-1 min-h-0 overflow-y-auto" style:--ambient-hue=crate::ambient::hue_style()
                                                 style="overscroll-behavior: contain"
                                             >
                                                 <div class="space-y-3">

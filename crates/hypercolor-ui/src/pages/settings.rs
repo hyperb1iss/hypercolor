@@ -352,7 +352,7 @@ pub fn SettingsPage() -> impl IntoView {
             </PageHeader>
 
             // Scrollable content
-            <div class="flex-1 overflow-y-auto scroll-smooth">
+            <div class="ambient-scroll flex-1 overflow-y-auto scroll-smooth" style:--ambient-hue=crate::ambient::hue_style()>
                 // Loading skeleton
                 {move || {
                     if !config_loaded.get() {

@@ -277,8 +277,8 @@ pub fn MediaPage() -> impl IntoView {
             <div class="flex-1 overflow-hidden">
                 // Desktop: grid beside a fixed detail rail. Phone: one page
                 // scroll, detail full-width on top, grid below.
-                <div class="flex h-full max-md:flex-col max-md:overflow-y-auto">
-                    <main class="min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-4 max-md:flex-none max-md:overflow-visible max-md:px-4 max-md:pb-4">
+                <div class="ambient-scroll flex h-full max-md:flex-col max-md:overflow-y-auto" style:--ambient-hue=crate::ambient::hue_style()>
+                    <main class="ambient-scroll min-w-0 flex-1 overflow-y-auto px-6 pb-6 pt-4 max-md:flex-none max-md:overflow-visible max-md:px-4 max-md:pb-4" style:--ambient-hue=crate::ambient::hue_style()>
                         <Suspense fallback=move || view! { <MediaLoadingSkeleton /> }>
                             {move || match media_resource.get() {
                                 None => view! { <MediaLoadingSkeleton /> }.into_any(),

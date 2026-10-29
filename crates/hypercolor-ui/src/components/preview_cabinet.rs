@@ -236,19 +236,15 @@ pub fn PreviewCabinet(
     // the dashboard). Clipping lives on the inner canvas wrapper instead,
     // which rounds its top corners so the canvas and scrim still clip to
     // the cabinet's rounded silhouette.
-    // `cabinet-accent-transition` adds a 2px transparent top border with a
-    // `border-top-color` transition, so the dynamic `style:border-top-color`
-    // below crossfades to the new accent instead of snap-changing. The
-    // ignite pulse layers an animated box-shadow on top for extra drama.
-    // `preview-glow` layers the ambient-reactive halo (§9) on top of the
-    // neutral `edge-glow` hairline — the combined shadow lives in input.css
-    // so the ambient hue tints the cabinet without dropping the edge ring.
+    // `cabinet-accent-transition` crossfades the top border to its new accent.
+    // Halo, neutral hairline and ignition share an empty decoration so
+    // their shadow animation does not restyle the canvas or preset controls.
     let cabinet_class = if fill_height {
-        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow \
-         preview-glow h-full flex flex-col"
+        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black \
+         h-full flex flex-col"
     } else {
-        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black edge-glow \
-         preview-glow flex flex-col"
+        "cabinet-accent-transition relative rounded-xl border border-edge-subtle bg-black \
+         flex flex-col"
     };
     // The canvas region never shapes the picture. A bounded region hosts a
     // contained box (the largest rectangle of the source's aspect that
@@ -264,10 +260,15 @@ pub fn PreviewCabinet(
     view! {
         <div
             class=cabinet_class
-            class:animate-cabinet-ignite=move || igniting.get()
             style:--glow-rgb=move || accent_rgb.get()
             style:border-top-color=move || format!("rgba({}, 0.45)", accent_rgb.get())
         >
+            <div
+                class="preview-glow"
+                class:animate-cabinet-ignite=move || igniting.get()
+                style:--ambient-hue=crate::ambient::hue_style()
+                aria-hidden="true"
+            />
             // ── Top: canvas + scrim + overlay info ─────────────────────────
             <div class=canvas_wrapper_class>
                 <CanvasPreview

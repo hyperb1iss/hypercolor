@@ -2,7 +2,6 @@
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::events::document as browser_document;
-use hypercolor_leptos_ext::prelude::now_ms;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::{use_location, use_navigate};
@@ -10,8 +9,7 @@ use wasm_bindgen::JsCast;
 
 use hypercolor_types::scene::SceneMutationMode;
 
-use crate::ambient::AmbientHuePublisher;
-use crate::app::{EffectsContext, FrameAnalysisContext};
+use crate::app::EffectsContext;
 use crate::components::mobile_nav::MobileNav;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
 use crate::components::scene_picker::active_saved_scene_id;
@@ -34,18 +32,6 @@ fn targets_editable(ev: &leptos::ev::KeyboardEvent) -> bool {
     tag == "input" || tag == "textarea" || tag == "select" || el.is_content_editable()
 }
 
-/// The hue a previous shell left on the document element, so a remounted
-/// shell keeps unwrapping from it instead of from the CSS fallback.
-fn published_ambient_hue() -> Option<f64> {
-    let root = browser_document()?.document_element()?;
-    let value = root
-        .dyn_ref::<web_sys::HtmlElement>()?
-        .style()
-        .get_property_value("--ambient-hue")
-        .ok()?;
-    value.trim().parse().ok()
-}
-
 /// Focus the current page's search bar (the `/` kbd hint in `PageSearchBar`).
 fn focus_page_search() {
     if let Some(doc) = browser_document()
@@ -64,43 +50,6 @@ pub fn Shell(children: Children) -> impl IntoView {
     // One zone per preview: the page's focused zone where it has a zone
     // picker, the primary zone everywhere else.
     crate::preview_zone::follow_preview_zone(use_location().pathname);
-
-    // Ambient hue extraction — driven by the shared frame-analysis pass in
-    // app context. The hue is written to `:root` (not the shell div):
-    // custom-property `var()` substitution happens where a property is
-    // *declared*, and every `--ambient-*` token plus the scrollbar tints are
-    // declared in `:root` blocks of tokens/semantic.css, so a hue set any
-    // lower in the tree would never reach them. A `:root` write restyles the
-    // whole document, so `AmbientHuePublisher` paces it; CSS drifts the
-    // halo between published values.
-    let frame_analysis = use_context::<FrameAnalysisContext>();
-    let ambient_publisher = StoredValue::new(published_ambient_hue().map_or_else(
-        AmbientHuePublisher::default,
-        AmbientHuePublisher::starting_at,
-    ));
-
-    if let Some(frame_analysis) = frame_analysis {
-        Effect::new(move |_| {
-            let Some(analysis) = frame_analysis.live_canvas.get() else {
-                return;
-            };
-            let Some(hue) = ambient_publisher
-                .try_update_value(|publisher| publisher.offer(analysis.dominant_hue, now_ms()))
-                .flatten()
-            else {
-                return;
-            };
-
-            if let Some(doc) = browser_document()
-                && let Some(root) = doc.document_element()
-                && let Some(html_el) = root.dyn_ref::<web_sys::HtmlElement>()
-            {
-                let _ = html_el
-                    .style()
-                    .set_property("--ambient-hue", &format!("{hue:.1}"));
-            }
-        });
-    }
 
     // Global keyboard shortcuts, heard on the window so they work before
     // anything on the page has focus. The handle goes with the shell.
@@ -144,7 +93,7 @@ pub fn Shell(children: Children) -> impl IntoView {
             <main class="flex flex-col flex-1 min-h-0 min-w-0 overflow-clip
                          max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
                 <crate::components::release_notifications::ReleaseNotice />
-                <div class="flex-1 min-h-0 overflow-auto">{children()}</div>
+                <div class="ambient-scroll flex-1 min-h-0 overflow-auto" style:--ambient-hue=crate::ambient::hue_style()>{children()}</div>
             </main>
             <MobileNav />
 
@@ -357,7 +306,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                 </div>
 
                 // Results
-                <div class="max-h-[320px] overflow-y-auto py-1" role="listbox">
+                <div class="ambient-scroll max-h-[320px] overflow-y-auto py-1" style:--ambient-hue=crate::ambient::hue_style() role="listbox">
                     {move || {
                         let items = filtered.get();
                         if items.is_empty() {

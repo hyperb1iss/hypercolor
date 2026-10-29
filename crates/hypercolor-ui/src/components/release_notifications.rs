@@ -123,7 +123,7 @@ pub fn ReleaseSettings() -> impl IntoView {
                                             {(!notes.trim().is_empty()).then(|| view! {
                                                 <details class="text-xs text-fg-secondary">
                                                     <summary class="cursor-pointer hover:text-accent">"Release notes"</summary>
-                                                    <p class="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{notes}</p>
+                                                    <p class="ambient-scroll mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed" style:--ambient-hue=crate::ambient::hue_style()>{notes}</p>
                                                 </details>
                                             })}
                                         </div>
