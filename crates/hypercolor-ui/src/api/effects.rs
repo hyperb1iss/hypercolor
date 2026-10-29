@@ -37,6 +37,24 @@ pub struct PrimaryEffectView {
     pub scene_revision: u64,
 }
 
+/// Definition fields that a live control patch cannot change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrimaryEffectMetadata {
+    pub id: String,
+    pub name: String,
+    pub controls: Vec<ControlDefinition>,
+}
+
+impl From<&PrimaryEffectView> for PrimaryEffectMetadata {
+    fn from(view: &PrimaryEffectView) -> Self {
+        Self {
+            id: view.id.clone(),
+            name: view.name.clone(),
+            controls: view.controls.clone(),
+        }
+    }
+}
+
 /// Immutable identity of one effect layer observed or created by the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectLayerTarget {
@@ -79,17 +97,35 @@ pub async fn fetch_effects() -> ApiResult<Vec<EffectSummary>> {
 
 /// Project the primary zone's top effect layer from the live scene tree.
 pub async fn fetch_primary_effect_view() -> ApiResult<Option<PrimaryEffectView>> {
+    fetch_primary_effect_view_with_metadata(None).await
+}
+
+/// Reconcile live controls while reusing an unchanged effect's definition.
+/// Callers invalidate metadata for structural changes and reconnects.
+pub async fn fetch_primary_effect_view_with_metadata(
+    metadata: Option<PrimaryEffectMetadata>,
+) -> ApiResult<Option<PrimaryEffectView>> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     let Some((zone_id, layer_id, effect_id, values, _, preset_id)) = effect_target(&scene) else {
         return Ok(None);
     };
-    let detail = fetch_effect_detail(&effect_id.to_string()).await?;
+    let metadata = match metadata.filter(|metadata| metadata.id == effect_id) {
+        Some(metadata) => metadata,
+        None => {
+            let detail = fetch_effect_detail(&effect_id).await?;
+            PrimaryEffectMetadata {
+                id: effect_id.clone(),
+                name: detail.name,
+                controls: detail.controls,
+            }
+        }
+    };
     Ok(Some(PrimaryEffectView {
         id: effect_id,
         zone_id,
         layer_id,
-        name: detail.name,
-        controls: detail.controls,
+        name: metadata.name,
+        controls: metadata.controls,
         control_values: values,
         active_preset_id: preset_id,
         scene_revision: scene.revision,
