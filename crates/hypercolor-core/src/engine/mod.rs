@@ -25,6 +25,9 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, trace};
 
+use crate::bus::HypercolorBus;
+use hypercolor_types::event::HypercolorEvent;
+
 // ── Render Loop State ────────────────────────────────────────────────────────
 
 /// Lifecycle states for the render loop.
@@ -99,6 +102,11 @@ pub struct RenderLoop {
     /// Adaptive frame rate controller.
     fps_controller: FpsController,
 
+    /// Discrete tier transitions share the event stream with other state changes.
+    event_bus: Option<Arc<HypercolorBus>>,
+    published_fps: u32,
+    fps_revision: u64,
+
     /// Atomic stop signal, shareable across threads.
     running: Arc<AtomicBool>,
 
@@ -140,6 +148,9 @@ impl RenderLoop {
         fps_controller.set_max_tier(tier);
         Self {
             fps_controller,
+            event_bus: None,
+            published_fps: tier.fps(),
+            fps_revision: 0,
             running: Arc::new(AtomicBool::new(false)),
             state: RenderLoopState::Created,
             pause_generation: 0,
@@ -157,6 +168,9 @@ impl RenderLoop {
         info!(tier = %tier, "Render loop created with custom config");
         Self {
             fps_controller: FpsController::with_config(tier, config),
+            event_bus: None,
+            published_fps: tier.fps(),
+            fps_revision: 0,
             running: Arc::new(AtomicBool::new(false)),
             state: RenderLoopState::Created,
             pause_generation: 0,
@@ -166,6 +180,15 @@ impl RenderLoop {
             frame_number: 0,
             start_time: None,
         }
+    }
+
+    /// Publish subsequent manual and adaptive FPS transitions on `event_bus`.
+    /// The current tier is supplied by the initial status snapshot.
+    #[must_use]
+    pub fn with_event_bus(mut self, event_bus: Arc<HypercolorBus>) -> Self {
+        self.published_fps = self.fps_controller.tier().fps();
+        self.event_bus = Some(event_bus);
+        self
     }
 
     /// Transition the loop to the running state.
@@ -339,6 +362,8 @@ impl RenderLoop {
             );
         }
 
+        self.publish_fps_change();
+
         Some(stats)
     }
 
@@ -386,6 +411,31 @@ impl RenderLoop {
     pub fn set_tier(&mut self, tier: FpsTier) {
         info!(new_tier = %tier, "Manual FPS tier override");
         self.fps_controller.set_tier(tier);
+        self.publish_fps_change();
+    }
+
+    fn publish_fps_change(&mut self) {
+        let new_target = self.fps_controller.tier().fps();
+        let old_target = std::mem::replace(&mut self.published_fps, new_target);
+        if old_target == new_target {
+            return;
+        }
+        self.fps_revision = self.fps_revision.saturating_add(1);
+        if let Some(event_bus) = &self.event_bus {
+            let frame_seconds = self.fps_controller.ewma_frame_time().as_secs_f32();
+            event_bus.publish(HypercolorEvent::FpsChanged {
+                old_target,
+                new_target,
+                measured: frame_seconds.recip().min(new_target as f32),
+                revision: self.fps_revision,
+            });
+        }
+    }
+
+    /// Revision of the current target, for ordering snapshots and queued events.
+    #[must_use]
+    pub const fn fps_revision(&self) -> u64 {
+        self.fps_revision
     }
 
     /// Target frame interval for the current tier.
@@ -407,6 +457,9 @@ impl std::fmt::Debug for RenderLoop {
             .field("running", &self.running.load(Ordering::Relaxed))
             .field("start_time", &self.start_time)
             .field("fps_controller", &self.fps_controller)
+            .field("event_bus", &self.event_bus.as_ref().map(|_| "attached"))
+            .field("published_fps", &self.published_fps)
+            .field("fps_revision", &self.fps_revision)
             .finish()
     }
 }

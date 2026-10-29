@@ -293,6 +293,7 @@ fn system_events_have_system_category() {
             old_target: 60,
             new_target: 30,
             measured: 59.8,
+            revision: 1,
         },
         HypercolorEvent::ConfigChanged {
             key: "daemon.fps".into(),

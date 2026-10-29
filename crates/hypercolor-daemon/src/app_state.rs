@@ -485,7 +485,9 @@ impl AppState {
                 .expect("default app state should open asset library"),
         ));
         let preview_runtime = Arc::new(PreviewRuntime::new(Arc::clone(&event_bus)));
-        let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
+        let render_loop = Arc::new(RwLock::new(
+            RenderLoop::new(60).with_event_bus(Arc::clone(&event_bus)),
+        ));
         let configured_max_fps_tier = ConfiguredFpsTier::new(FpsTier::Full);
         let spatial_engine = SpatialService::new(
             SpatialEngine::try_new(default_layout.clone())

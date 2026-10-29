@@ -915,7 +915,12 @@ define_server_messages! {
     /// Subscribe acknowledgment: the connection's whole live subscription
     /// set, so a client always learns the state it ended up in rather
     /// than only the delta it asked for.
-    Subscribed { topics: Vec<ActiveSubscription> },
+    Subscribed {
+        topics: Vec<ActiveSubscription>,
+        /// Authoritative target at event admission, after any gap since hello.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fps: Option<SubscriptionFps>,
+    },
     /// Unsubscribe acknowledgment, carrying what remains.
     Unsubscribed { topics: Vec<ActiveSubscription> },
     /// Addressed input injection acknowledgment.
@@ -1096,6 +1101,12 @@ pub(super) struct HelloFps {
     pub(super) target: u32,
     pub(super) capacity: f64,
     pub(super) delivered: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct SubscriptionFps {
+    pub(super) target: u32,
+    pub(super) revision: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1696,6 +1707,7 @@ pub(crate) fn ws_capabilities() -> Vec<String> {
     capabilities.push("interactive_previews".to_owned());
     capabilities.push("wide_preview_frames".to_owned());
     capabilities.push("preview_chunking".to_owned());
+    capabilities.push("fps_events".to_owned());
     capabilities
 }
 

@@ -51,8 +51,8 @@ use super::command::dispatch_command;
 use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
     BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, SceneRef,
-    ServerMessage, SubscriptionState, TopicSelection, WsProtocolError, hello_clock,
-    parse_selectors, parse_subscriptions, stamp_command_response,
+    ServerMessage, SubscriptionFps, SubscriptionState, TopicSelection, WsProtocolError,
+    hello_clock, parse_selectors, parse_subscriptions, stamp_command_response,
     validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
@@ -1930,10 +1930,22 @@ async fn handle_client_message(
             input_demand_leases.commit(projected_demand);
             *subscriptions = next_subscriptions;
 
+            publish_subscriptions(subscriptions_tx, subscriptions);
+            // Subscribe before reading the target. A transition before admission
+            // is in the snapshot; queued events carry revisions so they cannot
+            // roll this snapshot back after the acknowledgment is sent.
+            let fps = if selections
+                .iter()
+                .any(|selection| selection.topic == TopicId::Events)
+            {
+                Some(event_subscription_fps(state).await)
+            } else {
+                None
+            };
             let ack = ServerMessage::Subscribed {
                 topics: subscription_projection(subscriptions, browser_previews),
+                fps,
             };
-            publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
         }
         ClientMessage::Unsubscribe { topics } => {
@@ -2036,6 +2048,15 @@ async fn handle_client_message(
                 .map(|()| browser_previews.release_authoritative(preview_id));
             send_protocol_result(socket, result).await;
         }
+    }
+}
+
+/// Capture the target and its revision under the same render-state lock.
+pub(super) async fn event_subscription_fps(state: &AppState) -> SubscriptionFps {
+    let render_loop = state.render_loop.read().await;
+    SubscriptionFps {
+        target: render_loop.stats().tier.fps(),
+        revision: render_loop.fps_revision(),
     }
 }
 

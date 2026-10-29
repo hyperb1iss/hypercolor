@@ -153,7 +153,7 @@ live.
     "metrics", "device_metrics", "sensors", "display_preview",
     "interactive_preview", "input_events",
     "commands", "canvas_format_jpeg", "interactive_previews",
-    "wide_preview_frames", "preview_chunking",
+    "wide_preview_frames", "preview_chunking", "fps_events",
     "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576"
   ],
   "subscriptions": [{ "topic": "events" }]
@@ -163,7 +163,7 @@ live.
 `version` is the protocol version (`"1.0"`), distinct from the
 `server.version` daemon build string. `capabilities` lists all 15 topic names
 plus feature flags such as `commands`, `canvas_format_jpeg`,
-`interactive_previews`, `wide_preview_frames`, and `preview_chunking`.
+`interactive_previews`, `wide_preview_frames`, `preview_chunking`, and `fps_events`.
 `subscriptions` uses the same entry shape the acknowledgments do, so a client
 reads its live set the same way everywhere.
 
@@ -295,6 +295,7 @@ takes no config reports none:
 ```json
 {
   "type": "subscribed",
+  "fps": { "target": 60, "revision": 0 },
   "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
   "topics": [
     { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
@@ -304,6 +305,16 @@ takes no config reports none:
   ]
 }
 ```
+
+When `fps_events` is advertised, a request selecting `events` also receives an
+`fps` snapshot in its acknowledgment. The snapshot contains the current render
+target and its revision, captured after the event subscription takes effect.
+Manual and adaptive tier changes publish `fps_changed` events with `new_target`
+and the same revision counter. Accept the first revision, then only newer
+revisions, so queued events cannot replace a newer snapshot. Reset the revision
+on reconnect. The target is distinct from measured or delivered frame rate.
+Clients connected to builds without `fps_events` can read the target from
+`metrics` instead.
 
 An `interactive_preview` entry also carries a `publication_id`: the identity of
 the render lane the subscription opened. Fence that preview's binary frames

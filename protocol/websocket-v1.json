@@ -228,7 +228,8 @@
     "canvas_format_jpeg",
     "interactive_previews",
     "wide_preview_frames",
-    "preview_chunking"
+    "preview_chunking",
+    "fps_events"
   ],
   "preview_transport": {
     "dimension_type": "u32",
