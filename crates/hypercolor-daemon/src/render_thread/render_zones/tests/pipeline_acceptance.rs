@@ -445,8 +445,8 @@ async fn persistent_scene_failure_keeps_zone_resources_and_layer_health_steady()
     );
 }
 
-/// A scene whose zones fail to admit, here because its effect is not
-/// registered, publishes black and releases the zones the previous scene
+/// A scene whose zones fail to admit because its controls are invalid
+/// publishes black and releases the zones the previous scene
 /// left admitted, since no frame renders them anymore. Once they are gone
 /// the failing frames after it have nothing left to release.
 #[tokio::test]
@@ -457,10 +457,13 @@ async fn scene_that_fails_to_admit_releases_the_previous_scenes_zones() {
     working.transition.duration_ms = 0;
     working.zones = overlapping_zones(solid_id, [255, 0, 0], [0, 0, 255]);
     working.unassigned_behavior = UnassignedBehavior::Off;
-    let mut unadmittable = make_scene("Unregistered Effect");
+    let mut unadmittable = make_scene("Invalid Controls");
     unadmittable.transition.duration_ms = 0;
-    unadmittable.zones =
-        overlapping_zones(EffectId::from(Uuid::now_v7()), [0, 255, 0], [0, 255, 0]);
+    unadmittable.zones = overlapping_zones(solid_id, [0, 255, 0], [0, 255, 0]);
+    let LayerSource::Effect { controls, .. } = &mut unadmittable.zones[1].layers[0].source else {
+        panic!("test layer should be an effect");
+    };
+    controls.insert("color".into(), ControlValue::Bool(true));
     unadmittable.unassigned_behavior = UnassignedBehavior::Off;
     let Some(mut pipeline) = SteppedPipeline::start(
         RenderAccelerationMode::Cpu,
@@ -497,6 +500,76 @@ async fn scene_that_fails_to_admit_releases_the_previous_scenes_zones() {
         assert!(runtime.reconciled_dependency_key.is_none());
     }
     assert_eq!(drain_layer_health_events(&mut events), 0);
+}
+
+/// Missing effects leave an admitted scene inactive. The previous scene's
+/// effects and lit pixels must disappear, while unavailable-layer health
+/// remains stable until a different scene is activated.
+#[tokio::test]
+async fn missing_effect_scene_stays_admitted_without_previous_scene_output() {
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut working = make_scene("Working Scene");
+    working.transition.duration_ms = 0;
+    working.zones = overlapping_zones(solid_id, [255, 0, 0], [0, 0, 255]);
+    working.unassigned_behavior = UnassignedBehavior::Off;
+    let mut unavailable = make_scene("Unregistered Effect");
+    unavailable.transition.duration_ms = 0;
+    unavailable.zones = overlapping_zones(EffectId::from(Uuid::now_v7()), [0, 255, 0], [0, 255, 0]);
+    unavailable.unassigned_behavior = UnassignedBehavior::Off;
+    let Some(mut pipeline) = SteppedPipeline::start(
+        RenderAccelerationMode::Cpu,
+        vec![working.clone(), unavailable.clone()],
+        working.id,
+        BackendManager::new(),
+    )
+    .await
+    else {
+        return;
+    };
+    pipeline
+        .frame_where("the working scene lit", |frame| {
+            zone_led(frame, "zone_red") == Some([255, 0, 0])
+        })
+        .await;
+    assert_eq!(pipeline.zone_runtime().effect_pool.slot_count(), 2);
+
+    pipeline.activate(unavailable.id).await;
+    let mut events = pipeline.state.event_bus.subscribe_all();
+    for frame in 0..8 {
+        let published = pipeline.frame().await;
+        assert_eq!(
+            zone_led(&published, "zone_red"),
+            Some([0, 0, 0]),
+            "inactive frame {frame} must not retain the previous scene's light"
+        );
+        let runtime = pipeline.zone_runtime();
+        assert_eq!(runtime.effect_pool.slot_count(), 0);
+        assert!(runtime.reconciled_dependency_key.is_some());
+        for zone in &unavailable.zones {
+            assert!(
+                runtime
+                    .effect_pool
+                    .layer_unavailable(zone.id, zone.layers[0].id)
+            );
+        }
+        let health_changes = drain_layer_health_events(&mut events);
+        if frame == 0 {
+            assert!(
+                health_changes > 0,
+                "missing effects should report their health"
+            );
+        } else {
+            assert_eq!(health_changes, 0, "unchanged health should not republish");
+        }
+    }
+    pipeline.activate(working.id).await;
+    pipeline
+        .frame_where("the working scene relit", |frame| {
+            zone_led(frame, "zone_red") == Some([255, 0, 0])
+        })
+        .await;
+    assert_eq!(pipeline.zone_runtime().effect_pool.slot_count(), 2);
 }
 
 /// A scene switch whose first frame fails publishes black and lets go of
