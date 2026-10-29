@@ -2105,7 +2105,7 @@ mod tests {
         let mut pool = EffectPool::new();
         for clear_pool in [false, true] {
             pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
-                .unwrap();
+                .expect("missing effects should leave the authored zone available");
             assert!(pool.layer_unavailable(zone.id, zone.layers[0].id));
             if clear_pool {
                 pool.clear();
