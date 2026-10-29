@@ -123,6 +123,7 @@ impl PortableSetupService {
         if active.receipt.setup_id != setup_id
             || remap.iter().any(|(source, target)| source != target)
         {
+            reconcile_unused_historical_aliases(&mut active, &target, live, &remap);
             active.receipt.applied.manifest = active
                 .receipt
                 .applied
@@ -137,6 +138,8 @@ impl PortableSetupService {
             for id in &mut active.receipt.unresolved_bindings {
                 *id = remap.get(id).copied().unwrap_or(*id);
             }
+            active.receipt.unresolved_bindings.sort_unstable();
+            active.receipt.unresolved_bindings.dedup();
         }
         Ok(Some(active))
     }
@@ -169,6 +172,97 @@ impl PortableSetupService {
             _ => Ok(None),
         }
     }
+}
+
+/// An old projection can retain an unused identity after its native address was
+/// associated with an already-authored offline identity. Only that fully proved
+/// historical alias is discarded from this clone; ordinary remapping still
+/// rejects collisions between distinct or configured devices.
+fn reconcile_unused_historical_aliases(
+    active: &mut ActiveProjection,
+    target: &SetupBindings,
+    live: &SetupBindings,
+    remap: &BTreeMap<Uuid, Uuid>,
+) {
+    let manifest = &active.receipt.applied.manifest;
+    let removable: Vec<_> = remap
+        .iter()
+        .filter_map(|(&source, &destination)| {
+            let definition = manifest.devices.get(&source)?;
+            if source == destination
+                || manifest.devices.get(&destination) != Some(definition)
+                || remap.get(&destination).is_some_and(|id| *id != destination)
+                || remap.iter().any(|(&other, &id)| {
+                    other != source && other != destination && (id == destination || id == source)
+                })
+                || [source, destination].iter().any(|id| {
+                    !active.receipt.unresolved_bindings.contains(id)
+                        || binding_contains(live, *id)
+                        || binding_contains(&active.receipt.materialized_bindings, *id)
+                })
+                || device_has_authored_state(manifest, source)
+                || active.aliases.devices.values().any(|id| *id == destination)
+                || active.aliases.outputs.iter().any(|(local, id)| {
+                    *id == destination && *local != format!("portable:{destination}")
+                })
+            {
+                return None;
+            }
+            let mut proved = false;
+            for (local, id) in &active.aliases.devices {
+                if *id == source {
+                    if target.devices.get(local) != Some(&destination) {
+                        return None;
+                    }
+                    proved = true;
+                }
+            }
+            for (local, id) in &active.aliases.outputs {
+                if *id == source && *local != format!("portable:{source}") {
+                    if target.outputs.get(local) != Some(&destination) {
+                        return None;
+                    }
+                    proved |= !local.starts_with("portable:");
+                }
+            }
+            proved.then_some(source)
+        })
+        .collect();
+    for id in removable {
+        active.receipt.applied.manifest.devices.remove(&id);
+    }
+}
+
+fn binding_contains(bindings: &SetupBindings, id: Uuid) -> bool {
+    bindings
+        .devices
+        .values()
+        .chain(bindings.outputs.values())
+        .any(|value| *value == id)
+}
+
+fn device_has_authored_state(manifest: &PortableSetupV1, id: Uuid) -> bool {
+    manifest.attachments.contains_key(&id)
+        || manifest.display_faces.contains_key(&id)
+        || manifest.device_output.contains_key(&id)
+        || manifest.logical_devices.contains_key(&id)
+        || manifest
+            .logical_devices
+            .values()
+            .any(|logical| logical.device == id)
+        || manifest
+            .layouts
+            .values()
+            .any(|layout| layout.zones.iter().any(|output| output.device == id))
+        || manifest.scenes.values().any(|scene| {
+            scene.zones.iter().any(|zone| {
+                zone.layout.zones.iter().any(|output| output.device == id)
+                    || zone
+                        .display_target
+                        .as_ref()
+                        .is_some_and(|target| target.device == id)
+            })
+        })
 }
 
 fn alias_remap(
