@@ -2712,8 +2712,9 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
     config.capture.enabled = false;
     config.input.enabled = false;
     config.effect_engine.watch_effects = false;
-    let temp = temp_config_file();
-    let manager = config_manager_for(&config, temp.path());
+    // Atomic replacement on Windows requires the fixture handle to be closed.
+    let temp = temp_config_file().into_temp_path();
+    let manager = config_manager_for(&config, &temp);
     let mut daemon = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
         .expect("initial daemon");
     daemon.start().await.expect("initial start");
@@ -3304,77 +3305,113 @@ async fn unavailable_offline_default_face_survives_real_restart() {
     config.audio.enabled = false;
     config.capture.enabled = false;
     config.input.enabled = false;
-    let temp = temp_config_file();
-    let manager = config_manager_for(&config, temp.path());
+    // Atomic replacement on Windows requires the fixture handle to be closed.
+    let temp = temp_config_file().into_temp_path();
+    let manager = config_manager_for(&config, &temp);
     let identity = SetupIdentity {
         setup_id: uuid::Uuid::now_v7(),
         name: "Fresh setup".into(),
     };
     let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
         .expect("first initialization");
-    first.start().await.expect("first startup");
-    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first)))
-        .expect("first service");
-    let before = service
-        .export(identity.clone(), &SetupBindings::default())
+    use futures_util::FutureExt as _;
+    let restored = std::panic::AssertUnwindSafe(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            first.start().await.expect("first startup");
+            let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first)))
+                .expect("first service");
+            let before = service
+                .export(identity.clone(), &SetupBindings::default())
+                .await
+                .expect("fresh projection");
+            let target = uuid::Uuid::now_v7();
+            let mut desired = before.manifest;
+            desired.devices.insert(
+                target,
+                hypercolor_types::portable_setup::PortableDevice {
+                    name: "Unplugged panel".into(),
+                    portable_key: None,
+                    driver_id: "test".into(),
+                    vendor_id: None,
+                    product_id: None,
+                    model: None,
+                    led_count: 0,
+                    binding_hint: None,
+                },
+            );
+            desired.display_faces.insert(
+                target,
+                hypercolor_types::portable_setup::PortableDisplayFace {
+                    effect_id: hypercolor_types::effect::EffectId::new(uuid::Uuid::now_v7()),
+                    controls: std::collections::HashMap::new(),
+                    blend_mode: hypercolor_types::layer::BlendMode::Alpha,
+                    opacity: 0.65,
+                },
+            );
+            let accepted = service
+                .restore(
+                    &desired,
+                    &SetupBindings::default(),
+                    hypercolor_daemon::domain::portable_setup::RestoreOptions {
+                        operation_id: uuid::Uuid::now_v7(),
+                        expected_revision: before.revision,
+                        mode: hypercolor_daemon::domain::portable_setup::RestoreMode::Merge,
+                        apply_selection: true,
+                    },
+                )
+                .await
+                .expect("offline resource restore");
+            assert_eq!(accepted.unresolved_bindings, vec![target]);
+            let exported = service
+                .export(identity.clone(), &SetupBindings::default())
+                .await
+                .expect("immediate export");
+            assert_eq!(exported.manifest, desired);
+            (accepted, desired)
+        })
         .await
-        .expect("fresh projection");
-    let target = uuid::Uuid::now_v7();
-    let mut desired = before.manifest;
-    desired.devices.insert(
-        target,
-        hypercolor_types::portable_setup::PortableDevice {
-            name: "Unplugged panel".into(),
-            portable_key: None,
-            driver_id: "test".into(),
-            vendor_id: None,
-            product_id: None,
-            model: None,
-            led_count: 0,
-            binding_hint: None,
-        },
-    );
-    desired.display_faces.insert(
-        target,
-        hypercolor_types::portable_setup::PortableDisplayFace {
-            effect_id: hypercolor_types::effect::EffectId::new(uuid::Uuid::now_v7()),
-            controls: std::collections::HashMap::new(),
-            blend_mode: hypercolor_types::layer::BlendMode::Alpha,
-            opacity: 0.65,
-        },
-    );
-    let accepted = service
-        .restore(
-            &desired,
-            &SetupBindings::default(),
-            hypercolor_daemon::domain::portable_setup::RestoreOptions {
-                operation_id: uuid::Uuid::now_v7(),
-                expected_revision: before.revision,
-                mode: hypercolor_daemon::domain::portable_setup::RestoreMode::Merge,
-                apply_selection: true,
-            },
-        )
-        .await
-        .expect("offline resource restore");
-    assert_eq!(accepted.unresolved_bindings, vec![target]);
-    let exported = service
-        .export(identity.clone(), &SetupBindings::default())
-        .await
-        .expect("immediate export");
-    assert_eq!(exported.manifest, desired);
-    first.shutdown().await.expect("graceful shutdown");
-    drop(service);
+        .expect("offline restore and export complete")
+    })
+    .catch_unwind()
+    .await;
+    let shutdown = first.shutdown().await;
+    let (accepted, desired) = match restored {
+        Ok(restored) => restored,
+        Err(panic) => {
+            if let Err(error) = &shutdown {
+                eprintln!("shutdown after offline restore assertion failed: {error:#}");
+            }
+            std::panic::resume_unwind(panic);
+        }
+    };
+    shutdown.expect("graceful shutdown");
     drop(first);
     let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
         .expect("restart initialization");
-    restarted.start().await.expect("restart");
-    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
-        .expect("restarted service");
-    let after = service
-        .export(identity, &SetupBindings::default())
+    let recovered = std::panic::AssertUnwindSafe(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            restarted.start().await.expect("restart");
+            let service =
+                PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+                    .expect("restarted service");
+            let after = service
+                .export(identity, &SetupBindings::default())
+                .await
+                .expect("restarted projection");
+            assert_eq!(after.manifest, desired);
+            assert_eq!(after.revision, accepted.applied.revision);
+        })
         .await
-        .expect("restarted projection");
-    assert_eq!(after.manifest, desired);
-    assert_eq!(after.revision, accepted.applied.revision);
-    restarted.shutdown().await.expect("final shutdown");
+        .expect("offline restart and export complete");
+    })
+    .catch_unwind()
+    .await;
+    let shutdown = restarted.shutdown().await;
+    if let Err(panic) = recovered {
+        if let Err(error) = &shutdown {
+            eprintln!("shutdown after offline restart assertion failed: {error:#}");
+        }
+        std::panic::resume_unwind(panic);
+    }
+    shutdown.expect("final shutdown");
 }
