@@ -1,9 +1,17 @@
 use hypercolor_ui::ambient::{
     AMBIENT_HUE_DEADBAND_DEG, AMBIENT_HUE_FALLBACK_DEG, AMBIENT_PUBLISH_INTERVAL_MS,
-    AmbientHuePublisher, shortest_hue_delta,
+    AmbientHuePublisher, hue_style, shortest_hue_delta,
 };
 
 const LATER: f64 = AMBIENT_PUBLISH_INTERVAL_MS;
+
+#[test]
+fn a_standalone_consumer_uses_the_css_fallback() {
+    let owner = leptos::prelude::Owner::new();
+    owner.with(|| {
+        assert_eq!(hue_style()(), format!("{AMBIENT_HUE_FALLBACK_DEG:.1}"));
+    });
+}
 
 #[test]
 fn the_first_hue_publishes_at_once_unwrapped_from_the_css_fallback() {
@@ -23,7 +31,7 @@ fn a_first_hue_beside_the_fallback_leaves_the_css_alone() {
 
 #[test]
 fn a_publisher_resuming_from_an_unwrapped_value_keeps_turning_the_short_way() {
-    // A remounted shell picks up where `--ambient-hue` was left, laps and all.
+    // Unwrapped state can retain multiple laps without resetting to purple.
     let mut publisher = AmbientHuePublisher::starting_at(1_090.0);
     assert_eq!(publisher.offer(20.0, 0.0), Some(1_100.0));
 }
@@ -125,6 +133,10 @@ fn the_fallback_matches_the_css_it_unwraps_against() {
     let drift = &input[input
         .find("@property --ambient-hue-drift")
         .expect("drift property registered")..];
+    let hue = &input[input
+        .find("@property --ambient-hue {")
+        .expect("consumer hue property registered")..];
     assert!((declared(&tokens, "--ambient-hue:") - AMBIENT_HUE_FALLBACK_DEG).abs() < f64::EPSILON);
+    assert!((declared(hue, "initial-value:") - AMBIENT_HUE_FALLBACK_DEG).abs() < f64::EPSILON);
     assert!((declared(drift, "initial-value:") - AMBIENT_HUE_FALLBACK_DEG).abs() < f64::EPSILON);
 }

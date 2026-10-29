@@ -607,6 +607,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     provide_context(FrameAnalysisContext {
         live_canvas: live_canvas_analysis,
     });
+    crate::ambient::provide_ambient_context(live_canvas_analysis);
     // A bridged page gets its main canvas as the bridge's video track, and
     // the ambient palette samples that video instead of socket frames. The
     // video follows the zone the socket path would show.

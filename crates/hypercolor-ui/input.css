@@ -100,17 +100,22 @@ button:not(:disabled),
 
 /* ── Scrollbars ─────────────────────────────────────────────────────────── */
 
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
+@property --ambient-hue {
+    syntax: "<number>";
+    inherits: false;
+    initial-value: 320;
 }
 
-/* Buttons, links, inline text and icons never scroll, yet they still carry
-   `scrollbar-color`, which tracks the ambient hue. Every hue publish would
-   then start a scrollbar-color transition on each one wearing
-   `transition-all`, animating chrome that has no scrollbar to tint. */
-button, a, span, svg {
+* {
+    scrollbar-width: thin;
     scrollbar-color: auto;
+}
+
+/* Only actual scroll owners receive the hue. Descendants keep the explicit
+   auto value above, including controls with transition-all. Theme channels
+   are static; no inherited custom property changes when the hue moves. */
+.ambient-scroll {
+    scrollbar-color: oklch(var(--scrollbar-l) var(--scrollbar-c) var(--ambient-hue) / var(--scrollbar-alpha)) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -129,6 +134,15 @@ button, a, span, svg {
 
 *::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-hover);
+}
+
+.ambient-scroll::-webkit-scrollbar-thumb {
+    --ambient-hue: inherit;
+    background: oklch(var(--scrollbar-l) var(--scrollbar-c) var(--ambient-hue) / var(--scrollbar-alpha));
+}
+
+.ambient-scroll::-webkit-scrollbar-thumb:hover {
+    background: oklch(var(--scrollbar-l) var(--scrollbar-hover-c) var(--ambient-hue) / var(--scrollbar-hover-alpha));
 }
 
 /* ── Slider Track Styling ────────────────────────────────────────────────── */
@@ -705,9 +719,7 @@ input[type="range"].slider-silk::-moz-range-track {
 }
 .animate-cabinet-ignite { animation: cabinetIgnite 0.7s var(--ease-silk); }
 
-/* Smooth transition for the cabinet's accent-tinted border so the
-   color crossfades when the active effect changes. Paired with a
-   `border-top: 2px solid transparent` base so only the color animates. */
+/* Crossfade the cabinet's accent-tinted top border when its effect changes. */
 .cabinet-accent-transition {
     transition: border-top-color 0.45s var(--ease-silk);
 }
@@ -1090,17 +1102,10 @@ input[type="range"].slider-silk::-moz-range-track {
     background: rgba(var(--glow-rgb), 0.08);
 }
 
-/* Preview panel glow — ambient-reactive edge glow around the live canvas.
-   Includes the `.edge-glow` hairline so stacking both classes adds the
-   ambient halo without dropping the neutral edge ring.
-
-   The halo drifts toward each published hue through `--ambient-hue-drift`,
-   a registered number that does not inherit. Interpolating it on this one
-   element keeps every frame of the drift here: nothing below inherits it,
-   so the cabinet's subtree never restyles while the hue settles, and
-   `--ambient-hue` itself only changes once per publish. The halo colors are
-   rebuilt from the ambient channel tokens because `--ambient-glow` and
-   `--ambient-border` already substituted the undrifted root hue. */
+/* A childless decoration owns the cabinet's halo, hairline and ignition.
+   Its border box matches the cabinet's, without clipping escaped menus or
+   including the canvas in its animated shadow. Both hue properties stay
+   local. OKLCH shadow interpolation still paints this decoration. */
 @property --ambient-hue-drift {
     syntax: "<number>";
     inherits: false;
@@ -1108,20 +1113,18 @@ input[type="range"].slider-silk::-moz-range-track {
 }
 
 .preview-glow {
+    position: absolute;
+    inset: -1px;
+    border: 1px solid transparent;
+    border-radius: inherit;
+    pointer-events: none;
+    contain: layout style;
     --ambient-hue-drift: var(--ambient-hue);
     box-shadow: 0 0 40px oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue-drift) / var(--ambient-glow-alpha)),
                 0 0 2px oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue-drift) / var(--ambient-border-alpha)),
                 0 0 1px var(--border-subtle),
                 inset 0 1px 0 rgba(255, 255, 255, 0.03);
     transition: --ambient-hue-drift 2s var(--ease-silk);
-}
-
-/* The preview cabinet runs both its accent-border crossfade and the ambient
-   drift; the transitions must ride one declaration or the later rule's
-   `transition` would silently drop the border crossfade. */
-.cabinet-accent-transition.preview-glow {
-    transition: border-top-color 0.45s var(--ease-silk),
-                --ambient-hue-drift 2s var(--ease-silk);
 }
 
 /* Command palette / modal glow — cinematic ambient */

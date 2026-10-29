@@ -1339,6 +1339,47 @@ writes need a protected-control credential (`protection`: `open`,
 affordances from this table.
 {% </api_endpoint> %}
 
+## Backups
+
+Backups transfer authored lighting configuration, including scenes, layouts,
+presets, favorites, and portable preferences. Self-installed effect files and
+local media stay on their respective machines. Importing an older archive
+verifies and discards its file payloads; it does not install them or remove
+existing local resources.
+
+{% <api_endpoint method="GET" path="/api/v1/backups/export"> %}
+Download the current configuration as a `.hypercolor-backup` archive. The
+success response is a binary tar stream (`Content-Type: application/x-tar`),
+with attachment filename `hypercolor.hypercolor-backup`, rather than a JSON
+envelope. Newly exported archives contain no effect or media blobs.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/backups/import"> %}
+Send the raw archive bytes to validate and stage a restore preview. The JSON
+response includes an `operation_id`, configuration counts, and resource
+warnings. The preview does not apply the uploaded settings. It captures the
+destination revision and relevant preferences for the subsequent apply.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/backups/apply"> %}
+Apply a staged preview with a JSON body containing only its operation ID:
+
+```json
+{"operation_id": "019b1f9a-3f4b-7c8d-a2e1-91b4c0d86a25"}
+```
+
+The restore merges configuration and favorites and applies the saved
+selection. Reusing the same staged operation ID replays its durable result
+after a lost response. If the destination changed after preview, the apply
+returns `409 Conflict`; import the archive again to obtain a fresh preview.
+
+Both preview and apply responses include `unresolved_devices` (device names)
+and `missing_resources` (effect, media, and preset ID arrays under `effects`,
+`media`, and `presets`). Missing resources keep their authored references;
+unavailable render sources remain inactive while other configuration restores.
+Install effects or reconnect media separately where needed.
+{% </api_endpoint> %}
+
 ## Diagnostics
 
 {% <api_endpoint method="POST" path="/api/v1/diagnose"> %}

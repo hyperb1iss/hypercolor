@@ -448,7 +448,7 @@ pub fn DashboardPage() -> impl IntoView {
                 </HeaderToolbar>
             </PageHeader>
 
-            <div class="flex-1 min-h-0 overflow-y-auto">
+            <div class="ambient-scroll flex-1 min-h-0 overflow-y-auto" style:--ambient-hue=crate::ambient::hue_style()>
                 <div class="p-4 pt-3 md:p-6 md:pt-4 flex flex-col gap-4 min-h-full">
                     // ── Hero row: preview on the left, favorites on the
                     // right, draggable splitter between them. Fixed height

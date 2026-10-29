@@ -42,10 +42,8 @@
     --accent-muted:      oklch(0.65 0.30 320 / 0.12);
     --accent-subtle:     oklch(0.65 0.30 320 / 0.06);
 
-    /* Ambient (dynamic: --ambient-hue is set from Leptos). The colors are
-       built from channel tokens so a consumer that drifts its own copy of
-       the hue (.preview-glow) can rebuild them; a token declared here has
-       already substituted the root hue. Light mode overrides the channels. */
+    /* Static ambient defaults. Reactive consumers bind their non-inheriting
+       hue locally and resolve colors from these theme channels. */
     --ambient-hue:       320;
     --ambient-l:         0.65;
     --ambient-c:         0.20;
@@ -62,9 +60,12 @@
     --status-warning:    oklch(0.93 0.15 105);
     --status-info:       oklch(0.72 0.12 260);
 
-    /* Scrollbar — ambient-tinted (§9: --ambient-border tier). Low chroma so
-       the thumb reads as chrome, not content; falls back to purple via the
-       static --ambient-hue: 320 above before the first frame lands. */
+    /* Scrollbar channels are static. Scroll owners resolve their own hue. */
+    --scrollbar-l:       0.65;
+    --scrollbar-c:       0.10;
+    --scrollbar-hover-c: 0.12;
+    --scrollbar-alpha:   0.18;
+    --scrollbar-hover-alpha: 0.32;
     --scrollbar-thumb:   oklch(0.65 0.10 var(--ambient-hue) / 0.18);
     --scrollbar-hover:   oklch(0.65 0.12 var(--ambient-hue) / 0.32);
 
@@ -145,6 +146,11 @@
     --status-info:       oklch(0.50 0.12 260);
 
     /* Scrollbar */
+    --scrollbar-l:       0;
+    --scrollbar-c:       0;
+    --scrollbar-hover-c: 0;
+    --scrollbar-alpha:   0.12;
+    --scrollbar-hover-alpha: 0.24;
     --scrollbar-thumb:   oklch(0 0 0 / 0.12);
     --scrollbar-hover:   oklch(0 0 0 / 0.24);
 

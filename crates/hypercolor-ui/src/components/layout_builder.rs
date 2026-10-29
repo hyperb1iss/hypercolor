@@ -369,6 +369,7 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
         end_grip(ev, PointerEnd::LostCapture);
     });
     on_cleanup(move || detached_capture_loss.remove());
+    let ambient_hue = crate::ambient::hue_style();
 
     view! {
         <Show
@@ -424,8 +425,8 @@ pub(crate) fn LayoutWorkspace() -> impl IntoView {
 
                     // Zone properties — resizable height
                     <div
-                        class="shrink-0 overflow-y-auto bg-surface-base/95 backdrop-blur-sm"
-                        style=move || format!("height: {:.0}px", bottom_height.get())
+                        class="ambient-scroll shrink-0 overflow-y-auto bg-surface-base/95 backdrop-blur-sm"
+                        style=move || format!("height: {:.0}px; --ambient-hue: {}", bottom_height.get(), ambient_hue())
                     >
                         <LayoutZoneProperties />
                     </div>

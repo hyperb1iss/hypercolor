@@ -44,8 +44,8 @@ darker to go. Layers separate through luminance steps and hairline borders.
 Box-shadow is reserved for two jobs: the single page-header elevation exception
 (§6.3) and colored *glows*, which communicate energy rather than depth.
 
-**3. The UI breathes.** A single `--ambient-hue` custom property, derived from
-the active effect's dominant hue, tints borders, scrollbars, and edge glows. The
+**3. The UI breathes.** The active effect's dominant hue feeds local
+`--ambient-hue` bindings on scrollbars and preview halos. The
 interface subtly mirrors the light it orchestrates. It is alive without being
 busy.
 
@@ -390,7 +390,8 @@ Dark mode brightens each step; light mode darkens it. Layers separate with a 1px
 Soft glows stand in for elevation shadows. `.edge-glow` is the neutral panel
 treatment: a faint border-tinted ring plus a 1px inner highlight.
 `.edge-glow-accent` adds a colored bloom driven by `--glow-rgb` (§4.2).
-`.preview-glow` wraps the live canvas in an ambient-reactive halo (§9).
+An empty `.preview-glow` decoration surrounds the live canvas with an
+ambient-reactive halo (§9).
 `.modal-glow`, `.dropdown-glow`, and `.swatch-glow` are the floating-element
 variants. These glows read as *energy*, not depth.
 
@@ -495,30 +496,33 @@ controlling.
 
 **How it works.** A component samples the live canvas frame for a dominant hue.
 The math is a circular mean over pixel data, using sin and cos so the wrap at
-360° is handled correctly. The result is written to `--ambient-hue` on the shell
-root, and every `--ambient-*` token derives from that hue in OKLCH.
+360° is handled correctly. App-owned hue state survives route remounts. Each
+visual consumer binds `--ambient-hue` locally, resolving its OKLCH colors from
+static theme channels. The document root never receives a hue update.
 
-| Token | Intensity | Tints |
+| Channel | Intensity | Tints |
 | ----- | --------- | ----- |
-| `--ambient-glow` | 6 to 8% | Shell edge gradient, preview halo |
-| `--ambient-border` | 12 to 15% | Scrollbar thumb, active card border |
-| `--ambient-tint` | 3 to 4% | "Now Playing" background, noise tint |
+| `--ambient-glow-alpha` | 6 to 8% | Preview halo |
+| `--ambient-border-alpha` | 12 to 15% | Preview edge glow |
+| `--scrollbar-alpha` | 12 to 18% | Scrollbar thumb |
 
 `.preview-glow` drifts to each new hue over 2s on the `--ease-silk` curve, so
 hue shifts drift rather than snap. The drift runs on `--ambient-hue-drift`, a
 registered `<number>` that does not inherit, so each frame of it restyles the
-halo element alone and never its subtree.
+childless halo decoration. The shadow still paints; moving it to a decoration
+does not turn OKLCH shadow interpolation into a compositor animation.
 
 **Discipline.** Hue extraction runs on a low-priority cadence, not the render
-loop and not every frame. A `:root` write restyles the whole document, so the
-hue publishes at most once a second and only when it moves at least 4°
+loop and not every frame. The hue publishes at most once a second and only
+when it moves at least 4°
 (`AmbientHuePublisher` in `src/ambient.rs`); the published value is unwrapped
 so CSS always turns the short way around the wheel. Interpolation happens in
-CSS. A surface that wants the drift rebuilds its color from the
-`--ambient-l`, `--ambient-c` and `--ambient-*-alpha` channel tokens against
-`--ambient-hue-drift`, because the composed `--ambient-*` colors have already
-substituted the root hue. When no effect is active, `--ambient-hue` falls back
-to `320` (purple), matching the primary accent. Ambient reactivity is a
+CSS. Both hue properties are registered with `inherits: false`. The halo
+resolves the `--ambient-l`, `--ambient-c` and `--ambient-*-alpha` channels
+against its own drift. Visible scrollbar owners use `.ambient-scroll` and a
+local hue binding; unrelated elements keep `scrollbar-color: auto`. Custom
+dropdown scrollbars and hidden scrollbars retain their own styling. Before the
+first publish, the hue is `320` (purple). Ambient reactivity is a
 progressive enhancement: the UI is correct and complete without it.
 
 ---

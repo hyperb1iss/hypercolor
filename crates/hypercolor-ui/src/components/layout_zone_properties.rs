@@ -140,7 +140,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
 
     view! {
         <div
-            class="h-full px-5 py-2.5 overflow-y-auto"
+            class="ambient-scroll h-full px-5 py-2.5 overflow-y-auto" style:--ambient-hue=crate::ambient::hue_style()
             on:pointerdown=move |ev: web_sys::PointerEvent| {
                 let is_range = ev
                     .target()
