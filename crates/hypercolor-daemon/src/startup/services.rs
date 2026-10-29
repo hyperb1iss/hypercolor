@@ -210,6 +210,9 @@ impl DaemonState {
         let config: &HypercolorConfig = &boot;
         let data_dir = ConfigManager::data_dir();
         let state_dir = ConfigManager::state_dir();
+        let portable_restore_pending =
+            crate::domain::portable_setup::pending_restore_exists(&state_dir)
+                .context("failed to inspect portable restore authority")?;
         info!("Initializing daemon subsystems");
         config
             .capture
@@ -387,7 +390,11 @@ impl DaemonState {
             html_failed = html_report.failed_files(),
             "Effect registry created"
         );
-        let effect_id_migrations = html_report.legacy_effect_ids;
+        let effect_id_migrations = if portable_restore_pending {
+            HashMap::new()
+        } else {
+            html_report.legacy_effect_ids
+        };
 
         let default_layout = SpatialLayout {
             id: "default".into(),
@@ -415,17 +422,19 @@ impl DaemonState {
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let profiles_path = ConfigManager::data_dir().join("profiles.json");
-        match crate::profile_import::import_profiles(
-            &profiles_path,
-            &scenes_path,
-            layout_resources.catalog(),
-            &default_layout,
-        )
-        .context("failed to import legacy profiles")?
-        {
-            crate::profile_import::ProfileImportOutcome::NoSource => {}
-            crate::profile_import::ProfileImportOutcome::Imported { profiles, backup } => {
-                info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
+        if !portable_restore_pending {
+            match crate::profile_import::import_profiles(
+                &profiles_path,
+                &scenes_path,
+                layout_resources.catalog(),
+                &default_layout,
+            )
+            .context("failed to import legacy profiles")?
+            {
+                crate::profile_import::ProfileImportOutcome::NoSource => {}
+                crate::profile_import::ProfileImportOutcome::Imported { profiles, backup } => {
+                    info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
+                }
             }
         }
         // Read after the legacy import, which writes this store, and before
@@ -434,9 +443,10 @@ impl DaemonState {
         let scene_store_absent = !scenes_path.try_exists().unwrap_or(true);
         let mut scene_store_inner = SceneStore::load(&scenes_path)
             .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
-        if scene_store_inner
-            .persist_normalization()
-            .context("failed to persist normalized scene store")?
+        if !portable_restore_pending
+            && scene_store_inner
+                .persist_normalization()
+                .context("failed to persist normalized scene store")?
         {
             info!(
                 path = %scenes_path.display(),
@@ -966,6 +976,8 @@ impl DaemonState {
             device_aliases_path,
             startup_device_aliases: Some(startup_device_aliases),
             startup_runtime_snapshot,
+            portable_setup: None,
+            portable_binding_task: None,
             fresh_install,
             discovery_in_progress,
             output_power,

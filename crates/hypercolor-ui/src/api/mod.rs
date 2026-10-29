@@ -10,10 +10,13 @@ use leptos::prelude::{Get, LocalResource, expect_context};
 use crate::app::WsContext;
 
 pub mod assets;
+pub mod backups;
 #[cfg(target_arch = "wasm32")]
 pub mod browser_body;
 #[cfg(target_arch = "wasm32")]
 pub mod browser_response;
+#[cfg(target_arch = "wasm32")]
+mod browser_stream;
 pub mod client;
 pub mod config;
 pub mod controls;

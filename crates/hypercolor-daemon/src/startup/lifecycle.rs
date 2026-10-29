@@ -55,6 +55,9 @@ impl DaemonState {
     }
 
     async fn start_inner(&mut self) -> Result<()> {
+        let restoring_setup = crate::domain::portable_setup::pending_restore_exists(
+            &hypercolor_core::config::ConfigManager::state_dir(),
+        )?;
         let config = self.config();
         self.startup_progress
             .enter(DaemonStartupPhase::StartingInputs);
@@ -66,9 +69,11 @@ impl DaemonState {
         );
 
         // Start configured input sources.
-        self.input_manager
-            .start_all()
-            .context("failed to start input sources")?;
+        if !restoring_setup {
+            self.input_manager
+                .start_all()
+                .context("failed to start input sources")?;
+        }
         if self.input_status_event_publisher.is_none() {
             self.input_status_event_publisher = Some(InputStatusEventPublisher::start(
                 self.input_status.clone(),
@@ -96,8 +101,10 @@ impl DaemonState {
         // no client reaches the scene or the library until the API is served,
         // so first-run seeds land here without racing anything.
         let fresh_install = std::mem::take(&mut self.fresh_install);
-        self.restore_runtime_session(&config, fresh_install).await;
-        if fresh_install {
+        if !restoring_setup {
+            self.restore_runtime_session(&config, fresh_install).await;
+        }
+        if fresh_install && !restoring_setup {
             crate::first_run::seed_favorites(
                 &self.domains.effects,
                 self.library_store.as_ref(),
@@ -105,25 +112,6 @@ impl DaemonState {
             )
             .await;
         }
-
-        let session_config = config.session.clone();
-        let monitors = self
-            .session_monitors
-            .take()
-            .unwrap_or_else(|| crate::session::platform_session_monitors(&session_config));
-        self.session_controller = Some(SessionController::start(
-            Arc::clone(&self.config_manager),
-            Arc::clone(&self.event_bus),
-            self.output_power.clone(),
-            self.discovery_runtime(),
-            Arc::clone(&self.driver_host),
-            Arc::clone(&self.driver_registry),
-            monitors,
-        ));
-
-        activate_simulated_displays(&self.discovery_runtime(), &self.simulated_displays)
-            .await
-            .context("failed to activate virtual display simulators")?;
 
         // Start the render loop.
         {
@@ -176,6 +164,40 @@ impl DaemonState {
             )
             .context("failed to spawn render thread with resolved compositor mode")?,
         );
+        let portable_setup = crate::domain::portable_setup::PortableSetupService::new(Arc::new(
+            crate::app_state::AppState::from_daemon_state(self),
+        ))?;
+        self.portable_setup = Some(portable_setup.clone());
+        portable_setup
+            .recover()
+            .await
+            .context("failed to recover portable lighting setup")?;
+        if restoring_setup {
+            self.startup_runtime_snapshot = None;
+            self.input_manager
+                .start_all()
+                .context("failed to start restored input sources")?;
+        }
+        let config = self.config();
+        activate_simulated_displays(&self.discovery_runtime(), &self.simulated_displays)
+            .await
+            .context("failed to activate virtual display simulators")?;
+        portable_setup.reconcile_active_bindings().await?;
+        self.spawn_portable_binding_worker(portable_setup);
+        let session_config = config.session.clone();
+        let monitors = self
+            .session_monitors
+            .take()
+            .unwrap_or_else(|| crate::session::platform_session_monitors(&session_config));
+        self.session_controller = Some(SessionController::start(
+            Arc::clone(&self.config_manager),
+            Arc::clone(&self.event_bus),
+            self.output_power.clone(),
+            self.discovery_runtime(),
+            Arc::clone(&self.driver_host),
+            Arc::clone(&self.driver_registry),
+            monitors,
+        ));
         self.startup_progress
             .enter(DaemonStartupPhase::StartingServices);
         #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
@@ -282,12 +304,11 @@ impl DaemonState {
     /// Graceful shutdown — stops all subsystems in reverse-dependency order.
     ///
     /// Sequence:
-    /// 1. Stop render loop (no more frames produced)
-    /// 2. Wait for render thread to exit
-    /// 3. Clear and disconnect renderable devices
-    /// 4. Persist the current runtime session snapshot
-    /// 5. Scene manager cleanup
-    /// 6. Log final state
+    /// 1. Close API admission and stop ordinary background writers.
+    /// 2. Release pending restore workers while retaining their durable intent.
+    /// 3. Stop and join render and display output threads.
+    /// 4. Disconnect devices and persist the completed runtime state.
+    /// 5. Clean up scenes and publish shutdown.
     ///
     /// # Errors
     ///
@@ -296,6 +317,7 @@ impl DaemonState {
     /// sequence from completing.
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Beginning graceful shutdown");
+        self.domains.requests.close_and_wait().await;
 
         if let Some(controller) = self.session_controller.take() {
             controller.shutdown().await;
@@ -317,6 +339,107 @@ impl DaemonState {
 
         self.preview_runtime.clear_interactive_executor();
 
+        if let Some(handle) = self.effect_watcher_task.take() {
+            handle.abort();
+            if let Err(error) = handle.await
+                && !error.is_cancelled()
+            {
+                warn!(%error, "Effect watcher did not stop cleanly");
+            }
+        }
+        if let Some(handle) = self.display_preference_sync_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.portable_binding_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.output_static_hold_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.effect_error_fallback_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.effect_cover_keeper_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.discovery_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        // Driver-requested scans run in their own lanes; stop them before
+        // device cleanup so none can activate a device after it.
+        self.discovery_runtime().target_lanes.shut_down().await;
+        if let Some(handle) = self.driver_reconcile_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.device_metrics_collector_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.software_conflict_task.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        let reconnect_tasks = {
+            let mut reconnect_tasks = self
+                .reconnect_tasks
+                .lock()
+                .expect("reconnect task map lock poisoned");
+            reconnect_tasks
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>()
+        };
+        for handle in reconnect_tasks {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        let mut preserve_pending_transaction =
+            crate::domain::portable_setup::pending_restore_exists(
+                &hypercolor_core::config::ConfigManager::state_dir(),
+            )
+            .unwrap_or_else(|error| {
+                warn!(%error, "Could not verify setup recovery authority during shutdown");
+                true
+            });
+        if let Some(service) = self.portable_setup.take() {
+            match service.shutdown_when_writers_closed().await {
+                Ok(crate::extensions::ShutdownPersistenceDisposition::SaveCurrentState) => {}
+                Ok(
+                    crate::extensions::ShutdownPersistenceDisposition::PreservePendingTransaction,
+                ) => preserve_pending_transaction = true,
+                Err(error) => {
+                    preserve_pending_transaction = true;
+                    warn!(%error, "Portable restore shutdown boundary failed; preserving durable state");
+                }
+            }
+        }
+        for extension in self.lifecycle_extensions.clone().iter().rev() {
+            match extension.writers_stopped(self).await {
+                Ok(crate::extensions::ShutdownPersistenceDisposition::SaveCurrentState) => {}
+                Ok(
+                    crate::extensions::ShutdownPersistenceDisposition::PreservePendingTransaction,
+                ) => {
+                    preserve_pending_transaction = true;
+                }
+                Err(error) => {
+                    preserve_pending_transaction = true;
+                    warn!(extension = extension.name(), %error, "Shutdown transaction boundary failed; preserving durable state");
+                }
+            }
+        }
+
+        // Restore workers retain registry and scene writers until the late
+        // shutdown boundary. Keep the renderer available for their final
+        // acknowledgement, then join readers after those guards are released.
         // 1. Stop render loop — next tick() will return false.
         {
             let mut loop_guard = self.render_loop.write().await;
@@ -344,52 +467,6 @@ impl DaemonState {
             Err(e) => warn!(error = %e, "Servo runtime shutdown error"),
         }
 
-        if let Some(handle) = self.effect_watcher_task.take() {
-            handle.abort();
-            if let Err(error) = handle.await
-                && !error.is_cancelled()
-            {
-                warn!(%error, "Effect watcher did not stop cleanly");
-            }
-        }
-        if let Some(handle) = self.display_preference_sync_task.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.output_static_hold_task.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.effect_error_fallback_task.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.effect_cover_keeper_task.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.discovery_task.take() {
-            handle.abort();
-        }
-        // Driver-requested scans run in their own lanes; stop them before
-        // device cleanup so none can activate a device after it.
-        self.discovery_runtime().target_lanes.shut_down().await;
-        if let Some(handle) = self.driver_reconcile_task.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.device_metrics_collector_task.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.software_conflict_task.take() {
-            handle.abort();
-        }
-
-        {
-            let mut reconnect_tasks = self
-                .reconnect_tasks
-                .lock()
-                .expect("reconnect task map lock poisoned");
-            for (_id, handle) in reconnect_tasks.drain() {
-                handle.abort();
-            }
-        }
-
         let disconnected_devices =
             discovery::shutdown_renderable_devices(&self.discovery_runtime()).await;
         info!(
@@ -406,15 +483,27 @@ impl DaemonState {
         // content these saves replace is kept in state history however
         // recently it was written, so a session's last state always survives.
         persistence::capture_next_writes();
-        let runtime_snapshot = self.persist_runtime_session_snapshot().await;
-        let scene_snapshot = persist_scene_store_snapshot(&self.scene_manager).await;
+        let runtime_snapshot = if preserve_pending_transaction {
+            Ok(None)
+        } else {
+            self.persist_runtime_session_snapshot().await.map(Some)
+        };
+        let scene_snapshot = if preserve_pending_transaction {
+            Ok(None)
+        } else {
+            persist_scene_store_snapshot(&self.scene_manager).await
+        };
         let flush_report = persistence::flush_all(SHUTDOWN_PERSISTENCE_FLUSH_TIMEOUT);
         for error in flush_report.errors() {
             warn!(%error, "Persistence retry did not converge during shutdown");
         }
-        let persistence_complete =
-            runtime_snapshot.is_ok() && scene_snapshot.is_ok() && flush_report.is_complete();
-        if let (Ok(runtime), Ok(scenes)) = (&runtime_snapshot, &scene_snapshot)
+        let persistence_complete = !preserve_pending_transaction
+            && runtime_snapshot.is_ok()
+            && scene_snapshot.is_ok()
+            && flush_report.is_complete();
+        if preserve_pending_transaction {
+            warn!("Preserving unfinished setup transaction for startup recovery");
+        } else if let (Ok(runtime), Ok(scenes)) = (&runtime_snapshot, &scene_snapshot)
             && flush_report.is_complete()
         {
             info!(
@@ -454,13 +543,15 @@ impl DaemonState {
         // store has flushed — there is nothing left to race and nothing
         // left to observe the result, which is dropped with the manager
         // a few lines later.
-        let mut mutation = self.scene_manager.begin_mutation().await;
-        mutation.deactivate_current(SceneChangeReason::UserDeactivate);
-        self.scene_manager
-            .commit_mutation(mutation)
-            .await
-            .context("failed to deactivate scene during shutdown")?;
-        info!("Scene manager cleaned up");
+        if !preserve_pending_transaction {
+            let mut mutation = self.scene_manager.begin_mutation().await;
+            mutation.deactivate_current(SceneChangeReason::UserDeactivate);
+            self.scene_manager
+                .commit_mutation(mutation)
+                .await
+                .context("failed to deactivate scene during shutdown")?;
+            info!("Scene manager cleaned up");
+        }
 
         // 7. Log final device count.
         let device_count = self.device_registry.len().await;
@@ -507,17 +598,42 @@ impl DaemonState {
         });
 
         if let Some(snapshot) = snapshot.as_ref()
+            && snapshot.output_stopped
+        {
+            self.output_power.restore_output_stopped().await;
+        } else if let Some(snapshot) = snapshot.as_ref()
             && snapshot.manual_paused
         {
             self.output_power.restore_manual_pause([0, 0, 0]).await;
         }
 
-        if !scene_mode.eq_ignore_ascii_case("last") {
-            self.activate_configured_start_scene(scene_mode).await;
-            return;
-        }
-
-        let Some(snapshot) = snapshot else {
+        let restore_last_selection = scene_mode.eq_ignore_ascii_case("last");
+        if let Some(snapshot) = snapshot {
+            // A configured startup scene changes selection, not the authored
+            // Default scene stored with the runtime session.
+            if restore_last_selection && let Some(layout_id) = &snapshot.active_layout_id {
+                match self.domains.layout.restore_startup_layout(layout_id).await {
+                    Ok(Some(layout)) => {
+                        info!(layout_id, layout_name = %layout.name, "Restored active layout");
+                    }
+                    Ok(None) => {
+                        debug!(
+                            layout_id,
+                            "Persisted active layout not found in store; using default"
+                        );
+                    }
+                    Err(error) => {
+                        warn!(layout_id, %error, "Rejected persisted active layout");
+                    }
+                }
+            }
+            if let Err(error) = self
+                .apply_runtime_session_snapshot(snapshot, restore_last_selection)
+                .await
+            {
+                warn!(%error, "Failed to restore runtime session snapshot");
+            }
+        } else if restore_last_selection {
             debug!(
                 path = %self.runtime_state_path.display(),
                 "No runtime session snapshot found to restore"
@@ -528,28 +644,10 @@ impl DaemonState {
             if seed_scene && !snapshot_unreadable {
                 crate::first_run::seed_scene(&self.domains.effects).await;
             }
-            return;
-        };
-        // Restore active layout if persisted.
-        if let Some(layout_id) = &snapshot.active_layout_id {
-            match self.domains.layout.restore_startup_layout(layout_id).await {
-                Ok(Some(layout)) => {
-                    info!(layout_id, layout_name = %layout.name, "Restored active layout");
-                }
-                Ok(None) => {
-                    debug!(
-                        layout_id,
-                        "Persisted active layout not found in store; using default"
-                    );
-                }
-                Err(error) => {
-                    warn!(layout_id, %error, "Rejected persisted active layout");
-                }
-            }
         }
 
-        if let Err(error) = self.apply_runtime_session_snapshot(snapshot).await {
-            warn!(%error, "Failed to restore runtime session snapshot");
+        if !restore_last_selection {
+            self.activate_configured_start_scene(scene_mode).await;
         }
     }
 
@@ -647,10 +745,11 @@ impl DaemonState {
     async fn apply_runtime_session_snapshot(
         &self,
         snapshot: RuntimeSessionSnapshot,
+        restore_last_selection: bool,
     ) -> anyhow::Result<()> {
-        let requested_active_scene_id = snapshot
-            .active_scene_id
-            .as_deref()
+        let requested_active_scene_id = restore_last_selection
+            .then_some(&snapshot)
+            .and_then(|snapshot| snapshot.active_scene_id.as_deref())
             .map(str::parse::<uuid::Uuid>)
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
@@ -658,7 +757,7 @@ impl DaemonState {
         // A member assigned in Studio was minted into the scene's primary
         // zone only; adopt those outputs into the active layout before the
         // zone is re-aligned to it, or every restart drops them.
-        {
+        if restore_last_selection {
             let mut active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
             let adopted = self
                 .domains
@@ -680,7 +779,8 @@ impl DaemonState {
 
         {
             let mut mutation = self.scene_manager.begin_mutation().await;
-            if !snapshot.default_scene_zones.is_empty() {
+            if !snapshot.default_scene_zones.is_empty() || snapshot.default_scene_settings.is_some()
+            {
                 let Some(mut default_scene) = mutation.scenes().get(&SceneId::DEFAULT).cloned()
                 else {
                     anyhow::bail!("default scene is missing during runtime restore");
@@ -688,27 +788,34 @@ impl DaemonState {
                 default_scene
                     .zones
                     .clone_from(&snapshot.default_scene_zones);
+                if let Some(settings) = &snapshot.default_scene_settings {
+                    settings.apply(&mut default_scene);
+                }
                 mutation.restore_scene(default_scene)?;
             }
 
-            if let Some(scene_id) =
-                requested_active_scene_id.filter(|scene_id| !scene_id.is_default())
-            {
-                if mutation.scenes().get(&scene_id).is_some() {
-                    mutation.activate(scene_id, None, SceneChangeReason::DaemonStart)?;
-                } else {
-                    warn!(
-                        scene_id = %scene_id,
-                        "Persisted active scene was not found in the scene store"
-                    );
+            if restore_last_selection {
+                if requested_active_scene_id.is_none() {
+                    mutation.restore_inactive_selection();
                 }
-            }
+                if let Some(scene_id) =
+                    requested_active_scene_id.filter(|scene_id| !scene_id.is_default())
+                {
+                    if mutation.scenes().get(&scene_id).is_some() {
+                        mutation.activate(scene_id, None, SceneChangeReason::DaemonStart)?;
+                    } else {
+                        warn!(
+                            scene_id = %scene_id,
+                            "Persisted active scene was not found in the scene store"
+                        );
+                    }
+                }
 
-            // Persisted zones carry a frozen layout snapshot that may pre-date
-            // the active layout restored just above. Re-align the primary zone
-            // so the render pipeline sees the current layout's zones.
-            let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
-            mutation.sync_primary_layout(&active_layout);
+                // Follow the current catalog for live scenes while retaining
+                // the captured geometry of snapshot scenes.
+                let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
+                mutation.realign_primary_layout(&active_layout);
+            }
             self.scene_manager.commit_mutation(mutation).await?;
         }
         if !snapshot.default_scene_zones.is_empty() || requested_active_scene_id.is_some() {
@@ -720,6 +827,28 @@ impl DaemonState {
         }
 
         Ok(())
+    }
+
+    fn spawn_portable_binding_worker(
+        &mut self,
+        service: crate::domain::portable_setup::PortableSetupService,
+    ) {
+        let mut events = self.event_bus.subscribe_all();
+        self.portable_binding_task = Some(tokio::spawn(async move {
+            loop {
+                let reconcile = match events.recv().await {
+                    Ok(event) => matches!(
+                        event.event,
+                        HypercolorEvent::DeviceDiscoveryCompleted { .. }
+                    ),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if reconcile && let Err(error) = service.reconcile_active_bindings().await {
+                    warn!(%error, "Saved lighting is waiting for device association reconciliation");
+                }
+            }
+        }));
     }
 
     async fn spawn_effect_watcher(&mut self) {

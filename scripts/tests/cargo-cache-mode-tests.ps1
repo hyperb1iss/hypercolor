@@ -120,8 +120,41 @@ exit 0
 
     $invocations = @(Get-Content $env:HYPERCOLOR_TEST_ARGUMENT_CAPTURE |
         ForEach-Object { ,(ConvertFrom-Json $_) })
-    if ($invocations.Count -ne 14) {
-        throw "Expected 14 Windows Cargo invocations, captured $($invocations.Count)"
+    if ($invocations.Count -ne 17) {
+        throw "Expected 17 Windows Cargo invocations, captured $($invocations.Count)"
+    }
+    # PowerShell passes comma-separated features as an array; the wrapper
+    # stringifies it into one space-separated Cargo feature argument.
+    $requiredInvocations = @{
+        'production persistence check' = @(
+            'cargo', 'check', '--locked', '-p', 'hypercolor-persistence',
+            '--lib', '--no-default-features'
+        )
+        'backup restore and replay' = @(
+            'cargo', 'nextest', 'run', '--locked', '-p', 'hypercolor-daemon',
+            '--no-default-features', '--features', 'builtin-drivers persistence-test-hooks',
+            '--lib', '--no-tests=fail', '-E',
+            'test(=api::backups::tests::backup_routes_export_preview_restore_and_replay_without_source_credentials)'
+        )
+        'interrupted setup startup' = @(
+            'cargo', 'test', '--locked', '-p', 'hypercolor-daemon',
+            '--no-default-features', '--features', 'builtin-drivers persistence-test-hooks',
+            '--test', 'startup_tests',
+            'public_startup_recovers_interrupted_setup_without_private_extensions',
+            '--', '--exact', '--nocapture'
+        )
+    }
+    foreach ($entry in $requiredInvocations.GetEnumerator()) {
+        $expected = ConvertTo-Json -Compress -InputObject $entry.Value
+        $matching = 0
+        foreach ($invocation in $invocations) {
+            if ((ConvertTo-Json -Compress -InputObject $invocation) -ceq $expected) {
+                $matching += 1
+            }
+        }
+        if ($matching -ne 1) {
+            throw "Expected exactly one intact $($entry.Key) invocation, captured $matching"
+        }
     }
     foreach ($invocation in $invocations) {
         if ($invocation[0] -ne 'cargo') { throw 'Lost the Cargo executable argument' }
@@ -132,7 +165,12 @@ exit 0
                 }
             }
             'test' {
-                if (($invocation[-2..-1] -join ' ') -ne '-- --test-threads=1') {
+                if ($invocation -contains 'startup_tests') {
+                    # The complete startup invocation is checked above, including --.
+                    if (($invocation[-3..-1] -join ' ') -ne '-- --exact --nocapture') {
+                        throw "Startup test lost its harness arguments: $invocation"
+                    }
+                } elseif (($invocation[-2..-1] -join ' ') -ne '-- --test-threads=1') {
                     throw "Allocation test lost its harness arguments: $invocation"
                 }
             }

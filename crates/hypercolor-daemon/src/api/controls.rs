@@ -1316,6 +1316,7 @@ async fn apply_device_control_changes(
     device_id: DeviceId,
     changes: &NormalizedDeviceControlChanges,
 ) -> Result<(), DomainError> {
+    let _mutation = state.device_settings.begin_device_mutation().await;
     let enabled_handled_by_lifecycle = if let Some(enabled) = changes.enabled {
         let runtime = super::discovery_runtime(state);
         match core_discovery::apply_user_enabled_state(&runtime, device_id, enabled).await {

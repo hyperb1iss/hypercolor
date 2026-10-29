@@ -1666,6 +1666,8 @@ impl PreparedCanvasResize {
 }
 
 pub(crate) struct PreparedLayoutActivation {
+    pub(crate) portable_snapshot:
+        Option<Arc<crate::scene_transactions::portable::PortableRendererSnapshot>>,
     pub(crate) scene_fence: Option<Arc<crate::domain::scene_activation::LayoutSceneFence>>,
     pub(crate) spatial_engine: SpatialEngine,
     pub(crate) expected_layout: SpatialLayout,

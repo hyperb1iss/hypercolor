@@ -1,6 +1,9 @@
 //! Persisted output settings: global brightness plus per-device user settings.
 
+#[cfg(test)]
+mod admission_tests;
 mod migration;
+mod portable;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -170,6 +173,7 @@ pub struct DeviceSettingsStore {
 #[derive(Debug, Clone)]
 pub struct DeviceSettingsAccess {
     store: Arc<RwLock<DeviceSettingsStore>>,
+    mutation_admission: Arc<RwLock<()>>,
 }
 
 pub(crate) struct DeviceSettingsBindingMigration {
@@ -206,8 +210,25 @@ pub(crate) enum BrightnessPersistence {
 }
 
 impl DeviceSettingsAccess {
-    pub(crate) fn new(store: Arc<RwLock<DeviceSettingsStore>>) -> Self {
-        Self { store }
+    pub(crate) fn new(
+        store: Arc<RwLock<DeviceSettingsStore>>,
+        mutation_admission: Arc<RwLock<()>>,
+    ) -> Self {
+        Self {
+            store,
+            mutation_admission,
+        }
+    }
+
+    /// Keep live and persisted settings in one ordinary mutation. Independent
+    /// device operations remain concurrent; a whole-setup restore waits for all
+    /// admitted operations before capturing either authority.
+    pub async fn begin_device_mutation(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        Arc::clone(&self.mutation_admission).read_owned().await
+    }
+
+    pub(crate) async fn begin_portable_restore(&self) -> OwnedRwLockWriteGuard<()> {
+        Arc::clone(&self.mutation_admission).write_owned().await
     }
 
     pub async fn device_settings_for_key(&self, key: &str) -> Option<StoredDeviceSettings> {
@@ -886,7 +907,7 @@ mod tests {
         }"#
     }
 
-    async fn claimed_registry(fingerprint: &str) -> (DeviceRegistry, DeviceId, String) {
+    pub(super) async fn claimed_registry(fingerprint: &str) -> (DeviceRegistry, DeviceId, String) {
         let registry = DeviceRegistry::new();
         let info = DeviceInfo {
             id: DeviceId::new(),
@@ -979,9 +1000,12 @@ mod tests {
         seeded.save().expect("seed saves");
 
         let (registry, device_id, portable_key) = claimed_registry("net:wled:aaa").await;
-        let access = DeviceSettingsAccess::new(Arc::new(RwLock::new(
-            DeviceSettingsStore::load(&path).expect("store loads"),
-        )));
+        let access = DeviceSettingsAccess::new(
+            Arc::new(RwLock::new(
+                DeviceSettingsStore::load(&path).expect("store loads"),
+            )),
+            Arc::new(RwLock::new(())),
+        );
 
         let key = resolve_device_settings_key(&registry, &access, device_id).await;
         assert_eq!(key, portable_key);

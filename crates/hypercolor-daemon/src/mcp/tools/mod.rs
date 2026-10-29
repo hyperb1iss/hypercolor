@@ -497,13 +497,22 @@ pub async fn execute_tool_response_with_state(
     params: &Value,
     state: &AppState,
 ) -> Result<ToolResponse, ToolError> {
-    let params = validate_params(name, params)?;
-    let response = match name {
-        "capture_canvas" => canvas::handle_capture_canvas_with_state(&params, state).await?,
-        _ => ToolResponse::structured(execute_structured_tool(name, &params, state).await?),
-    };
-    validate_result(name, &response.payload)?;
-    Ok(response)
+    state
+        .domains
+        .requests
+        .run(Box::pin(async {
+            let params = validate_params(name, params)?;
+            let response = match name {
+                "capture_canvas" => {
+                    canvas::handle_capture_canvas_with_state(&params, state).await?
+                }
+                _ => ToolResponse::structured(execute_structured_tool(name, &params, state).await?),
+            };
+            validate_result(name, &response.payload)?;
+            Ok(response)
+        }))
+        .await
+        .unwrap_or_else(|| Err(ToolError::Conflict("Hypercolor is shutting down".into())))
 }
 
 async fn execute_structured_tool(

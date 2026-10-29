@@ -289,6 +289,15 @@ fn discovery_reports_legacy_bundled_ids_without_installing_runtime_aliases() {
     let report = register_html_effects(&mut registry, &[root]);
 
     assert_eq!(registry.len(), 1);
+    let relative_legacy_id = hypercolor_types::effect::EffectId::new(
+        uuid::Uuid::parse_str("4721ac37-6e1c-4c77-9c59-3c987cc85a09")
+            .expect("historical Poisonous identity should parse"),
+    );
+    assert_eq!(
+        report.legacy_effect_ids.get(&relative_legacy_id),
+        Some(&bundled_html_effect_id("poisonous")),
+        "the old bundled-relative identity must migrate without a runtime alias"
+    );
     assert!(!report.legacy_effect_ids.is_empty());
     for (legacy_id, canonical_id) in report.legacy_effect_ids {
         assert_ne!(legacy_id, canonical_id);
@@ -299,6 +308,66 @@ fn discovery_reports_legacy_bundled_ids_without_installing_runtime_aliases() {
                 .map(|effect| effect.metadata.name.as_str()),
             Some("Poisonous")
         );
+    }
+}
+
+#[test]
+fn historical_relative_ids_migrate_across_platforms_only_for_bundled_sources() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("effects");
+    write_html(
+        &root.join("bundled/poisonous.html"),
+        "<title>Poisonous</title>",
+    );
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let report = register_html_effects(&mut registry, &[root]);
+    for legacy in [
+        "4721ac37-6e1c-4c77-9c59-3c987cc85a09",
+        "dc10be69-45c8-4f6b-8028-1d7ba01c9884",
+        "3b942c52-8048-4ae6-86f5-ebd4d59149ad",
+        "464fe95d-dc0f-4d61-a0aa-c518f2cf34ad",
+    ] {
+        let legacy = hypercolor_types::effect::EffectId::new(
+            uuid::Uuid::parse_str(legacy).expect("historical identity"),
+        );
+        assert_eq!(
+            report.legacy_effect_ids.get(&legacy),
+            Some(&bundled_html_effect_id("poisonous"))
+        );
+    }
+
+    let user_root = temp.path().join("user");
+    write_html(
+        &user_root.join("poisonous.html"),
+        "<title>Personal effect</title>",
+    );
+    let mut user_registry = EffectRegistry::new(vec![user_root.clone()]);
+    let user_report = register_html_effects(&mut user_registry, &[user_root]);
+    assert!(user_report.legacy_effect_ids.is_empty());
+}
+
+#[test]
+fn bubble_garden_replacement_migrates_its_retired_webgl_identity() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("effects");
+    write_html(
+        &root.join("bundled/bubble-garden.html"),
+        "<title>Bubble Garden</title>",
+    );
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let report = register_html_effects(&mut registry, &[root]);
+    for legacy in [
+        "09862c9f-6561-45e6-a636-940c0bdef7a2",
+        "5954fe3a-f9eb-43dc-86f7-fc79a27549be",
+    ] {
+        let legacy = hypercolor_types::effect::EffectId::new(
+            uuid::Uuid::parse_str(legacy).expect("retired identity"),
+        );
+        assert_eq!(
+            report.legacy_effect_ids.get(&legacy),
+            Some(&bundled_html_effect_id("bubble-garden"))
+        );
+        assert!(registry.get(&legacy).is_none());
     }
 }
 

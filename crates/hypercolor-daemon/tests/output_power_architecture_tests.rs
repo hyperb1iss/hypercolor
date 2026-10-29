@@ -111,8 +111,9 @@ fn transition_mutex_and_brightness_store_mutator_are_private() {
     let settings = std::fs::read_to_string(source_root.join("device_settings.rs"))
         .expect("device settings source should read");
 
-    assert!(output_power.contains("transition: Mutex<()>"));
-    assert!(!output_power.contains("pub transition: Mutex<()>"));
+    assert!(output_power.contains("transition: Arc<Mutex<()>>"));
+    assert!(!output_power.contains("pub transition: Arc<Mutex<()>>"));
+    assert!(!output_power.contains("pub(crate) transition: Arc<Mutex<()>>"));
     assert!(output_power.contains("settings: Arc<RwLock<DeviceSettingsStore>>"));
     assert!(!output_power.contains("pub settings: Arc<RwLock<DeviceSettingsStore>>"));
     assert!(settings.contains("pub(crate) fn persist_global_brightness("));
@@ -133,6 +134,19 @@ fn brightness_mutation_and_event_publication_stay_inside_output_power() {
     let mut offenders = Vec::new();
     for (path, source) in rust_sources(&source_root) {
         if path.ends_with("output_power.rs") || path.ends_with("device_settings.rs") {
+            continue;
+        }
+        if path == source_root.join("output_power/portable.rs") {
+            assert!(source.contains("impl OutputPower {"));
+            assert!(source.contains("power: OutputPower,"));
+            assert!(source.contains("_guard: OwnedMutexGuard<()>,"));
+            assert!(source.contains("Arc::clone(&self.inner.transition).lock_owned().await"));
+            assert!(source.contains("self.power.update_state_with_events(bus,"));
+            assert!(!source.contains("pub power:"));
+            assert!(!source.contains("pub _guard:"));
+            assert!(!source.contains("persist_global_brightness("));
+            assert!(!source.contains("watch::Sender<OutputPowerState>"));
+            assert!(!source.contains("Arc<RwLock<DeviceSettingsStore>>"));
             continue;
         }
         if source.contains("persist_global_brightness(")

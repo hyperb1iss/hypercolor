@@ -317,6 +317,8 @@ mod renderable {
                 default_scene_zones: Vec::new(),
                 active_layout_id: None,
                 manual_paused: false,
+                output_stopped: false,
+                default_scene_settings: None,
             },
         )
         .expect("runtime session should save");

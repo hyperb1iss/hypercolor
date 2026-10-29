@@ -17,6 +17,7 @@ from .api_error_body import ApiErrorBody
 from .api_error_detail import ApiErrorDetail
 from .applied_control_change import AppliedControlChange
 from .applied_control_change_value import AppliedControlChangeValue
+from .apply_backup_response_200 import ApplyBackupResponse200
 from .apply_control_changes_response import ApplyControlChangesResponse
 from .apply_control_changes_response_values import ApplyControlChangesResponseValues
 from .apply_control_surface_values_response_200 import (
@@ -147,6 +148,9 @@ from .b_tree_map_additional_property_type_18 import BTreeMapAdditionalPropertyTy
 from .b_tree_map_additional_property_type_18_kind import (
     BTreeMapAdditionalPropertyType18Kind,
 )
+from .backup_apply_request import BackupApplyRequest
+from .backup_apply_response import BackupApplyResponse
+from .backup_preview import BackupPreview
 from .binding_map import BindingMap
 from .binding_source_type_0 import BindingSourceType0
 from .binding_source_type_0_kind import BindingSourceType0Kind
@@ -506,6 +510,7 @@ from .member_edit import MemberEdit
 from .member_placement import MemberPlacement
 from .member_placement_hint import MemberPlacementHint
 from .member_state import MemberState
+from .missing_setup_resources import MissingSetupResources
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
 from .open_rgb_endpoint_status import OpenRgbEndpointStatus
@@ -551,6 +556,7 @@ from .playlist_target_request_type_1 import PlaylistTargetRequestType1
 from .playlist_target_request_type_1_type import PlaylistTargetRequestType1Type
 from .preset_template import PresetTemplate
 from .preset_template_controls import PresetTemplateControls
+from .preview_backup_response_200 import PreviewBackupResponse200
 from .preview_demand_status import PreviewDemandStatus
 from .preview_layout_response import PreviewLayoutResponse
 from .preview_layout_response_200 import PreviewLayoutResponse200
@@ -705,6 +711,7 @@ __all__ = (
     "ApiErrorDetail",
     "AppliedControlChange",
     "AppliedControlChangeValue",
+    "ApplyBackupResponse200",
     "ApplyControlChangesResponse",
     "ApplyControlChangesResponseValues",
     "ApplyControlSurfaceValuesResponse200",
@@ -793,6 +800,9 @@ __all__ = (
     "BTreeMapAdditionalPropertyType17Value",
     "BTreeMapAdditionalPropertyType18",
     "BTreeMapAdditionalPropertyType18Kind",
+    "BackupApplyRequest",
+    "BackupApplyResponse",
+    "BackupPreview",
     "BindingMap",
     "BindingSourceType0",
     "BindingSourceType0Kind",
@@ -1138,6 +1148,7 @@ __all__ = (
     "MemberPlacement",
     "MemberPlacementHint",
     "MemberState",
+    "MissingSetupResources",
     "NormalizedPosition",
     "NormalizedRect",
     "OpenRgbEndpointStatus",
@@ -1179,6 +1190,7 @@ __all__ = (
     "PlaylistTargetRequestType1Type",
     "PresetTemplate",
     "PresetTemplateControls",
+    "PreviewBackupResponse200",
     "PreviewDemandStatus",
     "PreviewLayoutResponse",
     "PreviewLayoutResponse200",

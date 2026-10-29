@@ -1,5 +1,7 @@
 //! Content-addressed user media asset storage.
 
+pub mod portable;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -186,6 +188,12 @@ pub struct AssetMetadataUpdate {
 /// Errors produced by the asset library.
 #[derive(Debug, thiserror::Error)]
 pub enum AssetLibraryError {
+    #[error("media reconciliation is deferred until the pending restore completes")]
+    RestorePending,
+    #[error("invalid pending media restore: {0}")]
+    InvalidRestoreIntent(String),
+    #[error("asset {0} already refers to different content")]
+    IdentityConflict(AssetId),
     #[error("asset file exceeds hard cap: {byte_len} bytes > {hard_cap_bytes} bytes")]
     HardCapExceeded { byte_len: u64, hard_cap_bytes: u64 },
     #[error("unsupported asset media type: {reason}")]
@@ -326,7 +334,10 @@ impl AssetLibrary {
             stream_url_policy,
         };
 
-        if !library.index_path.exists() || library.index.records().is_empty() {
+        if (!library.index_path.exists() || library.index.records().is_empty())
+            && !portable::has_pending_restore(&library.root)
+                .map_err(|error| AssetLibraryError::InvalidRestoreIntent(error.to_string()))?
+        {
             library.rebuild_index_from_objects()?;
         }
 
@@ -392,6 +403,27 @@ impl AssetLibrary {
         bytes: &[u8],
         options: AssetUploadOptions,
     ) -> Result<AssetUpsert, AssetLibraryError> {
+        self.add_bytes_with_identity(None, bytes, options)
+    }
+
+    /// Restore an authored identity while retaining normal media validation.
+    /// Different asset identities may share one immutable content object.
+    pub fn import_bytes(
+        &mut self,
+        id: AssetId,
+        bytes: &[u8],
+        mut options: AssetUploadOptions,
+    ) -> Result<AssetUpsert, AssetLibraryError> {
+        options.rename_duplicate = true;
+        self.add_bytes_with_identity(Some(id), bytes, options)
+    }
+
+    fn add_bytes_with_identity(
+        &mut self,
+        identity: Option<AssetId>,
+        bytes: &[u8],
+        options: AssetUploadOptions,
+    ) -> Result<AssetUpsert, AssetLibraryError> {
         let byte_len = bytes_len(bytes);
         if byte_len > self.limits.hard_file_cap_bytes {
             return Err(AssetLibraryError::HardCapExceeded {
@@ -401,7 +433,23 @@ impl AssetLibrary {
         }
 
         let hash = Self::hash_bytes(bytes);
-        if let Some(existing) = self.index.by_hash(&hash).cloned() {
+        if let Some(id) = identity {
+            if let Some(existing) = self.index.get(id).cloned() {
+                if existing.hash_sha256 != hash {
+                    return Err(AssetLibraryError::IdentityConflict(id));
+                }
+                if existing.name == sanitize_name(&options.name)
+                    && existing.tags == sanitize_tags(options.tags.clone())
+                {
+                    return Ok(AssetUpsert {
+                        record: existing,
+                        duplicate: true,
+                        events: Vec::new(),
+                    });
+                }
+                return self.handle_duplicate(existing, options);
+            }
+        } else if let Some(existing) = self.index.by_hash(&hash).cloned() {
             return self.handle_duplicate(existing, options);
         }
 
@@ -409,7 +457,7 @@ impl AssetLibrary {
         let object_path = self.write_object_once(&hash, bytes)?;
         let now = now_utc();
         let record = MediaAssetRecord {
-            id: AssetId::new(),
+            id: identity.unwrap_or_default(),
             name: sanitize_name(&options.name),
             hash_sha256: hash,
             mime_type: scan.mime_type,
@@ -429,8 +477,10 @@ impl AssetLibrary {
             self.write_thumbnail(&record.id, bytes)?;
         }
 
-        self.index.upsert(record.clone());
-        self.persist_index()?;
+        let mut candidate = self.index.clone();
+        candidate.upsert(record.clone());
+        self.persist_index_snapshot(&candidate)?;
+        self.index = candidate;
 
         let event = AssetEvent::Added {
             record: record.clone(),
@@ -445,14 +495,18 @@ impl AssetLibrary {
     }
 
     pub fn remove(&mut self, id: AssetId) -> Result<Option<AssetEvent>, AssetLibraryError> {
-        let Some(record) = self.index.remove(id) else {
+        let mut candidate = self.index.clone();
+        let Some(record) = candidate.remove(id) else {
             return Ok(None);
         };
 
-        let object_path = self.object_path_for_hash(&record.hash_sha256)?;
-        let _ = fs::remove_file(object_path);
+        self.persist_index_snapshot(&candidate)?;
+        self.index = candidate;
+        if self.index.by_hash(&record.hash_sha256).is_none() {
+            let object_path = self.object_path_for_hash(&record.hash_sha256)?;
+            let _ = fs::remove_file(object_path);
+        }
         let _ = fs::remove_file(self.thumbnail_path(record.id));
-        self.persist_index()?;
         Ok(Some(AssetEvent::Removed { asset_id: id }))
     }
 
@@ -480,8 +534,10 @@ impl AssetLibrary {
         }
 
         record.modified_at = now_utc();
-        self.index.upsert(record.clone());
-        self.persist_index()?;
+        let mut candidate = self.index.clone();
+        candidate.upsert(record.clone());
+        self.persist_index_snapshot(&candidate)?;
+        self.index = candidate;
         Ok(Some(AssetMetadataUpdate {
             record: record.clone(),
             event: Some(AssetEvent::Modified { record }),
@@ -489,10 +545,12 @@ impl AssetLibrary {
     }
 
     pub fn rebuild_index_from_objects(&mut self) -> Result<Vec<AssetEvent>, AssetLibraryError> {
+        self.ensure_reconciliation_allowed()?;
         self.reconcile_from_disk(false)
     }
 
     pub fn refresh_from_disk(&mut self) -> Result<Vec<AssetEvent>, AssetLibraryError> {
+        self.ensure_reconciliation_allowed()?;
         let previous_index = self.index.clone();
         let mut events = Vec::new();
         if let Some(index) = load_index(&self.index_path)? {
@@ -501,6 +559,15 @@ impl AssetLibrary {
         }
         events.extend(self.reconcile_from_disk(true)?);
         Ok(events)
+    }
+
+    fn ensure_reconciliation_allowed(&self) -> Result<(), AssetLibraryError> {
+        if portable::has_pending_restore(&self.root)
+            .map_err(|error| AssetLibraryError::InvalidRestoreIntent(error.to_string()))?
+        {
+            return Err(AssetLibraryError::RestorePending);
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -546,8 +613,10 @@ impl AssetLibrary {
         record.name = sanitize_name(&options.name);
         record.tags = sanitize_tags(options.tags);
         record.modified_at = now_utc();
-        self.index.upsert(record.clone());
-        self.persist_index()?;
+        let mut candidate = self.index.clone();
+        candidate.upsert(record.clone());
+        self.persist_index_snapshot(&candidate)?;
+        self.index = candidate;
         Ok(AssetUpsert {
             record: record.clone(),
             duplicate: true,
@@ -566,11 +635,13 @@ impl AssetLibrary {
             .cloned()
             .map(|record| (record.id, record))
             .collect();
-        let previous_by_hash: HashMap<String, MediaAssetRecord> = previous_by_id
-            .values()
-            .cloned()
-            .map(|record| (record.hash_sha256.clone(), record))
-            .collect();
+        let mut previous_by_hash: HashMap<String, Vec<MediaAssetRecord>> = HashMap::new();
+        for record in previous_by_id.values() {
+            previous_by_hash
+                .entry(record.hash_sha256.clone())
+                .or_default()
+                .push(record.clone());
+        }
 
         let discovered = self.discover_objects()?;
         let mut seen_path_hashes = HashSet::new();
@@ -581,8 +652,8 @@ impl AssetLibrary {
             seen_path_hashes.insert(discovered_object.path_hash.clone());
 
             if discovered_object.actual_hash == discovered_object.path_hash {
-                if let Some(record) = previous_by_hash.get(&discovered_object.actual_hash) {
-                    records.push(record.clone());
+                if let Some(aliases) = previous_by_hash.get(&discovered_object.actual_hash) {
+                    records.extend(aliases.iter().cloned());
                 } else {
                     let record = self.unscanned_record(
                         discovered_object.actual_hash,
@@ -597,8 +668,8 @@ impl AssetLibrary {
             }
 
             self.write_object_once(&discovered_object.actual_hash, &discovered_object.bytes)?;
-            if let Some(record) = previous_by_hash.get(&discovered_object.actual_hash) {
-                records.push(record.clone());
+            if let Some(aliases) = previous_by_hash.get(&discovered_object.actual_hash) {
+                records.extend(aliases.iter().cloned());
             } else {
                 let record = self
                     .unscanned_record(discovered_object.actual_hash, discovered_object.byte_len);
@@ -748,8 +819,11 @@ impl AssetLibrary {
     }
 
     fn persist_index(&self) -> Result<(), AssetLibraryError> {
-        let bytes =
-            serialize_json_pretty(&self.index).map_err(AssetLibraryError::SerializeIndex)?;
+        self.persist_index_snapshot(&self.index)
+    }
+
+    fn persist_index_snapshot(&self, index: &AssetIndex) -> Result<(), AssetLibraryError> {
+        let bytes = serialize_json_pretty(index).map_err(AssetLibraryError::SerializeIndex)?;
         self.index_writer
             .write(&bytes)
             .map_err(|source| AssetLibraryError::PersistIndex {

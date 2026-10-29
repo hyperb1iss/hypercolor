@@ -1704,8 +1704,7 @@ impl SceneManager {
 }
 
 #[must_use]
-pub fn default_primary_zone(mut layout: SpatialLayout) -> Zone {
-    DEFAULT_ZONE_NAME.clone_into(&mut layout.name);
+pub fn default_primary_zone(layout: SpatialLayout) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: DEFAULT_ZONE_NAME.to_owned(),

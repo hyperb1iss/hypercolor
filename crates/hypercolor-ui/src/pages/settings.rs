@@ -30,6 +30,7 @@ const SECTION_IDS: &[&str] = &[
     "discovery",
     "rendering",
     "developer",
+    "backups",
     "about",
 ];
 
@@ -261,7 +262,7 @@ pub fn SettingsPage() -> impl IntoView {
             label: "System",
             icon: LuGauge,
             separator_before: false,
-            members: vec!["rendering", "developer", "about"],
+            members: vec!["rendering", "developer", "backups", "about"],
         },
     ];
     tabs.extend(
@@ -451,6 +452,9 @@ pub fn SettingsPage() -> impl IntoView {
                                 class="settings-card"
                                 style="animation: enter-fade 0.4s ease-out 0.35s both"
                             >
+                                <BackupsSection />
+                            </div>
+                            <div class="settings-card">
                                 <AboutSection />
                             </div>
                             // Extension sections — the page supplies the card,

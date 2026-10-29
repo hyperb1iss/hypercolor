@@ -6,6 +6,7 @@
 pub mod access_log;
 pub mod assets;
 pub mod attachments;
+pub mod backups;
 pub mod canvas;
 pub mod capture;
 pub mod config;
@@ -333,7 +334,12 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             router
         }
     };
-    router.with_state(state)
+    router
+        .layer(axum::middleware::from_fn_with_state(
+            state.domains.requests.clone(),
+            crate::request_lifetime::guard_http,
+        ))
+        .with_state(state)
 }
 
 /// The prefixes this router answers from a handler that

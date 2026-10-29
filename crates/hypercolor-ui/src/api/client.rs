@@ -486,6 +486,25 @@ impl HttpTransport for BrowserHttpTransport {
     fn send(&self, request: HttpRequest) -> super::http_transport::HttpTransportFuture<'_> {
         Box::pin(async move { browser_send(request).await })
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn send_stream(
+        &self,
+        request: super::http_transport::HttpStreamRequest,
+    ) -> super::http_transport::HttpStreamFuture<'_> {
+        super::browser_stream::send(request)
+    }
+}
+
+/// Dispatch an incremental exchange through the installed desktop or Remote transport.
+pub async fn send_stream(
+    request: super::http_transport::HttpStreamRequest,
+) -> ApiResult<super::http_transport::HttpStreamResponse> {
+    validate_relative_path(&request.path)?;
+    http_transport()
+        .send_stream(request)
+        .await
+        .map_err(|error| ApiError::Network(error.to_string()))
 }
 
 async fn browser_send(

@@ -156,6 +156,8 @@ async fn seed_effect_identity_stores(
             default_scene_zones: named_scene.zones.clone(),
             active_layout_id: None,
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
         },
     )
     .expect("runtime identity should persist");
@@ -1897,6 +1899,8 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             default_scene_zones: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
         },
     )
     .expect("runtime state should save");
@@ -2153,6 +2157,8 @@ async fn daemon_start_restores_named_active_scene_and_default_zones() {
             default_scene_zones: vec![default_zone.clone()],
             active_layout_id: None,
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
         },
     )
     .expect("runtime state should save");
@@ -2177,6 +2183,81 @@ async fn daemon_start_restores_named_active_scene_and_default_zones() {
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn startup_preserves_snapshot_scene_primary_layout() {
+    let _config_guard = TestConfigDirGuard::new().await;
+    let guard = TestDataDirGuard::new().await;
+    let captured = SpatialLayout {
+        id: "default".into(),
+        name: "Captured desk".into(),
+        description: Some("Saved geometry before the catalog changed".into()),
+        canvas_width: 640,
+        canvas_height: 480,
+        zones: vec![test_zone("saved-strip", &DeviceId::new().to_string())],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    };
+    let mut scene = hypercolor_core::scene::make_scene("Captured lighting");
+    scene.mutation_mode = hypercolor_types::scene::SceneMutationMode::Snapshot;
+    scene.layout_id = Some(LayoutId::new("default").expect("layout identity"));
+    scene.zones = vec![hypercolor_core::scene::default_primary_zone(
+        captured.clone(),
+    )];
+    let scene_id = scene.id;
+    write_scene_store(&guard.scenes_path(), [scene]);
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(scene_id.to_string()),
+            active_layout_id: Some("default".into()),
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("saved runtime selection");
+    let mut config = default_config();
+    config.daemon.canvas_width = 832;
+    config.daemon.canvas_height = 468;
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialize snapshot setup");
+    state.start().await.expect("start snapshot setup");
+    let actual = state
+        .scene_manager
+        .snapshot()
+        .await
+        .get(&scene_id)
+        .expect("saved scene")
+        .primary_zone()
+        .expect("saved primary zone")
+        .layout
+        .clone();
+    let render_layout = state.spatial_engine.snapshot();
+    let render_dimensions = (
+        render_layout.layout().canvas_width,
+        render_layout.layout().canvas_height,
+    );
+    state.shutdown().await.expect("shutdown snapshot setup");
+    assert_eq!(render_dimensions, (832, 468));
+    assert_eq!(
+        actual, captured,
+        "startup must preserve snapshot-owned geometry"
+    );
 }
 
 #[tokio::test]
@@ -2256,8 +2337,12 @@ async fn daemon_start_activates_configured_scene_id() {
 
 #[tokio::test]
 async fn default_scene_contents_restore_on_restart() {
+    let _config_guard = TestConfigDirGuard::new().await;
     let guard = TestDataDirGuard::new().await;
     let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
     config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
@@ -2280,6 +2365,18 @@ async fn default_scene_contents_restore_on_restart() {
         "speed".to_owned(),
         hypercolor_types::control::ControlValue::Float(4.5),
     )]);
+    let mut default_settings = runtime_state::RuntimeDefaultSceneSettings::from(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&SceneId::DEFAULT)
+            .expect("synthesized default scene"),
+    );
+    default_settings.description = Some("My saved default lighting".to_owned());
+    default_settings
+        .metadata
+        .insert("room".to_owned(), "Studio".to_owned());
 
     runtime_state::save(
         &guard.runtime_state_path(),
@@ -2317,6 +2414,8 @@ async fn default_scene_contents_restore_on_restart() {
             }],
             active_layout_id: None,
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: Some(default_settings),
         },
     )
     .expect("runtime state should save");
@@ -2329,6 +2428,14 @@ async fn default_scene_contents_restore_on_restart() {
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
     assert_eq!(default_scene.zones.len(), 1);
+    assert_eq!(
+        default_scene.description.as_deref(),
+        Some("My saved default lighting")
+    );
+    assert_eq!(
+        default_scene.metadata.get("room").map(String::as_str),
+        Some("Studio")
+    );
     assert_eq!(default_scene.zones[0].name, "Saved Default Zone");
     assert!(matches!(
         default_scene.zones[0]
@@ -2347,6 +2454,373 @@ async fn default_scene_contents_restore_on_restart() {
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn named_startup_preserves_inactive_default_scene_across_restart() {
+    use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let data = TestDataDirGuard::new().await;
+    let named = hypercolor_core::scene::make_scene("Studio");
+    let selected = named.id;
+    write_scene_store(&data.scenes_path(), [named]);
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = selected.to_string();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    let temp = temp_config_file();
+    let manager = config_manager_for(&config, temp.path());
+    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("first initialization");
+    let mut saved = first
+        .scene_manager
+        .snapshot()
+        .await
+        .get(&SceneId::DEFAULT)
+        .expect("default scene")
+        .clone();
+    saved.description = Some("Saved inactive lighting".into());
+    saved.metadata.insert("room".into(), "Studio".into());
+    saved.zones[0].id = ZoneId::new();
+    saved.zones[0].name = "Saved inactive primary".into();
+    saved.zones[0].brightness = 0.37;
+    let effect_id = first
+        .effect_registry
+        .read()
+        .await
+        .iter()
+        .find_map(|(_, entry)| {
+            (entry.metadata.source.source_stem() == Some("breathing")).then_some(entry.metadata.id)
+        })
+        .expect("breathing effect");
+    saved.zones[0].layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        std::collections::HashMap::from([(
+            "speed".into(),
+            hypercolor_types::control::ControlValue::Float(4.5),
+        )]),
+        std::collections::HashMap::new(),
+        None,
+    )];
+    let saved_zone = saved.zones[0].id;
+    runtime_state::save(
+        &data.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_zones: saved.zones.clone(),
+            default_scene_settings: Some((&saved).into()),
+            active_layout_id: None,
+            manual_paused: false,
+            output_stopped: false,
+        },
+    )
+    .expect("saved default content");
+    first.start().await.expect("first startup");
+    let service =
+        PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first))).expect("service");
+    let identity = SetupIdentity {
+        setup_id: uuid::Uuid::now_v7(),
+        name: "Named startup".into(),
+    };
+    let before = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("first projection");
+    let active = first
+        .scene_manager
+        .snapshot()
+        .await
+        .active_scene_id()
+        .copied();
+    first.shutdown().await.expect("first shutdown");
+    drop(service);
+    drop(first);
+
+    assert_eq!(
+        active,
+        Some(selected),
+        "configured selection overrides last selection"
+    );
+    let default = before
+        .manifest
+        .scenes
+        .get(&SceneId::DEFAULT.0)
+        .expect("portable default");
+    assert_eq!(default.zones[0].id, saved_zone);
+    assert_eq!(default.zones[0].name, "Saved inactive primary");
+    assert_eq!(default.zones[0].brightness, 0.37);
+    assert_eq!(default.zones[0].layers, saved.zones[0].layers);
+    assert_eq!(default.description, saved.description);
+    assert_eq!(default.metadata, saved.metadata);
+
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
+        .expect("restart initialization");
+    restarted.start().await.expect("restart");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+        .expect("restarted service");
+    let after = service
+        .export(identity, &SetupBindings::default())
+        .await
+        .expect("restarted projection");
+    restarted.shutdown().await.expect("final shutdown");
+    assert_eq!(after.manifest, before.manifest);
+    assert_eq!(after.revision, before.revision);
+}
+
+#[tokio::test]
+async fn fresh_portable_setup_is_identical_after_graceful_restart() {
+    use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let _data_guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    let temp = temp_config_file();
+    let manager = config_manager_for(&config, temp.path());
+    let identity = SetupIdentity {
+        setup_id: uuid::Uuid::now_v7(),
+        name: "Fresh setup".into(),
+    };
+    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("first initialization");
+    first.start().await.expect("first startup");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first)))
+        .expect("first service");
+    let before = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("fresh projection");
+    first.shutdown().await.expect("graceful shutdown");
+    drop(service);
+    drop(first);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
+        .expect("restart initialization");
+    restarted.start().await.expect("restart");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+        .expect("restarted service");
+    let after = service
+        .export(identity, &SetupBindings::default())
+        .await
+        .expect("restarted projection");
+    assert_eq!(after.manifest, before.manifest);
+    assert_eq!(after.revision, before.revision);
+    restarted.shutdown().await.expect("final shutdown");
+}
+
+#[tokio::test]
+async fn explicitly_inactive_runtime_selection_survives_restart() {
+    let _config_guard = TestConfigDirGuard::new().await;
+    let guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    let temp = temp_config_file();
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: None,
+            output_stopped: true,
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("save inactive session");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialize isolated runtime");
+    state.start().await.expect("start isolated runtime");
+    assert!(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene_id()
+            .is_none()
+    );
+    assert_eq!(
+        state.output_power.snapshot().output_override,
+        hypercolor_daemon::output_power::OutputOverride::Stopped
+    );
+    state.shutdown().await.expect("shutdown isolated runtime");
+    assert!(
+        runtime_state::load(&guard.runtime_state_path())
+            .expect("saved runtime")
+            .expect("runtime exists")
+            .active_scene_id
+            .is_none()
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+// Unwinding an assertion must not strand the detached restore worker in a
+// permanently failing write while Tokio waits for its blocking tasks to exit.
+struct InjectedStartupCommitFailure(hypercolor_daemon::persistence::AtomicFileWriter);
+
+#[cfg(feature = "persistence-test-hooks")]
+impl Drop for InjectedStartupCommitFailure {
+    fn drop(&mut self) {
+        self.0.set_injected_commit_failures(0);
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_startup_recovers_interrupted_setup_without_private_extensions() {
+    use uuid::Uuid;
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::DEBUG)
+        .try_init();
+    use hypercolor_daemon::domain::portable_setup::{
+        PortableSetupService, RestoreMode, RestoreOptions, SetupIdentity,
+    };
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    config.effect_engine.watch_effects = false;
+    // Atomic replacement on Windows requires the fixture handle to be closed.
+    let temp = temp_config_file().into_temp_path();
+    let manager = config_manager_for(&config, &temp);
+    let mut daemon = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("initial daemon");
+    daemon.start().await.expect("initial start");
+    let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&daemon)))
+        .expect("public setup service");
+    let identity = SetupIdentity {
+        setup_id: Uuid::now_v7(),
+        name: "Recovered lighting".into(),
+    };
+    let before = service
+        .export(identity.clone(), &SetupBindings::default())
+        .await
+        .expect("initial setup");
+    let mut desired = before.manifest;
+    desired.output.canvas_width = 800;
+    desired.output.canvas_height = 600;
+    desired
+        .scenes
+        .get_mut(&Uuid::nil())
+        .expect("default scene")
+        .description = Some("Recovered before startup authoring".into());
+    let operation_id = Uuid::now_v7();
+    let writer = hypercolor_daemon::persistence::AtomicFileWriter::new(&guard.scenes_path())
+        .expect("scene writer");
+    let failure_cleanup = InjectedStartupCommitFailure(writer.clone());
+    writer.set_injected_commit_failures(usize::MAX);
+    let restore_service = service.clone();
+    let incoming = desired.clone();
+    let caller = tokio::spawn(async move {
+        restore_service
+            .restore(
+                &incoming,
+                &SetupBindings::default(),
+                RestoreOptions {
+                    operation_id,
+                    expected_revision: before.revision,
+                    mode: RestoreMode::Merge,
+                    apply_selection: true,
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while writer.pending_failure().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restore reaches injected durability failure");
+    caller.abort();
+    assert!(
+        caller
+            .await
+            .expect_err("caller cancellation")
+            .is_cancelled()
+    );
+    tokio::time::timeout(Duration::from_secs(12), daemon.shutdown())
+        .await
+        .expect("public shutdown releases pending guards")
+        .expect("shutdown preserves pending intent");
+    drop(failure_cleanup);
+    writer
+        .flush(Duration::from_secs(3))
+        .expect("retained write converges");
+    drop(service);
+    drop(daemon);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), Arc::clone(&manager))
+        .expect("restart initialization");
+    use futures_util::FutureExt as _;
+    let recovery = std::panic::AssertUnwindSafe(async {
+        tokio::time::timeout(Duration::from_secs(10), restarted.start())
+            .await
+            .expect("public start completes recovery")
+            .expect("public recovery succeeds");
+        let restored = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+            .expect("restarted service");
+        assert_eq!(
+            restored
+                .last_restore_receipt(identity.setup_id)
+                .await
+                .expect("receipt")
+                .expect("committed receipt")
+                .operation_id,
+            operation_id
+        );
+        assert_eq!(
+            restored
+                .export(identity, &SetupBindings::default())
+                .await
+                .expect("coherent public export")
+                .manifest,
+            desired
+        );
+    })
+    .catch_unwind()
+    .await;
+    // Recovery owns a detached worker. Close its writers before propagating
+    // any assertion panic, including the unchanged startup deadline.
+    let shutdown = restarted.shutdown().await;
+    if let Err(panic) = recovery {
+        if let Err(error) = &shutdown {
+            eprintln!("shutdown after recovery assertion failed: {error:#}");
+        }
+        std::panic::resume_unwind(panic);
+    }
+    shutdown.expect("normal shutdown after recovery");
 }
 
 #[tokio::test]
@@ -2811,4 +3285,133 @@ fn browser_e2e_config_disables_every_compiled_driver() {
             "browser fixture must explicitly disable compiled driver {id}"
         );
     }
+}
+
+#[tokio::test]
+async fn unavailable_offline_default_face_survives_real_restart() {
+    use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
+    use hypercolor_types::portable_setup::SetupBindings;
+
+    let _config_guard = TestConfigDirGuard::new().await;
+    let _data_guard = TestDataDirGuard::new().await;
+    let mut config = default_config();
+    for driver in config.drivers.values_mut() {
+        driver.enabled = false;
+    }
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    config.discovery.mdns_enabled = false;
+    config.effect_engine.watch_effects = false;
+    config.audio.enabled = false;
+    config.capture.enabled = false;
+    config.input.enabled = false;
+    // Atomic replacement on Windows requires the fixture handle to be closed.
+    let temp = temp_config_file().into_temp_path();
+    let manager = config_manager_for(&config, &temp);
+    let identity = SetupIdentity {
+        setup_id: uuid::Uuid::now_v7(),
+        name: "Fresh setup".into(),
+    };
+    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
+        .expect("first initialization");
+    use futures_util::FutureExt as _;
+    let restored = std::panic::AssertUnwindSafe(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            first.start().await.expect("first startup");
+            let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first)))
+                .expect("first service");
+            let before = service
+                .export(identity.clone(), &SetupBindings::default())
+                .await
+                .expect("fresh projection");
+            let target = uuid::Uuid::now_v7();
+            let mut desired = before.manifest;
+            desired.devices.insert(
+                target,
+                hypercolor_types::portable_setup::PortableDevice {
+                    name: "Unplugged panel".into(),
+                    portable_key: None,
+                    driver_id: "test".into(),
+                    vendor_id: None,
+                    product_id: None,
+                    model: None,
+                    led_count: 0,
+                    binding_hint: None,
+                },
+            );
+            desired.display_faces.insert(
+                target,
+                hypercolor_types::portable_setup::PortableDisplayFace {
+                    effect_id: hypercolor_types::effect::EffectId::new(uuid::Uuid::now_v7()),
+                    controls: std::collections::HashMap::new(),
+                    blend_mode: hypercolor_types::layer::BlendMode::Alpha,
+                    opacity: 0.65,
+                },
+            );
+            let accepted = service
+                .restore(
+                    &desired,
+                    &SetupBindings::default(),
+                    hypercolor_daemon::domain::portable_setup::RestoreOptions {
+                        operation_id: uuid::Uuid::now_v7(),
+                        expected_revision: before.revision,
+                        mode: hypercolor_daemon::domain::portable_setup::RestoreMode::Merge,
+                        apply_selection: true,
+                    },
+                )
+                .await
+                .expect("offline resource restore");
+            assert_eq!(accepted.unresolved_bindings, vec![target]);
+            let exported = service
+                .export(identity.clone(), &SetupBindings::default())
+                .await
+                .expect("immediate export");
+            assert_eq!(exported.manifest, desired);
+            (accepted, desired)
+        })
+        .await
+        .expect("offline restore and export complete")
+    })
+    .catch_unwind()
+    .await;
+    let shutdown = first.shutdown().await;
+    let (accepted, desired) = match restored {
+        Ok(restored) => restored,
+        Err(panic) => {
+            if let Err(error) = &shutdown {
+                eprintln!("shutdown after offline restore assertion failed: {error:#}");
+            }
+            std::panic::resume_unwind(panic);
+        }
+    };
+    shutdown.expect("graceful shutdown");
+    drop(first);
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
+        .expect("restart initialization");
+    let recovered = std::panic::AssertUnwindSafe(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            restarted.start().await.expect("restart");
+            let service =
+                PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
+                    .expect("restarted service");
+            let after = service
+                .export(identity, &SetupBindings::default())
+                .await
+                .expect("restarted projection");
+            assert_eq!(after.manifest, desired);
+            assert_eq!(after.revision, accepted.applied.revision);
+        })
+        .await
+        .expect("offline restart and export complete");
+    })
+    .catch_unwind()
+    .await;
+    let shutdown = restarted.shutdown().await;
+    if let Err(panic) = recovered {
+        if let Err(error) = &shutdown {
+            eprintln!("shutdown after offline restart assertion failed: {error:#}");
+        }
+        std::panic::resume_unwind(panic);
+    }
+    shutdown.expect("final shutdown");
 }

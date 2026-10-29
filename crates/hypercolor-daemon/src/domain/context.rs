@@ -1,5 +1,7 @@
 //! Narrow dependency handles for daemon domain services (Spec 76 §6.4).
 
+pub(crate) mod portable;
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +47,8 @@ use crate::runtime_state::{self, RuntimeSessionSnapshot};
 /// Complete daemon domain graph assembled once by the composition root.
 #[derive(Clone)]
 pub struct DomainContexts {
+    pub(crate) requests: crate::request_lifetime::RequestLifetime,
+    pub(crate) portable_setup: super::portable_setup::PortableSetupAuthority,
     /// Runtime-session snapshot and persistence authority.
     pub runtime_session: RuntimeSessionService,
     /// Device lifecycle and discovery reconciliation authority.
@@ -130,6 +134,8 @@ impl DomainContexts {
             resources.spatial,
         );
         Self {
+            portable_setup: super::portable_setup::PortableSetupAuthority::default(),
+            requests: crate::request_lifetime::RequestLifetime::default(),
             runtime_session,
             devices,
             scene,
@@ -333,6 +339,8 @@ impl RuntimeSessionProjection {
         snapshot.active_layout_id = Some(self.spatial.layout().id.clone());
         let power = self.output_power.snapshot();
         snapshot.manual_paused = power.manually_paused();
+        snapshot.output_stopped =
+            power.output_override == crate::output_power::OutputOverride::Stopped;
         snapshot
     }
 
@@ -791,6 +799,8 @@ impl RuntimeSessionEffectIdMigrationAdmission {
         let mut snapshot = runtime_state::snapshot_from_scene_manager(manager);
         snapshot.active_layout_id = Some(projection.spatial.layout().id.clone());
         snapshot.manual_paused = projection.output_power.snapshot().manually_paused();
+        snapshot.output_stopped = projection.output_power.snapshot().output_override
+            == crate::output_power::OutputOverride::Stopped;
         let pending = runtime_state::reserve_save(&path)
             .map_err(|error| DomainError::Internal(error.into()))?;
         let pending = runtime_state::prepare_reserved(pending, &snapshot)
@@ -810,6 +820,8 @@ impl RuntimeSessionDeviceBindingMigrationAdmission {
         let mut snapshot = runtime_state::snapshot_from_scene_manager(manager);
         snapshot.active_layout_id = Some(self.projection.spatial.layout().id.clone());
         snapshot.manual_paused = self.projection.output_power.snapshot().manually_paused();
+        snapshot.output_stopped = self.projection.output_power.snapshot().output_override
+            == crate::output_power::OutputOverride::Stopped;
         let pending = runtime_state::reserve_save(&self.path)
             .map_err(|error| DomainError::Internal(error.into()))?;
         let pending = runtime_state::prepare_reserved(pending, &snapshot)

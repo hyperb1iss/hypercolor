@@ -394,6 +394,19 @@ impl SceneStoreSave {
 }
 
 impl AdmittedSceneStoreSave {
+    pub(crate) fn commit_and_wait_durable_or_shutdown(
+        self,
+        shutdown: &crate::persistence::PersistenceShutdown,
+    ) -> (
+        HashMap<SceneId, Scene>,
+        crate::persistence::AtomicWriteWaitOutcome,
+    ) {
+        (
+            self.scenes,
+            self.write.commit_and_wait_durable_or_shutdown(shutdown),
+        )
+    }
+
     pub(crate) fn commit_stage_aware(self) -> (HashMap<SceneId, Scene>, AtomicWriteCommitResult) {
         (self.scenes, self.write.commit_stage_aware())
     }

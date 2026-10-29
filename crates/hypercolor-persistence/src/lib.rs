@@ -12,6 +12,7 @@ use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -19,8 +20,6 @@ use std::time::{Duration, Instant};
 use std::cell::Cell;
 #[cfg(any(test, feature = "persistence-test-hooks"))]
 use std::sync::atomic::AtomicUsize;
-#[cfg(any(unix, test, feature = "persistence-test-hooks"))]
-use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -298,6 +297,64 @@ pub struct AdmittedAtomicWrite {
     generation: u64,
     payload: Arc<[u8]>,
     armed: bool,
+}
+
+/// Shutdown authority for one transaction's blocking persistence waits.
+/// Callers must close ordinary writers before releasing pending store guards.
+#[derive(Debug, Clone, Default)]
+pub struct PersistenceShutdown {
+    inner: Arc<PersistenceShutdownInner>,
+}
+
+#[derive(Debug, Default)]
+struct PersistenceShutdownInner {
+    closed: std::sync::atomic::AtomicBool,
+    destinations: Mutex<Vec<Weak<Destination>>>,
+}
+
+/// Exact-generation result, including a controlled application shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtomicWriteWaitOutcome {
+    Written,
+    Superseded,
+    ShutdownPending,
+}
+
+impl PersistenceShutdown {
+    /// Wake blocked transaction writers only after mutation admission and
+    /// ordinary background writers have stopped. Durable transaction journals
+    /// must remain available for recovery before the next startup admits edits.
+    pub fn writers_stopped(&self) {
+        self.inner.closed.store(true, Ordering::Release);
+        let destinations = self
+            .inner
+            .destinations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        for destination in destinations {
+            let _state = destination
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            destination.state_changed.notify_all();
+        }
+    }
+
+    #[must_use]
+    pub fn is_shutdown(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
+    fn register(&self, destination: &Arc<Destination>) {
+        self.inner
+            .destinations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::downgrade(destination));
+    }
 }
 
 #[derive(Debug)]
@@ -835,6 +892,18 @@ impl AtomicFileWriter {
             .store(stale, Ordering::Release);
     }
 
+    /// Inject failures at the platform's last independent commit boundary.
+    ///
+    /// Unix can fail its directory barrier after replacement. Other platforms
+    /// include durability in the replacement operation, so fail that operation.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    pub fn set_injected_commit_failures(&self, count: usize) {
+        #[cfg(unix)]
+        self.set_injected_directory_sync_failures(count);
+        #[cfg(not(unix))]
+        self.set_injected_replace_failures(count);
+    }
+
     /// Inject post-replacement directory-sync failures for deterministic tests.
     #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
     pub fn set_injected_directory_sync_failures(&self, count: usize) {
@@ -1017,6 +1086,71 @@ impl AtomicWriteReservation {
 }
 
 impl AdmittedAtomicWrite {
+    /// Attempt a write and retain the caller until this exact admitted
+    /// generation is durable or a newer admission supersedes it. Transaction
+    /// owners use this on a blocking worker while retaining their store guards;
+    /// returning a transient failure would release those guards while the retry
+    /// supervisor still owns the old bytes.
+    ///
+    /// A persistent storage failure keeps this call pending. The destination's
+    /// normal failure status remains available to diagnostics during the wait.
+    #[must_use]
+    pub fn commit_and_wait_durable(self) -> AtomicWriteOutcome {
+        match self.commit_wait(None) {
+            AtomicWriteWaitOutcome::Written => AtomicWriteOutcome::Written,
+            AtomicWriteWaitOutcome::Superseded => AtomicWriteOutcome::Superseded,
+            AtomicWriteWaitOutcome::ShutdownPending => {
+                unreachable!("no shutdown authority supplied")
+            }
+        }
+    }
+
+    /// The shutdown-aware transaction variant. `ShutdownPending` leaves the
+    /// admitted bytes retained for retry and the host's journal for next boot.
+    #[must_use]
+    pub fn commit_and_wait_durable_or_shutdown(
+        self,
+        shutdown: &PersistenceShutdown,
+    ) -> AtomicWriteWaitOutcome {
+        self.commit_wait(Some(shutdown))
+    }
+
+    fn commit_wait(self, shutdown: Option<&PersistenceShutdown>) -> AtomicWriteWaitOutcome {
+        let destination = Arc::clone(&self.destination);
+        let generation = self.generation;
+        if let Some(shutdown) = shutdown {
+            shutdown.register(&destination);
+            if shutdown.is_shutdown() {
+                return AtomicWriteWaitOutcome::ShutdownPending;
+            }
+        }
+        match self.commit_stage_aware() {
+            AtomicWriteCommitResult::DurableWritten => return AtomicWriteWaitOutcome::Written,
+            AtomicWriteCommitResult::Superseded => return AtomicWriteWaitOutcome::Superseded,
+            AtomicWriteCommitResult::FailedBeforeReplacement(_)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(_) => {}
+        }
+        let mut state = destination
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if state.latest_admitted_generation != generation {
+                return AtomicWriteWaitOutcome::Superseded;
+            }
+            if state.pending.is_none() && state.active_generation.is_none() {
+                return AtomicWriteWaitOutcome::Written;
+            }
+            if shutdown.is_some_and(PersistenceShutdown::is_shutdown) {
+                return AtomicWriteWaitOutcome::ShutdownPending;
+            }
+            state = destination
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
     /// Attempt the admitted replacement. Failures remain retained by the
     /// shared retry supervisor.
     ///
@@ -1670,5 +1804,110 @@ mod tests {
         writer
             .flush(Duration::from_secs(5))
             .expect("nothing is left pending");
+    }
+}
+
+#[cfg(test)]
+mod transaction_wait_tests {
+    use super::{
+        AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome, AtomicWriteWaitOutcome,
+        PersistenceShutdown,
+    };
+
+    #[test]
+    fn commit_fault_uses_the_platform_durability_boundary() {
+        let directory = tempfile::tempdir().expect("transaction directory");
+        let path = directory.path().join("transaction.json");
+        let writer = AtomicFileWriter::new(&path).expect("transaction writer");
+        writer.set_injected_commit_failures(1);
+        let outcome = writer
+            .reserve()
+            .admit(b"candidate".to_vec())
+            .commit_stage_aware();
+        #[cfg(unix)]
+        assert!(matches!(
+            outcome,
+            AtomicWriteCommitResult::ReplacementVisibleButNotDurable(_)
+        ));
+        #[cfg(not(unix))]
+        assert!(matches!(
+            outcome,
+            AtomicWriteCommitResult::FailedBeforeReplacement(_)
+        ));
+        writer
+            .flush(std::time::Duration::from_secs(2))
+            .expect("retry converges");
+        assert_eq!(
+            std::fs::read(path).expect("durable candidate"),
+            b"candidate"
+        );
+        assert!(writer.holds_durable_bytes());
+    }
+
+    #[test]
+    fn transaction_waits_for_retry_to_make_its_generation_durable() {
+        let directory = tempfile::tempdir().expect("transaction directory");
+        let path = directory.path().join("transaction.json");
+        let writer = AtomicFileWriter::new(&path).expect("transaction writer");
+        writer.set_injected_replace_failures(1);
+        let write = writer.reserve().admit(b"candidate".to_vec());
+        assert_eq!(write.commit_and_wait_durable(), AtomicWriteOutcome::Written);
+        assert_eq!(
+            std::fs::read(path).expect("durable candidate"),
+            b"candidate"
+        );
+        assert!(writer.pending_failure().is_none());
+        assert!(writer.holds_durable_bytes());
+    }
+
+    #[test]
+    fn transaction_wait_never_mistakes_a_newer_generation_for_its_own() {
+        let directory = tempfile::tempdir().expect("transaction directory");
+        let path = directory.path().join("transaction.json");
+        let writer = AtomicFileWriter::new(&path).expect("transaction writer");
+        let old = writer.reserve().admit(b"old".to_vec());
+        let new = writer.reserve().admit(b"new".to_vec());
+        assert_eq!(
+            old.commit_and_wait_durable(),
+            AtomicWriteOutcome::Superseded
+        );
+        assert_eq!(new.commit_and_wait_durable(), AtomicWriteOutcome::Written);
+        assert_eq!(std::fs::read(path).expect("durable successor"), b"new");
+    }
+
+    #[test]
+    fn controlled_shutdown_releases_failed_wait_and_retains_pending_bytes() {
+        let directory = tempfile::tempdir().expect("transaction directory");
+        let path = directory.path().join("transaction.json");
+        let writer = AtomicFileWriter::new(&path).expect("transaction writer");
+        writer.set_injected_replace_failures(usize::MAX);
+        let shutdown = PersistenceShutdown::default();
+        let worker_shutdown = shutdown.clone();
+        let write = writer.reserve().admit(b"candidate".to_vec());
+        let worker =
+            std::thread::spawn(move || write.commit_and_wait_durable_or_shutdown(&worker_shutdown));
+        let mut state = writer.destination.state.lock().expect("destination state");
+        while state.lag_error.is_none() {
+            state = writer
+                .destination
+                .state_changed
+                .wait(state)
+                .expect("failure notification");
+        }
+        drop(state);
+        shutdown.writers_stopped();
+        assert_eq!(
+            worker.join().expect("worker exit"),
+            AtomicWriteWaitOutcome::ShutdownPending
+        );
+        assert!(writer.pending_failure().is_some());
+        writer.set_injected_replace_failures(0);
+        writer
+            .flush(std::time::Duration::from_secs(2))
+            .expect("test cleanup converges");
+        assert_eq!(
+            std::fs::read(path).expect("retained candidate"),
+            b"candidate"
+        );
     }
 }

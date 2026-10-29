@@ -19,6 +19,8 @@
 //! returned [`SceneCommit`], because after admission the retry
 //! supervisor owns the bytes and the mutation is going to land.
 
+pub(crate) mod portable;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -1479,6 +1481,16 @@ impl SceneMutation {
                 reason,
             ));
         }
+    }
+
+    /// Restore an explicitly empty runtime selection without falling back to
+    /// the synthesized default scene.
+    pub(crate) fn restore_inactive_selection(&mut self) {
+        if let Some(id) = self.candidate.active_scene_id().copied() {
+            self.retire_scene_previews(id);
+        }
+        self.candidate.priority_stack_mut().clear();
+        self.candidate.invalidate_resolved_zones();
     }
 
     /// Align the active primary zone with a newly authoritative layout.

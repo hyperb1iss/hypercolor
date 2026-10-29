@@ -2105,6 +2105,80 @@ async fn orchestrator_cancellation_drains_a_scanner_that_is_mid_work() {
 }
 
 #[tokio::test]
+async fn orchestrator_cancellation_interrupts_a_held_registry_snapshot() {
+    let registry = DeviceRegistry::new();
+    let guard = registry
+        .prepare_output_settings(&HashMap::new(), HashMap::new())
+        .await
+        .expect("retain registry writer");
+    let orchestrator = DiscoveryOrchestrator::new(registry.clone());
+    let cancel = tokio::sync::Notify::new();
+    let mut scan =
+        std::pin::pin!(orchestrator.full_scan_with_progress_until(cancel.notified(), |_| async {}));
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(scan.as_mut(), &mut context).is_pending());
+    cancel.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), scan)
+            .await
+            .expect("cancel while writer remains held")
+            .is_none()
+    );
+    drop(guard);
+    assert_eq!(registry.len().await, 0);
+}
+
+#[tokio::test]
+async fn orchestrator_cancellation_interrupts_progress_waiting_on_registry() {
+    let registry = DeviceRegistry::new();
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
+    orchestrator.add_source("one", async {
+        Ok::<_, anyhow::Error>(vec![DiscoveredDevice {
+            fingerprint: DeviceFingerprint::from_persisted("test:progress"),
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+            info: mock_device_info("Progress"),
+            metadata: HashMap::new(),
+            claim: None,
+        }])
+    });
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let progress_entered = Arc::clone(&entered);
+    let progress_registry = registry.clone();
+    let cancel = Arc::new(tokio::sync::Notify::new());
+    let cancel_scan = Arc::clone(&cancel);
+    let scan = tokio::spawn(async move {
+        orchestrator
+            .full_scan_with_progress_until(cancel_scan.notified(), move |_| {
+                let registry = progress_registry.clone();
+                let entered = Arc::clone(&progress_entered);
+                async move {
+                    let _guard = registry
+                        .prepare_output_settings(&HashMap::new(), HashMap::new())
+                        .await
+                        .expect("hold registry");
+                    entered.notify_one();
+                    registry.len().await;
+                }
+            })
+            .await
+    });
+    entered.notified().await;
+    cancel.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), scan)
+            .await
+            .expect("cancel progress wait")
+            .expect("scan task")
+            .is_none()
+    );
+    assert_eq!(
+        registry.len().await,
+        1,
+        "already committed discovery survives cancellation"
+    );
+}
+
+#[tokio::test]
 async fn orchestrator_registers_scanners() {
     let registry = DeviceRegistry::new();
     let mut orchestrator = DiscoveryOrchestrator::new(registry);

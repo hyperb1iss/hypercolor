@@ -383,6 +383,7 @@ async fn attachment_template_collection_lists_builtin_metadata() {
 async fn user_template_create_persists_to_overridden_data_dir() {
     let guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new_with_data_dir(guard.data_dir.clone()));
+    let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(state);
     let template_id = "test-custom-strip";
     let template_path = guard.attachments_dir().join(format!("{template_id}.toml"));
@@ -398,6 +399,10 @@ async fn user_template_create_persists_to_overridden_data_dir() {
     let create_json = body_json(create_response).await;
     assert_eq!(create_json["data"]["origin"], "user");
     assert!(template_path.exists(), "template file should be persisted");
+    assert!(matches!(
+        events.try_recv().expect("template settings changed").event,
+        hypercolor_types::event::HypercolorEvent::DeviceSettingsChanged { .. }
+    ));
 
     let list_response = send_empty(
         &app,
@@ -578,6 +583,12 @@ async fn device_attachment_profile_flow_persists_and_clears() {
         guard.attachment_profiles_path().exists(),
         "attachment profile store should be written"
     );
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
+            event.event,
+            hypercolor_types::event::HypercolorEvent::DeviceSettingsChanged { .. }
+        ))
+    );
 
     let get_response = send_empty(
         &app,
@@ -613,6 +624,12 @@ async fn device_attachment_profile_flow_persists_and_clears() {
     assert_eq!(delete_profile_response.status(), StatusCode::OK);
     let delete_profile_json = body_json(delete_profile_response).await;
     assert_eq!(delete_profile_json["data"]["deleted"], true);
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
+            event.event,
+            hypercolor_types::event::HypercolorEvent::DeviceSettingsChanged { .. }
+        ))
+    );
 }
 
 #[tokio::test]

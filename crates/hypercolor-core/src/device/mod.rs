@@ -37,7 +37,9 @@ pub use manager::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, DirectControlGuard,
     DisplayOutputLane, DisplayOutputStatistics, SegmentRange,
 };
-pub use registry::{DeviceRegistry, PortableKeyCollision, PortableRebindError};
+pub use registry::{
+    DeviceRegistry, PortableKeyCollision, PortableRebindError, PreparedDeviceOutput,
+};
 pub use smbus_backend::SmBusBackend;
 pub use smbus_scanner::SmBusScanner;
 pub use state_machine::{

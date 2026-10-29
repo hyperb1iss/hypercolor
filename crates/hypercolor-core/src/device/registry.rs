@@ -4,6 +4,9 @@
 //! actively connected and previously seen. It is the single source of truth
 //! for device identity, state, and metadata within a running daemon session.
 
+mod portable;
+pub use portable::PreparedDeviceOutput;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

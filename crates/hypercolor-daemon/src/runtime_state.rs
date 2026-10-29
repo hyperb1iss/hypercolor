@@ -2,6 +2,9 @@
 //!
 //! Stores the active scene snapshot so daemon startup can restore the previous user session.
 
+mod default_scene;
+pub use default_scene::RuntimeDefaultSceneSettings;
+
 use std::path::{Path, PathBuf};
 
 use hypercolor_core::scene::SceneManager;
@@ -21,7 +24,7 @@ use crate::persistence::{
 const STORE_SUBJECT: &str = "runtime session state";
 
 /// Runtime session snapshot persisted to disk.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct RuntimeSessionSnapshot {
@@ -31,11 +34,18 @@ pub struct RuntimeSessionSnapshot {
     /// Full zones for the synthesized default scene.
     pub default_scene_zones: Vec<Zone>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_scene_settings: Option<RuntimeDefaultSceneSettings>,
+
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,
 
     /// Explicit user pause state. Transient OS sleep is never persisted.
     pub manual_paused: bool,
+
+    /// Explicitly stopped output, independent from transient OS sleep.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_stopped: bool,
 }
 
 impl RuntimeSessionSnapshot {
@@ -105,8 +115,10 @@ pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnap
     RuntimeSessionSnapshot {
         active_scene_id,
         default_scene_zones,
+        default_scene_settings: manager.get(&SceneId::DEFAULT).map(Into::into),
         active_layout_id: None,
         manual_paused: false,
+        output_stopped: false,
     }
 }
 
@@ -298,6 +310,13 @@ impl PreparedRuntimeSnapshotSave {
 }
 
 impl AdmittedRuntimeSnapshotSave {
+    pub(crate) fn commit_and_wait_durable_or_shutdown(
+        self,
+        shutdown: &crate::persistence::PersistenceShutdown,
+    ) -> crate::persistence::AtomicWriteWaitOutcome {
+        self.write.commit_and_wait_durable_or_shutdown(shutdown)
+    }
+
     pub(crate) fn commit_stage_aware(self) -> AtomicWriteCommitResult {
         self.write.commit_stage_aware()
     }
@@ -326,6 +345,8 @@ mod tests {
             default_scene_zones: Vec::new(),
             active_layout_id: Some("layout_abc123".to_owned()),
             manual_paused: true,
+            output_stopped: false,
+            default_scene_settings: None,
         };
 
         save(&path, &expected).expect("save snapshot");
@@ -525,6 +546,8 @@ mod tests {
             default_scene_zones: Vec::new(),
             active_layout_id: None,
             manual_paused: false,
+            output_stopped: false,
+            default_scene_settings: None,
         });
 
         let worker_count = 8;

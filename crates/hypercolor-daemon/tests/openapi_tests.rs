@@ -404,15 +404,15 @@ fn runtime_document_exactly_matches_the_spec_78_target_manifest() {
     let live = documented_operations(&document);
     let target = target_operations();
 
-    assert_eq!(target.len(), 129, "target operation count drifted");
-    assert_eq!(live.len(), 129, "live operation count has not converged");
+    assert_eq!(target.len(), 132, "target operation count drifted");
+    assert_eq!(live.len(), 132, "live operation count has not converged");
     assert_eq!(
         target
             .iter()
             .map(|(_, path)| path)
             .collect::<BTreeSet<_>>()
             .len(),
-        93,
+        96,
         "target path count drifted"
     );
     assert_eq!(
@@ -420,7 +420,7 @@ fn runtime_document_exactly_matches_the_spec_78_target_manifest() {
             .map(|(_, path)| path)
             .collect::<BTreeSet<_>>()
             .len(),
-        93,
+        96,
         "live path count has not converged"
     );
     assert_eq!(
@@ -516,7 +516,7 @@ fn runtime_document_has_complete_operation_contracts() {
         }
     }
 
-    assert_eq!(operation_ids.len(), 129);
+    assert_eq!(operation_ids.len(), 132);
     let schemas = &document["components"]["schemas"];
     assert!(schemas["Vec"].is_null());
     assert!(schemas["ListResponse"].is_null());
@@ -758,4 +758,24 @@ async fn swagger_ui_is_served() {
     let body = body_text(response).await;
     assert!(content_type.starts_with("text/html"));
     assert!(!body.is_empty());
+}
+
+#[test]
+fn backups_declare_streamed_binary_upload_and_typed_confirmation() {
+    let document = openapi_document();
+    assert_eq!(
+        document["paths"]["/api/v1/backups/import"]["post"]["requestBody"]["content"]["application/octet-stream"]
+            ["schema"],
+        serde_json::json!({"type":"string","format":"binary"})
+    );
+    assert_eq!(
+        document["paths"]["/api/v1/backups/export"]["get"]["responses"]["200"]["content"]["application/x-tar"]
+            ["schema"]["format"],
+        "binary"
+    );
+    assert_eq!(
+        document["paths"]["/api/v1/backups/apply"]["post"]["requestBody"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/BackupApplyRequest"
+    );
 }

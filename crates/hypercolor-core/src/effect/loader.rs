@@ -251,6 +251,13 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
 }
 
 pub(super) fn inspect_html_effect_file(file: &Path) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
+    if super::bundle::is_pending(file) {
+        return Ok(HtmlEffectFile {
+            entry: None,
+            legacy_effect_ids: Vec::new(),
+            imported: true,
+        });
+    }
     let bundle_entrypoint = if super::bundle::is_manifest(file) {
         super::bundle::html_effect_bundle(file)?.map(|bundle| bundle.entrypoint)
     } else {
@@ -275,6 +282,13 @@ pub(super) fn inspect_html_effect_source(
     raw_html: &str,
     modified: SystemTime,
 ) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
+    if super::bundle::is_pending(file) {
+        return Ok(HtmlEffectFile {
+            entry: None,
+            legacy_effect_ids: Vec::new(),
+            imported: true,
+        });
+    }
     let parsed = parse_html_effect_metadata(raw_html);
     let source_path = normalize_path(file);
     let bundle = super::bundle::html_effect_bundle(file)?;
@@ -376,6 +390,9 @@ fn collect_html_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
+        if super::bundle::is_pending(&dir) {
+            continue;
+        }
         for child in fs::read_dir(&dir)? {
             let child = child?;
             let file_type = child.file_type()?;
@@ -469,9 +486,35 @@ fn html_effect_id_migrations(source_path: &Path, canonical: EffectId) -> Vec<Eff
 
     push_legacy_id(deterministic_html_effect_id(source_path));
 
-    if bundled_effect_slug(source_path).is_some() {
-        for path in related_bundled_effect_paths(source_path) {
+    if let Some(slug) = bundled_effect_slug(source_path) {
+        let predecessor = match slug.as_str() {
+            // The WebGL implementation replaced the original Bubble Garden.
+            "bubble-garden" => Some("bubble-garden-webgl.html"),
+            _ => None,
+        };
+        for file_name in source_path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .into_iter()
+            .chain(predecessor)
+        {
+            let path = source_path.with_file_name(file_name);
             push_legacy_id(deterministic_html_effect_id(&path));
+            for related in related_bundled_effect_paths(&path) {
+                push_legacy_id(deterministic_html_effect_id(&related));
+            }
+            // Early loaders persisted paths relative to the bundled root.
+            // Include both separators so those documents survive an OS move.
+            for prefix in ["", "hypercolor/", "bundled/", "hypercolor\\", "bundled\\"] {
+                push_legacy_id(deterministic_html_effect_id_from_key(&format!(
+                    "hypercolor:html:{prefix}{file_name}"
+                )));
+            }
+            if predecessor == Some(file_name)
+                && let Some(stem) = Path::new(file_name).file_stem().and_then(OsStr::to_str)
+            {
+                push_legacy_id(bundled_html_effect_id(stem));
+            }
         }
     }
 

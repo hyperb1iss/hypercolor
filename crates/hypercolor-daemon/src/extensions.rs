@@ -164,6 +164,15 @@ impl PublicRoute {
     }
 }
 
+/// Whether ordinary shutdown snapshots may replace authored state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ShutdownPersistenceDisposition {
+    #[default]
+    SaveCurrentState,
+    /// An interrupted durable transaction owns recovery of its partial stores.
+    PreservePendingTransaction,
+}
+
 #[async_trait]
 pub trait DaemonLifecycleExtension: Send + Sync {
     fn name(&self) -> &'static str;
@@ -178,5 +187,15 @@ pub trait DaemonLifecycleExtension: Send + Sync {
 
     async fn shutdown(&self, _daemon: &DaemonState) -> Result<()> {
         Ok(())
+    }
+
+    /// Called after API admission and ordinary background writers have stopped,
+    /// before device cleanup or shutdown state snapshots. Pending transaction
+    /// owners may release their guards and preserve the journal for next boot.
+    async fn writers_stopped(
+        &self,
+        _daemon: &DaemonState,
+    ) -> Result<ShutdownPersistenceDisposition> {
+        Ok(ShutdownPersistenceDisposition::SaveCurrentState)
     }
 }

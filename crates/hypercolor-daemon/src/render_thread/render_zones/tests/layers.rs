@@ -179,6 +179,244 @@ fn adjusted_effect_layer_uses_layer_compositor() {
 }
 
 #[test]
+fn unavailable_effect_does_not_hide_available_layers_or_change_authored_state() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = builtin_registry();
+    let mut zone = sample_zone(4, 4);
+    let missing_layer = zone.layers[0].clone();
+    let solid = effect_layer(
+        builtin_effect_id(&registry, "solid_color"),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+        )]),
+    );
+    zone.layers = vec![solid, missing_layer.clone()];
+    zone.layers[1].blend = BlendMode::Replace;
+    let authored = zone.clone();
+    let result = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut Vec::new(),
+    )
+    .expect("available layers render");
+    assert_eq!(
+        canvas_from_scene_frame(&result.scene_frame).get_pixel(0, 0),
+        Rgba::new(255, 0, 0, 255)
+    );
+    assert_eq!(zone, authored);
+    let events = runtime.drain_layer_runtime_events();
+    assert!(events.iter().any(|event| matches!(event,
+        HypercolorEvent::LayerHealthChanged { layer_id, health: LayerHealth::Failed { reason }, .. }
+        if *layer_id == missing_layer.id && reason == "Effect is not installed")));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, HypercolorEvent::EffectError { .. }))
+    );
+}
+
+#[test]
+fn unavailable_effect_clears_stale_frames_and_recovers_without_scene_edits() {
+    for opacity in [1.0, 0.5] {
+        let mut runtime = ZoneRuntime::new(4, 4);
+        let mut registry = builtin_registry();
+        let effect_id = builtin_effect_id(&registry, "solid_color");
+        let mut zone = sample_zone(4, 4);
+        set_effect_zone(
+            &mut zone,
+            effect_id,
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
+        );
+        zone.layers[0].opacity = opacity;
+        let authored = zone.clone();
+        let initial = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&zone),
+            1,
+            0,
+            &HashMap::new(),
+            &registry,
+            &mut Vec::new(),
+        )
+        .expect("initial effect renders");
+        assert!(
+            canvas_from_scene_frame(&initial.scene_frame)
+                .get_pixel(0, 0)
+                .a
+                > 0
+        );
+        runtime.drain_layer_runtime_events();
+        let entry = registry.remove(&effect_id).expect("registered effect");
+        let missing = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&zone),
+            1,
+            16,
+            &HashMap::new(),
+            &registry,
+            &mut Vec::new(),
+        )
+        .expect("missing effect stays inactive");
+        assert_eq!(
+            canvas_from_scene_frame(&missing.scene_frame).get_pixel(0, 0),
+            Rgba::TRANSPARENT
+        );
+        assert!(
+            runtime
+                .drain_layer_runtime_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    HypercolorEvent::LayerHealthChanged {
+                        health: LayerHealth::Failed { .. },
+                        ..
+                    }
+                ))
+        );
+        registry.register(entry);
+        let recovered = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&zone),
+            1,
+            32,
+            &HashMap::new(),
+            &registry,
+            &mut Vec::new(),
+        )
+        .expect("registry installation recovers effect");
+        assert!(
+            canvas_from_scene_frame(&recovered.scene_frame)
+                .get_pixel(0, 0)
+                .a
+                > 0
+        );
+        assert!(
+            runtime
+                .drain_layer_runtime_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    HypercolorEvent::LayerHealthChanged {
+                        health: LayerHealth::Active,
+                        ..
+                    }
+                ))
+        );
+        assert_eq!(zone, authored);
+    }
+}
+
+#[test]
+fn unavailable_effect_on_direct_display_stays_transparent_between_cadence_ticks() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = EffectRegistry::new(Vec::new());
+    let zone = sample_display_zone(4, 4);
+    let cadence = HashMap::from([(zone.id, 30)]);
+    for elapsed in [0, 1, 16, 34] {
+        let result = render_scene_for_test(
+            &mut runtime,
+            std::slice::from_ref(&zone),
+            1,
+            elapsed,
+            &cadence,
+            &registry,
+            &mut Vec::new(),
+        )
+        .expect("direct missing effect stays inactive");
+        let (_, frame) = result.display_zone_frames.first().expect("direct frame");
+        assert!(
+            frame
+                .surface_for_test()
+                .rgba_bytes()
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+    }
+    assert!(matches!(
+        runtime.drain_layer_runtime_events().as_slice(),
+        [HypercolorEvent::LayerHealthChanged {
+            health: LayerHealth::Failed { reason },
+            ..
+        }] if reason == "Effect is not installed"
+    ));
+}
+
+#[test]
+fn missing_media_does_not_replace_available_layers() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = builtin_registry();
+    let mut zone = sample_zone(4, 4);
+    let solid = effect_layer(
+        builtin_effect_id(&registry, "solid_color"),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+        )]),
+    );
+    let mut missing = solid.clone();
+    missing.id = SceneLayerId::new();
+    missing.source = LayerSource::Media {
+        asset_id: AssetId::new(),
+        playback: MediaPlayback::default(),
+    };
+    missing.blend = BlendMode::Replace;
+    let missing_id = missing.id;
+    zone.layers = vec![solid, missing];
+    let authored = zone.clone();
+    let result = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut Vec::new(),
+    )
+    .expect("available layer renders beside missing media");
+    assert_eq!(
+        canvas_from_scene_frame(&result.scene_frame).get_pixel(0, 0),
+        Rgba::new(255, 0, 0, 255)
+    );
+    assert_eq!(zone, authored);
+    assert!(
+        runtime
+            .drain_layer_runtime_events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                HypercolorEvent::LayerHealthChanged {
+                    layer_id,
+                    health: LayerHealth::AssetMissing,
+                    ..
+                } if *layer_id == missing_id
+            ))
+    );
+    zone.layers.remove(0);
+    let result = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        2,
+        16,
+        &HashMap::new(),
+        &registry,
+        &mut Vec::new(),
+    )
+    .expect("missing media clears the previous available frame");
+    assert_eq!(
+        canvas_from_scene_frame(&result.scene_frame).get_pixel(0, 0),
+        Rgba::TRANSPARENT
+    );
+}
+
+#[test]
 fn missing_media_layer_renders_transparent_black_and_reports_health() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = EffectRegistry::new(Vec::new());

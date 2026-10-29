@@ -13,7 +13,7 @@ use crate::app_state::AppState;
 use crate::scene_transactions::SceneTransaction;
 
 #[derive(Debug, thiserror::Error)]
-pub(in crate::api::config) enum CaptureConfigTransactionError {
+pub(crate) enum CaptureConfigTransactionError {
     #[error("capture config identity changed during preparation")]
     Conflict,
     #[error(transparent)]
@@ -24,7 +24,7 @@ pub(in crate::api::config) enum CaptureConfigTransactionError {
     Commit(ScreenReconfigurationConflict),
 }
 
-pub(in crate::api::config) async fn apply_capture_config_transaction(
+pub(crate) async fn apply_capture_config_transaction(
     state: &Arc<AppState>,
     expected_config: &Arc<HypercolorConfig>,
     capture: CaptureConfig,
@@ -212,7 +212,7 @@ const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration = std::time::Dura
 const PREPARED_CAPTURE_USABILITY_DEADLINE: std::time::Duration =
     std::time::Duration::from_millis(500);
 
-pub(in crate::api::config) async fn validate_prepared_capture_status(
+pub(crate) async fn validate_prepared_capture_status(
     status: hypercolor_core::input::SourceStatusHandle,
 ) -> anyhow::Result<()> {
     let mut subscription = status.subscribe();
@@ -244,7 +244,7 @@ pub(in crate::api::config) async fn validate_prepared_capture_status(
     }
 }
 
-pub(in crate::api::config) async fn capture_runtime_matches(
+pub(crate) async fn capture_runtime_matches(
     state: &Arc<AppState>,
     expected_config: &Arc<HypercolorConfig>,
 ) -> bool {
@@ -262,7 +262,7 @@ pub(in crate::api::config) async fn capture_runtime_matches(
     capture_statuses_match(&expected_config.capture, &statuses)
 }
 
-pub(in crate::api::config) fn capture_statuses_match(
+pub(crate) fn capture_statuses_match(
     capture: &CaptureConfig,
     statuses: &[Arc<hypercolor_core::input::SourceStatus>],
 ) -> bool {

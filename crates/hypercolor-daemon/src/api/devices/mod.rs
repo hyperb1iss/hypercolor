@@ -254,6 +254,7 @@ pub async fn update_device(
     ApiPath(id): ApiPath<String>,
     ApiJson(body): ApiJson<UpdateDeviceRequest>,
 ) -> Response {
+    let _mutation = state.device_settings.begin_device_mutation().await;
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
         Err(error) => return error.into_response(),

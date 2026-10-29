@@ -189,7 +189,7 @@ impl PreparedDaemon {
         let server = ApiServerTask::spawn(serve_api_handoff_with_shutdown_timeout(
             listeners,
             handoff.clone(),
-            api_shutdown_rx,
+            api_shutdown_rx.clone(),
             API_GRACEFUL_SHUTDOWN_TIMEOUT,
         ));
         info!(binds = %self.listen_addr, "API listeners answering startup probes");
@@ -218,7 +218,28 @@ impl PreparedDaemon {
             has_explicit_bind_override(&self.options),
         );
         install_extensions(&mut daemon_state, ui_dir.clone(), extension_installers)?;
-        Box::pin(daemon_state.start()).await?;
+        let started = tokio::select! {
+            result = Box::pin(daemon_state.start()) => Some(result),
+            () = wait_for_api_shutdown_signal(self.advertised_bind, api_shutdown_rx) => None,
+        };
+        if let Some(result) = started {
+            result?;
+        } else {
+            let server_result = server.join().await;
+            let shutdown_result = daemon_state.shutdown().await;
+            if let Some(record) = render_supervision.termination() {
+                if let Err(error) = server_result {
+                    warn!(%error, "API shutdown failed after startup render failure");
+                }
+                if let Err(error) = shutdown_result {
+                    warn!(%error, "Startup rollback failed after render failure");
+                }
+                return Err(render_failure_exit_error(&record));
+            }
+            server_result?;
+            shutdown_result?;
+            return Ok(());
+        }
 
         progress.enter(DaemonStartupPhase::PreparingApi);
         let app_state = Arc::new(api::build_state(
@@ -303,13 +324,13 @@ impl PreparedDaemon {
             }
             return Err(render_failure_exit_error(&record));
         }
-        server_result?;
-
         if let Some(publisher) = mdns_publisher {
             publisher.shutdown().await;
         }
 
-        daemon_state.shutdown().await?;
+        let shutdown_result = daemon_state.shutdown().await;
+        server_result?;
+        shutdown_result?;
 
         if let Some(record) = render_supervision.termination() {
             return Err(render_failure_exit_error(&record));
@@ -1118,6 +1139,15 @@ pub async fn serve_api_handoff_with_shutdown_timeout(
     shutdown_timeout: Duration,
 ) -> Result<()> {
     let mut servers = JoinSet::new();
+    let _cancel_requests = CancelApiRequests(handoff.requests.clone());
+    let requests = handoff.requests.clone();
+    let mut request_shutdown = shutdown_rx.clone();
+    let _request_shutdown = BackgroundTask::spawn(async move {
+        if !*request_shutdown.borrow() {
+            let _ = request_shutdown.changed().await;
+        }
+        requests.close_and_wait().await;
+    });
 
     for listener in listeners {
         let bind = listener
@@ -1149,21 +1179,32 @@ pub async fn serve_api_handoff_with_shutdown_timeout(
         });
     }
 
-    while let Some(result) = servers.join_next().await {
+    let outcome = loop {
+        let Some(result) = servers.join_next().await else {
+            break Ok(());
+        };
         match result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 servers.abort_all();
-                return Err(error);
+                break Err(error);
             }
             Err(error) => {
                 servers.abort_all();
-                return Err(error).context("API server task failed");
+                break Err(error).context("API server task failed");
             }
         }
-    }
+    };
+    handoff.requests.close_and_wait().await;
+    outcome
+}
 
-    Ok(())
+struct CancelApiRequests(crate::request_lifetime::RequestLifetime);
+
+impl Drop for CancelApiRequests {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 async fn wait_for_api_shutdown_signal(bind: SocketAddr, mut shutdown_rx: watch::Receiver<bool>) {

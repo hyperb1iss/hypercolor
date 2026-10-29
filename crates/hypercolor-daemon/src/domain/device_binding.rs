@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DriverTransportKind};
+use hypercolor_types::portable_setup::{
+    PortableBindingClass as BindingClass, PortableBindingHint, PortableSegmentShape as SegmentShape,
+};
 use hypercolor_types::scene::Zone;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 use tokio::sync::{Mutex, RwLock};
@@ -150,26 +153,6 @@ impl DeviceBindingRemaps {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum BindingClass {
-    ClaimlessUsb {
-        owner: String,
-        vendor_id: u16,
-        product_id: u16,
-    },
-    SmBus {
-        owner: String,
-        protocol_or_model: String,
-        address: u16,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct SegmentShape {
-    name: String,
-    led_count: u32,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct CurrentBinding {
     pub layout_device_id: String,
@@ -266,6 +249,17 @@ impl PersistedBindingEvidence {
 }
 
 impl CurrentBinding {
+    pub(super) fn portable_hint(&self) -> PortableBindingHint {
+        PortableBindingHint {
+            class: self.class.clone(),
+            segments: self.segment_shape.clone(),
+        }
+    }
+
+    pub(super) fn matches_portable_hint(&self, hint: &PortableBindingHint) -> bool {
+        self.class == hint.class && self.segment_shape == hint.segments
+    }
+
     pub(super) fn from_discovery(
         info: &DeviceInfo,
         fingerprint: &DeviceFingerprint,

@@ -365,7 +365,7 @@ async fn run_discovery_scan(
             new_devices: Vec::new(),
             reappeared_devices: Vec::new(),
             vanished_devices: Vec::new(),
-            total_known: runtime.device_registry.len().await,
+            total_known: known_devices_before_shutdown(&runtime).await,
             duration_ms: 0,
             scanners: Vec::new(),
         };
@@ -406,174 +406,192 @@ async fn run_discovery_scan(
     }
     outcomes.sort_by_key(|(index, _)| *index);
 
-    // Each target scan stops on its own at shutdown; nothing here may act
-    // on what they left behind once the daemon is clearing devices.
-    if runtime.target_lanes.is_shut_down() {
-        debug!(targets = ?target_names, "discovery scan stopped by shutdown");
-        return DiscoveryScanResult {
-            targets: target_names,
-            timeout_ms,
-            new_devices: Vec::new(),
-            reappeared_devices: Vec::new(),
-            vanished_devices: Vec::new(),
-            total_known: runtime.device_registry.len().await,
-            duration_ms: 0,
-            scanners: Vec::new(),
-        };
-    }
+    let shutdown = runtime.target_lanes.shutdown_signal();
+    let stopped = DiscoveryScanResult {
+        targets: target_names.clone(),
+        timeout_ms,
+        new_devices: Vec::new(),
+        reappeared_devices: Vec::new(),
+        vanished_devices: Vec::new(),
+        total_known: 0,
+        duration_ms: 0,
+        scanners: Vec::new(),
+    };
+    let finish = async {
+        // Each target scan stops on its own at shutdown; nothing here may act
+        // on what they left behind once the daemon is clearing devices.
+        if runtime.target_lanes.is_shut_down() {
+            debug!(targets = ?target_names, "discovery scan stopped by shutdown");
+            return stopped.clone();
+        }
 
-    if outcomes.is_empty() {
-        warn!("Discovery scan requested with zero active sources");
+        if outcomes.is_empty() {
+            warn!("Discovery scan requested with zero active sources");
+            runtime
+                .event_bus
+                .publish(HypercolorEvent::DeviceDiscoveryCompleted {
+                    found: Vec::new(),
+                    duration_ms: 0,
+                });
+            return DiscoveryScanResult {
+                targets: target_names,
+                timeout_ms,
+                new_devices: Vec::new(),
+                reappeared_devices: Vec::new(),
+                vanished_devices: Vec::new(),
+                total_known: runtime.device_registry.len().await,
+                duration_ms: 0,
+                scanners: Vec::new(),
+            };
+        }
+
+        let scan_had_errors = outcomes.iter().any(|(_, outcome)| outcome.failed);
+        let mut found = Vec::new();
+        let mut new_devices = Vec::new();
+        let mut reappeared_devices = Vec::new();
+        let mut seen_ids = HashSet::new();
+        let mut vanished_devices = Vec::new();
+        let mut scanner_reports = Vec::new();
+        let mut observed_by = HashMap::new();
+        for (_, outcome) in outcomes {
+            if let Some(observation) = outcome.observation {
+                for id in &outcome.seen_ids {
+                    observed_by
+                        .entry(*id)
+                        .or_insert_with(|| (outcome.target.clone(), observation));
+                }
+            }
+            found.extend(outcome.found);
+            new_devices.extend(outcome.new_devices);
+            reappeared_devices.extend(outcome.reappeared_devices);
+            seen_ids.extend(outcome.seen_ids);
+            vanished_devices.extend(outcome.vanished_devices);
+            scanner_reports.extend(outcome.scanner_reports);
+        }
+        let total_known = runtime.device_registry.len().await;
+        let scan_duration = scan_started.elapsed();
+
+        driver_host
+            .driver_inventory()
+            .refresh(driver_registry.as_ref(), driver_host.as_ref())
+            .await;
+
+        let duration_ms = u64::try_from(scan_duration.as_millis()).unwrap_or(u64::MAX);
         runtime
             .event_bus
             .publish(HypercolorEvent::DeviceDiscoveryCompleted {
-                found: Vec::new(),
-                duration_ms: 0,
+                found: found.clone(),
+                duration_ms,
             });
-        return DiscoveryScanResult {
-            targets: target_names,
-            timeout_ms,
-            new_devices: Vec::new(),
-            reappeared_devices: Vec::new(),
-            vanished_devices: Vec::new(),
-            total_known: runtime.device_registry.len().await,
-            duration_ms: 0,
-            scanners: Vec::new(),
-        };
-    }
 
-    let scan_had_errors = outcomes.iter().any(|(_, outcome)| outcome.failed);
-    let mut found = Vec::new();
-    let mut new_devices = Vec::new();
-    let mut reappeared_devices = Vec::new();
-    let mut seen_ids = HashSet::new();
-    let mut vanished_devices = Vec::new();
-    let mut scanner_reports = Vec::new();
-    let mut observed_by = HashMap::new();
-    for (_, outcome) in outcomes {
-        if let Some(observation) = outcome.observation {
-            for id in &outcome.seen_ids {
-                observed_by
-                    .entry(*id)
-                    .or_insert_with(|| (outcome.target.clone(), observation));
-            }
-        }
-        found.extend(outcome.found);
-        new_devices.extend(outcome.new_devices);
-        reappeared_devices.extend(outcome.reappeared_devices);
-        seen_ids.extend(outcome.seen_ids);
-        vanished_devices.extend(outcome.vanished_devices);
-        scanner_reports.extend(outcome.scanner_reports);
-    }
-    let total_known = runtime.device_registry.len().await;
-    let scan_duration = scan_started.elapsed();
-
-    driver_host
-        .driver_inventory()
-        .refresh(driver_registry.as_ref(), driver_host.as_ref())
-        .await;
-
-    let duration_ms = u64::try_from(scan_duration.as_millis()).unwrap_or(u64::MAX);
-    runtime
-        .event_bus
-        .publish(HypercolorEvent::DeviceDiscoveryCompleted {
-            found: found.clone(),
+        debug!(
+            new_devices = found.len(),
+            total_known = total_known,
             duration_ms,
-        });
+            "Discovery scan completed"
+        );
+        info!(
+            targets = ?target_names,
+            found = found.len(),
+            vanished = vanished_devices.len(),
+            total_known = total_known,
+            duration_ms,
+            "Discovery sweep finished"
+        );
 
-    debug!(
-        new_devices = found.len(),
-        total_known = total_known,
-        duration_ms,
-        "Discovery scan completed"
-    );
-    info!(
-        targets = ?target_names,
-        found = found.len(),
-        vanished = vanished_devices.len(),
-        total_known = total_known,
-        duration_ms,
-        "Discovery sweep finished"
-    );
+        let complete_sweep = super::resolve_targets(None, &config, &driver_registry)
+            .is_ok_and(|expected| complete_target_set(&targets, &expected));
+        // Another target can keep this sweep running long after it observed a
+        // target, so a newer lane scan may have seen that target since. Only
+        // devices whose observation is still the newest take part.
+        let current_ids = still_current_observations(&runtime, &observed_by, &seen_ids);
+        let bindings_migrated = if complete_sweep && !scan_had_errors {
+            match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
+                &runtime.device_registry,
+                &runtime.lifecycle_manager,
+                &current_ids,
+            ))
+            .await
+            {
+                Ok(report) if report.mappings > 0 => {
+                    info!(
+                        mappings = report.mappings,
+                        references = report.references,
+                        "Reconciled persisted cross-host device bindings"
+                    );
+                    true
+                }
+                Ok(_) => false,
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "Failed to reconcile persisted cross-host device bindings"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if bindings_migrated {
+            reconcile_migrated_device_connections(&runtime, &current_ids, &observed_by).await;
+        }
 
-    let complete_sweep = super::resolve_targets(None, &config, &driver_registry)
-        .is_ok_and(|expected| complete_target_set(&targets, &expected));
-    // Another target can keep this sweep running long after it observed a
-    // target, so a newer lane scan may have seen that target since. Only
-    // devices whose observation is still the newest take part.
-    let current_ids = still_current_observations(&runtime, &observed_by, &seen_ids);
-    let bindings_migrated = if complete_sweep && !scan_had_errors {
-        match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
+        runtime
+            .layout
+            .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+            .await;
+        {
+            let mut manager = runtime.backend_manager.lock().await;
+            manager.enable_unmapped_layout_warnings();
+        }
+
+        let guard = super::conflict_guard::enforce_native_ownership(&runtime).await;
+        if !guard.locked.is_empty() || !guard.unlocked.is_empty() {
+            info!(
+                locked = guard.locked.len(),
+                unlocked = guard.unlocked.len(),
+                "conflict guard reconciled bridge routes after discovery"
+            );
+        }
+
+        if let Err(error) = crate::device_aliases::sync_from_registry(
+            &runtime.device_aliases_path,
             &runtime.device_registry,
-            &runtime.lifecycle_manager,
-            &current_ids,
-        ))
+        )
         .await
         {
-            Ok(report) if report.mappings > 0 => {
-                info!(
-                    mappings = report.mappings,
-                    references = report.references,
-                    "Reconciled persisted cross-host device bindings"
-                );
-                true
-            }
-            Ok(_) => false,
-            Err(error) => {
-                warn!(
-                    %error,
-                    "Failed to reconcile persisted cross-host device bindings"
-                );
-                false
-            }
+            warn!(
+                path = %runtime.device_aliases_path.display(),
+                %error,
+                "Failed to persist the device alias overlay after discovery"
+            );
         }
-    } else {
-        false
+
+        DiscoveryScanResult {
+            targets: target_names,
+            timeout_ms,
+            new_devices,
+            reappeared_devices,
+            vanished_devices,
+            total_known,
+            duration_ms,
+            scanners: map_scanner_reports(&scanner_reports),
+        }
     };
-    if bindings_migrated {
-        reconcile_migrated_device_connections(&runtime, &current_ids, &observed_by).await;
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => stopped.clone(),
+        result = finish => result,
     }
+}
 
-    runtime
-        .layout
-        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
-        .await;
-    {
-        let mut manager = runtime.backend_manager.lock().await;
-        manager.enable_unmapped_layout_warnings();
-    }
-
-    let guard = super::conflict_guard::enforce_native_ownership(&runtime).await;
-    if !guard.locked.is_empty() || !guard.unlocked.is_empty() {
-        info!(
-            locked = guard.locked.len(),
-            unlocked = guard.unlocked.len(),
-            "conflict guard reconciled bridge routes after discovery"
-        );
-    }
-
-    if let Err(error) = crate::device_aliases::sync_from_registry(
-        &runtime.device_aliases_path,
-        &runtime.device_registry,
-    )
-    .await
-    {
-        warn!(
-            path = %runtime.device_aliases_path.display(),
-            %error,
-            "Failed to persist the device alias overlay after discovery"
-        );
-    }
-
-    DiscoveryScanResult {
-        targets: target_names,
-        timeout_ms,
-        new_devices,
-        reappeared_devices,
-        vanished_devices,
-        total_known,
-        duration_ms,
-        scanners: map_scanner_reports(&scanner_reports),
+async fn known_devices_before_shutdown(runtime: &DiscoveryRuntime) -> usize {
+    let shutdown = runtime.target_lanes.shutdown_signal();
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => 0,
+        count = runtime.device_registry.len() => count,
     }
 }
 
@@ -610,8 +628,12 @@ async fn scan_target(
 
     // Held until this target's departures are retired, so a newer scan of
     // the same target cannot interleave with this one.
-    let mut lane = runtime.target_lanes.hold(target).await;
     let shutdown = runtime.target_lanes.shutdown_signal();
+    let mut lane = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => return None,
+        lane = runtime.target_lanes.hold(target) => lane,
+    };
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     orchestrator.add_source(display_name, async move {
         let Some(capability) = driver.discovery() else {
@@ -660,53 +682,60 @@ async fn scan_target(
         return None;
     }
 
-    let IncrementalDiscoveryState {
-        found,
-        new_devices,
-        reappeared_devices,
-    } = incremental.lock().await.clone();
-    let seen_ids: HashSet<DeviceId> = report
-        .new_devices
-        .iter()
-        .chain(report.reappeared_devices.iter())
-        .copied()
-        .collect();
-    let failed = report
-        .scanner_reports
-        .iter()
-        .any(|scanner| scanner.error.is_some());
-    let vanished_devices = if failed {
-        let failed_scanners = report
+    let finish = async {
+        let IncrementalDiscoveryState {
+            found,
+            new_devices,
+            reappeared_devices,
+        } = incremental.lock().await.clone();
+        let seen_ids: HashSet<DeviceId> = report
+            .new_devices
+            .iter()
+            .chain(report.reappeared_devices.iter())
+            .copied()
+            .collect();
+        let failed = report
             .scanner_reports
             .iter()
-            .filter_map(|scanner| scanner.error.as_ref().map(|_| scanner.scanner.clone()))
-            .collect::<Vec<_>>();
-        warn!(
-            target = target.as_str(),
-            failed_scanners = ?failed_scanners,
-            "discovery of this target was incomplete; preserving its device mappings"
-        );
-        Vec::new()
-    } else {
-        retire_target_departures(runtime, target, &report.vanished_devices, &seen_ids).await
-    };
-    let observation = (!failed).then(|| {
-        *lane = lane.wrapping_add(1);
-        *lane
-    });
-    drop(lane);
+            .any(|scanner| scanner.error.is_some());
+        let vanished_devices = if failed {
+            let failed_scanners = report
+                .scanner_reports
+                .iter()
+                .filter_map(|scanner| scanner.error.as_ref().map(|_| scanner.scanner.clone()))
+                .collect::<Vec<_>>();
+            warn!(
+                target = target.as_str(),
+                failed_scanners = ?failed_scanners,
+                "discovery of this target was incomplete; preserving its device mappings"
+            );
+            Vec::new()
+        } else {
+            retire_target_departures(runtime, target, &report.vanished_devices, &seen_ids).await
+        };
+        let observation = (!failed).then(|| {
+            *lane = lane.wrapping_add(1);
+            *lane
+        });
+        drop(lane);
 
-    Some(TargetScanOutcome {
-        target: target.clone(),
-        observation,
-        found,
-        new_devices,
-        reappeared_devices,
-        seen_ids,
-        vanished_devices,
-        scanner_reports: report.scanner_reports,
-        failed,
-    })
+        Some(TargetScanOutcome {
+            target: target.clone(),
+            observation,
+            found,
+            new_devices,
+            reappeared_devices,
+            seen_ids,
+            vanished_devices,
+            scanner_reports: report.scanner_reports,
+            failed,
+        })
+    };
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => None,
+        result = finish => result,
+    }
 }
 
 /// Retire the devices `target` owns that its scan did not report.

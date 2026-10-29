@@ -28,6 +28,11 @@ pub(crate) async fn run_pipeline(
     let mut observed_pause_generation = 0;
 
     loop {
+        if wait_for_scene_control(&state, &runtime, &supervision).await {
+            next_frame_at = Instant::now();
+            runtime.frame_loop.clock.rebase(next_frame_at);
+            skip_decision = SkipDecision::None;
+        }
         let scheduled_start = next_frame_at;
         wait_until_deadline(scheduled_start).await;
         #[cfg(feature = "persistence-test-hooks")]
@@ -80,6 +85,40 @@ pub(crate) async fn run_pipeline(
     }
 
     info!("render pipeline exited");
+}
+
+/// Retained transactions cannot draw until their owner publishes a decision.
+/// Sleep on that decision instead of spinning on zero-duration frame ticks.
+pub(super) async fn wait_for_scene_control(
+    state: &RenderThreadState,
+    runtime: &PipelineRuntime,
+    supervision: &RenderSupervision,
+) -> bool {
+    let mut waited = false;
+    loop {
+        let changed = state.scene_transactions.queued();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if state.scene_transactions.has_pending() {
+            return waited;
+        }
+        let pending = runtime.render.pending_layout_activation.as_ref();
+        if pending.is_some_and(|prepared| {
+            prepared.activation.decision()
+                != crate::scene_transactions::LayoutActivationDecision::Pending
+        }) || (pending.is_none() && !state.scene_transactions.portable_restore_held())
+        {
+            return waited;
+        }
+        supervision.heartbeat(Instant::now());
+        tokio::select! {
+            () = &mut changed => {},
+            // Preserve the existing parked-loop watchdog heartbeat without
+            // counting control-plane waits as rendered frames.
+            () = tokio::time::sleep(super::output_gate::PARKED_SAFETY_TICK) => {},
+        }
+        waited = true;
+    }
 }
 
 /// Leave a park that a previous pipeline entered and never left.
@@ -205,6 +244,9 @@ async fn handle_inactive_render_loop(
         runtime.render.sparkleflinger.end_gpu_frame();
     }
 
+    if state.scene_transactions.portable_restore_held() {
+        return runtime.frame_policy.inactive_loop_execution(loop_state);
+    }
     runtime.frame_loop.clear_input_demands();
     clear_inactive_render_zones(state, runtime).await;
     runtime.frame_policy.inactive_loop_execution(loop_state)

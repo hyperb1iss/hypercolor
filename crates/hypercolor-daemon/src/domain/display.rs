@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -1030,6 +1031,34 @@ impl DisplayContext {
         if let Err(error) = sync_display_surfaces(&self.authorities.scene, displays).await {
             tracing::warn!(%error, "Failed to sync connected display surfaces");
         }
+    }
+}
+
+/// Materialize restored preferences into a prepared scene candidate.
+///
+/// The restore coordinator holds the scene, device, preference, and effect
+/// authorities through publication. Use those prepared values without
+/// reacquiring live authority or publishing overlays ahead of the transaction.
+pub(crate) fn restore_preference_overlays(
+    scenes: &mut SceneManager,
+    preferences: &DisplayPreferencesStore,
+    devices: &HashMap<DeviceId, DeviceInfo>,
+) {
+    for (id, info) in devices {
+        let Some(preference) = preferences.get(*id) else {
+            scenes.remove_default_display_zone(*id);
+            continue;
+        };
+        let Some(surface) = display_surface_info(info) else {
+            continue;
+        };
+        scenes.set_default_display_zone(build_default_display_zone(
+            *id,
+            &info.name,
+            preference.effect_id,
+            preference,
+            display_face_layout(*id, &info.name, surface),
+        ));
     }
 }
 

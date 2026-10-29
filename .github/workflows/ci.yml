@@ -930,6 +930,11 @@ jobs:
           # cache. Seeding from failed runs is what breaks back out.
           cache-on-failure: "true"
 
+      - name: Check Windows production persistence
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo check --locked -p hypercolor-persistence
+          --lib --no-default-features
+
       - name: Download generated effects
         uses: actions/download-artifact@v8
         with:
@@ -940,6 +945,51 @@ jobs:
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-nextest
+
+      - name: Seed effect cover fixture
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force effects/screenshots/curated/rainbow | Out-Null
+          [IO.File]::WriteAllBytes(
+            "effects/screenshots/curated/rainbow/default.webp",
+            [Text.Encoding]::ASCII.GetBytes("RIFFtest-webp-fixture")
+          )
+
+      - name: Check Windows backup restore and replay
+        id: windows-backup
+        # Preserve this step's log while the full suite gathers other failures.
+        # The required-outcome step below keeps this failure fatal to the job.
+        continue-on-error: true
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon
+          --no-default-features --features builtin-drivers,persistence-test-hooks
+          --lib --no-tests=fail
+          -E 'test(=api::backups::tests::backup_routes_export_preview_restore_and_replay_without_source_credentials)'
+
+      - name: Check Windows interrupted setup startup
+        id: windows-startup
+        # Keep lifecycle diagnostics visible before the complete suite runs.
+        # Its original result remains required below.
+        continue-on-error: true
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-daemon
+          --no-default-features --features builtin-drivers,persistence-test-hooks
+          --test startup_tests public_startup_recovers_interrupted_setup_without_private_extensions
+          '--' --exact --nocapture
+
+      - name: Run daemon input and capture integration tests
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon
+          --no-default-features --features builtin-drivers,persistence-test-hooks
+          --test-threads=1 --no-fail-fast
+
+      - name: Require Windows backup restore and replay
+        if: always() && steps.windows-backup.outcome == 'failure'
+        run: exit 1
+
+      - name: Require Windows interrupted setup startup
+        if: always() && steps.windows-startup.outcome == 'failure'
+        run: exit 1
 
       - name: Clippy shared crates
         run: >-
@@ -979,20 +1029,6 @@ jobs:
           --test screen_cpu_fanout_allocation_tests
           --test spatial_area_reuse_tests
           '--' -D warnings
-
-      - name: Seed effect cover fixture
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force effects/screenshots/curated/rainbow | Out-Null
-          [IO.File]::WriteAllBytes(
-            "effects/screenshots/curated/rainbow/default.webp",
-            [Text.Encoding]::ASCII.GetBytes("RIFFtest-webp-fixture")
-          )
-
-      - name: Run daemon input and capture integration tests
-        run: >-
-          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers,persistence-test-hooks --test-threads=1
 
       - name: Save Rust build caches
         if: always()

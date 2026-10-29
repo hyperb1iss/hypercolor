@@ -6,6 +6,8 @@
 //! `hypercolor-types`.
 
 mod change_stream;
+mod transaction;
+pub use transaction::PreparedConfigMutation;
 pub mod paths;
 pub mod servers;
 pub mod sources;

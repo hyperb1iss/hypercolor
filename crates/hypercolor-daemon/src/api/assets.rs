@@ -301,7 +301,8 @@ fn asset_error(error: AssetLibraryError) -> DomainError {
         AssetLibraryError::DecodeImage(error) => {
             DomainError::validation(format!("Failed to decode image asset: {error}"))
         }
-        AssetLibraryError::InvalidHashPath { .. } => {
+        AssetLibraryError::RestorePending => DomainError::conflict(error.to_string()),
+        AssetLibraryError::InvalidHashPath { .. } | AssetLibraryError::InvalidRestoreIntent(_) => {
             DomainError::Internal(anyhow::anyhow!(error.to_string()))
         }
         AssetLibraryError::CreateDir { .. }
@@ -317,6 +318,9 @@ fn asset_error(error: AssetLibraryError) -> DomainError {
             DomainError::Internal(anyhow::anyhow!(error.to_string()))
         }
         AssetLibraryError::NotFound(id) => DomainError::not_found(ResourceKind::Asset, id),
+        AssetLibraryError::IdentityConflict(id) => {
+            DomainError::conflict(format!("asset {id} already refers to different content"))
+        }
     }
 }
 

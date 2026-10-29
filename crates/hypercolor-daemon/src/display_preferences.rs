@@ -5,6 +5,8 @@
 //! daemon materializes each preference into a runtime-only default zone on
 //! the scene manager; this store is only the persistence layer.
 
+mod portable;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,7 +48,7 @@ pub struct DisplayPreference {
 }
 
 /// JSON-file-backed store of per-display default faces.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DisplayPreferencesStore {
     preferences: HashMap<DeviceId, DisplayPreference>,
     path: PathBuf,

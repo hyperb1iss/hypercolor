@@ -174,6 +174,7 @@ fn scene_domain_source_uses_zone_vocabulary() {
     ];
     for relative in [
         "api/config/live/audio.rs",
+        "domain/input_configuration/audio.rs",
         "domain/layout/convergence.rs",
         "profile_import.rs",
         "api/ws/session.rs",
@@ -375,7 +376,7 @@ fn output_static_hold_lifecycle_uses_output_context_directly() {
     assert!(startup.contains("self.domains.output.reconcile_static_hold().await;"));
     assert!(worker.contains("let output = self.domains.output.clone();"));
     assert!(
-        !lifecycle.contains("AppState"),
+        !worker.contains("AppState"),
         "daemon lifecycle workers must enter through the domain graph"
     );
 }
@@ -1103,10 +1104,13 @@ fn registry_refreshes_share_the_effect_domain_identity_authority() {
 #[test]
 fn runtime_state_writers_share_the_runtime_session_authority() {
     let sources = daemon_sources();
+    // The prepared child implements the same service and retains its admission
+    // through the aggregate commit; unrelated context children remain fenced.
     let bypasses = sources
         .iter()
         .filter(|(path, _)| {
             !path.ends_with("domain/context.rs")
+                && !path.ends_with("domain/context/portable.rs")
                 && !path.ends_with("runtime_state.rs")
                 && !path.ends_with("startup/services.rs")
         })
@@ -1130,6 +1134,10 @@ fn runtime_state_writers_share_the_runtime_session_authority() {
             .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
     };
     let layout_publication = source("domain/layout/publication.rs");
+    let portable = source("domain/context/portable.rs");
+    assert!(portable.contains("impl RuntimeSessionService"));
+    assert!(portable.contains(".identity_publication_gate"));
+    assert!(portable.contains("_guard: OwnedRwLockWriteGuard<()>"));
     assert!(layout_publication.contains("persist_snapshot_with"));
     assert!(!layout_publication.contains("runtime_state::reserve_save"));
     assert!(!layout_publication.contains("runtime_state::save_reserved"));
@@ -1168,6 +1176,7 @@ fn scene_store_writers_share_the_scene_service_authority() {
         .iter()
         .filter(|(path, _)| {
             !path.ends_with("domain/scene.rs")
+                && !path.ends_with("domain/scene/portable.rs")
                 && !path.ends_with("profile_import.rs")
                 && !path.ends_with("scene_store.rs")
                 && !path.ends_with("startup/services.rs")
@@ -1194,6 +1203,12 @@ fn scene_store_writers_share_the_scene_service_authority() {
             .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
     };
     let lifecycle = source("startup/lifecycle.rs");
+    let portable = source("domain/scene/portable.rs");
+    assert!(portable.contains("impl SceneService"));
+    assert!(portable.contains("self.0.snapshot_save_gate.clone().write_owned().await"));
+    assert!(portable.contains("manager: OwnedRwLockWriteGuard<SceneManager>"));
+    assert!(portable.contains("store: OwnedRwLockWriteGuard<SceneStore>"));
+    assert!(portable.contains("_snapshot_guard: OwnedRwLockWriteGuard<()>"));
     assert!(lifecycle.contains("persist_scene_store_snapshot(&self.scene_manager)"));
     assert!(!lifecycle.contains("self.scene_store"));
     let watcher_shutdown = lifecycle

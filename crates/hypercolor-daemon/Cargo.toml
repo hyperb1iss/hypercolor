@@ -124,6 +124,7 @@ single-instance = "0.3.3"
 socket2 = "0.6.5"
 tokio = { workspace = true }
 async-trait = { workspace = true }
+futures-util = { workspace = true }
 spin_sleep = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -140,7 +141,7 @@ cpal = { workspace = true }
 image = { workspace = true }
 turbojpeg = { workspace = true }
 fast_image_resize = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
 if-addrs = { workspace = true }
 mdns-sd = { workspace = true }
 notify = { workspace = true }
