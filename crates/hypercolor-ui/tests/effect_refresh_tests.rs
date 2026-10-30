@@ -9,7 +9,9 @@ use hypercolor_ui::api::client::{install_http_transport, install_verified_daemon
 use hypercolor_ui::api::http_transport::{
     HttpRequest, HttpResponse, HttpTransport, HttpTransportFuture,
 };
-use hypercolor_ui::api::{PrimaryEffectView, fetch_primary_effect_view_with_metadata};
+use hypercolor_ui::api::{
+    PrimaryEffectView, fetch_primary_effect_view_with_metadata, primary_effect_view_from_scene,
+};
 use hypercolor_ui::app::effect_refresh::PrimaryEffectRefresh;
 use hypercolor_ui::ws::effect_registry::EffectRegistryChanges;
 use leptos::prelude::*;
@@ -149,6 +151,41 @@ fn control_reconciliation_fetches_live_values_and_reuses_only_matching_metadata(
     assert!(
         state.begin(false, 0).1.is_none(),
         "stopped effect retires its definition"
+    );
+}
+
+#[test]
+fn shared_scene_projection_preserves_authority_without_reading_the_scene_again() {
+    let fixture = Rc::new(Fixture {
+        scene: RefCell::new(scene(OTHER, LAYER, 0.1, None, 1)),
+        definition_name: RefCell::new("Shared definition".to_owned()),
+        requests: RefCell::new(Vec::new()),
+    });
+    install_verified_daemon_connection("http://127.0.0.1:9420", None);
+    install_http_transport(fixture.clone()).expect("fixture installed");
+    let shared = serde_json::from_value(scene(EFFECT, LAYER, 0.8, Some(PRESET), 7))
+        .expect("shared document");
+    let first = ready(primary_effect_view_from_scene(&shared, None))
+        .expect("projection")
+        .expect("effect");
+    let mut state = PrimaryEffectRefresh::default();
+    let generation = state.begin(true, 0).0;
+    assert!(state.finish(generation, 0, Some(&first)));
+    let metadata = state.begin(false, 0).1;
+    let changed =
+        serde_json::from_value(scene(EFFECT, OTHER, 0.9, None, 8)).expect("new shared document");
+    let view = ready(primary_effect_view_from_scene(&changed, metadata))
+        .expect("projection")
+        .expect("effect");
+    assert_eq!(view.control_values["gain"], ControlValue::Float(0.9));
+    assert_eq!(view.layer_id, OTHER);
+    assert_eq!(view.scene_revision, 8);
+    assert_eq!(view.active_preset_id, None);
+    assert_eq!(first.active_preset_id.as_deref(), Some(PRESET));
+    assert_eq!(
+        *fixture.requests.borrow(),
+        vec![format!("/api/v1/effects/{EFFECT}")],
+        "the one definition read serves both authoritative snapshots"
     );
 }
 
