@@ -106,7 +106,15 @@ pub async fn fetch_primary_effect_view_with_metadata(
     metadata: Option<PrimaryEffectMetadata>,
 ) -> ApiResult<Option<PrimaryEffectView>> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    let Some((zone_id, layer_id, effect_id, values, _, preset_id)) = effect_target(&scene) else {
+    primary_effect_view_from_scene(&scene, metadata).await
+}
+
+/// Project authoritative controls from a shared scene, fetching only its definition.
+pub async fn primary_effect_view_from_scene(
+    scene: &SceneDocument,
+    metadata: Option<PrimaryEffectMetadata>,
+) -> ApiResult<Option<PrimaryEffectView>> {
+    let Some((zone_id, layer_id, effect_id, values, _, preset_id)) = effect_target(scene) else {
         return Ok(None);
     };
     let metadata = match metadata.filter(|metadata| metadata.id == effect_id) {

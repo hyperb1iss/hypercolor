@@ -38,7 +38,6 @@ use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContex
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
 use crate::ws::messages::ConnectionState;
-use crate::ws::messages::scene_event_requires_effect_refresh;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
@@ -218,9 +217,11 @@ pub struct EffectsContext {
     /// depend on the reactive owner being live.
     pub preferences: PreferencesStore,
     pub apply_generation: StoredValue<u64>,
+    apply_pending: StoredValue<Option<u64>>,
     active_refresh: StoredValue<effect_refresh::PrimaryEffectRefresh>,
     connection_generation: ReadSignal<u64>,
     effect_registry_generation: ReadSignal<u64>,
+    active_scene_read: crate::zones::ActiveSceneRead,
     /// The shared zone state. Effect applies land in its target zone.
     pub zones: crate::zones::ZonesContext,
     /// Refresh hook for the shared active-scene resource (crate::zones).
@@ -271,10 +272,13 @@ impl EffectsContext {
     }
 
     pub fn refresh_active_effect(&self) {
-        self.refresh_primary_effect(true);
+        self.active_refresh.update_value(|refresh| {
+            refresh.begin(true, self.effect_registry_generation.get_untracked());
+        });
+        self.refresh_active_scene();
     }
 
-    fn refresh_primary_effect(&self, invalidate_metadata: bool) {
+    fn project_primary_effect(&self, invalidate_metadata: bool) {
         let ctx = *self;
         let registry_generation = ctx.effect_registry_generation.get_untracked();
         let Some((generation, metadata)) = ctx
@@ -284,9 +288,16 @@ impl EffectsContext {
             return;
         };
         let connection = ctx.connection_generation.get_untracked();
+        if ctx.apply_pending.get_value().is_some() {
+            return;
+        }
+        let Some((scene_generation, scene)) = untrack(|| ctx.active_scene_read.current(connection))
+        else {
+            return;
+        };
         let apply_generation = ctx.apply_generation.get_value();
         leptos::task::spawn_local(async move {
-            let Ok(active) = api::fetch_primary_effect_view_with_metadata(metadata).await else {
+            let Ok(active) = api::primary_effect_view_from_scene(&scene, metadata).await else {
                 return;
             };
             let Some(registry_generation) = ctx.effect_registry_generation.try_get_untracked()
@@ -295,6 +306,9 @@ impl EffectsContext {
             };
             if ctx.connection_generation.try_get_untracked() != Some(connection)
                 || ctx.apply_generation.try_get_value() != Some(apply_generation)
+                || !ctx
+                    .active_scene_read
+                    .is_current(scene_generation, connection)
                 || ctx.active_refresh.try_update_value(|refresh| {
                     refresh.finish(generation, registry_generation, active.as_ref())
                 }) != Some(true)
@@ -376,6 +390,7 @@ impl EffectsContext {
 
         let generation = self.apply_generation.get_value().saturating_add(1);
         self.apply_generation.set_value(generation);
+        self.apply_pending.set_value(Some(generation));
         self.active_refresh.update_value(|refresh| {
             refresh.begin(true, self.effect_registry_generation.get_untracked());
         });
@@ -408,13 +423,16 @@ impl EffectsContext {
 
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            match apply_owned_target(
+            let outcome = apply_owned_target(
                 generation,
                 || async { api::apply_effect(&id, body.as_ref()).await },
                 || ctx.apply_generation.get_value(),
             )
-            .await
-            {
+            .await;
+            if ctx.apply_pending.get_value() == Some(generation) {
+                ctx.apply_pending.set_value(None);
+            }
+            match outcome {
                 Ok(Some(target)) => {
                     ctx.set_active_effect_target.set(Some(target));
                     ctx.refresh_active_effect();
@@ -422,6 +440,7 @@ impl EffectsContext {
                 Ok(None) => ctx.refresh_active_effect(),
                 Err(_) if ctx.apply_generation.get_value() == generation => {
                     restore_active_effect_state(&ctx, previous);
+                    ctx.refresh_active_effect();
                     toasts::toast_error("Couldn't apply the effect");
                 }
                 Err(_) => ctx.refresh_active_effect(),
@@ -850,9 +869,11 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         apply_generation: StoredValue::new(0),
+        apply_pending: StoredValue::new(None),
         active_refresh: StoredValue::new(effect_refresh::PrimaryEffectRefresh::default()),
         connection_generation: ws_ctx.connection_generation,
         effect_registry_generation: effect_registry.generation,
+        active_scene_read: expect_context::<crate::zones::ActiveSceneRead>(),
         zones: zones_ctx,
         scene_refresh: zones_ctx.refresh,
         zone_effects,
@@ -955,19 +976,29 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         }
     });
 
-    // Reconnects invalidate definitions as well as live controls. Every refresh
-    // shares the same generation fence so an older response cannot win later.
-    Effect::new(move |_| {
-        ws_ctx.connection_generation.track();
-        effect_registry.generation.track();
-        effects_ctx.refresh_active_effect();
-    });
-
-    // A refreshed library can replace a definition without changing its id.
+    // Catalog refreshes can replace a definition without changing its id.
+    let (catalog_generation, set_catalog_generation) = signal(0_u64);
     Effect::new(move |_| {
         if effects_resource.get().is_some_and(|result| result.is_ok()) {
-            effects_ctx.refresh_active_effect();
+            set_catalog_generation.update(|generation| *generation = generation.wrapping_add(1));
         }
+    });
+    let structural_generation = Memo::new(move |_| {
+        ws_ctx.last_scene_event.with(|hint| {
+            hint.as_ref()
+                .map_or(0, |hint| hint.active_effect_generation)
+        })
+    });
+    Effect::new(move |previous_metadata: Option<(u64, u64, u64, u64)>| {
+        let metadata = (
+            ws_ctx.connection_generation.get(),
+            effect_registry.generation.get(),
+            catalog_generation.get(),
+            structural_generation.get(),
+        );
+        effects_ctx.active_scene_read.track();
+        effects_ctx.project_primary_effect(previous_metadata != Some(metadata));
+        metadata
     });
 
     Effect::new(move |_| {
@@ -1056,23 +1087,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 effects_ctx
                     .set_active_scene_mutation_mode
                     .set(Some(scene_mutation_mode));
-            }
-            let target = effects_ctx.active_effect_target.get_untracked();
-            if current_scene_event.as_ref().is_none_or(|current| {
-                scene_event_requires_effect_refresh(
-                    previous_scene_event.as_ref().and_then(Option::as_ref),
-                    current,
-                    target.as_ref().map(|target| target.zone_id.as_str()),
-                )
-            }) {
-                let invalidate_metadata = current_scene_event.as_ref().is_none_or(|current| {
-                    current.active_effect_generation
-                        != previous_scene_event
-                            .as_ref()
-                            .and_then(Option::as_ref)
-                            .map_or(0, |previous| previous.active_effect_generation)
-                });
-                effects_ctx.refresh_primary_effect(invalidate_metadata);
             }
 
             current_scene_event

@@ -244,6 +244,49 @@ pub struct ScenesContext {
     pub deactivate: Callback<()>,
 }
 
+/// The completed shared read, including requests whose document is unchanged.
+/// Retained scene memos remain visible while a new request is in flight.
+#[derive(Clone, Copy)]
+pub(crate) struct ActiveSceneRead {
+    resource: LocalResource<(u64, u64, api::ApiResult<api::SceneDocument>)>,
+    requested: RwSignal<u64>,
+}
+
+impl ActiveSceneRead {
+    pub fn track(self) {
+        self.requested.track();
+        self.resource.track();
+    }
+
+    pub fn current(self, connection: u64) -> Option<(u64, api::SceneDocument)> {
+        let requested = self.requested.get();
+        self.resource.with(|read| {
+            let (read_connection, generation, document) = read.as_ref()?;
+            (*read_connection == connection && *generation == requested)
+                .then(|| document.as_ref().ok().cloned())
+                .flatten()
+                .map(|document| (*generation, document))
+        })
+    }
+
+    pub fn is_current(self, generation: u64, connection: u64) -> bool {
+        self.requested.get_untracked() == generation
+            && self.resource.with_untracked(|read| {
+                read.as_ref()
+                    .is_some_and(|(read_connection, read_generation, result)| {
+                        *read_connection == connection
+                            && *read_generation == generation
+                            && result.is_ok()
+                    })
+            })
+    }
+
+    fn refresh(self) {
+        self.requested
+            .update(|generation| *generation = generation.wrapping_add(1));
+    }
+}
+
 /// Whether one read of the active scene tells the page what scene this
 /// connection serves.
 ///
@@ -270,10 +313,17 @@ pub fn provide_scene_contexts(
     // Each read remembers the connection it was made on, so a failure
     // from before the socket opened is not taken for this connection's.
     let connection_generation = expect_context::<WsContext>().connection_generation;
+    let requested = RwSignal::new(0_u64);
     let active_scene_resource = api::daemon_resource(move || {
-        let generation = connection_generation.get_untracked();
-        async move { (generation, api::fetch_active_scene().await) }
+        let connection = connection_generation.get_untracked();
+        let generation = requested.get();
+        async move { (connection, generation, api::fetch_active_scene().await) }
     });
+    let active_read = ActiveSceneRead {
+        resource: active_scene_resource,
+        requested,
+    };
+    provide_context(active_read);
     let scenes_resource = api::daemon_resource(api::list_scenes);
 
     // Memo (not derive) so refetches that return identical state don't
@@ -281,12 +331,12 @@ pub fn provide_scene_contexts(
     let active_scene = Memo::new(move |_| {
         active_scene_resource
             .get()
-            .and_then(|(_, scene)| scene.ok())
+            .and_then(|(_, _, scene)| scene.ok())
     });
     let scene_resolved = Memo::new(move |_| {
         let generation = connection_generation.get();
         active_scene_resource.with(|read| {
-            read.as_ref().is_some_and(|(read_generation, scene)| {
+            read.as_ref().is_some_and(|(read_generation, _, scene)| {
                 scene_read_settles(*read_generation, scene.is_ok(), generation)
             })
         })
@@ -319,9 +369,9 @@ pub fn provide_scene_contexts(
             .is_some_and(|scene| led_zone_count(&scene.zones) > 1)
     });
 
-    let refresh_active = Callback::new(move |()| active_scene_resource.refetch());
+    let refresh_active = Callback::new(move |()| active_read.refresh());
     let refresh_all = Callback::new(move |()| {
-        active_scene_resource.refetch();
+        active_read.refresh();
         scenes_resource.refetch();
     });
 
@@ -334,7 +384,7 @@ pub fn provide_scene_contexts(
         leptos::task::spawn_local(async move {
             match api::activate_scene(&scene_id).await {
                 Ok(()) => {
-                    active_scene_resource.refetch();
+                    active_read.refresh();
                     scenes_resource.refetch();
                 }
                 Err(error) => toasts::toast_error(&format!("Couldn't switch scene: {error}")),
@@ -350,7 +400,7 @@ pub fn provide_scene_contexts(
         leptos::task::spawn_local(async move {
             match api::deactivate_scene().await {
                 Ok(()) => {
-                    active_scene_resource.refetch();
+                    active_read.refresh();
                     scenes_resource.refetch();
                 }
                 Err(error) => {
@@ -370,7 +420,7 @@ pub fn provide_scene_contexts(
     Effect::new(move |previous: Option<u64>| {
         let current = scene_generation.get();
         if previous.unwrap_or_default() != current {
-            active_scene_resource.refetch();
+            active_read.refresh();
         }
         current
     });
