@@ -553,7 +553,8 @@ pub fn DevicesPage() -> impl IntoView {
                             >
                                 <button
                                     class="absolute top-3 right-3 z-10 flex h-9 w-9 items-center justify-center
-                                           rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 glow-ring"
+                                           rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 glow-ring
+                                           max-md:top-2 max-md:right-2 max-md:h-11 max-md:w-11"
                                     aria-label="Close device details"
                                     on:click=move |_| set_selected_device.set(None)
                                 >

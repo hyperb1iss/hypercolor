@@ -425,7 +425,8 @@ pub fn DashboardPage() -> impl IntoView {
                         <button
                             type="button"
                             class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
-                                   hover:bg-surface-hover/40 transition-all"
+                                   hover:bg-surface-hover/40 transition-all \
+                                   max-md:flex max-md:h-[44px] max-md:w-[44px] max-md:items-center max-md:justify-center"
                             class=("text-accent", move || layout_menu_open.get())
                             title="Dashboard layout"
                             on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)

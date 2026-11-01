@@ -547,7 +547,8 @@ pub fn ScenePicker() -> impl IntoView {
                 node_ref=trigger_ref
                 class="group flex min-w-0 max-w-full items-center gap-2 rounded-lg border \
                        border-edge-subtle bg-surface-sunken px-2.5 py-1.5 text-left \
-                       transition-colors duration-150 hover:border-edge-strong btn-press"
+                       transition-colors duration-150 hover:border-edge-strong btn-press \
+                       max-md:min-h-[44px]"
                 class=("border-accent-muted", move || open.get())
                 aria-haspopup="menu"
                 aria-expanded=move || open.get().to_string()
@@ -730,7 +731,7 @@ fn SceneList(
                                 role="menuitemradio"
                                 aria-checked=is_active.to_string()
                                 tabindex="-1"
-                                class="dropdown-option flex w-full items-center gap-2 px-3 py-[7px] \
+                                class="dropdown-option flex w-full items-center gap-2 px-3 py-[7px] max-md:min-h-[44px] \
                                        text-left text-xs text-fg-secondary \
                                        disabled:cursor-not-allowed disabled:opacity-50"
                                 class=("dropdown-option-active", is_active)
@@ -800,7 +801,7 @@ fn SceneList(
                                 role="menuitem"
                                 tabindex="-1"
                                 class=format!(
-                                    "dropdown-option flex w-full items-center gap-2 px-3 py-[7px] text-left text-xs {tone}"
+                                    "dropdown-option flex w-full items-center gap-2 px-3 py-[7px] max-md:min-h-[44px] text-left text-xs {tone}"
                                 )
                                 class=("dropdown-option-keyboard", move || highlighted.get() == Some(index))
                                 on:click=move |_| on_action.run(action)
