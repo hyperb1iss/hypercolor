@@ -4,8 +4,9 @@ Status: In progress (status line added 2026-08-25; this file previously carried 
 Wave 0 shipped: `MobileNav` (`crates/hypercolor-ui/src/components/mobile_nav.rs`) and
 the responsive breakpoint pass are live. Wave 1 shipped on 2026-10-10 and passed
 emulated touch QA; its real-device pass is still owed (see Wave 1 below). Waves 2
-through 4 are open. This spec supersedes the archived Spec 63, which designed a
-separate mobile shell that was never built.
+and 3 were built on 2026-10-31 and passed emulated touch QA; their real-device pass
+is owed with Wave 1's. Wave 4 is open. This spec supersedes the archived Spec 63,
+which designed a separate mobile shell that was never built.
 
 Make `hypercolor-ui` fully usable on phones and tablets as a pure
 Leptos + Tailwind effort. No new frameworks, no daemon changes beyond
@@ -247,33 +248,172 @@ rejection, or system edge gestures that fire `pointercancel`.
 
 ### Wave 2: Per-page audits
 
-Page by page below `md`, in priority order: Dashboard, Effects,
-Devices, Settings, Media, Studio. Effects and control panels are the
-core phone use case (browse, apply, tweak live controls, brightness).
-Studio's spatial editor stays tablet-and-up; phones get a read-only
-zone summary with per-zone effect switching rather than a cramped
-editor. Modals and dropdowns get a phone pass (SilkSelect already
-portals, so clipping is contained).
+Landed 2026-10-31. Every page was audited below `md` in priority order
+(Dashboard, Effects, Devices, Settings, Media, Studio), with the three
+shell decisions this wave owned settled first.
 
-Wave 2 also owns three decisions the shell prototype surfaces:
+#### Phone shell
 
-- Toolbar width strategy on phones. Horizontal scrolling requires the
-  Effects/Devices filter panels to portal first (SilkSelect-style
-  `fixed` positioning); until then toolbars must fit or wrap.
-- A phone home for the sidebar's non-nav functions, which `hidden
-  md:flex` removes wholesale: Now Playing controls, global
-  brightness, and the scene chip. Likely a bottom-sheet off a
-  now-playing surface, or a dashboard card.
-- An extension-item policy for the bottom bar: six core tabs fit a
-  390px phone, and every extension nav item shrinks all of them.
-  Probably a "More" overflow tab past six.
+- **Now-playing strip.** The sidebar's player has no home below `md`,
+  so a compact strip (`components/phone_now_playing.rs`) docks above the
+  bottom tab bar on every page, like a mini player: a live thumbnail (the
+  palette swatch on pages with their own preview), what is playing, and
+  play/pause and next at 44px. Tapping it opens a bottom sheet with the
+  live preview, the full transport (shuffle, previous, play/pause, next,
+  and a jump to the effect controls), global brightness, every zone of a
+  multi-zone scene with its own pause, and the scene list. `<main>` pads
+  by the bar, the strip, and the home-indicator inset (`.shell-main`,
+  `--phone-nav-h` and `--phone-strip-h`), and toasts sit above both.
+- **One player model.** The sidebar and the strip read one shared
+  `NowPlaying` context (`components/now_playing.rs`): the zone the player
+  steers, transport actions, the ambient `--np-*` palette, and global
+  brightness with its single throttled writer. The stepping, shuffle, and
+  caption rules are pure and tested (`tests/now_playing_tests.rs`).
+- **Scene picker on phones.** The brief that opened this wave listed a
+  sidebar "scene chip". By this wave it had already moved into the page
+  headers as `ScenePicker` (Dashboard, Effects, Studio), which phones
+  render. The sheet adds a scene switcher reachable from every page;
+  creating, renaming, and deleting scenes stay in the header picker.
+- **More tab.** The bottom bar keeps the six core tabs. When an extension
+  contributes nav items (`mobile_only` ones included), a seventh More tab
+  appears and those items live in its sheet; with none, the bar is
+  exactly the six (`nav::phone_nav`, tested in `nav.rs`). Seven tabs on a
+  360px phone are 51px each, above the 44px floor.
+- **Bottom sheet.** `components/bottom_sheet.rs` is the phone dialog: the
+  shared `Modal` behavior (dialog semantics, Escape, backdrop tap, focus
+  trap and restore) plus a grab area that drags the sheet down. A release
+  past `min(96px, 25%)` of the sheet's height, or a downward flick of
+  0.5px/ms after 24px, dismisses; a cancel or lost capture snaps back.
+  The drag follows the Wave 1 gesture model. The rule is tested in
+  `tests/bottom_sheet_tests.rs`.
+- **Mount, not just hide.** `viewport::is_phone_layout` is a synchronous
+  `(width < 48rem)` signal, provided at the app root. Surfaces that cost
+  work mount on one side of the boundary only: the strip on phones, the
+  sidebar's live thumbnail (which kept a hidden preview stream running on
+  phones) on desktop, and the Studio editor on tablet and desktop.
+
+#### Pages
+
+- **Dashboard.** The header's layout gear is 44px on phones. The panels'
+  floating width, hide, and reorder bar is revealed by hover only, so on
+  touch it sat at opacity 0 yet stayed tappable: a tap near a panel's top
+  right corner could hide the panel blind. It is gone on touch screens; the
+  layout menu still shows, hides, and resets panels. The
+  favorites' remove button, the same pattern, now shows on touch. The
+  preset strip gives its dropdown a full row on phones, with the four
+  actions at 44px on a second row.
+- **Effects.** Phones split the page into Browse and Controls under a
+  segmented switch. Browse is the grid at two compact cards per row (the
+  description yields to the title); tapping a card applies it and the
+  strip shows it at once. Controls is the live preview and controls,
+  always docked. `?view=controls` opens Controls, which is where the
+  sheet's controls button lands; typing a search or opening the filters
+  returns to Browse.
+- **Devices.** The detail drawer's close button is 44px on phones. The
+  page's Escape listener leaked on every visit (Leptos 0.8 never removes
+  a window listener on its own) and is removed on cleanup now.
+- **Settings.** On phones the tab strip follows the scroll spy, sliding
+  the active tab to the middle, and fades at its trailing edge. The About
+  card's config path wraps instead of widening the page to 487px.
+- **Media.** The grid comes first at two tiles per row; a tapped file
+  opens its details in a bottom sheet instead of a rail stacked over the
+  grid. The kind chips scroll in place with an edge fade.
+- **Studio.** Phones get `pages/studio/phone_summary.rs` instead of the
+  editor: a card per LED zone with its hardware ("12 outputs on 4
+  devices"), what it plays, a pause toggle, and a Change button that opens
+  an effect picker for that zone alone (favorites first, display faces
+  excluded). Screens are listed read-only. The editor never mounts on a
+  phone. Counting and filtering are tested in
+  `tests/studio_phone_summary_tests.rs`.
+- **Modals and dropdowns.** `Modal` leaked its keydown listener on every
+  open; it is removed on unmount now, which every sheet relies on. Menu
+  rows in every dropdown, the scene picker trigger, SilkSelect triggers,
+  and toolbar search and buttons reach 44px on coarse pointers.
+
+Toolbar width strategy: toolbars fit or wrap. The two strips that scroll
+in place (Media's kind chips, Settings' section tabs) hold buttons only,
+no dropdowns, so a clip box cannot shred a panel, and each fades at its
+trailing edge (`edge-fade-x`) so the cut-off item reads as more to come.
 
 ### Wave 3: Touch polish
 
-44px minimum touch targets, `overscroll-behavior` on scroll containers,
-tap-highlight suppression with visible `:active` states, hover-only
-affordances gated on `(hover: hover)`, momentum scrolling checks on
-iOS Safari and Android Chrome.
+Landed 2026-10-31.
+
+- **Targets.** Cursor-sized controls get an invisible finger margin on
+  coarse pointers (`touch-hit`, and `touch-hit-y` for chips and tabs
+  packed side by side), or grow to 44px outright where layout allows.
+  Range inputs take a 44px hit box and a 22px thumb on coarse pointers
+  over the same visible track.
+- **Hover.** Every custom `:hover` rule in `input.css` sits behind
+  `@media (hover: hover)`; Tailwind 4's `hover:` variant already does. A
+  tap no longer leaves a card or button stuck in its hover look.
+  Hover-revealed row actions (`touch-reveal`) show outright on touch
+  screens, matched as `(hover: none) and (pointer: coarse)` so a
+  headless browser, which reports neither hover nor a pointer, keeps the
+  desktop look. The eight remaining `on:mouse*` handlers stay hover-only
+  by design (see the Wave 1 census) and need no gate: on touch they only
+  move a highlight.
+- **Taps.** `-webkit-tap-highlight-color` is transparent; presses show
+  through each control's own `:active` state.
+- **Scrolling.** Below `md` every scroll owner contains its overscroll,
+  and the document has none, so reaching an edge never drags the page
+  under a sheet or triggers pull-to-refresh on the fixed shell. Momentum
+  scrolling is native on both target engines for `overflow: auto`, so no
+  `-webkit-overflow-scrolling` is needed.
+- **Safe areas.** The tab bar, the strip, `<main>`, toasts, and every
+  sheet body pad by `env(safe-area-inset-bottom)`.
+- **Focus zoom.** Text fields are 16px below `md`, since iOS Safari zooms
+  the page into any smaller field on focus.
+
+#### Touch QA matrix (waves 2 and 3)
+
+Run 2026-10-31 with the Wave 1 method: HeadlessChrome 156 over CDP with
+touch emulation (`pointer: coarse`, no hover) and real touch input
+through `Input.dispatchTouchEvent`, against an isolated daemon built
+without drivers, in its own network namespace with throwaway config and
+data, reaching neither the live daemon nor a dev server. The daemon was
+seeded with a saved three-zone scene, two more saved scenes, two
+simulated displays, favorites, and three media files. The More tab ran
+against a scratch embedder that registers two extension nav items, one
+of them `mobile_only`.
+
+| Surface | Check | 390x844 | 360x800 |
+| --- | --- | --- | --- |
+| Now-playing strip | Docked above the tab bar on every page; its targets are 44px or more | Pass | Pass |
+| Now-playing strip | Next steps the effect; pause shows Paused, resume clears it | Pass | Pass |
+| Player sheet | A tap on the strip opens it | Pass | Pass |
+| Player sheet | A short slow drag keeps it; a cancelled drag snaps back; a long drag dismisses; a backdrop tap dismisses | Pass | Pass |
+| Player sheet | Previous and shuffle step the effect; the controls button opens Effects in Controls | Pass | Pass |
+| Player sheet | A brightness drag reaches the daemon; the slider's hit box is 44px | Pass | Pass |
+| Player sheet | Switching to another scene and back | Pass | Pass |
+| More tab | Six core tabs plus More, each at least 44px (55px and 51px wide) | Pass | Pass |
+| More tab | The sheet lists the extension items; a tap navigates and closes it; More shows active on an extension route | Pass | Pass |
+| Effects | `?view=controls` opens Controls with the preview mounted; typing a search or opening Filters returns to Browse, where the preview unmounts | Pass | Pass |
+| Effects | Tapping a card applies it and the strip shows it; the card keeps no hover look | Pass | Pass |
+| Effects | A touch drag moves a control slider; its hit box is at least 44px | Pass | Pass |
+| Studio | The editor never mounts; a zone's picker switches only that zone; a card's pause and resume work | Pass | Pass |
+| Media | A tile opens its details in a sheet | Pass | Pass |
+| Every page | No horizontal overflow, no page errors, no visible control under 44px | Pass | Pass |
+| Touch polish | Tap highlight transparent; the page scroller contains overscroll; the document has none; text fields are 16px | Pass | Pass |
+
+Light theme: the Effects grid, the Studio summary, and the player sheet
+were checked at 390x844. The strip and sheet captions moved from the
+palette tint to theme text tokens after cyan on white proved unreadable.
+
+Desktop regression: every page at 1440x900, before (main 2e871a0b0) and
+after, each shot twice to mask live content. Studio, Media, Devices,
+and Settings are pixel-identical. Dashboard and Effects differ only in
+live content: Dashboard's readouts (uptime, fps, and the engine, frame,
+and preview numbers), and on Effects the running effect's card art,
+which the gallery captures from live frames. A headless desktop reports neither hover nor a
+pointer, so its run also proves the touch-only rules stay off there. The
+desktop sidebar still lists an extension item and hides a `mobile_only`
+one.
+
+Not exercised: safe-area insets (no emulated notch; the padding is
+checked in CSS), iOS Safari focus zoom and momentum scrolling (the
+16px fields and native `overflow: auto` are checked instead), and the
+real-device pass, which stays owed for waves 1 through 3 together.
 
 ### Wave 4: PWA affordances
 
