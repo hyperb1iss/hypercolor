@@ -655,18 +655,44 @@ fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
     );
     assert_eq!(
         commands.len(),
-        2 * 4 + 2 * 3 * 4 + 4 + 1,
-        "PWM, RGB, clock, poll"
+        4 + 1,
+        "fans at their duty with the frame confirmed: clock and poll only"
     );
-    protocol.echo(&commands);
+    assert_eq!(commands[0].data[5], RfSubCommand::ClockSync as u8);
+    report_duty(&protocol, HELD_DUTY);
     let again = protocol.upkeep();
     assert_eq!(again.len(), commands.len());
 }
 
-/// All PWM envelopes precede recovery; unrelated upkeep must wait until the
-/// full RGB transfer (including every data packet and repeated header) is
-/// sent, and the table poll comes last so its reply can confirm it.
+/// The duty `record` reports, which every cluster in these tests holds.
+const HELD_DUTY: [u8; 4] = [128, 64, 32, 0];
+/// A report more than L-Connect's tolerance of five off the held duty.
+const DRIFTED_DUTY: [u8; 4] = [140, 64, 32, 0];
+
+/// Every routed cluster reports `duty`, echoing the tag it already shows.
+fn report_duty(protocol: &Clocked, duty: [u8; 4]) {
+    let records: Vec<_> = protocol
+        .clusters()
+        .iter()
+        .map(|cluster| {
+            let mut record = record(cluster.mac, 0x00, 3, 28);
+            record[20..24].copy_from_slice(&cluster.effect_index);
+            record[36..40].copy_from_slice(&duty);
+            record
+        })
+        .collect();
+    protocol
+        .parse_response(&table_with(&records))
+        .expect("table parses");
+}
+
+/// Every cluster drifts off its duty, so upkeep sends each the duty it
+/// holds. All PWM envelopes precede recovery; unrelated upkeep must wait
+/// until the full RGB transfer (including every data packet and repeated
+/// header) is sent, and the table poll comes last so its reply can confirm
+/// it.
 fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]) {
+    report_duty(protocol, DRIFTED_DUTY);
     let commands = protocol.upkeep();
     let pwm_end = protocol.clusters().len() * 4;
     let rgb_end = pwm_end + expected.len();
@@ -677,6 +703,7 @@ fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]
     );
     for pwm in commands[..pwm_end].as_chunks::<4>().0 {
         assert_eq!(pwm[0].data[5], RfSubCommand::Pwm as u8);
+        assert_eq!(&pwm[0].data[21..25], &HELD_DUTY, "the held duty goes out");
     }
     for (actual, expected) in commands[pwm_end..rgb_end].iter().zip(expected) {
         assert_eq!(
@@ -729,14 +756,15 @@ fn upkeep_restores_the_latest_frame_before_clock_and_retains_it_while_idle() {
     assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
 }
 
-/// The restore upkeep owes goes through the window: with room it follows
-/// the PWM at once, with a full window it waits for an echo to free room.
-/// (Both upkeeps run at one instant, so no timeout intervenes.)
+/// The restore a drifted duty's PWM owes goes through the window: with room
+/// it follows the PWM at once, with a full window it waits for an echo to
+/// free room. (Both upkeeps run at one instant, so no timeout intervenes.)
 #[test]
 fn upkeep_restores_only_where_the_window_has_room() {
     let protocol = discovered_protocol();
     let first = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
     assert_eq!(header_tags(&first).len(), 2);
+    report_duty(&protocol, DRIFTED_DUTY);
     let with_room = protocol.keepalive_commands();
     assert_eq!(
         header_tags(&with_room).len(),
@@ -926,13 +954,12 @@ fn a_new_session_discards_cached_colors_before_rediscovery() {
     let commands = protocol.keepalive_commands();
     assert_eq!(
         commands.len(),
-        2 + 4 + 4 + 1,
-        "no cached RGB in a new session"
+        2 + 4 + 1,
+        "no cached RGB in a new session, and the fans sit at their duty"
     );
     assert_eq!(&commands[0].data[..4], &[USB_CMD_GET_MAC, 8, 0, 0]);
-    assert_eq!(commands[2].data[5], RfSubCommand::Pwm as u8);
-    assert_eq!(commands[6].data[5], RfSubCommand::ClockSync as u8);
-    assert_eq!(commands[10].transfer_type, TransferType::Companion);
+    assert_eq!(commands[2].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(commands[6].transfer_type, TransferType::Companion);
 
     let fresh = protocol.encode_frame(&[[1, 2, 3]; 26]);
     let mut record = record([0x33; 6], 0, 1, 27);
@@ -956,47 +983,118 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
 
     let commands = protocol.keepalive_commands();
     // The streaming preamble (channel selection plus one prep packet per
-    // cluster) because no frame has armed it yet, then two PWM envelopes
-    // and one clock envelope at four packets each, then the table poll.
+    // cluster) because no frame has armed it yet, then the clock envelope
+    // at four packets, then the table poll. Both clusters report the duty
+    // they hold, so neither gets fan-speed traffic.
     let preamble = 1 + 2;
-    assert_eq!(commands.len(), preamble + 3 * 4 + 1);
+    assert_eq!(commands.len(), preamble + 4 + 1);
     assert_eq!(
         &commands[0].data[..4],
         &[USB_CMD_GET_MAC, 8, 0, 0],
         "the first tick arms streaming when no frame has"
     );
-
-    let pwm = &commands[preamble].data;
-    assert_eq!(pwm[5], RfSubCommand::Pwm as u8);
-    assert_eq!(&pwm[6..12], &[0x11; 6]);
-    assert_eq!(
-        &pwm[18..25],
-        &[3, 8, 1, 128, 64, 32, 0],
-        "observed duty, never invented"
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data[5] != RfSubCommand::Pwm as u8),
+        "fans at their duty are left alone"
     );
-    let second_pwm = &commands[preamble + 4].data;
-    assert_eq!(second_pwm[20], 2, "slot index counts clusters from one");
 
-    let clock = &commands[preamble + 8].data;
+    let clock = &commands[preamble].data;
     assert_eq!(&clock[..4], &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]);
     assert_eq!(clock[5], RfSubCommand::ClockSync as u8);
     assert_eq!(&clock[18..20], &[CLOCK_UNSET; 2], "no address to latch");
     let year = u16::from_be_bytes([clock[50], clock[51]]);
     assert!(year >= 2026, "the first tick carries the real date: {year}");
 
-    let poll = &commands[preamble + 12];
+    let poll = &commands[preamble + 4];
     assert_eq!(poll.transfer_type, TransferType::Companion);
     assert_eq!(poll.response.capacity, Some(GET_DEV_REPLY_CAPACITY));
+
+    report_duty(&protocol, DRIFTED_DUTY);
+    let drifted = protocol.upkeep();
+    assert_eq!(
+        drifted.len(),
+        2 * 4 + 4 + 1,
+        "PWM for each cluster that drifted"
+    );
+    let pwm = &drifted[0].data;
+    assert_eq!(pwm[5], RfSubCommand::Pwm as u8);
+    assert_eq!(&pwm[6..12], &[0x11; 6]);
+    assert_eq!(
+        &pwm[18..25],
+        &[3, 8, 1, 128, 64, 32, 0],
+        "the duty the cluster held, never the drift and never invented"
+    );
+    assert_eq!(
+        drifted[4].data[20], 2,
+        "slot index counts clusters from one"
+    );
 
     let mut pumped = vec![ProtocolCommand::default()];
     protocol.pump_frame_into(&mut pumped);
     assert!(pumped.is_empty(), "a pump with nothing due sends nothing");
+    report_duty(&protocol, HELD_DUTY);
     let later = protocol.upkeep();
-    assert_eq!(later[8].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(later.len(), 4 + 1, "back at their duty: no fan speed again");
+    assert_eq!(later[0].data[5], RfSubCommand::ClockSync as u8);
     assert_eq!(
-        &later[8].data[18..50],
-        &clock[18..50],
+        &later[0].data[18..46],
+        &clock[18..46],
         "later ticks send the same sentinel layout"
+    );
+}
+
+#[test]
+fn a_duty_within_the_tolerance_is_left_alone() {
+    let protocol = discovered_protocol();
+    let _ = protocol.keepalive_commands();
+    for duty in [[133, 64, 32, 0], [123, 69, 27, 5]] {
+        report_duty(&protocol, duty);
+        let commands = protocol.upkeep();
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.data[5] != RfSubCommand::Pwm as u8),
+            "{duty:?} sits within five of the held duty on every slot"
+        );
+    }
+    report_duty(&protocol, [128, 64, 32, 6]);
+    let commands = protocol.upkeep();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.data[1] == 0 && command.data[5] == RfSubCommand::Pwm as u8)
+            .count(),
+        2,
+        "six off on one slot is a drift"
+    );
+}
+
+#[test]
+fn only_the_cluster_that_got_fan_speed_owes_a_restore() {
+    let protocol = discovered_protocol();
+    let _ = confirmed_frame(&protocol, &[[9, 9, 9]; 5 * 26]);
+    let clusters = protocol.clusters();
+    let mut first = record(clusters[0].mac, 0x00, 3, 28);
+    first[20..24].copy_from_slice(&clusters[0].effect_index);
+    first[36..40].copy_from_slice(&DRIFTED_DUTY);
+    let mut second = record(clusters[1].mac, 0x00, 2, 27);
+    second[20..24].copy_from_slice(&clusters[1].effect_index);
+    protocol
+        .parse_response(&table_with(&[first, second]))
+        .expect("table parses");
+    let commands = protocol.upkeep();
+    assert_eq!(commands[0].data[5], RfSubCommand::Pwm as u8);
+    assert_eq!(&commands[0].data[6..12], &[0x11; 6]);
+    let restored: Vec<_> = header_tags(&commands)
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect();
+    assert_eq!(
+        restored,
+        vec![[0x11; 6]],
+        "the steady cluster is not resent"
     );
 }
 

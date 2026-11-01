@@ -115,6 +115,27 @@ const MAX_BOUND_DEVICES: usize = 10;
 /// The flash write is broadcast this many times, this far apart.
 const SAVE_CONFIG_REPEATS: usize = 3;
 const SAVE_CONFIG_GAP: Duration = Duration::from_millis(200);
+/// How far a reported slot duty may sit from the duty a cluster holds
+/// before upkeep sends it again: L-Connect's `NeedSyncPwm` tolerance.
+const DUTY_TOLERANCE: u8 = 5;
+
+/// The duty a cluster holds for the session: what it reported the first
+/// time this session heard it bound.
+#[derive(Debug, Clone, Copy)]
+struct HeldDuty {
+    mac: Mac,
+    duty: [u8; 4],
+    /// The last report sat outside the tolerance, so the drift is logged
+    /// once per episode rather than on every tick.
+    drifting: bool,
+}
+
+/// Whether any slot of `reported` sits more than the tolerance from `held`.
+fn duty_drifted(held: [u8; 4], reported: [u8; 4]) -> bool {
+    held.iter()
+        .zip(reported)
+        .any(|(&held, reported)| held.abs_diff(reported) > DUTY_TOLERANCE)
+}
 
 /// Everything learned from the controller and its table.
 #[derive(Debug, Default)]
@@ -137,6 +158,8 @@ struct WirelessState {
     /// A newly heard bound cluster needs the backend to publish fresh routing.
     topology_restart: bool,
     streaming_started: bool,
+    /// Each driven cluster's duty, by radio MAC, captured on first sight.
+    held_duty: Vec<HeldDuty>,
     /// The last submitted pixels, including black frames, retained across idle upkeep.
     /// None means no lighting frame has arrived in this session.
     latest_colors: Option<Vec<[u8; 3]>>,
@@ -221,7 +244,46 @@ impl WirelessState {
                 }
             }
         }
+        self.hold_duties();
         self.observe_echoes(&fresh, now);
+    }
+
+    /// Capture the duty of every driven cluster this session has not held
+    /// yet. Values are never invented: what a cluster first reports is what
+    /// it keeps.
+    fn hold_duties(&mut self) {
+        for cluster in &self.table.clusters {
+            if !self.held_duty.iter().any(|held| held.mac == cluster.mac) {
+                self.held_duty.push(HeldDuty {
+                    mac: cluster.mac,
+                    duty: cluster.pwm,
+                    drifting: false,
+                });
+            }
+        }
+    }
+
+    /// The duty `cluster` should be sent again, if its report drifted off
+    /// what it holds. A cluster at its duty gets no fan-speed traffic at
+    /// all, as in L-Connect: a fan-speed envelope can knock a receiver back
+    /// to its onboard lighting, so one goes out only when it changes
+    /// something.
+    fn duty_to_resend(&mut self, cluster: &FanCluster) -> Option<[u8; 4]> {
+        let held = self
+            .held_duty
+            .iter_mut()
+            .find(|held| held.mac == cluster.mac)?;
+        let drifted = duty_drifted(held.duty, cluster.pwm);
+        if drifted && !held.drifting {
+            info!(
+                mac = %format_mac(cluster.mac),
+                held = ?held.duty,
+                reported = ?cluster.pwm,
+                "wireless cluster drifted off its fan duty; sending it again"
+            );
+        }
+        held.drifting = drifted;
+        drifted.then_some(held.duty)
     }
 
     /// Hand each driven cluster's echoed tag to the pacer.
@@ -711,10 +773,10 @@ impl WirelessControllerProtocol {
         }
     }
 
-    /// The 1 Hz upkeep: hold every cluster at the PWM it reported, restore
-    /// the confirmed frame if nothing newer is waiting, broadcast the
-    /// clock, and refresh the table. Streaming mode is armed here only when
-    /// no frame has done it yet.
+    /// The 1 Hz upkeep: send a cluster whose duty drifted the duty it
+    /// holds, restore that cluster's frame, broadcast the clock, and refresh
+    /// the table. Streaming mode is armed here only when no frame has done
+    /// it yet.
     ///
     /// The table poll comes after the sends, as every poll does, so its
     /// reply can only confirm a transfer that was already on its way.
@@ -726,7 +788,11 @@ impl WirelessControllerProtocol {
             state.streaming_started = true;
         }
 
-        for (index, cluster) in state.table.clusters.iter().enumerate() {
+        let clusters = state.table.clusters.clone();
+        for (index, cluster) in clusters.iter().enumerate() {
+            let Some(duty) = state.duty_to_resend(cluster) else {
+                continue;
+            };
             let slot_index = u8::try_from(index + 1).unwrap_or(u8::MAX);
             let envelope = pwm_envelope(
                 cluster.mac,
@@ -734,18 +800,18 @@ impl WirelessControllerProtocol {
                 cluster.rx_type,
                 cluster.channel,
                 slot_index,
-                cluster.pwm,
+                duty,
             );
             Self::envelope_commands(commands, &envelope, cluster.channel, cluster.rx_type);
+            // A fan-speed envelope can knock a receiver back to its onboard
+            // lighting without changing its echo, so this cluster now owes
+            // a restore. Where the window is open it goes out right after
+            // the fan speed, before clock or pairing traffic can delay it;
+            // where a transfer is still out, it follows once that transfer
+            // resolves, since the transfer may have landed first.
+            state.pacer.owe_restore(index);
         }
 
-        // PWM traffic can knock a receiver back to its onboard lighting
-        // without changing its echo, so every cluster now owes a restore.
-        // Where the window is open it goes out right after the PWM, before
-        // clock or pairing traffic can delay it; where a transfer is still
-        // out, it follows once that transfer resolves, since the transfer
-        // may have landed before the PWM.
-        state.pacer.owe_restores();
         let mut rgb_commands = Vec::new();
         let mut buffer = CommandBuffer::new(&mut rgb_commands);
         Self::pace_rgb(state, now, true, None, &mut buffer);

@@ -59,8 +59,8 @@
 //!   interval is measured the timeout is at least [`ECHO_TIMEOUT_UNKNOWN`],
 //!   and a timeout then leaves slow start's ceiling alone. Timed-out sends
 //!   retain bounded tag history without occupying the active window.
-//! - Fan-speed upkeep can knock a receiver back to its onboard lighting
-//!   without changing its echo, so every upkeep leaves each cluster owing a
+//! - A fan-speed envelope can knock a receiver back to its onboard lighting
+//!   without changing its echo, so a cluster upkeep sends one owes a
 //!   restore, sent with the next room in its window.
 //! - Fans that are present but confirm nothing for [`ECHO_STALL`], including
 //!   a recovery probe given its full observation interval, trigger the vendor
@@ -750,13 +750,13 @@ impl DeliveryPacer {
         }
     }
 
-    /// Fan-speed upkeep just went out: every cluster showing our lighting
-    /// owes a restore, paid by the next send it gets.
-    pub fn owe_restores(&mut self) {
-        for link in &mut self.links {
-            if link.newest.is_some() {
-                link.restore_owed = true;
-            }
+    /// A fan-speed envelope just went to `cluster`: if it shows our
+    /// lighting, it owes a restore, paid by the next send it gets.
+    pub fn owe_restore(&mut self, cluster: usize) {
+        if let Some(link) = self.links.get_mut(cluster)
+            && link.newest.is_some()
+        {
+            link.restore_owed = true;
         }
     }
 
@@ -1823,7 +1823,7 @@ mod tests {
         let mut pacer = connected(now);
         let first = send_all(&mut pacer, &[T1], now)[0];
         pacer.observe(0, first, now);
-        pacer.owe_restores();
+        pacer.owe_restore(0);
         assert_eq!(pacer.decide(0, now), Some(SendKind::Restore));
         let restore = pacer.note_sent(0, T1, SendKind::Restore, now);
         assert_ne!(restore, first, "every send carries its own wire tag");

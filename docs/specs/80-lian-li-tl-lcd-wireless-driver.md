@@ -812,12 +812,21 @@ occasionally spikes RPM.
 
 **v1 policy — hold-steady, decided:** while Hypercolor owns the dongle, it
 
-1. captures each cluster's current per-slot PWM from GetDev records at
-   connect,
-2. re-broadcasts those observed values via RF_PWM_CMD at 1 Hz (payload:
-   envelope + rx_type/channel/slot at [14..17], 4 PWM bytes at [17..21]);
-   values are never invented — only observed duty is held. Undetected slots
-   send 0,
+1. captures each cluster's per-slot PWM from the first GetDev record the
+   session hears for it, and holds that duty for the session,
+2. sends RF_PWM_CMD (payload: envelope + rx_type/channel/slot at
+   [14..17], 4 PWM bytes at [17..21]) to a cluster only when a slot it
+   reports drifts more than 5 off the duty it holds, the tolerance of
+   L-Connect 2.1.29's `MasterDevice.NeedSyncPwm`. A cluster at its duty
+   gets no fan-speed traffic. Values are never invented: only observed
+   duty is held, and undetected slots hold what they reported (0 when
+   empty). Until 2026-10-31 the driver re-sent every cluster's latest
+   reported duty every second, which held nothing (it echoed whatever the
+   fans said) and put a fan-speed envelope into every second of the RGB
+   stream. L-Connect also skips a device whose effect upload is still
+   unconfirmed (`SyncPwm`, `changingEffect`); a live stream always has
+   transfers out, so the driver cannot defer that way and pays a restore
+   instead,
 3. emits RF_CLOCK_SYNC at 1 Hz, the same layout every time, as L-Connect
    2.1.29 builds it (`MasterDevice.SyncMasterClock` over `cpuInfoParam`):
    the 220-byte blob at envelope bytes [14..234], its 50-byte fixed region
@@ -845,11 +854,11 @@ occasionally spikes RPM.
    a channel query restarts a video stream.
 
 PWM writes can interrupt direct RGB output and briefly expose the receiver's
-onboard rainbow effect. After writing the PWM batch, upkeep immediately
-re-sends each cluster's latest RGB frame through the normal transfer codec,
-before clock or pairing work. The restore goes through the pacing window
-(§6.11): every upkeep leaves each cluster owing one, sent right away where
-the window has room and with the next room otherwise. Recovery starts only after a frame has been encoded,
+onboard rainbow effect. After writing a cluster's PWM, upkeep re-sends that
+cluster's latest RGB frame through the normal transfer codec, before clock
+or pairing work. The restore goes through the pacing window (§6.11): a
+cluster that got PWM owes one, sent right away where the window has room
+and with the next room otherwise. Recovery starts only after a frame has been encoded,
 preserves black frames, and never re-arms streaming mode. The cached frame
 belongs to the connection session and is cleared on init.
 The upstream driver documents the same interruption in
@@ -862,15 +871,15 @@ This holds user-set speeds steady without making Hypercolor a fan-curve
 product. Exact clock-blob field values are validated on hardware before the
 descriptor ships enabled (§11). Both upkeep streams and the GetDev poll run
 on the 1 Hz keepalive, in this order:
-streaming preamble (first tick only), PWM per cluster, the paced restore,
-the clock broadcast, then the two-page table poll, which comes after the
+streaming preamble (first tick only), PWM for a cluster that drifted, its
+paced restore, the clock broadcast, then the two-page table poll, which comes after the
 sends so its reply can only confirm a transfer already on its way.
 
-That is the minimum the protocol needs, per second: one PWM envelope per
-cluster and one clock envelope (four TX packets each), the restore when
-the window is open (twelve TX packets per three-fan cluster), and one
-two-page table poll on the RX. A still scene with one cluster therefore
-costs 20 TX packets and one RX poll a second. The master query L-Connect
+That is the minimum the protocol needs, per second: one clock envelope
+(four TX packets) and one two-page table poll on the RX, plus a PWM
+envelope and a restore (twelve TX packets per three-fan cluster) only for
+a cluster whose duty drifted. A still scene with one cluster at its duty
+therefore costs 4 TX packets and one RX poll a second. The master query L-Connect
 repeats every second is not needed: nothing in this driver moves the TX
 off its channel after init.
 
@@ -1086,8 +1095,8 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   window but keep their tags in a bounded history of 128, so a late echo
   still counts as delivery and a window full of lost sends cannot block
   the recovery probe.
-- **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
-  owing a restore, paid by the next room in its window.
+- **Restores after upkeep.** A cluster that upkeep sends fan speed owes a
+  restore, paid by the next room in its window.
 - **Unheard fans.** A cluster missing from every table reply for 3 s is sent
   nothing until it answers; then the sends out are given up and the newest
   frame goes out. A complete table that omits a cluster marks it missing at

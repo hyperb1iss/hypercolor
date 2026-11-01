@@ -214,8 +214,8 @@ fn fans_that_never_come_back_are_reconnected_every_ten_minutes() {
         "a resting cluster gets no RGB"
     );
     assert!(
-        rig.radio.tx_packets - packets_before >= 60 * 8,
-        "fan-speed and clock upkeep carry on through the rest: {} packets in 60 s",
+        rig.radio.tx_packets - packets_before >= 60 * 4,
+        "the clock carries on through the rest, with fans at their duty: {} packets in 60 s",
         rig.radio.tx_packets - packets_before
     );
 }

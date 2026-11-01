@@ -1098,22 +1098,21 @@ fn a_still_scene_costs_only_the_upkeep_the_fans_need() {
     let stats = rig.stats();
 
     assert_eq!(stats.frames_sent, before.frames_sent, "nothing new to send");
-    // Per second: one PWM envelope for the cluster, one clock envelope,
-    // and the confirmed frame again after the PWM, four packets per
-    // envelope; nothing else reaches the TX.
+    // Per second: the clock envelope, four packets. The fans sit at their
+    // duty, so no fan-speed envelope goes out and no restore follows one;
+    // nothing else reaches the TX.
     let packets_per_second = (stats.tx_packets - before.tx_packets) / 10;
-    assert_eq!(packets_per_second, 4 + 4 + TRANSFER_ENVELOPES as u64 * 4);
-    // Per second: the table poll, and an echo poll or three until the
-    // restore's own echo comes back.
+    assert_eq!(packets_per_second, 4);
+    // Per second: the table poll; nothing is out to poll echoes for.
     let polls = rig.radio.rx_polls.len() - polls_before;
-    assert!(
-        (10..=41).contains(&polls),
-        "a few RX polls a second when still: {polls} in 10 s"
+    assert_eq!(
+        polls, 10,
+        "one RX poll a second when still: {polls} in 10 s"
     );
     assert_eq!(
         stats.restores - before.restores,
-        10,
-        "one restore after each PWM upkeep"
+        0,
+        "no fan-speed traffic, so nothing to restore"
     );
 }
 
