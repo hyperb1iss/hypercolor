@@ -1510,20 +1510,25 @@ html {
         overscroll-behavior: none;
     }
 
-    /* Scroll owners keep their scroll; reaching an edge never drags the
-       page or the sheet beneath along with it. Pages scroll in
-       .ambient-scroll; lists, dropdown panels, and drawers use Tailwind's
-       overflow utilities, matched here in any variant. Horizontal strips
-       contain only sideways overscroll, which would otherwise read as a
-       back gesture. */
-    .ambient-scroll,
-    [class*="overflow-auto"],
-    [class*="overflow-y-auto"],
-    [class*="overflow-scroll"],
-    [class*="overflow-y-scroll"] {
+    /* Overscroll is contained in two places only. The page's own scroll
+       owner (`page-scroll`) contains it so an edge never pulls to refresh
+       or bounces the fixed document. Overlays (dropdown panels, sheets,
+       dialogs, drawers, and menus) contain it so scrolling inside one
+       never bleeds to the page behind. Every scroller nested inside the
+       page keeps the default and chains: at the end of a panel list, a
+       swipe moves the page, as it should. */
+    .page-scroll,
+    .scrollbar-dropdown,
+    .sheet-body,
+    [role="dialog"] [class*="overflow-y-auto"],
+    .fixed[class*="overflow-y-auto"],
+    .absolute[class*="overflow-y-auto"] {
         overscroll-behavior: contain;
     }
 
+    /* Nothing in the page scrolls sideways, so containing a horizontal
+       strip's sideways overscroll blocks only the browser's back gesture,
+       never a page scroll. */
     [class*="overflow-x-auto"],
     [class*="overflow-x-scroll"] {
         overscroll-behavior-x: contain;

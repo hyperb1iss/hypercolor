@@ -751,7 +751,7 @@ pub fn EffectsPage() -> impl IntoView {
             // inner scrolls. Phone: one flowing page scroll — detail first
             // like a now-playing card, full-width grid below, no splitter.
             <div
-                class="ambient-scroll flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4"
+                class="ambient-scroll page-scroll flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4"
                 style:--ambient-hue=crate::ambient::hue_style()
                 // On phones this is the panel the view tabs control.
                 role=move || phone.get().then_some("tabpanel")

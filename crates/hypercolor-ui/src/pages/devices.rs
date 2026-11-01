@@ -485,7 +485,7 @@ pub fn DevicesPage() -> impl IntoView {
             // Grid + resizable sidebar
             <div class="flex-1 overflow-hidden">
                 <div class="flex h-full">
-                    <div class="ambient-scroll flex-1 min-w-0 overflow-y-auto px-6 pb-6 pt-4" style:--ambient-hue=crate::ambient::hue_style()>
+                    <div class="ambient-scroll page-scroll flex-1 min-w-0 overflow-y-auto px-6 pb-6 pt-4" style:--ambient-hue=crate::ambient::hue_style()>
                         <SoftwareConflictBanner state=conflicts />
                         <Suspense fallback=move || view! { <DevicesLoadingSkeleton /> }>
                             {move || {

@@ -99,7 +99,7 @@ pub fn Shell(children: Children) -> impl IntoView {
             // now-playing strip docked above it (`.shell-main`).
             <main class="shell-main flex flex-col flex-1 min-h-0 min-w-0 overflow-clip">
                 <crate::components::release_notifications::ReleaseNotice />
-                <div class="ambient-scroll flex-1 min-h-0 overflow-auto" style:--ambient-hue=crate::ambient::hue_style()>{children()}</div>
+                <div class="ambient-scroll page-scroll flex-1 min-h-0 overflow-auto" style:--ambient-hue=crate::ambient::hue_style()>{children()}</div>
             </main>
             <MobileNav />
             {move || phone.get().then(|| view! { <PhoneNowPlaying /> })}

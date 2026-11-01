@@ -176,7 +176,7 @@ pub fn StudioPhoneSummary() -> impl IntoView {
             </PageHeader>
 
             <div
-                class="ambient-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-4 pt-4"
+                class="ambient-scroll page-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-4"
                 style:--ambient-hue=crate::ambient::hue_style()
             >
                 <div class="space-y-5">
