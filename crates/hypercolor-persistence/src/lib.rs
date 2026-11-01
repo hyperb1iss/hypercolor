@@ -214,17 +214,20 @@ struct FlushProgress {
     landed: u64,
     pending: Option<u64>,
     active: Option<(u64, Duration)>,
-    foreground: Option<u64>,
-    finished_attempts: u64,
+    unstarted: Option<u64>,
+    attempts_since_landing: u64,
     last_finished: Option<Duration>,
+    waited: Duration,
 }
 
 impl std::fmt::Display for FlushProgress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "waiting for generation {}, landed {}",
-            self.target, self.landed
+            "gave up after {}ms waiting for generation {}, landed {}",
+            self.waited.as_millis(),
+            self.target,
+            self.landed
         )?;
         if let Some(pending) = self.pending {
             write!(f, ", pending {pending}")?;
@@ -236,11 +239,19 @@ impl std::fmt::Display for FlushProgress {
                 running.as_millis()
             )?;
         }
-        if let Some(foreground) = self.foreground {
-            write!(f, ", foreground commit {foreground} not started")?;
+        if let Some(unstarted) = self.unstarted {
+            write!(f, ", admitted commit {unstarted} not started")?;
         }
-        let plural = if self.finished_attempts == 1 { "" } else { "s" };
-        write!(f, ", {} attempt{plural} finished", self.finished_attempts)?;
+        let plural = if self.attempts_since_landing == 1 {
+            ""
+        } else {
+            "s"
+        };
+        write!(
+            f,
+            ", {} attempt{plural} since the last landing",
+            self.attempts_since_landing
+        )?;
         if let Some(ago) = self.last_finished {
             write!(f, ", the last {}ms ago", ago.as_millis())?;
         }
@@ -596,9 +607,10 @@ struct DestinationState {
     landed_generation: u64,
     /// When the attempt in `active_generation` started.
     active_since: Option<Instant>,
-    /// Attempts finished at this destination in this process, and when the
-    /// latest finished, for flush timeouts to report.
-    finished_attempts: u64,
+    /// Attempts finished without landing since an attempt last landed
+    /// durably, and when the latest of them finished, for flush timeouts
+    /// to report.
+    attempts_since_landing: u64,
     last_finished: Option<Instant>,
 }
 
@@ -987,7 +999,8 @@ impl AtomicFileWriter {
         timeout: Duration,
     ) -> Result<PersistenceFlushOutcome, PersistenceFlushError> {
         self.kick();
-        let deadline = Instant::now() + timeout;
+        let started = Instant::now();
+        let deadline = started + timeout;
         let mut state = self
             .destination
             .state
@@ -1005,7 +1018,7 @@ impl AtomicFileWriter {
         while unsettled(&state) {
             let now = Instant::now();
             if now >= deadline {
-                return Err(self.destination.flush_error(&state, target));
+                return Err(self.destination.flush_error(&state, target, started));
             }
             let wait = deadline.saturating_duration_since(now);
             let (next, result) = self
@@ -1015,7 +1028,7 @@ impl AtomicFileWriter {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = next;
             if result.timed_out() && unsettled(&state) {
-                return Err(self.destination.flush_error(&state, target));
+                return Err(self.destination.flush_error(&state, target, started));
             }
         }
 
@@ -1239,8 +1252,13 @@ impl Destination {
                 state.active_generation = None;
                 state.active_since = None;
             }
-            state.finished_attempts += 1;
-            state.last_finished = Some(Instant::now());
+            if matches!(result, AtomicWriteCommitResult::DurableWritten) {
+                state.attempts_since_landing = 0;
+                state.last_finished = None;
+            } else {
+                state.attempts_since_landing += 1;
+                state.last_finished = Some(Instant::now());
+            }
             match result {
                 AtomicWriteCommitResult::DurableWritten => {
                     if state.pending.as_ref().map(|pending| pending.generation) == Some(generation)
@@ -1323,7 +1341,12 @@ impl Destination {
         }
     }
 
-    fn flush_error(&self, state: &DestinationState, target: u64) -> PersistenceFlushError {
+    fn flush_error(
+        &self,
+        state: &DestinationState,
+        target: u64,
+        started: Instant,
+    ) -> PersistenceFlushError {
         let now = Instant::now();
         PersistenceFlushError {
             path: self.path.clone(),
@@ -1341,11 +1364,12 @@ impl Destination {
                         .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
                     (generation, running)
                 }),
-                foreground: state.foreground_generation,
-                finished_attempts: state.finished_attempts,
+                unstarted: state.foreground_generation,
+                attempts_since_landing: state.attempts_since_landing,
                 last_finished: state
                     .last_finished
                     .map(|finished| now.saturating_duration_since(finished)),
+                waited: now.saturating_duration_since(started),
             }),
         }
     }
@@ -2193,33 +2217,66 @@ mod flush_progress_tests {
             landed: 5,
             pending: Some(7),
             active: Some((7, Duration::from_millis(5_120))),
-            foreground: None,
-            finished_attempts: 1,
+            unstarted: None,
+            attempts_since_landing: 1,
             last_finished: Some(Duration::from_millis(5_200)),
+            waited: Duration::from_millis(5_003),
         };
         assert_eq!(
             progress.to_string(),
-            "waiting for generation 7, landed 5, pending 7, attempt at 7 running 5120ms, \
-             1 attempt finished, the last 5200ms ago"
+            "gave up after 5003ms waiting for generation 7, landed 5, pending 7, \
+             attempt at 7 running 5120ms, 1 attempt since the last landing, the last 5200ms ago"
         );
     }
 
     #[test]
-    fn an_unstarted_foreground_commit_is_named() {
+    fn an_unstarted_admitted_commit_is_named() {
         let progress = FlushProgress {
             target: 3,
             landed: 2,
             pending: Some(3),
             active: None,
-            foreground: Some(3),
-            finished_attempts: 0,
+            unstarted: Some(3),
+            attempts_since_landing: 0,
             last_finished: None,
+            waited: Duration::from_millis(10_240),
         };
         assert_eq!(
             progress.to_string(),
-            "waiting for generation 3, landed 2, pending 3, foreground commit 3 not started, \
-             0 attempts finished"
+            "gave up after 10240ms waiting for generation 3, landed 2, pending 3, \
+             admitted commit 3 not started, 0 attempts since the last landing"
         );
+    }
+
+    #[test]
+    fn a_landing_resets_the_attempt_count() {
+        let directory = tempfile::tempdir().expect("destination directory");
+        let writer = AtomicFileWriter::new(&directory.path().join("state.json"))
+            .expect("destination writer");
+        let attempts = || {
+            let state = writer
+                .destination
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.attempts_since_landing, state.last_finished.is_some())
+        };
+
+        for payload in [b"one", b"two", b"six"] {
+            writer.write(payload).expect("write lands");
+        }
+        assert_eq!(attempts(), (0, false));
+
+        writer.set_injected_replace_failures(usize::MAX);
+        writer.write(b"ten").expect_err("injected failure");
+        let (failed, finished) = attempts();
+        assert!(failed >= 1 && finished, "a failed attempt counts");
+
+        writer.set_injected_replace_failures(0);
+        writer
+            .flush(Duration::from_secs(5))
+            .expect("the retry lands");
+        assert_eq!(attempts(), (0, false));
     }
 }
 
