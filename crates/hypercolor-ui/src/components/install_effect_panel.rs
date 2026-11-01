@@ -135,7 +135,9 @@ pub fn InstallEffectPanel() -> impl IntoView {
                 type="button"
                 class="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-all duration-200
                        text-fg-primary bg-surface-overlay/70 border-edge-subtle hover:border-accent-muted
-                       hover:bg-surface-overlay glow-ring"
+                       hover:bg-surface-overlay glow-ring
+                       max-md:h-[44px] max-md:w-[44px] max-md:justify-center max-md:px-0"
+                aria-label="Install effect"
                 on:click=move |_| open_picker.run(())
             >
                 <Icon icon=LuFolder width="14px" height="14px" />

@@ -120,8 +120,9 @@ pub fn SilkSelect(
         options.with_untracked(|opts| opts.iter().position(|(v, _)| v == &current))
     };
 
-    let trigger_class =
-        format!("w-full flex items-center gap-1.5 select-silk-trigger transition-all {class}");
+    let trigger_class = format!(
+        "w-full flex items-center gap-1.5 select-silk-trigger transition-all pointer-coarse:min-h-[44px] {class}"
+    );
     let label_class = format!("flex-1 min-w-0 text-left truncate {label_class}");
 
     Effect::new(move |_| {

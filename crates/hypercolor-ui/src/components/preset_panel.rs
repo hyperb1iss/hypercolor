@@ -2,11 +2,13 @@
 
 use leptos::ev;
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use std::collections::HashMap;
 
 use crate::api;
 use crate::control_value_json::controls_to_json;
+use crate::icons::LuZap;
 use crate::toasts;
 use hypercolor_color::Hsl;
 use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
@@ -504,18 +506,21 @@ fn PresetSelectorRow(
     };
 
     view! {
-        <div class="flex items-center gap-2" on:keydown=on_keydown>
+        // Phones give the dropdown its own row and drop the actions to a
+        // second row at finger size.
+        <div class="flex items-center gap-2 max-md:flex-wrap max-md:gap-y-1" on:keydown=on_keydown>
             <Show when=move || is_open.get()>
                 <PresetDropdownDismissHandler set_open=set_is_open />
             </Show>
             // Custom dropdown
-            <div class="relative flex-1 min-w-0 preset-dropdown">
+            <div class="relative flex-1 min-w-0 preset-dropdown max-md:basis-full">
                 // Trigger button — accent-tinted with the selected preset's
                 // own swatch falling back to the effect category accent.
                 <button
                     type="button"
                     class="w-full flex items-center gap-2 border pl-2.5 pr-2 py-[7px] \
-                           text-xs cursor-pointer select-silk-trigger transition-all"
+                           text-xs cursor-pointer select-silk-trigger transition-all \
+                           pointer-coarse:min-h-[44px]"
                     class=("rounded-t-lg", move || is_open.get())
                     class=("rounded-b-none", move || is_open.get())
                     class=("rounded-lg", move || !is_open.get())
@@ -780,6 +785,16 @@ fn PresetSelectorRow(
                     </div>
                 </Show>
             </div>
+
+            // Phones: the cabinet's preset label leads the actions row.
+            <span
+                class="md:hidden mr-auto inline-flex items-center gap-1.5 text-[9px] font-mono \
+                       uppercase tracking-[0.18em] font-semibold"
+                style=move || format!("color: rgb({})", accent_rgb.get())
+            >
+                <Icon icon=LuZap width="12px" height="12px" />
+                "Preset"
+            </span>
 
             // Action buttons
             <PresetActionButtons

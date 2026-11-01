@@ -290,7 +290,7 @@ pub fn PreviewCabinet(
                 {on_toggle_fullscreen.map(|cb| view! {
                     <button
                         type="button"
-                        class="absolute top-3 right-3 z-20 p-1.5 rounded-lg \
+                        class="touch-hit absolute top-3 right-3 z-20 p-1.5 rounded-lg \
                                bg-black/45 backdrop-blur-sm border border-edge-subtle/60 \
                                text-fg-secondary hover:text-fg-primary \
                                hover:bg-black/65 hover:border-edge-default \
@@ -512,8 +512,10 @@ pub fn PreviewCabinet(
                     )
                 }
             >
+                // Phones fold the label into the preset toolbar's second
+                // row, so the dropdown can take the strip's full width.
                 <div class="flex items-center gap-3 px-3 py-2">
-                    <div class="flex items-center gap-1.5 shrink-0">
+                    <div class="flex items-center gap-1.5 shrink-0 max-md:hidden">
                         <span
                             class="inline-flex items-center justify-center"
                             style=move || {
@@ -535,7 +537,7 @@ pub fn PreviewCabinet(
                     </div>
 
                     <div
-                        class="w-px h-4 shrink-0"
+                        class="w-px h-4 shrink-0 max-md:hidden"
                         style=move || format!(
                             "background: linear-gradient(180deg, \
                                transparent 0%, \

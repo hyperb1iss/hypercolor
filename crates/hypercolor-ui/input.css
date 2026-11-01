@@ -58,10 +58,34 @@
     box-shadow: 0 8px 24px oklch(0 0 0 / 0.25);
 }
 
-@media (max-width: 767.98px) {
+@media (width < 48rem) {
     .toast-host {
-        bottom: calc(3.5rem + env(safe-area-inset-bottom));
+        bottom: calc(var(--phone-nav-h) + var(--phone-strip-h) + var(--phone-strip-gap) +
+                env(safe-area-inset-bottom));
     }
+}
+
+/* ── Phone shell ──────────────────────────────────────────────────────────
+
+   Below md the bottom tab bar replaces the sidebar, and the now-playing
+   strip docks just above it. `<main>` pads by both, plus the home
+   indicator inset, so no content ever hides behind them. */
+:root {
+    --phone-nav-h: 3.5rem;
+    --phone-strip-h: 3rem;
+    --phone-strip-gap: 0.375rem;
+}
+
+@media (width < 48rem) {
+    .shell-main {
+        padding-bottom: calc(var(--phone-nav-h) + var(--phone-strip-h) +
+                        var(--phone-strip-gap) + env(safe-area-inset-bottom));
+    }
+}
+
+.phone-now-playing {
+    bottom: calc(var(--phone-nav-h) + env(safe-area-inset-bottom));
+    padding-bottom: var(--phone-strip-gap);
 }
 
 /* ── Base Resets ─────────────────────────────────────────────────────────── */
@@ -187,13 +211,17 @@ input[type="range"]::-moz-range-thumb {
     box-shadow: 0 0 10px var(--glow-accent-50), 0 0 3px var(--glow-accent-80);
 }
 
-input[type="range"]:hover::-webkit-slider-thumb {
-    box-shadow: 0 0 16px var(--glow-accent-70), 0 0 4px var(--glow-accent);
-    transform: scale(1.15);
+@media (hover: hover) {
+    input[type="range"]:hover::-webkit-slider-thumb {
+        box-shadow: 0 0 16px var(--glow-accent-70), 0 0 4px var(--glow-accent);
+        transform: scale(1.15);
+    }
 }
 
-input[type="range"]:hover::-moz-range-thumb {
-    box-shadow: 0 0 16px var(--glow-accent-70), 0 0 4px var(--glow-accent);
+@media (hover: hover) {
+    input[type="range"]:hover::-moz-range-thumb {
+        box-shadow: 0 0 16px var(--glow-accent-70), 0 0 4px var(--glow-accent);
+    }
 }
 
 /* ── Color Channel Sliders ───────────────────────────────────────────────── */
@@ -274,10 +302,12 @@ input[type="color"]::-webkit-color-swatch {
                 box-shadow 0.35s var(--ease-silk),
                 background-color 0.2s ease;
 }
-.select-silk:hover:not(:disabled) {
-    border-color: var(--accent-muted);
-    background-color: rgba(255, 255, 255, 0.03);
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(225,53,255,0.6)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+@media (hover: hover) {
+    .select-silk:hover:not(:disabled) {
+        border-color: var(--accent-muted);
+        background-color: rgba(255, 255, 255, 0.03);
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(225,53,255,0.6)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    }
 }
 .select-silk:focus {
     border-color: var(--accent-muted);
@@ -297,9 +327,11 @@ input[type="color"]::-webkit-color-swatch {
                 box-shadow 0.35s var(--ease-silk),
                 background-color 0.2s ease;
 }
-.select-silk-trigger:hover {
-    border-color: var(--accent-muted);
-    background-color: rgba(255, 255, 255, 0.03);
+@media (hover: hover) {
+    .select-silk-trigger:hover {
+        border-color: var(--accent-muted);
+        background-color: rgba(255, 255, 255, 0.03);
+    }
 }
 .select-silk-trigger:focus-visible {
     outline: none;
@@ -317,10 +349,12 @@ input[type="color"]::-webkit-color-swatch {
                 box-shadow 0.25s ease;
     position: relative;
 }
-.dropdown-option:hover {
-    background: linear-gradient(90deg, rgba(225, 53, 255, 0.06) 0%, transparent 80%);
-    color: var(--text-primary);
-    padding-left: 14px;
+@media (hover: hover) {
+    .dropdown-option:hover {
+        background: linear-gradient(90deg, rgba(225, 53, 255, 0.06) 0%, transparent 80%);
+        color: var(--text-primary);
+        padding-left: 14px;
+    }
 }
 .dropdown-option:active {
     background: linear-gradient(90deg, rgba(225, 53, 255, 0.1) 0%, transparent 60%);
@@ -369,18 +403,22 @@ input[type="color"]::-webkit-color-swatch {
                 width 0.22s var(--ease-spring),
                 box-shadow 0.22s var(--ease-silk);
 }
-.preset-option:hover {
-    background: linear-gradient(90deg,
-        rgba(var(--item-rgb), 0.16) 0%,
-        rgba(var(--item-rgb), 0.02) 80%);
-    padding-left: 20px;
-    color: var(--text-primary);
+@media (hover: hover) {
+    .preset-option:hover {
+        background: linear-gradient(90deg,
+            rgba(var(--item-rgb), 0.16) 0%,
+            rgba(var(--item-rgb), 0.02) 80%);
+        padding-left: 20px;
+        color: var(--text-primary);
+    }
 }
-.preset-option:hover::before {
-    opacity: 1;
-    width: 4px;
-    box-shadow: 0 0 12px rgba(var(--item-rgb), 0.85),
-                0 0 2px rgba(var(--item-rgb), 1);
+@media (hover: hover) {
+    .preset-option:hover::before {
+        opacity: 1;
+        width: 4px;
+        box-shadow: 0 0 12px rgba(var(--item-rgb), 0.85),
+                    0 0 2px rgba(var(--item-rgb), 1);
+    }
 }
 .preset-option:active {
     background: linear-gradient(90deg,
@@ -443,9 +481,11 @@ input[type="color"]::-webkit-color-swatch {
                 box-shadow 0.25s var(--ease-silk),
                 opacity 0.2s ease;
 }
-.toolbar-action:hover:not(:disabled) {
-    transform: scale(1.12);
-    box-shadow: 0 0 12px currentColor;
+@media (hover: hover) {
+    .toolbar-action:hover:not(:disabled) {
+        transform: scale(1.12);
+        box-shadow: 0 0 12px currentColor;
+    }
 }
 .toolbar-action:active:not(:disabled) {
     transform: scale(0.88);
@@ -468,8 +508,10 @@ input[type="range"].slider-silk {
     outline: none;
     transition: background 0.2s ease;
 }
-input[type="range"].slider-silk:hover {
-    background: rgba(255, 255, 255, 0.1);
+@media (hover: hover) {
+    input[type="range"].slider-silk:hover {
+        background: rgba(255, 255, 255, 0.1);
+    }
 }
 input[type="range"].slider-silk::-webkit-slider-thumb {
     -webkit-appearance: none;
@@ -484,10 +526,12 @@ input[type="range"].slider-silk::-webkit-slider-thumb {
     transition: transform 0.2s var(--ease-spring),
                 box-shadow 0.25s ease;
 }
-input[type="range"].slider-silk::-webkit-slider-thumb:hover {
-    transform: scale(1.2);
-    box-shadow: 0 0 14px rgba(var(--glow-rgb, 225, 53, 255), 0.5),
-                0 1px 6px rgba(0, 0, 0, 0.3);
+@media (hover: hover) {
+    input[type="range"].slider-silk::-webkit-slider-thumb:hover {
+        transform: scale(1.2);
+        box-shadow: 0 0 14px rgba(var(--glow-rgb, 225, 53, 255), 0.5),
+                    0 1px 6px rgba(0, 0, 0, 0.3);
+    }
 }
 input[type="range"].slider-silk::-webkit-slider-thumb:active {
     transform: scale(0.95);
@@ -507,10 +551,12 @@ input[type="range"].slider-silk::-moz-range-thumb {
     transition: transform 0.2s var(--ease-spring),
                 box-shadow 0.25s ease;
 }
-input[type="range"].slider-silk::-moz-range-thumb:hover {
-    transform: scale(1.2);
-    box-shadow: 0 0 14px rgba(var(--glow-rgb, 225, 53, 255), 0.5),
-                0 1px 6px rgba(0, 0, 0, 0.3);
+@media (hover: hover) {
+    input[type="range"].slider-silk::-moz-range-thumb:hover {
+        transform: scale(1.2);
+        box-shadow: 0 0 14px rgba(var(--glow-rgb, 225, 53, 255), 0.5),
+                    0 1px 6px rgba(0, 0, 0, 0.3);
+    }
 }
 input[type="range"].slider-silk::-moz-range-track {
     height: 4px;
@@ -765,12 +811,14 @@ input[type="range"].slider-silk::-moz-range-track {
                 box-shadow 0.35s var(--ease-silk),
                 filter 0.25s ease;
 }
-.card-hover:hover:not(:disabled) {
-    border-color: var(--accent-muted);
-    box-shadow: 0 0 8px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
-                0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.06),
-                inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    filter: brightness(1.06);
+@media (hover: hover) {
+    .card-hover:hover:not(:disabled) {
+        border-color: var(--accent-muted);
+        box-shadow: 0 0 8px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+                    0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.06),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        filter: brightness(1.06);
+    }
 }
 .card-hover:active:not(:disabled) {
     transform: scale(0.97);
@@ -791,9 +839,11 @@ input[type="range"].slider-silk::-moz-range-track {
                 filter 0.15s ease,
                 opacity 0.15s ease;
 }
-.btn-press:hover:not(:disabled) {
-    filter: brightness(1.2);
-    box-shadow: 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.08);
+@media (hover: hover) {
+    .btn-press:hover:not(:disabled) {
+        filter: brightness(1.2);
+        box-shadow: 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.08);
+    }
 }
 .btn-press:active:not(:disabled) {
     transform: scale(0.92);
@@ -810,10 +860,12 @@ input[type="range"].slider-silk::-moz-range-track {
                 border-color 0.2s ease,
                 filter 0.2s ease;
 }
-.chip-interactive:hover {
-    transform: scale(1.06);
-    filter: brightness(1.25);
-    box-shadow: 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.15);
+@media (hover: hover) {
+    .chip-interactive:hover {
+        transform: scale(1.06);
+        filter: brightness(1.25);
+        box-shadow: 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.15);
+    }
 }
 .chip-interactive:active { transform: scale(0.96); transition-duration: 0.08s; }
 
@@ -823,8 +875,10 @@ input[type="range"].slider-silk::-moz-range-track {
                 color 0.2s ease,
                 box-shadow 0.25s ease;
 }
-.nav-item-hover:hover {
-    box-shadow: inset 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.05);
+@media (hover: hover) {
+    .nav-item-hover:hover {
+        box-shadow: inset 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.05);
+    }
 }
 
 /* Player controls: scale + glow halo */
@@ -834,9 +888,11 @@ input[type="range"].slider-silk::-moz-range-track {
                 background-color 0.15s ease,
                 filter 0.2s ease;
 }
-.player-btn:hover {
-    transform: scale(1.15);
-    filter: drop-shadow(0 0 8px currentColor);
+@media (hover: hover) {
+    .player-btn:hover {
+        transform: scale(1.15);
+        filter: drop-shadow(0 0 8px currentColor);
+    }
 }
 .player-btn:active { transform: scale(0.9); transition-duration: 0.08s; }
 
@@ -884,8 +940,10 @@ input[type="range"].slider-silk::-moz-range-track {
     border: 1px solid var(--border-subtle);
     transition: border-color 0.2s ease;
 }
-.settings-card:hover {
-    border-color: var(--border-default);
+@media (hover: hover) {
+    .settings-card:hover {
+        border-color: var(--border-default);
+    }
 }
 
 .setting-row + .setting-row {
@@ -931,7 +989,7 @@ input[type="range"].slider-silk::-moz-range-track {
 
 /* Phone header ramp: the 21px title reads oversized against a 390px
    canvas, so it steps down with the tighter 48px title row. */
-@media (max-width: 767.98px) {
+@media (width < 48rem) {
     .page-title {
         font-size: 17px;
     }
@@ -1096,10 +1154,12 @@ input[type="range"].slider-silk::-moz-range-track {
     border-color: rgba(var(--glow-rgb), 0.08);
     background: transparent;
 }
-.filter-chip-inactive:hover {
-    color: rgba(var(--glow-rgb), 0.85);
-    border-color: rgba(var(--glow-rgb), 0.2);
-    background: rgba(var(--glow-rgb), 0.08);
+@media (hover: hover) {
+    .filter-chip-inactive:hover {
+        color: rgba(var(--glow-rgb), 0.85);
+        border-color: rgba(var(--glow-rgb), 0.2);
+        background: rgba(var(--glow-rgb), 0.08);
+    }
 }
 
 /* A childless decoration owns the cabinet's halo, hairline and ignition.
@@ -1147,10 +1207,12 @@ input[type="range"].slider-silk::-moz-range-track {
                 inset 0 1px 0 rgba(255, 255, 255, 0.06);
     transition: box-shadow 0.2s ease, transform 0.15s var(--ease-spring);
 }
-.swatch-glow:hover {
-    box-shadow: 0 0 28px var(--swatch-color, rgba(225, 53, 255, 0.4)),
-                inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    transform: scale(1.05);
+@media (hover: hover) {
+    .swatch-glow:hover {
+        box-shadow: 0 0 28px var(--swatch-color, rgba(225, 53, 255, 0.4)),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        transform: scale(1.05);
+    }
 }
 .swatch-glow:active {
     transform: scale(0.95);
@@ -1184,8 +1246,10 @@ input[type="range"].slider-silk::-moz-range-track {
 
 /* ── Card hover brightness ───────────────────────────────────────────────── */
 
-button:hover:not(:disabled) > .relative {
-    filter: brightness(1.02);
+@media (hover: hover) {
+    button:hover:not(:disabled) > .relative {
+        filter: brightness(1.02);
+    }
 }
 
 /* ── Noise texture overlay ───────────────────────────────────────────────── */
@@ -1260,10 +1324,12 @@ button:hover:not(:disabled) > .relative {
     transition: background-color 200ms ease, height 200ms ease, box-shadow 200ms ease;
 }
 
-.resize-handle-zone:hover .resize-handle-line {
-    background: rgba(225, 53, 255, 0.55);
-    height: 80px;
-    box-shadow: 0 0 14px rgba(225, 53, 255, 0.35);
+@media (hover: hover) {
+    .resize-handle-zone:hover .resize-handle-line {
+        background: rgba(225, 53, 255, 0.55);
+        height: 80px;
+        box-shadow: 0 0 14px rgba(225, 53, 255, 0.35);
+    }
 }
 
 .resize-handle-active .resize-handle-line {
@@ -1295,6 +1361,41 @@ body.resizing {
 }
 body.resizing * {
     cursor: col-resize !important;
+}
+
+/* ── Bottom sheet (phones) ─────────────────────────────────────────────────
+
+   The panel rises on entry and slides back down on close. The entrance has
+   no fill mode so the inline drag transform owns the panel once it lands;
+   a held `both` fill would pin it at rest and swallow the drag. */
+@keyframes enter-sheet {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+}
+
+.animate-enter-sheet {
+    animation: enter-sheet 0.28s var(--ease-silk);
+}
+
+.sheet-panel {
+    transition: transform 0.2s var(--ease-silk);
+}
+
+.sheet-panel.sheet-dragging {
+    transition: none;
+}
+
+.sheet-grab,
+.sheet-backdrop {
+    touch-action: none;
+}
+
+.sheet-backdrop {
+    transition: opacity 0.2s var(--ease-silk);
+}
+
+.bottom-sheet:has(> .sheet-panel[data-closing]) > .sheet-backdrop {
+    opacity: 0;
 }
 
 /* ── Fullscreen Preview ───────────────────────────────────────────────────
@@ -1384,6 +1485,149 @@ body.resizing * {
     100% { filter: blur(6px) hue-rotate(360deg); }
 }
 
+/* A horizontal scroll strip fades at its trailing edge, so an item cut
+   off there reads as "more this way" rather than as a clipping bug. */
+@utility edge-fade-x {
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+}
+
+/* ── Touch polish (spec 75 wave 3) ────────────────────────────────────────
+
+   A tap never flashes the browser's grey highlight; every control shows
+   its press through its own :active state (btn-press, card-hover, and
+   friends) instead. Custom :hover rules above sit behind (hover: hover)
+   so a tap cannot leave a control stuck in its hover look. */
+html {
+    -webkit-tap-highlight-color: transparent;
+}
+
+@media (width < 48rem) {
+    /* The shell is fixed and the document never scrolls, so rubber-band
+       and pull-to-refresh on it could only reload the app mid-gesture. */
+    html,
+    body {
+        overscroll-behavior: none;
+    }
+
+    /* Overscroll is contained in two places only. The page's own scroll
+       owner (`page-scroll`) contains it so an edge never pulls to refresh
+       or bounces the fixed document. Overlays (dropdown panels, sheets,
+       dialogs, drawers, and menus) contain it so scrolling inside one
+       never bleeds to the page behind. Every scroller nested inside the
+       page keeps the default and chains: at the end of a panel list, a
+       swipe moves the page, as it should. */
+    .page-scroll,
+    .scrollbar-dropdown,
+    .sheet-body,
+    [role="dialog"] [class*="overflow-y-auto"],
+    .fixed[class*="overflow-y-auto"],
+    .absolute[class*="overflow-y-auto"] {
+        overscroll-behavior: contain;
+    }
+
+    /* Nothing in the page scrolls sideways, so containing a horizontal
+       strip's sideways overscroll blocks only the browser's back gesture,
+       never a page scroll. */
+    [class*="overflow-x-auto"],
+    [class*="overflow-x-scroll"] {
+        overscroll-behavior-x: contain;
+    }
+
+    /* iOS Safari zooms the page into any text field under 16px on focus
+       and leaves it zoomed. */
+    input[type="text"],
+    input[type="search"],
+    input[type="number"],
+    input[type="email"],
+    input[type="password"],
+    input[type="url"],
+    input:not([type]),
+    textarea,
+    select {
+        font-size: 16px;
+    }
+}
+
+/* Hover-revealed controls cannot be revealed on a touch screen, and at
+   opacity 0 they stay tappable: a blind tap could unfavorite an effect
+   or delete a row. Row actions (`touch-reveal`) show outright there; the
+   dashboard panels' bar (`panel-hover-controls`) goes away, since its
+   layout menu covers showing, hiding, and resetting panels. The query
+   names a coarse pointer too, so an environment that merely reports no
+   hover (a headless browser, say) keeps the desktop look. */
+@media (hover: none) and (pointer: coarse) {
+    .touch-reveal:not(:disabled) {
+        opacity: 1;
+    }
+
+    .panel-hover-controls {
+        display: none;
+    }
+}
+
+/* Controls drawn at cursor size get an invisible finger margin on coarse
+   pointers, reaching about 44px without moving any layout. Each one is
+   positioned (`relative` or `absolute`) so the margin anchors to it.
+   `touch-hit` grows every side; `touch-hit-y` grows only up and down, for
+   chips and tabs packed side by side. Hover-revealed row actions use
+   `touch-reveal` together with `touch-hit`. */
+@media (pointer: coarse) {
+    .touch-hit::before,
+    .touch-hit-y::before {
+        content: "";
+        position: absolute;
+    }
+
+    .touch-hit::before {
+        inset: -14px -12px;
+    }
+
+    .touch-hit-y::before {
+        inset: -14px 0;
+    }
+
+    /* Menu rows in every dropdown (SilkSelect, control menus, presets). */
+    .dropdown-option,
+    .preset-option {
+        min-height: 44px;
+    }
+}
+
+/* Range inputs on fingers: a taller hit box and a 22px thumb over the
+   same visible track. Padding grows the box, and the background is
+   clipped to the content box so a track drawn on the input itself stays
+   its own thickness. The clip must win over an inline `background`
+   shorthand (the settings and sidebar brightness sliders set their track
+   color inline) and over `.slider-silk`'s shorthand, both of which reset
+   the clip to the border box and paint the whole 44px box; only
+   !important beats an inline style. Padding also eats rounded ends, since
+   the content box's corner radius is the outer radius minus the padding:
+   a vertical radius of half the box (50%) leaves the content box half its
+   own height, and a 3px horizontal radius closes the cap. */
+@media (pointer: coarse) {
+    input[type="range"],
+    input[type="range"].slider-silk {
+        box-sizing: content-box;
+        padding-block: 20px;
+        background-clip: content-box !important;
+        border-radius: 3px / 50%;
+    }
+
+    input[type="range"]::-webkit-slider-thumb,
+    input[type="range"].slider-silk::-webkit-slider-thumb {
+        width: 22px;
+        height: 22px;
+        margin-top: -8.5px;
+    }
+
+    input[type="range"]::-moz-range-thumb,
+    input[type="range"].slider-silk::-moz-range-thumb {
+        width: 22px;
+        height: 22px;
+    }
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -1394,6 +1638,7 @@ body.resizing * {
     .animate-enter-scale,
     .animate-enter-pop,
     .animate-enter-down,
+    .animate-enter-sheet,
     .animate-breathe,
     .animate-border-glow,
     .animate-edge-shimmer,
@@ -1425,6 +1670,8 @@ body.resizing * {
     .toggle-track,
     .toggle-thumb,
     .swatch-glow,
+    .sheet-panel,
+    .sheet-backdrop,
     /* Ambient hue crossfade snaps instead of drifting (§8.5). */
     .preview-glow {
         transition: none !important;

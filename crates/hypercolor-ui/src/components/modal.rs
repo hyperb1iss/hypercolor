@@ -17,6 +17,17 @@ use wasm_bindgen::JsCast;
 const FOCUSABLE_SELECTOR: &str = "a[href], button:not([disabled]), input:not([disabled]), \
      select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
+/// Whether an element the focusable selector matched is a stop in the Tab
+/// sequence. A negative tabindex takes it out of the sequence (a roving
+/// tabindex group parks every member but one there), and an element that
+/// is inert or not rendered cannot take focus at all. Disabled controls
+/// never reach this check; the selector already leaves them out.
+#[must_use]
+pub fn is_tab_stop(tab_index: i32, inert: bool, rendered: bool) -> bool {
+    tab_index >= 0 && !inert && rendered
+}
+
+/// The dialog's Tab sequence, in document order.
 fn focusable_elements(dialog: &web_sys::HtmlElement) -> Vec<web_sys::HtmlElement> {
     let Ok(list) = dialog.query_selector_all(FOCUSABLE_SELECTOR) else {
         return Vec::new();
@@ -24,6 +35,11 @@ fn focusable_elements(dialog: &web_sys::HtmlElement) -> Vec<web_sys::HtmlElement
     (0..list.length())
         .filter_map(|index| list.get(index))
         .filter_map(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+        .filter(|element| {
+            let inert = element.closest("[inert]").ok().flatten().is_some();
+            let rendered = element.get_client_rects().length() > 0;
+            is_tab_stop(element.tab_index(), inert, rendered)
+        })
         .collect()
 }
 
@@ -34,6 +50,26 @@ fn active_element() -> Option<web_sys::Element> {
 fn contains_element(container: &web_sys::HtmlElement, element: &web_sys::Element) -> bool {
     let node: &web_sys::Node = element;
     container.contains(Some(node))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    Before,
+    After,
+    Same,
+}
+
+/// Where `other` sits relative to `reference` in document order.
+fn relative_order(reference: &web_sys::Element, other: &web_sys::HtmlElement) -> Order {
+    let other: &web_sys::Node = other;
+    let position = reference.compare_document_position(other);
+    if position & web_sys::Node::DOCUMENT_POSITION_PRECEDING != 0 {
+        Order::Before
+    } else if position & web_sys::Node::DOCUMENT_POSITION_FOLLOWING != 0 {
+        Order::After
+    } else {
+        Order::Same
+    }
 }
 
 fn is_same_element(a: &web_sys::Element, b: &web_sys::HtmlElement) -> bool {
@@ -99,8 +135,11 @@ pub fn Modal(
 
     // Escape closes; Tab cycles within the dialog instead of escaping it.
     // `default_prevented` lets inner widgets (dropdowns) consume Escape for
-    // themselves without also dismissing the modal.
-    let _keydown = window_event_listener(ev::keydown, move |event| match event.key().as_str() {
+    // themselves without also dismissing the modal. Leptos 0.8 never
+    // removes a window listener on its own, so the handle is removed when
+    // the modal unmounts; a leaked one would keep answering Escape and Tab
+    // for a dialog that is gone.
+    let keydown = window_event_listener(ev::keydown, move |event| match event.key().as_str() {
         "Escape" if !event.default_prevented() && can_dismiss() => {
             event.prevent_default();
             on_close.run(());
@@ -119,9 +158,31 @@ pub fn Modal(
             let inside = active
                 .as_ref()
                 .is_some_and(|el| contains_element(&container, el));
+            // Focus can sit on something outside the Tab sequence: the
+            // dialog itself, or a roving group member parked at -1. The
+            // browser's next stop from there can lie past the dialog, so
+            // step from its place in document order instead.
+            let off_sequence = active
+                .as_ref()
+                .filter(|el| inside && !focusables.iter().any(|stop| is_same_element(el, stop)));
             if !inside {
                 event.prevent_default();
                 let _ = first.focus();
+            } else if let Some(active) = off_sequence {
+                let target = if event.shift_key() {
+                    focusables
+                        .iter()
+                        .rev()
+                        .find(|stop| relative_order(active, stop) == Order::Before)
+                        .unwrap_or(last)
+                } else {
+                    focusables
+                        .iter()
+                        .find(|stop| relative_order(active, stop) == Order::After)
+                        .unwrap_or(first)
+                };
+                event.prevent_default();
+                let _ = target.focus();
             } else if event.shift_key()
                 && active.as_ref().is_some_and(|el| is_same_element(el, first))
             {
@@ -136,6 +197,7 @@ pub fn Modal(
         }
         _ => {}
     });
+    on_cleanup(move || keydown.remove());
 
     view! {
         <Portal>

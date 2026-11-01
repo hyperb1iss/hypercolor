@@ -32,6 +32,7 @@ pub fn PageSearchBar(
                 type="text"
                 placeholder=placeholder
                 class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-1.5 \
+                       pointer-coarse:min-h-[44px] \
                        text-sm text-fg-primary placeholder-fg-tertiary \
                        focus:outline-none focus:border-accent-muted \
                        search-glow glow-ring transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-300"

@@ -425,7 +425,8 @@ pub fn DashboardPage() -> impl IntoView {
                         <button
                             type="button"
                             class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
-                                   hover:bg-surface-hover/40 transition-all"
+                                   hover:bg-surface-hover/40 transition-all \
+                                   max-md:flex max-md:h-[44px] max-md:w-[44px] max-md:items-center max-md:justify-center"
                             class=("text-accent", move || layout_menu_open.get())
                             title="Dashboard layout"
                             on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
@@ -450,7 +451,7 @@ pub fn DashboardPage() -> impl IntoView {
                 </HeaderToolbar>
             </PageHeader>
 
-            <div class="ambient-scroll flex-1 min-h-0 overflow-y-auto" style:--ambient-hue=crate::ambient::hue_style()>
+            <div class="ambient-scroll page-scroll flex-1 min-h-0 overflow-y-auto" style:--ambient-hue=crate::ambient::hue_style()>
                 <div class="p-4 pt-3 md:p-6 md:pt-4 flex flex-col gap-4 min-h-full">
                     // ── Hero row: preview on the left, favorites on the
                     // right, draggable splitter between them. Fixed height

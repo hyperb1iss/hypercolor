@@ -86,6 +86,30 @@ pub fn nav_model(extra: &[UiNavItem]) -> Vec<NavEntry> {
     entries
 }
 
+/// The phone bottom bar's split of the nav set.
+#[derive(Clone)]
+pub struct PhoneNav {
+    /// The core tabs, which always hold the bar in sidebar order.
+    pub tabs: Vec<NavEntry>,
+    /// Extension items, which live in the bar's More sheet so they never
+    /// shrink the core tabs below a finger's width. Empty means no More tab.
+    pub more: Vec<NavEntry>,
+}
+
+/// Split the nav set for the phone bottom bar: the core tabs, then every
+/// extension item (including `mobile_only` ones) behind a More tab.
+#[must_use]
+pub fn phone_nav(extra: &[UiNavItem]) -> PhoneNav {
+    PhoneNav {
+        tabs: core_nav(),
+        more: extra
+            .iter()
+            .cloned()
+            .map(NavEntry::from_extension)
+            .collect(),
+    }
+}
+
 /// Resolve a `Ctrl/Cmd+<digit>` key to a nav path in sidebar order.
 ///
 /// Shortcut slots are assigned by position over the entries that opt into a
@@ -107,7 +131,7 @@ pub fn nav_shortcut_path(extra: &[UiNavItem], key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{nav_model, nav_shortcut_path};
+    use super::{nav_model, nav_shortcut_path, phone_nav};
     use crate::extensions::UiNavItem;
     use crate::icons::LuKeyRound;
 
@@ -163,5 +187,36 @@ mod tests {
         // Core numbering is undisturbed; the extension item is click-only.
         assert_eq!(nav_shortcut_path(&extra, "7"), None);
         assert_eq!(nav_shortcut_path(&extra, "6").as_deref(), Some("/settings"));
+    }
+
+    #[test]
+    fn phone_nav_keeps_core_tabs_and_has_no_more_without_extensions() {
+        let nav = phone_nav(&[]);
+        let tabs: Vec<&str> = nav.tabs.iter().map(|entry| entry.path).collect();
+        assert_eq!(
+            tabs,
+            [
+                "/",
+                "/effects",
+                "/studio",
+                "/media",
+                "/devices",
+                "/settings"
+            ]
+        );
+        assert!(nav.more.is_empty());
+    }
+
+    #[test]
+    fn phone_nav_moves_every_extension_item_into_more() {
+        let extra = [
+            UiNavItem::new("/account", "Account", LuKeyRound),
+            UiNavItem::new("/remote", "Remote", LuKeyRound).mobile_only(),
+        ];
+        let nav = phone_nav(&extra);
+        assert_eq!(nav.tabs.len(), 6);
+        let more: Vec<&str> = nav.more.iter().map(|entry| entry.path).collect();
+        assert_eq!(more, ["/account", "/remote"]);
+        assert!(nav.more[1].mobile_only);
     }
 }

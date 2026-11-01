@@ -61,6 +61,7 @@ pub mod tauri_bridge;
 pub mod thumbnails;
 pub mod toasts;
 pub mod vendors;
+pub mod viewport;
 pub mod ws;
 pub mod zones;
 

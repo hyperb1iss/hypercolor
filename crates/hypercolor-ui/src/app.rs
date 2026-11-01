@@ -532,6 +532,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     } = ext;
     provide_meta_context();
     provide_context(mount.clone());
+    crate::viewport::provide_phone_layout();
     leptoaster::provide_toaster();
     crate::toasts::install_root_context();
     provide_context(NavExtensionItems(extension_nav));

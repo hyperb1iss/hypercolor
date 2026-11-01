@@ -11,7 +11,9 @@ use hypercolor_types::scene::SceneMutationMode;
 
 use crate::app::EffectsContext;
 use crate::components::mobile_nav::MobileNav;
+use crate::components::now_playing::provide_now_playing;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
+use crate::components::phone_now_playing::PhoneNowPlaying;
 use crate::components::scene_picker::active_saved_scene_id;
 use crate::components::sidebar::Sidebar;
 use crate::components::zone_tabs::ZoneTabLabel;
@@ -50,6 +52,9 @@ pub fn Shell(children: Children) -> impl IntoView {
     // One zone per preview: the page's focused zone where it has a zone
     // picker, the primary zone everywhere else.
     crate::preview_zone::follow_preview_zone(use_location().pathname);
+    // The player state the sidebar and the phone strip share.
+    provide_now_playing();
+    let phone = crate::viewport::is_phone_layout();
 
     // Global keyboard shortcuts, heard on the window so they work before
     // anything on the page has focus. The handle goes with the shell.
@@ -90,12 +95,14 @@ pub fn Shell(children: Children) -> impl IntoView {
     view! {
         <div class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-clip noise-overlay">
             <Sidebar />
-            <main class="flex flex-col flex-1 min-h-0 min-w-0 overflow-clip
-                         max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
+            // Phones pad the content clear of the tab bar and the
+            // now-playing strip docked above it (`.shell-main`).
+            <main class="shell-main flex flex-col flex-1 min-h-0 min-w-0 overflow-clip">
                 <crate::components::release_notifications::ReleaseNotice />
-                <div class="ambient-scroll flex-1 min-h-0 overflow-auto" style:--ambient-hue=crate::ambient::hue_style()>{children()}</div>
+                <div class="ambient-scroll page-scroll flex-1 min-h-0 overflow-auto" style:--ambient-hue=crate::ambient::hue_style()>{children()}</div>
             </main>
             <MobileNav />
+            {move || phone.get().then(|| view! { <PhoneNowPlaying /> })}
 
             // Command palette overlay
             {move || palette_open.get().then(|| {

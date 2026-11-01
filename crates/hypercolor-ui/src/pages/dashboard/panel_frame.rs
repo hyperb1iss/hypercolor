@@ -91,7 +91,11 @@ pub fn PanelFrame(
             // Floating control bar — sits above the panel's own content,
             // fades in on hover so it never competes with the chart
             // visuals at rest.
-            <div class="absolute top-2 right-2 z-20 flex items-center gap-1 \
+            // Hover reveals these, so a touch screen never sees them;
+            // `panel-hover-controls` removes them there rather than leaving
+            // invisible buttons a tap could hit. The layout menu still
+            // shows, hides, and resets panels on touch.
+            <div class="panel-hover-controls absolute top-2 right-2 z-20 flex items-center gap-1 \
                         opacity-0 group-hover/panel:opacity-100 \
                         transition-opacity duration-200 pointer-events-none">
                 // Width cycle

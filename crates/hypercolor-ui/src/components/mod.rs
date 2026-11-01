@@ -1,5 +1,6 @@
 pub mod attachment_editor;
 pub mod attachment_panel;
+pub mod bottom_sheet;
 pub mod calibration_guide;
 pub mod canvas_preview;
 pub mod color_wheel;
@@ -26,9 +27,11 @@ pub mod media_preview;
 pub mod mobile_nav;
 pub mod modal;
 pub mod mounting_select;
+pub mod now_playing;
 pub mod page_header;
 pub mod page_search_bar;
 pub mod perf_charts;
+pub mod phone_now_playing;
 pub mod preset_panel;
 pub mod preview_box;
 pub mod preview_cabinet;
