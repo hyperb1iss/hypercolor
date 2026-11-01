@@ -7,26 +7,21 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
-use leptos_use::use_throttle_fn_with_arg;
 
 use crate::api;
-use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
+use crate::app::{EffectsContext, WsContext};
 use crate::async_helpers::spawn_api_call;
-use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
+use crate::components::now_playing::{NowPlaying, use_now_playing};
 use crate::components::zone_now_playing::SidebarZoneRows;
 use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_model};
-use crate::preview_zone::{PlayerTarget, PreviewZoneContext, player_target, shown_zone_state};
 use crate::route_ui::NowPlayingCanvasMode;
-use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
-use crate::zones::ZoneEffectState;
-use crate::zones::surface::apply_zone_id;
+use crate::viewport::is_phone_layout;
 use hypercolor_leptos_ext::events::Input;
-use hypercolor_leptos_ext::prelude::random_unit;
 
 const SPONSOR_URL: &str = "https://github.com/sponsors/hyperb1iss";
 
@@ -50,209 +45,25 @@ pub fn Sidebar() -> impl IntoView {
     let sponsor_visible = move || chrome_flags.is_none_or(|flags| flags.sponsor_link_visible.get());
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
 
-    // Multi-zone scenes keep the panel alive whenever any zone is
-    // showing something, even while the primary zone sits idle — the
-    // per-zone rows are the content then, not the singular effect.
-    let has_active = Memo::new(move |_| {
-        fx.active_effect_id.get().is_some()
-            || (zones_ctx.multi_zone.get()
-                && fx.zone_effects.with(|zones| {
-                    zones
-                        .iter()
-                        .any(|state| state.effect_id.is_some() || state.zone.top_layer.is_some())
-                }))
-    });
-    let canvas_mode =
-        Signal::derive(move || crate::route_ui::mounted_canvas_mode(&location.pathname.get()));
-
-    // ── Live canvas + palette from WebSocket frames ────────────────────
-    let ws = use_context::<WsContext>();
-    // Avoid Signal::derive re-wrap — pass ReadSignals directly when WS is available
-    let (canvas_frame, preview_fps, preview_target_fps): (
-        Signal<Option<crate::ws::CanvasFrame>>,
-        Signal<f32>,
-        Signal<u32>,
-    ) = match ws {
-        Some(ctx) => (
-            ctx.canvas_frame.into(),
-            ctx.preview_fps.into(),
-            ctx.preview_target_fps.into(),
-        ),
-        None => (
-            Signal::derive(|| None),
-            Signal::derive(|| 0.0_f32),
-            Signal::derive(|| 0_u32),
-        ),
-    };
-    let output_paused = ws.map_or_else(
-        || Signal::derive(|| false),
-        |ctx| Signal::from(ctx.output_paused),
-    );
-    let frame_analysis = use_context::<FrameAnalysisContext>();
-    let (live_palette, set_live_palette) = signal(None::<CanvasPalette>);
-    let global_brightness_resource = api::daemon_resource(api::fetch_global_brightness);
-    let (global_brightness, set_global_brightness) = signal(100_u8);
-
-    Effect::new(move |_| {
-        if let Some(Ok(brightness)) = global_brightness_resource.get() {
-            set_global_brightness.set(brightness);
-        }
-    });
-
-    let push_global_brightness = use_throttle_fn_with_arg(
-        move |brightness: u8| {
-            spawn_api_call(
-                "Global brightness update failed",
-                api::set_global_brightness(brightness),
-            );
-        },
-        50.0,
-    );
-
-    if let Some(frame_analysis) = frame_analysis {
-        Effect::new(move |_| {
-            if canvas_mode.get() != NowPlayingCanvasMode::Palette {
-                return;
-            }
-
-            let Some(analysis) = frame_analysis.live_canvas.get() else {
-                return;
-            };
-
-            let smoothed = live_palette
-                .get_untracked()
-                .map_or(analysis.palette, |old| {
-                    color::lerp_palette(old, analysis.palette, 0.3)
-                });
-            set_live_palette.set(Some(smoothed));
-        });
-    }
-
-    // The player acts on the zone the preview shows: the thumbnail's
-    // primary zone here, or the zone a page's picker focused.
-    let preview_zone = use_context::<PreviewZoneContext>();
-    let shown_zone_effect = Memo::new(move |last_seen: Option<&Option<ZoneEffectState>>| {
-        let zone_id = preview_zone.and_then(|preview| preview.zone.get());
-        fx.zone_effects.with(|zones| {
-            shown_zone_state(
-                zone_id.as_deref(),
-                zones,
-                last_seen.and_then(Option::as_ref),
-            )
-        })
-    });
-    let player = move || {
-        let target_zone = apply_zone_id(fx.zones.target_zone_untracked().as_ref());
-        shown_zone_effect.with_untracked(|shown| {
-            player_target(
-                shown.as_ref(),
-                fx.active_effect_id.get_untracked().as_deref(),
-                target_zone.as_deref(),
-            )
-        })
-    };
-
-    // Navigate effects list (for prev/next)
-    let navigate_effect = move |direction: i32| {
-        let list = fx
-            .effects_index
-            .get()
-            .into_iter()
-            .map(|entry| entry.effect)
-            .filter(|effect| effect.runnable)
-            .collect::<Vec<_>>();
-        if list.is_empty() {
-            return;
-        }
-        let PlayerTarget {
-            current_effect,
-            apply_zone,
-        } = player();
-        let idx = current_effect
-            .as_ref()
-            .and_then(|id| list.iter().position(|e| &e.id == id))
-            .unwrap_or(0);
-        let next_idx = ((idx as i32 + direction).rem_euclid(list.len() as i32)) as usize;
-        fx.apply_effect_to(list[next_idx].id.clone(), apply_zone);
-    };
-
-    // Random effect
-    let random_effect = move || {
-        let list = fx
-            .effects_index
-            .get()
-            .into_iter()
-            .map(|entry| entry.effect)
-            .filter(|effect| effect.runnable)
-            .collect::<Vec<_>>();
-        if list.is_empty() {
-            return;
-        }
-        let PlayerTarget {
-            current_effect,
-            apply_zone,
-        } = player();
-        let rand = random_unit();
-        let mut idx = (rand * list.len() as f64) as usize;
-        if list.len() > 1
-            && let Some(ref cur) = current_effect
-            && list.get(idx).is_some_and(|e| &e.id == cur)
-        {
-            idx = (idx + 1) % list.len();
-        }
-        if let Some(effect) = list.get(idx) {
-            fx.apply_effect_to(effect.id.clone(), apply_zone);
-        }
-    };
-
-    // The accent falls back to the shown zone's effect category until
-    // the live palette arrives, so the panel reads as the zone it steers.
-    let accent_category = Memo::new(move |_| {
-        shown_zone_effect.with(|shown| match shown {
-            Some(state) => state.effect_category.clone().unwrap_or_default(),
-            None => fx.active_effect_category.get(),
-        })
-    });
-
-    // Memoized palette colors. Published once per live_palette tick as
-    // --np-primary / --np-secondary / --np-tertiary CSS custom properties on
-    // the Now Playing root, so every downstream style binding is a static
-    // `rgb(var(--np-*))` string instead of a reactive format! closure that
-    // wakes on every tick. All live-palette colors pass through harmonize_rgb
-    // so the three hues sit in a cohesive L/S band.
-    let primary_rgb = Memo::new(move |_| {
-        let cat = accent_category.get();
-        if canvas_mode.get() != NowPlayingCanvasMode::Palette {
-            category_accent_rgb(&cat).to_string()
-        } else {
-            live_palette.get().map_or_else(
-                || category_accent_rgb(&cat).to_string(),
-                |p| color::rgb_string(color::harmonize_rgb(p.primary)),
-            )
-        }
-    });
-    let secondary_rgb = Memo::new(move |_| {
-        let cat = accent_category.get();
-        if canvas_mode.get() != NowPlayingCanvasMode::Palette {
-            category_accent_rgb(&cat).to_string()
-        } else {
-            live_palette.get().map_or_else(
-                || category_accent_rgb(&cat).to_string(),
-                |p| color::rgb_string(color::harmonize_rgb(p.secondary)),
-            )
-        }
-    });
-    let tertiary_rgb = Memo::new(move |_| {
-        let cat = accent_category.get();
-        if canvas_mode.get() != NowPlayingCanvasMode::Palette {
-            category_accent_rgb(&cat).to_string()
-        } else {
-            live_palette.get().map_or_else(
-                || category_accent_rgb(&cat).to_string(),
-                |p| color::rgb_string(color::harmonize_rgb(p.tertiary)),
-            )
-        }
-    });
+    // The player state is shared with the phone now-playing strip, so the
+    // two shells steer the same zone and never race brightness writes.
+    let now_playing = use_now_playing();
+    let NowPlaying {
+        has_active,
+        canvas_mode,
+        primary_rgb,
+        secondary_rgb,
+        tertiary_rgb,
+        output_paused,
+        canvas_frame,
+        preview_fps,
+        preview_target_fps,
+        global_brightness,
+        ..
+    } = now_playing;
+    // Phones never show the sidebar; its live thumbnail must not keep a
+    // preview stream running behind `hidden`.
+    let phone = is_phone_layout();
     let open_sponsor = move |ev: leptos::ev::MouseEvent| {
         if !tauri_bridge::is_tauri_available() {
             return;
@@ -401,8 +212,6 @@ pub fn Sidebar() -> impl IntoView {
                 if !has_active.get() || collapsed.get() {
                     return None;
                 }
-                let push_global_brightness = push_global_brightness.clone();
-
                 Some(view! {
                     <div
                         class="shrink-0 border-t border-edge-subtle py-2 space-y-2 animate-enter-fade"
@@ -451,7 +260,7 @@ pub fn Sidebar() -> impl IntoView {
 
                         // Live canvas thumbnail — only on pages without their own preview
                         {move || {
-                            (canvas_mode.get() == NowPlayingCanvasMode::Preview).then(|| view! {
+                            (canvas_mode.get() == NowPlayingCanvasMode::Preview && !phone.get()).then(|| view! {
                                 <div class="px-3 animate-enter-fade">
                                     <div
                                         class="relative rounded-lg overflow-hidden bg-black/40"
@@ -480,7 +289,7 @@ pub fn Sidebar() -> impl IntoView {
                                 class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Previous effect"
                                 aria-label="Previous effect"
-                                on:click=move |_| navigate_effect(-1)
+                                on:click=move |_| now_playing.step(-1)
                             >
                                 <Icon icon=LuSkipBack width="16px" height="16px" />
                             </button>
@@ -511,7 +320,7 @@ pub fn Sidebar() -> impl IntoView {
                                 class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Next effect"
                                 aria-label="Next effect"
-                                on:click=move |_| navigate_effect(1)
+                                on:click=move |_| now_playing.step(1)
                             >
                                 <Icon icon=LuSkipForward width="16px" height="16px" />
                             </button>
@@ -519,7 +328,7 @@ pub fn Sidebar() -> impl IntoView {
                                 class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Random effect"
                                 aria-label="Random effect"
-                                on:click=move |_| random_effect()
+                                on:click=move |_| now_playing.shuffle()
                             >
                                 <Icon icon=LuShuffle width="16px" height="16px" />
                             </button>
@@ -538,8 +347,7 @@ pub fn Sidebar() -> impl IntoView {
                                 prop:value=move || global_brightness.get().to_string()
                                 on:input=move |ev| {
                                     if let Some(brightness) = Input::from_event(ev).value::<u8>() {
-                                        set_global_brightness.set(brightness);
-                                        push_global_brightness(brightness);
+                                        now_playing.set_brightness(brightness);
                                     }
                                 }
                             />
