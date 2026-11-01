@@ -1297,6 +1297,41 @@ body.resizing * {
     cursor: col-resize !important;
 }
 
+/* ── Bottom sheet (phones) ─────────────────────────────────────────────────
+
+   The panel rises on entry and slides back down on close. The entrance has
+   no fill mode so the inline drag transform owns the panel once it lands;
+   a held `both` fill would pin it at rest and swallow the drag. */
+@keyframes enter-sheet {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+}
+
+.animate-enter-sheet {
+    animation: enter-sheet 0.28s var(--ease-silk);
+}
+
+.sheet-panel {
+    transition: transform 0.2s var(--ease-silk);
+}
+
+.sheet-panel.sheet-dragging {
+    transition: none;
+}
+
+.sheet-grab,
+.sheet-backdrop {
+    touch-action: none;
+}
+
+.sheet-backdrop {
+    transition: opacity 0.2s var(--ease-silk);
+}
+
+.bottom-sheet:has(> .sheet-panel[data-closing]) > .sheet-backdrop {
+    opacity: 0;
+}
+
 /* ── Fullscreen Preview ───────────────────────────────────────────────────
    Drives the preview cabinet takeover. Paired with the browser Fullscreen
    API on supported user agents, but works standalone as a CSS-only overlay
@@ -1394,6 +1429,7 @@ body.resizing * {
     .animate-enter-scale,
     .animate-enter-pop,
     .animate-enter-down,
+    .animate-enter-sheet,
     .animate-breathe,
     .animate-border-glow,
     .animate-edge-shimmer,
@@ -1425,6 +1461,8 @@ body.resizing * {
     .toggle-track,
     .toggle-thumb,
     .swatch-glow,
+    .sheet-panel,
+    .sheet-backdrop,
     /* Ambient hue crossfade snaps instead of drifting (§8.5). */
     .preview-glow {
         transition: none !important;
