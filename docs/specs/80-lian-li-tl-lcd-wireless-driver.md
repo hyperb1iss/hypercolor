@@ -788,7 +788,13 @@ carry the packet index at [18] and up to 220 compressed bytes at
 of a live transfer is unique per send: an FNV-1a hash of the frame's
 pixels mixed with a send number that runs for the whole process from a
 wall-clock seed, never zero, and never the tag the cluster echoes at that
-moment. The tag a
+moment. Its first byte always has the high bit set: the index rides at
+envelope [14..18], where targeted frames carry the receiver slot, so a
+receiver that latches an RGB frame's bytes as its address reads that byte
+as its slot, and a set high bit makes it no valid slot (lian-li-linux
+`WirelessRgbUpload` sets the same bit). The bit also keeps every send apart
+from the firmware's own indices, `00000000` and `00000001`, which a
+receiver echoes once it falls back to its onboard lighting. The tag a
 receiver echoes in its record (record bytes 20 to 23) therefore names
 exactly one transfer, which makes it the acknowledgement RGB delivery paces
 on (§6.11); the pixel hash alone identifies what a frame shows.

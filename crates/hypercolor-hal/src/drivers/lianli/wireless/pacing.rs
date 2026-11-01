@@ -1371,13 +1371,26 @@ impl DeliveryPacer {
 
 /// The tag send number `sequence` of `content` carries on the wire: unique
 /// per send, so its echo names this transfer and no other, never zero.
+///
+/// Its first byte always has the high bit set. The tag rides at envelope
+/// bytes 14 to 17, where targeted frames carry the receiver slot, so a
+/// receiver that latches an RGB frame's bytes as its address reads the
+/// first tag byte as its slot; with the bit set that is no valid slot
+/// (lian-li-linux sets the same bit). It also keeps every tag apart from
+/// the firmware's own effect indices (`00000000`, `00000001`), which a
+/// receiver echoes when it falls back to its onboard lighting.
 #[must_use]
 pub fn wire_tag(content: Tag, sequence: u32) -> Tag {
     let mut seed = [0_u8; 8];
     seed[..4].copy_from_slice(&content);
     seed[4..].copy_from_slice(&sequence.to_be_bytes());
-    effect_index_for(&seed)
+    let mut tag = effect_index_for(&seed);
+    tag[0] |= WIRE_TAG_MARK;
+    tag
 }
+
+/// The bit every wire tag carries in its first byte.
+pub const WIRE_TAG_MARK: u8 = 0x80;
 
 /// A wire tag for `content` that `taken` does not reject, drawing send
 /// numbers from `next` until one fits.
@@ -1987,5 +2000,12 @@ mod tests {
         assert_ne!(wire_tag(T1, 1), wire_tag(T1, 2));
         assert_ne!(wire_tag(T1, 1), wire_tag(T2, 1));
         assert_ne!(wire_tag([0; 4], 0), [0; 4]);
+        for sequence in 0..4096 {
+            let tag = wire_tag(T1, sequence);
+            assert!(
+                tag[0] >= WIRE_TAG_MARK,
+                "no valid slot at byte 14: {tag:02x?}"
+            );
+        }
     }
 }
