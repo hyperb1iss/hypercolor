@@ -1531,6 +1531,57 @@ html {
     }
 }
 
+/* Controls drawn at cursor size get an invisible finger margin on coarse
+   pointers, reaching about 44px without moving any layout. Each one is
+   positioned (`relative` or `absolute`) so the margin anchors to it.
+   `touch-hit` grows every side; `touch-hit-y` grows only up and down, for
+   chips and tabs packed side by side. */
+@media (pointer: coarse) {
+    .touch-hit::before,
+    .touch-hit-y::before {
+        content: "";
+        position: absolute;
+    }
+
+    .touch-hit::before {
+        inset: -14px -12px;
+    }
+
+    .touch-hit-y::before {
+        inset: -14px 0;
+    }
+
+    /* Menu rows in every dropdown (SilkSelect, control menus, presets). */
+    .dropdown-option,
+    .preset-option {
+        min-height: 44px;
+    }
+}
+
+/* Range inputs on fingers: a taller hit box and a 22px thumb over the
+   same visible track. Padding grows the box; clipping the background to
+   the content box keeps tracks drawn on the input itself unchanged. */
+@media (pointer: coarse) {
+    input[type="range"] {
+        box-sizing: content-box;
+        padding-block: 20px;
+        background-clip: content-box;
+    }
+
+    input[type="range"]::-webkit-slider-thumb,
+    input[type="range"].slider-silk::-webkit-slider-thumb {
+        width: 22px;
+        height: 22px;
+        margin-top: -8.5px;
+    }
+
+    input[type="range"]::-moz-range-thumb,
+    input[type="range"].slider-silk::-moz-range-thumb {
+        width: 22px;
+        height: 22px;
+    }
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {

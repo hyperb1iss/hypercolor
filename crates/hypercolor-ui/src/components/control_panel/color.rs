@@ -61,7 +61,7 @@ pub(super) fn render_color_picker(
                 <button
                     type="button"
                     node_ref=swatch_ref
-                    class="h-7 w-7 shrink-0 rounded-lg border border-edge-default swatch-glow
+                    class="relative touch-hit h-7 w-7 shrink-0 rounded-lg border border-edge-default swatch-glow
                            transition-all duration-200 hover:border-edge-strong hover:scale-105"
                     style=move || format!(
                         "background: linear-gradient(145deg, {0}, color-mix(in srgb, {0} 65%, black)); \

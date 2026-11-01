@@ -184,7 +184,7 @@ pub(super) fn StatusLine() -> impl IntoView {
                 {separator(StatusValue::Devices)}
                 <A
                     href=crate::route_ui::route_href("/devices")
-                    attr:class="shrink-0 rounded transition-colors hover:text-fg-primary"
+                    attr:class="relative touch-hit shrink-0 rounded transition-colors hover:text-fg-primary"
                     attr:title="Open Devices"
                 >
                     {device_count_label(count)}

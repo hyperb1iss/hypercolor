@@ -290,7 +290,7 @@ pub fn PreviewCabinet(
                 {on_toggle_fullscreen.map(|cb| view! {
                     <button
                         type="button"
-                        class="absolute top-3 right-3 z-20 p-1.5 rounded-lg \
+                        class="touch-hit absolute top-3 right-3 z-20 p-1.5 rounded-lg \
                                bg-black/45 backdrop-blur-sm border border-edge-subtle/60 \
                                text-fg-secondary hover:text-fg-primary \
                                hover:bg-black/65 hover:border-edge-default \

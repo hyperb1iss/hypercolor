@@ -78,7 +78,7 @@ pub fn SettingToggle(
             <button
                 role="switch"
                 aria-checked=move || value.get().to_string()
-                class="relative w-11 h-6 rounded-full transition-all duration-200 shrink-0 mt-0.5 cursor-pointer"
+                class="relative touch-hit-y w-11 h-6 rounded-full transition-all duration-200 shrink-0 mt-0.5 cursor-pointer"
                 style=move || if value.get() {
                     "background: rgba(225, 53, 255, 0.5); box-shadow: 0 0 10px rgba(225, 53, 255, 0.25)"
                 } else {
@@ -543,7 +543,7 @@ pub fn SectionReset(section_label: &'static str, on_reset: Callback<()>) -> impl
             } else {
                 view! {
                     <button
-                        class="flex items-center gap-1.5 text-xs text-fg-tertiary/50 hover:text-fg-tertiary transition-colors"
+                        class="relative touch-hit-y flex items-center gap-1.5 text-xs text-fg-tertiary/50 hover:text-fg-tertiary transition-colors"
                         on:click=move |_| set_confirming.set(true)
                     >
                         <Icon icon=LuUndo2 width="11px" height="11px" />
@@ -569,7 +569,7 @@ pub fn AdvancedDisclosure(children: Children) -> impl IntoView {
     view! {
         <div class="mt-2 border-t border-edge-subtle/40">
             <button
-                class="w-full flex items-center gap-2 py-2.5 text-fg-tertiary hover:text-fg-secondary transition-colors duration-200 glow-ring rounded-md"
+                class="w-full flex items-center gap-2 py-2.5 text-fg-tertiary hover:text-fg-secondary transition-colors duration-200 glow-ring rounded-md pointer-coarse:min-h-[44px]"
                 on:click=move |_| set_open.update(|v| *v = !*v)
             >
                 <span

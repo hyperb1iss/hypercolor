@@ -326,7 +326,7 @@ pub fn CaptureSection(
                     </div>
                     <button
                         type="button"
-                        class="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay px-2.5 py-1.5 text-xs text-fg-primary hover:bg-surface-overlay/80 disabled:opacity-50"
+                        class="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay px-2.5 py-1.5 text-xs text-fg-primary hover:bg-surface-overlay/80 disabled:opacity-50 pointer-coarse:min-h-[44px]"
                         disabled=move || !enabled.get() || picking.get()
                         on:click=pick_source
                     >

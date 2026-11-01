@@ -208,7 +208,7 @@ pub fn EffectCard(
 
             // ── Favorite heart (top-right, floats above everything) ──────
             <button
-                class="absolute top-2.5 right-2.5 z-20 p-1.5 rounded-full \
+                class="touch-hit absolute top-2.5 right-2.5 z-20 p-1.5 rounded-full \
                        bg-black/30 backdrop-blur-sm transition-all duration-200 \
                        hover:bg-black/50 hover:scale-110 active:scale-95"
                 aria-label=move || if is_favorite.get() {

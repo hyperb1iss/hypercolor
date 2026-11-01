@@ -254,7 +254,7 @@ pub fn MediaPage() -> impl IntoView {
                     // header's Install button.
                     <button
                         type="button"
-                        class="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all btn-press disabled:opacity-60
+                        class="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all btn-press disabled:opacity-60 pointer-coarse:min-h-[44px]
                                text-fg-primary bg-surface-overlay/70 border border-edge-subtle hover:border-accent-muted hover:bg-surface-overlay glow-ring"
                         prop:disabled=move || uploading.get()
                         on:click=move |_| open_file_picker.run(())

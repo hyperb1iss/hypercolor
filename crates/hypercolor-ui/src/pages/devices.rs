@@ -365,7 +365,7 @@ pub fn DevicesPage() -> impl IntoView {
                     // is the only chrome accent) — matches the Effects
                     // header's Install button.
                     <button
-                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0 disabled:opacity-60
+                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0 disabled:opacity-60 pointer-coarse:min-h-[44px]
                                text-fg-primary bg-surface-overlay/70 border border-edge-subtle hover:border-accent-muted hover:bg-surface-overlay glow-ring"
                         prop:disabled=move || scanning.get()
                         on:click=move |_| {
@@ -402,7 +402,7 @@ pub fn DevicesPage() -> impl IntoView {
 
                     <div class="relative shrink-0">
                         <button
-                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
+                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200 pointer-coarse:min-h-[44px]"
                             style=move || {
                                 if active_filter_count.get() > 0 {
                                     "background: rgba(225, 53, 255, 0.12); color: rgb(225, 53, 255); border-color: rgba(225, 53, 255, 0.25); box-shadow: 0 0 10px rgba(225, 53, 255, 0.15)"

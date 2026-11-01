@@ -517,7 +517,7 @@ pub fn EffectsPage() -> impl IntoView {
                     // Filters dropdown trigger
                     <div class="relative shrink-0">
                         <button
-                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
+                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200 pointer-coarse:min-h-[44px]"
                             style=move || {
                                 if active_filter_count.get() > 0 {
                                     "background: rgba(225, 53, 255, 0.12); color: rgb(225, 53, 255); border-color: rgba(225, 53, 255, 0.25); box-shadow: 0 0 10px rgba(225, 53, 255, 0.15)"
