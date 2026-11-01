@@ -299,11 +299,10 @@ impl FakeCluster {
     }
 }
 
-/// Whether `bytes` is the clock broadcast a session sends first: its
-/// leading 50 payload bytes all carry the sub-command.
-fn is_session_start_clock(bytes: &[u8; RF_ENVELOPE_LEN]) -> bool {
-    let marker = RfSubCommand::ClockSync as u8;
-    bytes[1] == marker && bytes[14..64].iter().all(|byte| *byte == marker)
+/// Whether `bytes` is a clock broadcast. Every tick sends the same layout,
+/// so which one starts a session is the radio's to track.
+fn is_clock(bytes: &[u8; RF_ENVELOPE_LEN]) -> bool {
+    bytes[1] == RfSubCommand::ClockSync as u8
 }
 
 /// An envelope the TX has queued for the air.
@@ -353,6 +352,8 @@ pub struct FakeRadio {
     pub resets: Vec<Duration>,
     /// When a session-start clock broadcast went out on the air.
     pub session_starts: Vec<Duration>,
+    /// A session connected and its first clock broadcast is still to come.
+    session_clock_pending: bool,
 }
 
 impl FakeRadio {
@@ -388,7 +389,13 @@ impl FakeRadio {
             rx_polls: Vec::new(),
             resets: Vec::new(),
             session_starts: Vec::new(),
+            session_clock_pending: false,
         }
+    }
+
+    /// A session connected: the next clock broadcast is its first.
+    pub fn begin_session(&mut self) {
+        self.session_clock_pending = true;
     }
 
     /// Two clusters, the second two fans on its own receiver slot.
@@ -465,7 +472,10 @@ impl FakeRadio {
 
     fn deliver(&mut self, envelope: &AirEnvelope, now: Duration) {
         let bytes = &envelope.bytes;
-        if bytes[0] == RF_SELECT && is_session_start_clock(bytes) {
+        if bytes[0] == RF_SELECT && is_clock(bytes) {
+            if !std::mem::take(&mut self.session_clock_pending) {
+                return;
+            }
             self.session_starts.push(now);
             for cluster in &mut self.clusters {
                 if !cluster.deaf {
@@ -683,6 +693,7 @@ impl Rig {
         self.sessions.push(self.now());
         self.reset_in_session = false;
         self.down_until = None;
+        self.radio.begin_session();
         let init = self.protocol.init_sequence();
         self.execute(&init);
         let diagnostics = self.protocol.connection_diagnostics();

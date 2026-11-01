@@ -137,7 +137,6 @@ struct WirelessState {
     /// A newly heard bound cluster needs the backend to publish fresh routing.
     topology_restart: bool,
     streaming_started: bool,
-    clock_sent: bool,
     /// The last submitted pixels, including black frames, retained across idle upkeep.
     /// None means no lighting frame has arrived in this session.
     latest_colors: Option<Vec<[u8; 3]>>,
@@ -754,9 +753,8 @@ impl WirelessControllerProtocol {
         commands.extend(rgb_commands);
 
         let payload = clock_payload(WallClock::now_local());
-        let envelope = clock_sync_envelope(master, &payload, !state.clock_sent);
+        let envelope = clock_sync_envelope(master, &payload);
         Self::envelope_commands(commands, &envelope, channel, RF_BROADCAST_SLOT);
-        state.clock_sent = true;
 
         commands.push(Self::get_dev_command(STEADY_TIMEOUT));
         // The table poll carries every echo a due poll would have.

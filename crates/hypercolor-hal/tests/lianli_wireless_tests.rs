@@ -12,8 +12,8 @@ use hypercolor_hal::drivers::lianli::wireless::discovery::{
     WirelessFanModel, parse_device_table, parse_master_reply, parse_table_records,
 };
 use hypercolor_hal::drivers::lianli::wireless::frame::{
-    CLOCK_PAYLOAD_LEN, RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT, RGB_CHUNK_LEN,
-    RGB_DATA_OFFSET, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfSubCommand, TX_RESET,
+    CLOCK_FIXED_LEN, CLOCK_PAYLOAD_LEN, CLOCK_UNSET, RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT,
+    RGB_CHUNK_LEN, RGB_DATA_OFFSET, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfSubCommand, TX_RESET,
     USB_CMD_GET_MAC, USB_CMD_SEND_RF, USB_PACKET_LEN, WallClock, clock_payload,
     clock_sync_envelope, pwm_envelope, reverse_fan_order, rgb_transfer,
 };
@@ -249,7 +249,7 @@ fn an_envelope_ships_as_four_usb_packets_with_the_rf_header() {
 }
 
 #[test]
-fn the_first_clock_sync_of_a_session_carries_the_unset_sentinel() {
+fn every_clock_sync_carries_the_date_inside_the_unset_sentinel() {
     let clock = WallClock {
         year: 2026,
         month: 9,
@@ -262,18 +262,28 @@ fn the_first_clock_sync_of_a_session_carries_the_unset_sentinel() {
     assert_eq!(payload.len(), CLOCK_PAYLOAD_LEN);
     assert_eq!(&payload[32..39], &[0x07, 0xEA, 9, 4, 20, 15, 30]);
     assert!(
-        payload[..32].iter().all(|&b| b == 0),
-        "sensor fields stay zero"
+        payload[..32]
+            .iter()
+            .chain(&payload[39..CLOCK_FIXED_LEN])
+            .all(|&b| b == CLOCK_UNSET),
+        "the fixed region around the date carries the sentinel"
+    );
+    assert!(
+        payload[CLOCK_FIXED_LEN..].iter().all(|&b| b == 0),
+        "no fan LCD themes are configured over the radio"
     );
 
-    let first = clock_sync_envelope(MASTER_MAC, &payload, true);
-    assert_eq!(first.0[1], RfSubCommand::ClockSync as u8);
-    assert_eq!(&first.0[2..8], &[0; 6], "clock sync is broadcast");
-    assert!(first.0[14..64].iter().all(|&b| b == 0x14));
-    assert_eq!(&first.0[64..234], &payload[50..]);
-
-    let steady = clock_sync_envelope(MASTER_MAC, &payload, false);
-    assert_eq!(&steady.0[14..234], &payload[..]);
+    let envelope = clock_sync_envelope(MASTER_MAC, &payload);
+    assert_eq!(envelope.0[1], RfSubCommand::ClockSync as u8);
+    assert_eq!(&envelope.0[2..8], &[0; 6], "clock sync is broadcast");
+    assert_eq!(&envelope.0[8..14], &MASTER_MAC);
+    assert_eq!(&envelope.0[14..234], &payload[..]);
+    assert_eq!(
+        &envelope.0[14..16],
+        &[CLOCK_UNSET; 2],
+        "the bytes a targeted frame reads as slot and channel are never zero"
+    );
+    assert_eq!(&envelope.0[46..53], &[0x07, 0xEA, 9, 4, 20, 15, 30]);
 }
 
 #[test]
@@ -970,10 +980,9 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     let clock = &commands[preamble + 8].data;
     assert_eq!(&clock[..4], &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]);
     assert_eq!(clock[5], RfSubCommand::ClockSync as u8);
-    assert!(
-        clock[18..64].iter().all(|&b| b == 0x14),
-        "first tick sends the sentinel"
-    );
+    assert_eq!(&clock[18..20], &[CLOCK_UNSET; 2], "no address to latch");
+    let year = u16::from_be_bytes([clock[50], clock[51]]);
+    assert!(year >= 2026, "the first tick carries the real date: {year}");
 
     let poll = &commands[preamble + 12];
     assert_eq!(poll.transfer_type, TransferType::Companion);
@@ -983,9 +992,11 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     protocol.pump_frame_into(&mut pumped);
     assert!(pumped.is_empty(), "a pump with nothing due sends nothing");
     let later = protocol.upkeep();
-    assert!(
-        later[8].data[18..64].iter().any(|&b| b != 0x14),
-        "later ticks send the blob"
+    assert_eq!(later[8].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(
+        &later[8].data[18..50],
+        &clock[18..50],
+        "later ticks send the same sentinel layout"
     );
 }
 

@@ -818,13 +818,22 @@ occasionally spikes RPM.
    envelope + rx_type/channel/slot at [14..17], 4 PWM bytes at [17..21]);
    values are never invented — only observed duty is held. Undetected slots
    send 0,
-3. emits RF_CLOCK_SYNC at 1 Hz: first an init frame (bytes [14..64] filled
-   with the `0x14` sentinel), then frames carrying real date/time at
-   [32..39], zeroed CPU/GPU sensor fields, and the per-receiver fan blocks
-   (14 × 12 bytes at [50..218]) left zero. The hardware-tested reference
-   sends those blocks zeroed as well (`clock_sync.rs` "defaults for now"),
-   so zero is the validated value; filling them from observed state is a
-   follow-up gated on hardware, not a v1 requirement,
+3. emits RF_CLOCK_SYNC at 1 Hz, the same layout every time, as L-Connect
+   2.1.29 builds it (`MasterDevice.SyncMasterClock` over `cpuInfoParam`):
+   the 220-byte blob at envelope bytes [14..234], its 50-byte fixed region
+   filled with the `0x14` "unset" sentinel except for the real local date
+   and time at blob [32..39] (envelope [46..53]), and the per-receiver fan
+   blocks (14 × 12 bytes at blob [50..218]) left zero, since Hypercolor
+   configures no fan LCD themes over the radio. The sentinel is a safety
+   property, not filler: envelope bytes 14 and 15 are where targeted frames
+   carry the receiver slot and channel, and a receiver that latches a clock
+   broadcast as a targeted frame takes its address from them. lian-li-linux
+   measured 11 of 12 unexplained slot changes matching the CPU temperature
+   it broadcast there, and fans that latched channel 0 dropped off the
+   receiver until power-cycled (PR 237, 2026-10-06). Until 2026-10-31 this
+   driver sent an all-sentinel first frame (which overwrote the date with
+   `0x14`, reading as year 5140) and then zeros at bytes 14 and 15 on every
+   later tick, the exact shape PR 237 retired,
 4. sends nothing after disconnect/shutdown — fans revert to firmware
    defaults, which is the same behavior as L-Connect exiting; documented, not
    hidden,

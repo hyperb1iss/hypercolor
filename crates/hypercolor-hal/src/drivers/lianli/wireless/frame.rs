@@ -36,6 +36,10 @@ pub const RGB_CHUNK_LEN: usize = 220;
 pub const RGB_DATA_OFFSET: usize = 20;
 /// Bytes of the clock-sync blob.
 pub const CLOCK_PAYLOAD_LEN: usize = 220;
+/// The blob's fixed region, ahead of the per-receiver fan blocks.
+pub const CLOCK_FIXED_LEN: usize = 50;
+/// The vendor's "unset" sentinel for clock-blob fields with no value.
+pub const CLOCK_UNSET: u8 = 0x14;
 
 /// Precomposed TX control the reference driver sends as its "reset".
 ///
@@ -205,12 +209,21 @@ impl WallClock {
     }
 }
 
-/// The 220-byte clock-sync blob: date and time at offsets 32 to 38, sensor
-/// fields zeroed (Hypercolor is not a fan-curve product), per-receiver fan
-/// blocks left at their defaults.
+/// The 220-byte clock-sync blob, laid out as L-Connect's `cpuInfoParam`:
+/// the 50-byte fixed region carries the `0x14` "unset" sentinel with the
+/// date and time at offsets 32 to 38, and the per-receiver fan blocks after
+/// it stay zero (Hypercolor configures no fan LCD themes over the radio).
+///
+/// The sentinel is not decoration. The envelope carries the blob from byte
+/// 14, and bytes 14 and 15 are where targeted frames put the receiver slot
+/// and RF channel, so a receiver that latches a clock broadcast as a
+/// targeted frame reads its address from them. `0x14` is no valid slot and
+/// no channel the fans use; zeros or sensor values there have parked fans
+/// on channel 0 until they were power-cycled (lian-li-linux PR 237).
 #[must_use]
 pub fn clock_payload(clock: WallClock) -> [u8; CLOCK_PAYLOAD_LEN] {
     let mut payload = [0_u8; CLOCK_PAYLOAD_LEN];
+    payload[..CLOCK_FIXED_LEN].fill(CLOCK_UNSET);
     payload[32..34].copy_from_slice(&clock.year.to_be_bytes());
     payload[34] = clock.month;
     payload[35] = clock.day;
@@ -220,24 +233,12 @@ pub fn clock_payload(clock: WallClock) -> [u8; CLOCK_PAYLOAD_LEN] {
     payload
 }
 
-/// The broadcast clock-sync envelope.
-///
-/// The first one a session sends carries the `0x14` "unset" sentinel across
-/// the fixed-data region with only the per-receiver blocks filled; every one
-/// after it carries the whole blob.
+/// The broadcast clock-sync envelope: the blob at bytes 14 to 233, the same
+/// on every send, as L-Connect sends it once a second.
 #[must_use]
-pub fn clock_sync_envelope(
-    master: Mac,
-    payload: &[u8; CLOCK_PAYLOAD_LEN],
-    first_of_session: bool,
-) -> RfEnvelope {
+pub fn clock_sync_envelope(master: Mac, payload: &[u8; CLOCK_PAYLOAD_LEN]) -> RfEnvelope {
     let mut envelope = RfEnvelope::new(RfSubCommand::ClockSync, [0; 6], master);
-    if first_of_session {
-        envelope.0[14..64].fill(RfSubCommand::ClockSync as u8);
-        envelope.0[64..234].copy_from_slice(&payload[50..CLOCK_PAYLOAD_LEN]);
-    } else {
-        envelope.0[14..234].copy_from_slice(payload);
-    }
+    envelope.0[14..14 + CLOCK_PAYLOAD_LEN].copy_from_slice(payload);
     envelope
 }
 
