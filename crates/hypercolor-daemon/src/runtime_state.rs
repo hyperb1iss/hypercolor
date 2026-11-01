@@ -18,7 +18,7 @@ use crate::path_migration::{
 };
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
-    AtomicWriteReservation, PersistenceError, serialize_json_pretty,
+    AtomicWriteReservation, PersistenceError, WriteBehind, serialize_json_pretty,
 };
 
 const STORE_SUBJECT: &str = "runtime session state";
@@ -282,6 +282,39 @@ impl AdmittedRuntimeSnapshotWrite {
     }
 
     /// Attempt the admitted replacement. This blocks on file I/O.
+    pub(crate) fn commit(self) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
+        let Self { path, write } = self;
+        write
+            .commit()
+            .map_err(|source| RuntimeSessionError::Persist { path, source })
+    }
+}
+
+/// A serialized runtime snapshot admitted to be written behind its caller
+/// (see [`crate::persistence::WriteBehind`]).
+#[derive(Debug)]
+pub(crate) struct RuntimeSnapshotWriteBehind {
+    path: PathBuf,
+    write: WriteBehind,
+}
+
+/// Serialize and admit a reserved runtime snapshot for a write the caller
+/// does not wait on.
+pub(crate) fn admit_reserved_write_behind(
+    pending: RuntimeSnapshotSave,
+    snapshot: &RuntimeSessionSnapshot,
+) -> Result<RuntimeSnapshotWriteBehind, RuntimeSessionError> {
+    let path = pending.path.clone();
+    let prepared = prepare_reserved(pending, snapshot)?;
+    Ok(RuntimeSnapshotWriteBehind {
+        path,
+        write: prepared.write.admit_write_behind(prepared.payload),
+    })
+}
+
+impl RuntimeSnapshotWriteBehind {
+    /// Attempt the replacement unless a newer admission stood it down.
+    /// This blocks on file I/O.
     pub(crate) fn commit(self) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
         let Self { path, write } = self;
         write

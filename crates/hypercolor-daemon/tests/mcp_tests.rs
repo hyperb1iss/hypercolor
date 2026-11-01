@@ -50,6 +50,18 @@ use strum::VariantNames;
 use tempfile::TempDir;
 use uuid::Uuid;
 
+/// The runtime session as its file holds it once the writes that scene
+/// mutations leave behind them have landed.
+fn persisted_runtime_snapshot(state: &AppState) -> runtime_state::RuntimeSessionSnapshot {
+    hypercolor_daemon::persistence::AtomicFileWriter::new(&state.runtime_state_path)
+        .expect("runtime state writer should open")
+        .flush(Duration::from_secs(5))
+        .expect("runtime session writes should land");
+    runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("runtime snapshot should exist")
+}
+
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 fn effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
     zone.layers.iter().find_map(|layer| match &layer.source {
@@ -1146,9 +1158,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     assert_eq!(activate_result["scene"]["id"], scene_id);
     assert_eq!(activate_result["transition_ms"], 250);
 
-    let snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
+    let snapshot = persisted_runtime_snapshot(&state);
     assert_eq!(snapshot.active_scene_id, Some(scene_id.clone()));
 
     let mut saw_active_scene_event = false;
@@ -1207,9 +1217,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_zones() {
         "CPU"
     );
 
-    let assign_snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
+    let assign_snapshot = persisted_runtime_snapshot(&state);
     assert_eq!(
         assign_snapshot.active_scene_id,
         Some(SceneId::DEFAULT.to_string())
@@ -1256,9 +1264,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_zones() {
         Some(0)
     );
 
-    let clear_snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
+    let clear_snapshot = persisted_runtime_snapshot(&state);
     assert_eq!(clear_snapshot.default_scene_zones.len(), 2);
     let display_zone = clear_snapshot
         .default_scene_zones
@@ -2091,9 +2097,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
         Some(&ControlValue::Float(7.5))
     );
 
-    let active_snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
+    let active_snapshot = persisted_runtime_snapshot(&state);
     assert_eq!(active_snapshot.default_scene_zones.len(), 1);
     assert_eq!(
         active_snapshot.default_scene_zones[0].effect_ids().next(),
@@ -2154,9 +2158,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     assert_eq!(clear_result["id"], scene_id.to_string());
     assert!(clear_result["revision"].is_number());
 
-    let stopped_snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
+    let stopped_snapshot = persisted_runtime_snapshot(&state);
     assert_eq!(stopped_snapshot.default_scene_zones.len(), 1);
     assert!(stopped_snapshot.default_scene_zones[0].layers.is_empty());
 
@@ -2251,9 +2253,7 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
         solid_effect.id.to_string()
     );
 
-    let snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
+    let snapshot = persisted_runtime_snapshot(&state);
     assert_eq!(snapshot.default_scene_zones.len(), 1);
     assert_eq!(
         snapshot.default_scene_zones[0].effect_ids().next(),

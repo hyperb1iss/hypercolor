@@ -2119,6 +2119,104 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
     );
 }
 
+/// A control patch answers with its runtime-session write still in flight,
+/// and shutdown must not exit before the patched state is on disk. Both
+/// shutdown's own whole-session save and its `flush_all` stand behind the
+/// stalled write here; what a flush waits for is pinned on its own in
+/// `runtime_session_write_behind_tests` and the persistence crate.
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn shutdown_leaves_the_patched_state_on_disk_with_a_write_in_flight() {
+    use hypercolor_daemon::domain::MutationContext;
+    use hypercolor_daemon::domain::scene_tree::{PatchLayerControls, patch_layer_controls};
+    use hypercolor_daemon::persistence::AtomicFileWriter;
+    use hypercolor_types::control::ControlValue;
+
+    let guard = TestDataDirGuard::new().await;
+    let config = default_config();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+    state.start().await.expect("start should succeed");
+
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .find(|(_, entry)| entry.metadata.source.source_stem() == Some("rainbow"))
+            .map(|(_, entry)| entry.metadata.clone())
+            .expect("registry should contain rainbow")
+    };
+    let api_state = AppState::from_daemon_state(&state);
+    let layout = state.spatial_engine.snapshot().layout().as_ref().clone();
+    let mut mutation = api_state.scene_manager.begin_mutation().await;
+    let zone = mutation
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("rainbow should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&api_state.domains.scene, mutation)
+        .await
+        .expect("rainbow should commit");
+    let layer_id = zone.layers[0].id;
+
+    // Stall the disk, then patch: the patch answers with its write in flight.
+    let runtime = AtomicFileWriter::new(&guard.runtime_state_path()).expect("runtime writer");
+    let hold = runtime.hold_writes();
+    patch_layer_controls(
+        &api_state.domains.scene_tree,
+        PatchLayerControls {
+            zone_id: zone.id,
+            layer_id,
+            values: HashMap::from([("speed".to_owned(), ControlValue::Float(42.0))]),
+            clear_bindings: Vec::new(),
+            fence: None,
+        },
+        MutationContext::mcp(),
+    )
+    .await
+    .expect("the patch commits while the disk is stalled");
+    assert!(
+        hold.wait_for_held(1, Duration::from_secs(5)),
+        "a runtime-session write is in flight"
+    );
+
+    // Shutdown waits behind the stalled disk like any writer would, so let
+    // the disk go once shutdown is underway.
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        hold.release();
+    });
+    state.shutdown().await.expect("shutdown should succeed");
+    release.join().expect("release thread");
+
+    let snapshot = runtime_state::load(&guard.runtime_state_path())
+        .expect("runtime state should load")
+        .expect("runtime state should exist");
+    let speed = snapshot
+        .default_scene_zones
+        .iter()
+        .flat_map(|zone| &zone.layers)
+        .find(|layer| layer.id == layer_id)
+        .and_then(|layer| match &layer.source {
+            LayerSource::Effect { controls, .. } => controls.get("speed").cloned(),
+            _ => None,
+        });
+    assert_eq!(
+        speed,
+        Some(ControlValue::Float(42.0)),
+        "the patched control is on disk when shutdown returns"
+    );
+}
+
 #[tokio::test]
 async fn daemon_start_restores_named_active_scene_and_default_zones() {
     let guard = TestDataDirGuard::new().await;
