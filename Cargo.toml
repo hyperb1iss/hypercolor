@@ -5,7 +5,6 @@ exclude = [
     "vendor/libsqlite3-sys",
     "vendor/servo-script",
     "vendor/tachys",
-    "vendor/utoipa-swagger-ui",
 ]
 resolver = "3"
 
@@ -223,7 +222,7 @@ tower-http = { version = "0.7", features = ["cors", "fs", "trace"] }
 rmcp = { version = "3.5.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 utoipa = { version = "6.0.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
 utoipa-axum = "0.3.0"
-utoipa-swagger-ui = { version = "10.0.1", features = ["axum", "vendored"] }
+utoipa-swagger-ui = { version = "10.0.2", features = ["axum", "vendored"] }
 
 # CLI
 clap = { version = "4.6", features = ["derive", "cargo", "env"] }
@@ -277,12 +276,6 @@ stats_alloc = "0.1.10"
 # scripts/check-vendored-patches.sh turns into a CI failure, so re-vendor or
 # drop it in the same change.
 #
-# utoipa-swagger-ui 10.0.1, vendored to carry upstream's unreleased move of
-# its build-time zip dependency to 9.x. vendor/utoipa-swagger-ui/HYPERCOLOR.md
-# describes the patch and says to drop the vendor once a utoipa-swagger-ui
-# release carries it; scripts/check-vendored-patches.sh fails CI as soon as a
-# bump moves the crate off 10.0.1.
-#
 # libsqlite3-sys 0.36.0, vendored to bundle SQLite 3.51.3 in place of 3.51.1.
 # servo-net pins rusqlite ^0.38, which pins this crate, so no dependency bump
 # can reach the SQLite fixes; vendor/libsqlite3-sys/HYPERCOLOR.md lists them
@@ -291,7 +284,6 @@ stats_alloc = "0.1.10"
 [patch.crates-io]
 libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 servo-script = { path = "vendor/servo-script" }
-utoipa-swagger-ui = { path = "vendor/utoipa-swagger-ui" }
 
 [profile.release]
 opt-level = 3

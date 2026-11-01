@@ -174,7 +174,6 @@ jobs:
               # Patched sources the daemon builds through [patch.crates-io].
               - 'vendor/libsqlite3-sys/**'
               - 'vendor/servo-script/**'
-              - 'vendor/utoipa-swagger-ui/**'
             python:
               - 'python/**'
               - 'protocol/**'
