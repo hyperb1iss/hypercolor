@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_router::hooks::use_query_map;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::{use_navigate, use_query_map};
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
@@ -31,9 +32,11 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlDefinition, EffectCategory};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
+pub mod phone_view;
 mod support;
 mod zone_controls;
 
+use phone_view::{PhoneView, VIEW_PARAM};
 use support::{LoadingSkeleton, drag_callbacks, expand_control_updates, persist_to_storage};
 use zone_controls::{ControlsZoneName, ZoneControlSchemaCache, ZoneScopedControls};
 
@@ -281,15 +284,30 @@ pub fn EffectsPage() -> impl IntoView {
                     .with(|zones| zones.iter().any(ZoneEffectState::is_active)))
     });
     // Phones split the page in two: Browse (the grid) and Controls (the
-    // live preview and controls), so neither scrolls past the other.
-    // `?view=controls` opens Controls; the now-playing sheet links there.
+    // live preview and controls), so neither scrolls past the other. The
+    // view lives in the URL (see `phone_view`): every switch writes it and
+    // the page reads it back, so the now-playing sheet's link to
+    // `?view=controls` lands from any state.
     let phone = crate::viewport::is_phone_layout();
     let query = use_query_map();
-    let (phone_view, set_phone_view) = signal(PhoneView::Browse);
-    Effect::new(move |_| {
-        if query.with(|query| query.get("view").as_deref() == Some("controls")) {
-            set_phone_view.set(PhoneView::Controls);
+    let phone_view = Memo::new(move |_| {
+        PhoneView::from_query(query.with(|query| query.get(VIEW_PARAM)).as_deref())
+    });
+    let navigate = StoredValue::new_local(use_navigate());
+    let set_phone_view = Callback::new(move |view: PhoneView| {
+        if !phone.get_untracked() || phone_view.get_untracked() == view {
+            return;
         }
+        navigate.with_value(|navigate| {
+            navigate(
+                view.href(),
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..NavigateOptions::default()
+                },
+            );
+        });
     });
     let phone_browse = Memo::new(move |_| phone.get() && phone_view.get() == PhoneView::Browse);
     let phone_controls = Memo::new(move |_| phone.get() && phone_view.get() == PhoneView::Controls);
@@ -297,7 +315,7 @@ pub fn EffectsPage() -> impl IntoView {
     Effect::new(move |previous: Option<String>| {
         let current = search.get();
         if previous.is_some_and(|previous| previous != current) {
-            set_phone_view.set(PhoneView::Browse);
+            set_phone_view.run(PhoneView::Browse);
         }
         current
     });
@@ -508,7 +526,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 }
                             }
                             on:click=move |_| {
-                                set_phone_view.set(PhoneView::Browse);
+                                set_phone_view.run(PhoneView::Browse);
                                 set_filter_dropdown_open.update(|v| *v = !*v);
                             }
                         >
@@ -732,7 +750,10 @@ pub fn EffectsPage() -> impl IntoView {
             // Desktop: pane row (grid | handle | detail) with independent
             // inner scrolls. Phone: one flowing page scroll — detail first
             // like a now-playing card, full-width grid below, no splitter.
-            <div class="ambient-scroll flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4" style:--ambient-hue=crate::ambient::hue_style()>
+            <div
+                class="ambient-scroll flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4"
+                style:--ambient-hue=crate::ambient::hue_style()
+            >
                 // Left column — effect grid, independent from the detail panels
                 <div
                     class="flex-1 min-w-0 flex flex-col max-md:flex-none"
@@ -829,7 +850,7 @@ pub fn EffectsPage() -> impl IntoView {
                     <button
                         type="button"
                         class="rounded-lg border border-edge-subtle bg-surface-overlay/70 px-4 py-2.5 text-sm font-medium text-fg-primary btn-press glow-ring"
-                        on:click=move |_| set_phone_view.set(PhoneView::Browse)
+                        on:click=move |_| set_phone_view.run(PhoneView::Browse)
                     >
                         "Browse effects"
                     </button>
@@ -1020,20 +1041,11 @@ pub fn EffectsPage() -> impl IntoView {
     }
 }
 
-/// Which half of the Effects page a phone shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PhoneView {
-    /// The effect grid.
-    Browse,
-    /// The live preview and controls of what is playing.
-    Controls,
-}
-
 /// The phone's Browse / Controls switch, under the page header.
 #[component]
 fn PhoneViewSwitch(
-    view: ReadSignal<PhoneView>,
-    set_view: WriteSignal<PhoneView>,
+    view: Memo<PhoneView>,
+    set_view: Callback<PhoneView>,
     has_active: Memo<bool>,
 ) -> impl IntoView {
     let segment = move |target: PhoneView, label: &'static str, icon: icondata_core::Icon| {
@@ -1053,7 +1065,7 @@ fn PhoneViewSwitch(
                 } else {
                     "none"
                 }
-                on:click=move |_| set_view.set(target)
+                on:click=move |_| set_view.run(target)
             >
                 <span class="flex shrink-0" class:text-accent=selected>
                     <Icon icon=icon width="16px" height="16px" />
