@@ -199,10 +199,52 @@ pub enum PersistenceFlushOutcome {
 
 /// A dirty snapshot could not converge before its flush deadline.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("persistence retry for {path} did not converge: {last_error}")]
+#[error("persistence retry for {path} did not converge: {last_error} ({progress})")]
 pub struct PersistenceFlushError {
     path: PathBuf,
     last_error: String,
+    progress: Box<FlushProgress>,
+}
+
+/// Where a destination stood when a flush gave up on it, so a timeout says
+/// whether attempts were failing, stuck in flight, or never started.
+#[derive(Debug, Clone)]
+struct FlushProgress {
+    target: u64,
+    landed: u64,
+    pending: Option<u64>,
+    active: Option<(u64, Duration)>,
+    foreground: Option<u64>,
+    finished_attempts: u64,
+    last_finished: Option<Duration>,
+}
+
+impl std::fmt::Display for FlushProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "waiting for generation {}, landed {}",
+            self.target, self.landed
+        )?;
+        if let Some(pending) = self.pending {
+            write!(f, ", pending {pending}")?;
+        }
+        if let Some((generation, running)) = self.active {
+            write!(
+                f,
+                ", attempt at {generation} running {}ms",
+                running.as_millis()
+            )?;
+        }
+        if let Some(foreground) = self.foreground {
+            write!(f, ", foreground {foreground} not started")?;
+        }
+        write!(f, ", {} attempts finished", self.finished_attempts)?;
+        if let Some(ago) = self.last_finished {
+            write!(f, ", the last {}ms ago", ago.as_millis())?;
+        }
+        Ok(())
+    }
 }
 
 /// Aggregate result of flushing every live persistence destination.
@@ -551,6 +593,12 @@ struct DestinationState {
     /// generations land in order and this covers every admission at or
     /// below it.
     landed_generation: u64,
+    /// When the attempt in `active_generation` started.
+    active_since: Option<Instant>,
+    /// Attempts finished at this destination in this process, and when the
+    /// latest finished, for flush timeouts to report.
+    finished_attempts: u64,
+    last_finished: Option<Instant>,
 }
 
 /// What a destination's file durably held after one of this process's
@@ -956,7 +1004,7 @@ impl AtomicFileWriter {
         while unsettled(&state) {
             let now = Instant::now();
             if now >= deadline {
-                return Err(self.destination.flush_error(&state));
+                return Err(self.destination.flush_error(&state, target));
             }
             let wait = deadline.saturating_duration_since(now);
             let (next, result) = self
@@ -966,7 +1014,7 @@ impl AtomicFileWriter {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = next;
             if result.timed_out() && unsettled(&state) {
-                return Err(self.destination.flush_error(&state));
+                return Err(self.destination.flush_error(&state, target));
             }
         }
 
@@ -1159,6 +1207,7 @@ impl Destination {
             }
             if state.active_generation.is_none() {
                 state.active_generation = Some(generation);
+                state.active_since = Some(Instant::now());
                 if state.foreground_generation == Some(generation) {
                     state.foreground_generation = None;
                 }
@@ -1187,7 +1236,10 @@ impl Destination {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.active_generation == Some(generation) {
                 state.active_generation = None;
+                state.active_since = None;
             }
+            state.finished_attempts += 1;
+            state.last_finished = Some(Instant::now());
             match result {
                 AtomicWriteCommitResult::DurableWritten => {
                     if state.pending.as_ref().map(|pending| pending.generation) == Some(generation)
@@ -1230,6 +1282,7 @@ impl Destination {
             }
             let pending = state.pending.clone()?;
             state.active_generation = Some(pending.generation);
+            state.active_since = Some(Instant::now());
             pending
         };
 
@@ -1269,13 +1322,30 @@ impl Destination {
         }
     }
 
-    fn flush_error(&self, state: &DestinationState) -> PersistenceFlushError {
+    fn flush_error(&self, state: &DestinationState, target: u64) -> PersistenceFlushError {
+        let now = Instant::now();
         PersistenceFlushError {
             path: self.path.clone(),
             last_error: state
                 .last_error
                 .clone()
                 .unwrap_or_else(|| "dirty snapshot did not finish before the deadline".to_owned()),
+            progress: Box::new(FlushProgress {
+                target,
+                landed: state.landed_generation,
+                pending: state.pending.as_ref().map(|pending| pending.generation),
+                active: state.active_generation.map(|generation| {
+                    let running = state
+                        .active_since
+                        .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
+                    (generation, running)
+                }),
+                foreground: state.foreground_generation,
+                finished_attempts: state.finished_attempts,
+                last_finished: state
+                    .last_finished
+                    .map(|finished| now.saturating_duration_since(finished)),
+            }),
         }
     }
 }
