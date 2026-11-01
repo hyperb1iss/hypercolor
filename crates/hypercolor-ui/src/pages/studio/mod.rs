@@ -18,6 +18,7 @@ pub(crate) mod move_menu;
 mod moves;
 mod offline_device_card;
 pub mod pane_model;
+pub mod phone_summary;
 pub mod placement;
 mod screen_list;
 mod stage;
@@ -193,8 +194,25 @@ pub(crate) fn keyed_disclosure(slot: RwSignal<Option<String>>, key: String) -> R
     open
 }
 
+/// `/studio`: the spatial workspace on tablet and desktop widths, and a
+/// zone summary with per-zone effect switching on phones, where a canvas
+/// editor has no room to work.
 #[component]
 pub fn StudioPage() -> impl IntoView {
+    let phone = crate::viewport::is_phone_layout();
+    view! {
+        {move || {
+            if phone.get() {
+                view! { <phone_summary::StudioPhoneSummary /> }.into_any()
+            } else {
+                view! { <StudioWorkspace /> }.into_any()
+            }
+        }}
+    }
+}
+
+#[component]
+fn StudioWorkspace() -> impl IntoView {
     // The active scene is the app-wide shared resource — WS scene events
     // keep it fresh, so zone changes made from other pages, other
     // clients, or the CLI land here without a Studio-local refetch. A
