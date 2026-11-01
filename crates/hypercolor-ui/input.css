@@ -58,7 +58,7 @@
     box-shadow: 0 8px 24px oklch(0 0 0 / 0.25);
 }
 
-@media (max-width: 767.98px) {
+@media (width < 48rem) {
     .toast-host {
         bottom: calc(var(--phone-nav-h) + var(--phone-strip-h) + var(--phone-strip-gap) +
                 env(safe-area-inset-bottom));
@@ -76,7 +76,7 @@
     --phone-strip-gap: 0.375rem;
 }
 
-@media (max-width: 767.98px) {
+@media (width < 48rem) {
     .shell-main {
         padding-bottom: calc(var(--phone-nav-h) + var(--phone-strip-h) +
                         var(--phone-strip-gap) + env(safe-area-inset-bottom));
@@ -955,7 +955,7 @@ input[type="range"].slider-silk::-moz-range-track {
 
 /* Phone header ramp: the 21px title reads oversized against a 390px
    canvas, so it steps down with the tighter 48px title row. */
-@media (max-width: 767.98px) {
+@media (width < 48rem) {
     .page-title {
         font-size: 17px;
     }
