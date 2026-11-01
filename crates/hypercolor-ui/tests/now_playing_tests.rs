@@ -142,3 +142,21 @@ fn paused_output_says_so() {
     assert_eq!(caption.title, "Rainbow");
     assert_eq!(caption.detail, "Paused");
 }
+
+#[test]
+fn scene_radios_step_with_arrows_and_jump_with_home_and_end() {
+    use hypercolor_ui::components::phone_now_playing::radio_step;
+    assert_eq!(radio_step(Some(0), 4, "ArrowDown"), Some(1));
+    assert_eq!(radio_step(Some(0), 4, "ArrowRight"), Some(1));
+    assert_eq!(radio_step(Some(3), 4, "ArrowDown"), Some(0));
+    assert_eq!(radio_step(Some(0), 4, "ArrowUp"), Some(3));
+    assert_eq!(radio_step(Some(2), 4, "ArrowLeft"), Some(1));
+    assert_eq!(radio_step(Some(2), 4, "Home"), Some(0));
+    assert_eq!(radio_step(Some(1), 4, "End"), Some(3));
+    // Focus outside the group starts from an end.
+    assert_eq!(radio_step(None, 4, "ArrowDown"), Some(0));
+    // Other keys stay with the browser; an empty group has nowhere to go.
+    assert_eq!(radio_step(Some(1), 4, "Tab"), None);
+    assert_eq!(radio_step(Some(1), 4, " "), None);
+    assert_eq!(radio_step(None, 0, "ArrowDown"), None);
+}

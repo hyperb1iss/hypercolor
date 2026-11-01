@@ -23,12 +23,14 @@ use crate::components::now_playing::{
 use crate::components::scene_picker::{SceneRow, scene_rows};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::sidebar::SidebarAudioToggle;
+use crate::components::silk_select::next_highlight;
 use crate::components::zone_now_playing::set_zone_enabled;
 use crate::components::zone_tabs::{PAUSED_DIM, ZoneDot};
 use crate::icons::*;
 use crate::route_ui::NowPlayingCanvasMode;
 use crate::zones::{ScenesContext, ZoneEffectState, ZonesContext};
-use hypercolor_leptos_ext::events::Input;
+use hypercolor_leptos_ext::events::{Input, document as browser_document};
+use wasm_bindgen::JsCast;
 
 /// The strip's palette swatch: the `--np-*` triplets as one gradient,
 /// standing in for the live thumbnail on pages that show their own preview.
@@ -409,8 +411,37 @@ fn SheetZoneRow(state: ZoneEffectState) -> impl IntoView {
     }
 }
 
+/// The radio a group's arrow key moves to: Down and Right step forward,
+/// Up and Left step back, both wrapping; Home and End jump to the ends.
+/// `None` for any other key, which the group leaves alone.
+#[must_use]
+pub fn radio_step(current: Option<usize>, len: usize, key: &str) -> Option<usize> {
+    let key = match key {
+        "ArrowRight" => "ArrowDown",
+        "ArrowLeft" => "ArrowUp",
+        "ArrowDown" | "ArrowUp" | "Home" | "End" => key,
+        _ => return None,
+    };
+    next_highlight(current, len, key)
+}
+
+/// The element id of a scene radio. The Default row has no scene id.
+fn scene_radio_id(token: &str) -> String {
+    if token.is_empty() {
+        "sheet-scene-default".to_owned()
+    } else {
+        format!("sheet-scene-{token}")
+    }
+}
+
 /// Default and every saved scene; a tap switches. Creating, renaming, and
 /// deleting scenes stay in the page header's scene picker.
+///
+/// The list is a radio group with one tab stop, the checked scene. Arrow
+/// keys, Home, and End move focus and check the scene they land on, as
+/// radio groups do. While a switch is in flight the other rows are
+/// `aria-disabled` rather than disabled, so focus can still move; a check
+/// that lands then is ignored until the switch settles.
 #[component]
 fn SheetScenes() -> impl IntoView {
     let scenes_ctx = expect_context::<ScenesContext>();
@@ -422,6 +453,15 @@ fn SheetScenes() -> impl IntoView {
                 .with(|active| scene_rows(scenes, active.as_ref()))
         })
     });
+    // The roving tab stop: the checked row, or the first when none is.
+    let tab_stop = Memo::new(move |_| {
+        rows.with(|rows| {
+            rows.iter()
+                .find(|row| row.active)
+                .or_else(|| rows.first())
+                .map(|row| row.id.clone().unwrap_or_default())
+        })
+    });
     let choose = move |row: SceneRow| {
         if row.active || switching.get_untracked().is_some() {
             return;
@@ -429,6 +469,34 @@ fn SheetScenes() -> impl IntoView {
         match row.id {
             Some(id) => scenes_ctx.activate.run(id),
             None => scenes_ctx.deactivate.run(()),
+        }
+    };
+    let on_keydown = move |ev: web_sys::KeyboardEvent| {
+        let tokens: Vec<String> = rows.with_untracked(|rows| {
+            rows.iter()
+                .map(|row| row.id.clone().unwrap_or_default())
+                .collect()
+        });
+        let focused = browser_document()
+            .and_then(|doc| doc.active_element())
+            .map(|element| element.id());
+        let current = focused.and_then(|focused| {
+            tokens
+                .iter()
+                .position(|token| scene_radio_id(token) == focused)
+        });
+        let Some(target) = radio_step(current, tokens.len(), &ev.key()) else {
+            return;
+        };
+        ev.prevent_default();
+        if let Some(element) = browser_document()
+            .and_then(|doc| doc.get_element_by_id(&scene_radio_id(&tokens[target])))
+            .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let _ = element.focus();
+        }
+        if let Some(row) = rows.with_untracked(|rows| rows.get(target).cloned()) {
+            choose(row);
         }
     };
 
@@ -439,55 +507,89 @@ fn SheetScenes() -> impl IntoView {
                 class="divide-y divide-edge-subtle/40 rounded-lg border border-edge-subtle/60 bg-surface-sunken/40"
                 role="radiogroup"
                 aria-label="Scene"
+                on:keydown=on_keydown
             >
-                {move || rows.get().into_iter().map(|row| {
-                    // Deactivation reports `switching == Some("")`, which the
-                    // Default row's empty token matches.
-                    let token = row.id.clone().unwrap_or_default();
-                    let is_switching = Memo::new(move |_| switching.get().as_deref() == Some(token.as_str()));
-                    let active = row.active;
-                    let locked = row.locked;
-                    let label = row.label.clone();
-                    view! {
-                        <button
-                            type="button"
-                            role="radio"
-                            aria-checked=active.to_string()
-                            class="flex min-h-12 w-full items-center gap-3 px-3 text-left text-sm \
-                                   active:bg-surface-hover/30 disabled:opacity-50"
-                            class=("text-fg-primary", active)
-                            class=("text-fg-secondary", !active)
-                            disabled=move || switching.get().is_some() && !is_switching.get()
-                            on:click=move |_| choose(row.clone())
-                        >
-                            <span class="flex h-4 w-4 shrink-0 items-center justify-center">
-                                {move || if is_switching.get() {
-                                    Some(view! {
-                                        <span class="flex animate-spin text-fg-tertiary">
-                                            <Icon icon=LuLoader width="14px" height="14px" />
-                                            <span class="sr-only">"Switching"</span>
-                                        </span>
-                                    }.into_any())
-                                } else if active {
-                                    Some(view! {
-                                        <span class="flex text-accent">
-                                            <Icon icon=LuCheck width="14px" height="14px" />
-                                        </span>
-                                    }.into_any())
-                                } else {
-                                    None
-                                }}
-                            </span>
-                            <span class="min-w-0 flex-1 truncate">{label}</span>
-                            {locked.then(|| view! {
-                                <span class="flex shrink-0 text-status-warning" title="Snapshot-locked scene">
-                                    <Icon icon=LuLock width="13px" height="13px" />
-                                    <span class="sr-only">"Snapshot-locked"</span>
+                // Keyed by scene, so an activation updates rows in place
+                // and keyboard focus survives it.
+                <For
+                    each=move || rows.get()
+                    key=|row| row.id.clone().unwrap_or_default()
+                    children=move |row| {
+                        let token = row.id.clone().unwrap_or_default();
+                        let lookup = token.clone();
+                        let state = Memo::new(move |_| {
+                            rows.with(|rows| {
+                                rows.iter()
+                                    .find(|row| row.id.clone().unwrap_or_default() == lookup)
+                                    .map(|row| (row.active, row.locked, row.label.clone()))
+                                    .unwrap_or_default()
+                            })
+                        });
+                        let active = Memo::new(move |_| state.with(|state| state.0));
+                        // Deactivation reports `switching == Some("")`, which
+                        // the Default row's empty token matches.
+                        let switch_token = token.clone();
+                        let is_switching = Memo::new(move |_| {
+                            switching.get().as_deref() == Some(switch_token.as_str())
+                        });
+                        let waiting = Memo::new(move |_| switching.get().is_some() && !is_switching.get());
+                        let stop_token = token.clone();
+                        let is_tab_stop = Memo::new(move |_| {
+                            tab_stop.get().as_deref() == Some(stop_token.as_str())
+                        });
+                        view! {
+                            <button
+                                type="button"
+                                role="radio"
+                                id=scene_radio_id(&token)
+                                aria-checked=move || active.get().to_string()
+                                aria-disabled=move || waiting.get().then_some("true")
+                                tabindex=move || if is_tab_stop.get() { "0" } else { "-1" }
+                                class="flex min-h-12 w-full items-center gap-3 px-3 text-left text-sm \
+                                       active:bg-surface-hover/30"
+                                class=("text-fg-primary", move || active.get())
+                                class=("text-fg-secondary", move || !active.get())
+                                class=("opacity-50", move || waiting.get())
+                                on:click=move |_| {
+                                    let row = rows.with_untracked(|rows| {
+                                        rows.iter()
+                                            .find(|row| row.id.clone().unwrap_or_default() == token)
+                                            .cloned()
+                                    });
+                                    if let Some(row) = row {
+                                        choose(row);
+                                    }
+                                }
+                            >
+                                <span class="flex h-4 w-4 shrink-0 items-center justify-center">
+                                    {move || if is_switching.get() {
+                                        Some(view! {
+                                            <span class="flex animate-spin text-fg-tertiary">
+                                                <Icon icon=LuLoader width="14px" height="14px" />
+                                                <span class="sr-only">"Switching"</span>
+                                            </span>
+                                        }.into_any())
+                                    } else if active.get() {
+                                        Some(view! {
+                                            <span class="flex text-accent">
+                                                <Icon icon=LuCheck width="14px" height="14px" />
+                                            </span>
+                                        }.into_any())
+                                    } else {
+                                        None
+                                    }}
                                 </span>
-                            })}
-                        </button>
+                                <span class="min-w-0 flex-1 truncate">{move || state.with(|state| state.2.clone())}</span>
+                                {move || state.with(|state| state.1).then(|| view! {
+                                    <span class="flex shrink-0 text-status-warning" title="Snapshot-locked scene">
+                                        <Icon icon=LuLock width="13px" height="13px" />
+                                        <span class="sr-only">"Snapshot-locked"</span>
+                                    </span>
+                                })}
+                            </button>
+                        }
                     }
-                }).collect_view()}
+                />
             </div>
         </section>
     }
