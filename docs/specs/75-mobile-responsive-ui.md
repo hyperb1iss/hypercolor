@@ -286,10 +286,11 @@ shell decisions this wave owned settled first.
   trap and restore) plus a grab area that drags the sheet down. A release
   past `min(96px, 25%)` of the sheet's height, or a downward flick of
   0.5px/ms after 24px, dismisses; a cancel or lost capture snaps back.
-  The flick speed decays with the time since the last move (40ms time
-  constant), so a release after a pause is judged by position alone. The
-  drag follows the Wave 1 gesture model. The rules are tested in
-  `tests/bottom_sheet_tests.rs`.
+  Past one frame of grace (20ms after the last move) the flick speed
+  decays (40ms time constant), so a flick released on the next frame
+  keeps its speed while a release after a pause is judged by position
+  alone. The drag follows the Wave 1 gesture model. The rules are tested
+  in `tests/bottom_sheet_tests.rs`.
 - **Mount, not just hide.** `viewport::is_phone_layout` is a synchronous
   `(width < 48rem)` signal, provided at the app root; every phone rule in
   `input.css` uses the same query, as Tailwind's `max-md:` does. Surfaces that cost
@@ -342,9 +343,13 @@ shell decisions this wave owned settled first.
   `md`. Counting and filtering are tested in
   `tests/studio_phone_summary_tests.rs`.
 - **Modals and dropdowns.** `Modal` leaked its keydown listener on every
-  open; it is removed on unmount now, which every sheet relies on. Menu
-  rows in every dropdown, the scene picker trigger, SilkSelect triggers,
-  and toolbar search and buttons reach 44px on coarse pointers.
+  open; it is removed on unmount now, which every sheet relies on. Its
+  focus trap counts only real tab stops (no negative tabindex, nothing
+  inert or unrendered) and steps from focus that sits outside the
+  sequence by document order, so Tab never walks out of a sheet past a
+  roving tabindex group. Menu rows in every dropdown, the scene picker
+  trigger, SilkSelect triggers, and toolbar search and buttons reach
+  44px on coarse pointers.
 
 Toolbar width strategy: toolbars fit or wrap. The two strips that scroll
 in place (Media's kind chips, Settings' section tabs) hold buttons only,
@@ -373,13 +378,18 @@ Landed 2026-10-31.
   move a highlight.
 - **Taps.** `-webkit-tap-highlight-color` is transparent; presses show
   through each control's own `:active` state.
-- **Scrolling.** Below `md` every scroll owner contains its overscroll
-  (page scrollers, sheet bodies, drawers, lists, and dropdown panels;
-  horizontal strips contain sideways overscroll), and the document has
-  none, so reaching an edge never drags the page
-  under a sheet or triggers pull-to-refresh on the fixed shell. Momentum
-  scrolling is native on both target engines for `overflow: auto`, so no
-  `-webkit-overflow-scrolling` is needed.
+- **Scrolling.** Below `md` overscroll is contained in two places only:
+  the page's own scroll owner (`page-scroll`, on the shell's content
+  scroller and each page's), where it stops pull-to-refresh and the
+  fixed document's bounce, and overlays (dropdown panels, sheets,
+  dialogs, drawers, and menus), where it stops scrolling bleeding to
+  the page behind. Scrollers nested inside the page keep
+  `overscroll-behavior: auto` and chain, so a swipe at the end of a
+  panel list moves the page. Horizontal strips contain sideways
+  overscroll: nothing in the page scrolls sideways, so that blocks only
+  the browser's back gesture. Momentum scrolling is native on both
+  target engines for `overflow: auto`, so no `-webkit-overflow-scrolling`
+  is needed.
 - **Safe areas.** The tab bar, the strip, `<main>`, toasts, and every
   sheet body pad by `env(safe-area-inset-bottom)`.
 - **Focus zoom.** Text fields are 16px below `md`, since iOS Safari zooms
@@ -401,7 +411,9 @@ run against the build before each fix first, and failed there.
 CDP touch dispatch reaches the page 12 to 80ms per move here, far below
 flick speed, so the flick rule is checked with synthetic pointer events
 dispatched in the page at controlled spacing, as the e2e Studio specs
-do for drags.
+do for drags. Scroll chaining is checked with CDP touch swipes, which
+move the page from plain content by about 200px;
+`Input.synthesizeScrollGesture` scrolls nothing in this setup.
 
 | Surface | Check | 390x844 | 360x800 |
 | --- | --- | --- | --- |
@@ -417,10 +429,12 @@ do for drags.
 | Effects | `?view=controls` opens Controls with the preview mounted; typing a search or opening Filters returns to Browse, where the preview unmounts | Pass | Pass |
 | Effects | After leaving Controls by the tab, a search, or Filters, the sheet's controls link lands on Controls again; Browse drops `view` from the URL | Pass | Pass |
 | Effects | Both tabs control one tab panel that names the selected tab; one tab stop; ArrowRight and Home select and focus | Pass | Pass |
-| Player sheet | A fast pull released at once dismisses; the same pull released after a 350ms pause keeps the sheet | Pass | Pass |
+| Player sheet | A 50px pull at 0.6px/ms released 16ms after its last move dismisses; the same pull held 350ms keeps the sheet | Pass | Pass |
+| Player sheet | Tab four times from the checked scene stays in the sheet (wrapping to Close); Shift+Tab from Close lands on the checked scene | Pass | Pass |
 | Player sheet | The scene radios keep one tab stop; ArrowDown and ArrowUp move focus and check the scene | Pass | Pass |
 | Sliders | Settings, device brightness, and control sliders (and the sidebar's at 1024px with touch) keep a thin, round track inside a hit box of 44px or more | Pass | Pass |
-| Every page | Every scroll owner, open filter, scene, and select panels included, contains its overscroll | Pass | Pass |
+| Every page | The page scroll owners, the sheet body, and an open select panel contain overscroll | Pass | Pass |
+| Every page | A swipe at the end of a nested list moves the page: the Dashboard panel list, and a plain overflow list placed in Settings | Pass | Pass |
 | Studio | The note reads "Arrange on a bigger screen" at both sizes and in a 700px desktop window | Pass | Pass |
 | Effects | Tapping a card applies it and the strip shows it; the card keeps no hover look | Pass | Pass |
 | Effects | A touch drag moves a control slider; its hit box is at least 44px | Pass | Pass |
