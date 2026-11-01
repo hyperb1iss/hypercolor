@@ -86,7 +86,7 @@ serde_ignored = "0.1.14"
 serde_path_to_error = "0.1"
 # jsonschema 0.58 enables serde_json/float_roundtrip globally.
 # That feature changes f32 REST decoding before domain validation.
-jsonschema = { version = "=0.58.6", default-features = false }
+jsonschema = { version = "=0.60.2", default-features = false }
 toml = "1.1"
 base64 = "0.23"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde", "clock"] }
@@ -121,7 +121,7 @@ strum = { version = "0.28", features = ["derive"] }
 dirs = "7.0"
 tar = "0.4.46"
 notify = "8.2"
-sysinfo = "0.39.6"
+sysinfo = "0.40.0"
 nvml-wrapper = "0.13.0"
 # Pinned exactly: wmi 0.18.2+ declares open ranges (windows/windows-core
 # ">=0.59, <0.63"), and with tao/wry holding windows-core at 0.61 the resolver
