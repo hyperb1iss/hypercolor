@@ -18,5 +18,3 @@ vendor/libsqlite3-sys/**
 !vendor/libsqlite3-sys/HYPERCOLOR.md
 vendor/servo-script/**
 !vendor/servo-script/HYPERCOLOR.md
-vendor/utoipa-swagger-ui/**
-!vendor/utoipa-swagger-ui/HYPERCOLOR.md
