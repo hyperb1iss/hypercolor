@@ -63,15 +63,17 @@
 //!   without changing its echo, so a cluster upkeep sends one owes a
 //!   restore, sent with the next room in its window.
 //! - Fans that are present but confirm nothing for [`ECHO_STALL`], including
-//!   a recovery probe given its full observation interval, trigger the vendor
-//!   reset, which ends the session the way a refused write does. A receiver
-//!   that drops out of a complete table restarts that interval on its first
+//!   a recovery probe given its full observation interval, trigger a resync:
+//!   the session ends so the connect sequence runs again on fresh handles.
+//!   The TX is not reset. It took every write, and L-Connect resets a dongle
+//!   only after writes to it fail, never on its echoes. A receiver that
+//!   drops out of a complete table restarts that interval on its first
 //!   return without a confirmed frame; later brief omissions keep the failed
 //!   probes as evidence, and only an absence past [`ABSENT_AFTER`] earns a
-//!   fresh interval again. At most [`MAX_RESETS_WITHOUT_DELIVERY`] resets
+//!   fresh interval again. At most [`MAX_RESYNCS_WITHOUT_DELIVERY`] resyncs
 //!   are asked for on behalf of one cluster until it confirms a frame
 //!   again, across sessions.
-//! - Past that the stall is the fans', not the TX's: the cluster's RGB
+//! - Past that the stall is the fans', not the session's: the cluster's RGB
 //!   rests (upkeep goes on, so its fans hold their speed and clock), then
 //!   the session ends so the connect sequence runs again on fresh handles.
 //!   The rests grow ([`RECONNECT_RESTS`]); after the last, the log says to
@@ -146,15 +148,15 @@ pub const ECHO_TIMEOUT_CAP: Duration = Duration::from_secs(6);
 /// No confirmation for this long is logged once as a warning.
 pub const ECHO_STALL_WARN: Duration = Duration::from_secs(2);
 /// Minimum time without confirmation before a failed recovery probe may
-/// escalate to a TX reset.
+/// escalate to a resync.
 pub const ECHO_STALL: Duration = Duration::from_secs(5);
 /// A cluster counts as heard for the stall verdict when it was in a table
 /// reply this recently.
 const HEARD_WITHIN: Duration = Duration::from_secs(1);
-/// Resets asked for on behalf of one cluster before it confirms a frame
+/// Resyncs asked for on behalf of one cluster before it confirms a frame
 /// again.
-pub const MAX_RESETS_WITHOUT_DELIVERY: u32 = 2;
-/// Once a cluster's reset budget is spent, how long its RGB rests before
+pub const MAX_RESYNCS_WITHOUT_DELIVERY: u32 = 2;
+/// Once a cluster's resync budget is spent, how long its RGB rests before
 /// each reconnect runs the connect sequence again. On the owner's rig,
 /// three TX resets and three reconnects within 25 s did not bring stalled
 /// fans back, and a connect after 99 minutes without RGB did at once. How
@@ -198,19 +200,19 @@ pub enum SendKind {
 /// What the pacer decided about fans that stopped confirming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StallVerdict {
-    /// Ask the transport for the TX reset; the session ends.
-    Reset {
+    /// Resync: the session ends at once so the connect sequence runs again.
+    Resync {
         /// Index of the cluster that stopped confirming.
         cluster: usize,
         /// How long nothing has been confirmed.
         unconfirmed_for: Duration,
         /// Resends tried in that time.
         resends: u32,
-        /// Resets asked for since this cluster last confirmed, this one
+        /// Resyncs asked for since this cluster last confirmed, this one
         /// included.
-        resets: u32,
+        resyncs: u32,
     },
-    /// The cluster's reset budget is spent: its RGB rests, with upkeep
+    /// The cluster's resync budget is spent: its RGB rests, with upkeep
     /// going on, until the reconnect.
     Rest {
         /// Index of the cluster that stopped confirming.
@@ -350,7 +352,7 @@ struct Outstanding {
 /// One cluster's side of the window.
 #[derive(Debug)]
 struct ClusterLink {
-    /// The cluster's radio MAC, which keys its reset budget.
+    /// The cluster's radio MAC, which keys its resync budget.
     mac: Option<Mac>,
     /// Pixels of the newest frame submitted for this cluster.
     newest: Option<Tag>,
@@ -391,7 +393,7 @@ struct ClusterLink {
     /// Actual probes since the last advance or a return that renewed the
     /// probe budget.
     probes: u32,
-    /// The first probe's full timeout must expire before reset escalation.
+    /// The first probe's full timeout must expire before a resync.
     /// Further probes and cached status replies never move this deadline.
     probe_deadline: Option<Instant>,
     /// When the timeout clock last started: the first send after idle, a
@@ -683,7 +685,6 @@ impl ClusterLink {
 #[derive(Debug, Default)]
 pub struct DeliveryPacer {
     links: Vec<ClusterLink>,
-    reset_requested: bool,
     /// Why the session asked to be connected afresh, once it has.
     restart: Option<String>,
     totals: DeliveryStats,
@@ -698,11 +699,11 @@ impl DeliveryPacer {
         self.totals
     }
 
-    /// Whether the session sends nothing more: the TX reset or a fresh
-    /// connect was asked for.
+    /// Whether the session sends nothing more: a fresh connect was asked
+    /// for.
     #[must_use]
     pub const fn silenced(&self) -> bool {
-        self.reset_requested || self.restart.is_some()
+        self.restart.is_some()
     }
 
     /// Why the session asked to be connected afresh, if it has: the
@@ -712,14 +713,7 @@ impl DeliveryPacer {
         self.restart.as_deref()
     }
 
-    /// Whether the protocol has asked for the TX reset: the session is
-    /// ending and nothing more should be written.
-    #[must_use]
-    pub const fn reset_requested(&self) -> bool {
-        self.reset_requested
-    }
-
-    /// Clusters whose lighting is held because their reset budget is spent:
+    /// Clusters whose lighting is held because their resync budget is spent:
     /// resting until a reconnect.
     #[must_use]
     pub fn held_clusters(&self) -> usize {
@@ -1000,7 +994,7 @@ impl DeliveryPacer {
             // A receiver that was really gone, or the first return since the
             // last confirmed frame, gets a fresh probe budget. Later brief
             // omissions keep the failed probes, so a membership that keeps
-            // toggling cannot postpone the reset verdict forever.
+            // toggling cannot postpone the resync verdict forever.
             let renew_budget = genuine_absence || !link.return_grace_spent;
             link.missing = false;
             link.absent_logged = false;
@@ -1161,7 +1155,7 @@ impl DeliveryPacer {
         {
             info!(
                 cluster,
-                resets = recovery.resets,
+                resyncs = recovery.resyncs,
                 reconnects = recovery.reconnects,
                 "L-Wireless fans confirm frames again after reconnecting"
             );
@@ -1200,7 +1194,7 @@ impl DeliveryPacer {
                 link.rest_until = None;
                 let attempt = link.mac.map_or(1, note_reconnect);
                 self.restart = Some(format!(
-                    "L-Wireless fans on cluster {cluster} confirm no frame after their TX resets; \
+                    "L-Wireless fans on cluster {cluster} confirm no frame after their resyncs; \
                      reconnecting to run the connect sequence again (attempt {attempt})"
                 ));
                 return Some(StallVerdict::Reconnect { cluster, attempt });
@@ -1237,14 +1231,17 @@ impl DeliveryPacer {
                 continue;
             }
             let recovery = link.mac.map(recovery_of).unwrap_or_default();
-            if recovery.resets < MAX_RESETS_WITHOUT_DELIVERY {
-                self.reset_requested = true;
-                let resets = link.mac.map_or(1, note_reset);
-                return Some(StallVerdict::Reset {
+            if recovery.resyncs < MAX_RESYNCS_WITHOUT_DELIVERY {
+                let resyncs = link.mac.map_or(1, note_resync);
+                self.restart = Some(format!(
+                    "L-Wireless fans on cluster {cluster} confirm no frame after probing; \
+                     reconnecting to run the connect sequence again (resync {resyncs})"
+                ));
+                return Some(StallVerdict::Resync {
                     cluster,
                     unconfirmed_for,
                     resends: link.probes,
-                    resets,
+                    resyncs,
                 });
             }
             let done = recovery.reconnects;
@@ -1260,20 +1257,20 @@ impl DeliveryPacer {
                 std::cmp::Ordering::Less => warn!(
                     cluster,
                     unconfirmed_ms = millis(unconfirmed_for),
-                    resets = recovery.resets,
+                    resyncs = recovery.resyncs,
                     rest_s = rest.as_secs(),
                     attempt,
-                    "L-Wireless fans still confirm no frame after {} TX resets; resting their lighting, then reconnecting to run the connect sequence again",
-                    recovery.resets
+                    "L-Wireless fans still confirm no frame after {} resyncs; resting their lighting, then reconnecting to run the connect sequence again",
+                    recovery.resyncs
                 ),
                 std::cmp::Ordering::Equal => error!(
                     cluster,
                     unconfirmed_ms = millis(unconfirmed_for),
-                    resets = recovery.resets,
+                    resyncs = recovery.resyncs,
                     reconnects = done,
                     rest_s = rest.as_secs(),
-                    "L-Wireless fans confirm no frame after {} TX resets and {done} reconnects; holding their lighting. Power-cycle the controller. Reconnecting every {} minutes meanwhile",
-                    recovery.resets,
+                    "L-Wireless fans confirm no frame after {} resyncs and {done} reconnects; holding their lighting. Power-cycle the controller. Reconnecting every {} minutes meanwhile",
+                    recovery.resyncs,
                     RECONNECT_REST_HELD.as_secs() / 60
                 ),
                 std::cmp::Ordering::Greater => info!(
@@ -1421,16 +1418,16 @@ fn next_send_number() -> u32 {
 }
 
 /// What recovering a cluster that stopped confirming has cost since it
-/// last confirmed a frame: TX resets, then reconnects.
+/// last confirmed a frame: resyncs, then rested reconnects.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Recovery {
-    resets: u32,
+    resyncs: u32,
     reconnects: u32,
 }
 
 /// Each cluster's recovery (by radio MAC) since it last confirmed a frame.
-/// Kept for the process, so a reconnect cannot turn a TX that stays dead
-/// into a reset loop, and per cluster, so fans that still confirm cannot
+/// Kept for the process, so a reconnect cannot turn fans that stay silent
+/// into a resync loop, and per cluster, so fans that still confirm cannot
 /// renew a failing cluster's budget.
 fn recovery_budget() -> &'static Mutex<HashMap<Mac, Recovery>> {
     static RECOVERY: OnceLock<Mutex<HashMap<Mac, Recovery>>> = OnceLock::new();
@@ -1446,11 +1443,11 @@ fn recovery_of(mac: Mac) -> Recovery {
         .unwrap_or_default()
 }
 
-/// Resets asked for on behalf of the cluster `mac` since it last confirmed
+/// Resyncs asked for on behalf of the cluster `mac` since it last confirmed
 /// a frame.
 #[must_use]
-pub fn resets_without_delivery(mac: Mac) -> u32 {
-    recovery_of(mac).resets
+pub fn resyncs_without_delivery(mac: Mac) -> u32 {
+    recovery_of(mac).resyncs
 }
 
 /// Reconnects asked for on behalf of the cluster `mac` since it last
@@ -1460,13 +1457,13 @@ pub fn reconnects_without_delivery(mac: Mac) -> u32 {
     recovery_of(mac).reconnects
 }
 
-fn note_reset(mac: Mac) -> u32 {
+fn note_resync(mac: Mac) -> u32 {
     let mut budget = recovery_budget()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     let recovery = budget.entry(mac).or_default();
-    recovery.resets = recovery.resets.saturating_add(1);
-    recovery.resets
+    recovery.resyncs = recovery.resyncs.saturating_add(1);
+    recovery.resyncs
 }
 
 fn note_reconnect(mac: Mac) -> u32 {
@@ -1688,11 +1685,11 @@ mod tests {
     }
 
     #[test]
-    fn a_spent_reset_budget_rests_then_asks_for_a_reconnect_on_a_growing_schedule() {
+    fn a_spent_resync_budget_rests_then_asks_for_a_reconnect_on_a_growing_schedule() {
         let mac = [0x5E, 0x57, 0x0B, 0x0D, 0x6E, 0x01];
         let now = Instant::now();
-        for _ in 0..MAX_RESETS_WITHOUT_DELIVERY {
-            note_reset(mac);
+        for _ in 0..MAX_RESYNCS_WITHOUT_DELIVERY {
+            note_resync(mac);
         }
         let schedule = RECONNECT_RESTS
             .iter()
@@ -1716,7 +1713,7 @@ mod tests {
                 }) => {
                     assert_eq!((got, got_attempt), (rest, attempt), "session {done}");
                 }
-                other => panic!("session {done}: a rest past the reset budget, not {other:?}"),
+                other => panic!("session {done}: a rest past the resync budget, not {other:?}"),
             }
             assert!(!pacer.silenced(), "a rest does not end the session");
             pacer.submit(0, T2);
@@ -1746,7 +1743,7 @@ mod tests {
         assert_eq!(
             forget_recovery(mac),
             Some(Recovery {
-                resets: MAX_RESETS_WITHOUT_DELIVERY,
+                resyncs: MAX_RESYNCS_WITHOUT_DELIVERY,
                 reconnects: MAX_RECONNECTS_WITHOUT_DELIVERY + 2,
             })
         );

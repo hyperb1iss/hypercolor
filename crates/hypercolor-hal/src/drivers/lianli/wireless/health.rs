@@ -11,11 +11,10 @@
 //! cause; on the V1 `SLV3TX` the state has only ever cleared with a power
 //! cycle, and a USB-level reset of the stuck TX made it fail re-enumeration.
 //!
-//! A TX can also fail without refusing anything: it takes every write while
-//! its fans stop confirming frames. The protocol paces RGB on those
-//! confirmations (see [`super::pacing`]), so it is the one that notices, and
-//! it asks for the same partner reset; that wedge is recorded with its own
-//! [`WedgeCause`].
+//! Fans that stop confirming frames while the TX takes every write are no
+//! wedge of either half: the protocol, which paces RGB on those
+//! confirmations (see [`super::pacing`]), ends that session for a fresh
+//! connect without resetting anything.
 //!
 //! The registry is keyed by the controller's identity (the TX's USB path),
 //! records which half stalled, and is cleared by the first command that half
@@ -82,11 +81,9 @@ impl DongleHalf {
 pub enum WedgeCause {
     /// A write ran out its whole budget.
     RefusedWrite,
-    /// The TX took every write but its fans stopped confirming frames.
-    Undelivered,
 }
 
-/// A half that stopped taking commands, or stopped delivering them.
+/// A half that stopped taking commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Wedge {
     /// The half that stalled.

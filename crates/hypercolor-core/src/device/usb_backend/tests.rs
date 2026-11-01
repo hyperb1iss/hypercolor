@@ -1811,7 +1811,7 @@ struct EchoingTransfer {
 }
 
 /// The stand-in's fan cluster: a radio MAC of its own per controller, since
-/// the TX reset budget is kept per cluster for the whole process.
+/// the resync budget is kept per cluster for the whole process.
 const fn echoing_cluster(master: [u8; 6]) -> [u8; 6] {
     [0x11, 0x11, 0x11, 0x11, master[4], master[5]]
 }
@@ -2523,18 +2523,15 @@ async fn a_transient_fault_on_a_pumped_lianli_frame_keeps_the_actor_alive() {
     assert!(result.is_ok(), "{result:?}");
 }
 
-/// A TX that takes every write while its fans stop confirming frames is
-/// reset through the RX once the stall bound passes, and the actor ends
-/// instead of streaming into a radio that delivers nothing.
+/// A TX that takes every write while its fans stop confirming frames ends
+/// the actor once the stall bound passes, asking for a fresh connect,
+/// instead of streaming into a radio that delivers nothing. The TX took
+/// every write, so it is neither reset nor recorded as wedged.
 #[tokio::test(start_paused = true)]
-async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path() {
-    use hypercolor_hal::drivers::lianli::wireless::health::{
-        ControllerHealth, DongleHalf, WedgeCause, controller_health,
-    };
+async fn lianli_fans_that_stop_confirming_end_the_actor_without_a_tx_reset() {
+    use hypercolor_hal::drivers::lianli::wireless::health::{ControllerHealth, controller_health};
     use hypercolor_hal::drivers::lianli::wireless::pacing::ECHO_STALL;
-    use hypercolor_hal::drivers::lianli::wireless::transport::{
-        WirelessControllerTransport, partner_reset_packet,
-    };
+    use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x03];
     let controller = "usb-backend-test-lianli-undelivered";
@@ -2583,22 +2580,21 @@ async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path()
     }
     let ended_after = failed_at.elapsed();
     let result = actor.await.expect("actor task joins");
-    assert!(result.is_err(), "the session ends with the verdict");
+    let error = result.expect_err("the session ends with the verdict");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains("reconnecting to run the connect sequence again (resync 1)"),
+        "the reason names the resync: {chain}"
+    );
     assert!(
         ended_after + Duration::from_millis(100) >= ECHO_STALL,
         "the verdict waits out the stall bound: {ended_after:?}"
     );
 
     let state = pair.state();
-    let resets: Vec<&(TransferType, Vec<u8>)> = state
-        .sends
-        .iter()
-        .filter(|(_, data)| data[0] == 0x15)
-        .collect();
-    assert_eq!(
-        resets,
-        vec![&(TransferType::Companion, partner_reset_packet())],
-        "one reset, written to the RX"
+    assert!(
+        !state.sends.iter().any(|(_, data)| data[0] == 0x15),
+        "the TX took every write, so nothing resets it"
     );
     let after_failure = state
         .transfers
@@ -2610,13 +2606,11 @@ async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path()
         "a bounded number of resends, not {after_failure} transfers"
     );
     drop(state);
-    match controller_health(controller) {
-        ControllerHealth::Wedged(wedge) => {
-            assert_eq!(wedge.half, DongleHalf::Tx);
-            assert_eq!(wedge.cause, WedgeCause::Undelivered);
-        }
-        ControllerHealth::Healthy => panic!("the stall is recorded as a TX wedge"),
-    }
+    assert_eq!(
+        controller_health(controller),
+        ControllerHealth::Healthy,
+        "a radio that delivers nothing is not a wedged TX"
+    );
 }
 
 /// One actor session over `pair` for the controller `controller`, fed a
@@ -2665,16 +2659,16 @@ async fn run_lianli_session(
     (result, sends)
 }
 
-/// Fans that stop confirming past the TX-reset budget: the next session
-/// sends no reset but rests the cluster's RGB with upkeep going on, then
+/// Fans that stop confirming past the resync budget: the next session
+/// rests the cluster's RGB with upkeep going on, then
 /// ends the actor as a disconnect asking for a fresh connect, which the
 /// lifecycle turns into a reconnect. When the fans confirm again, their
 /// recovery budget starts over.
 #[tokio::test(start_paused = true)]
-async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh_connect() {
+async fn lianli_fans_past_their_resync_budget_rest_then_end_the_actor_for_a_fresh_connect() {
     use hypercolor_hal::drivers::lianli::wireless::pacing::{
-        MAX_RESETS_WITHOUT_DELIVERY, RECONNECT_RESTS, reconnects_without_delivery,
-        resets_without_delivery,
+        MAX_RESYNCS_WITHOUT_DELIVERY, RECONNECT_RESTS, reconnects_without_delivery,
+        resyncs_without_delivery,
     };
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x05];
@@ -2684,18 +2678,18 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
     pair.state().rf_dead = true;
     let is_reset = |(_, data): &(TransferType, Vec<u8>)| data.first() == Some(&0x15);
 
-    for session in 0..MAX_RESETS_WITHOUT_DELIVERY {
+    for session in 0..MAX_RESYNCS_WITHOUT_DELIVERY {
         let (result, sends) =
             run_lianli_session(master, controller, &pair, Duration::from_secs(15)).await;
         assert!(
             matches!(result, Some(Err(_))),
-            "session {session} ends with the TX reset"
+            "session {session} ends with a resync"
         );
-        assert_eq!(sends.iter().filter(|send| is_reset(send)).count(), 1);
+        assert!(!sends.iter().any(is_reset), "a resync resets nothing");
     }
     assert_eq!(
-        resets_without_delivery(cluster),
-        MAX_RESETS_WITHOUT_DELIVERY
+        resyncs_without_delivery(cluster),
+        MAX_RESYNCS_WITHOUT_DELIVERY
     );
 
     let started = tokio::time::Instant::now();
@@ -2715,10 +2709,7 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
         actor::FrameWriteDisposition::Fatal,
         "a disconnect, so the lifecycle reconnects"
     );
-    assert!(
-        !sends.iter().any(is_reset),
-        "past the budget, no further TX reset"
-    );
+    assert!(!sends.iter().any(is_reset), "the TX is never reset");
     assert!(
         ended_after >= RECONNECT_RESTS[0],
         "the rest comes first: ended after {ended_after:?}"
@@ -2728,8 +2719,8 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
         .filter(|(transfer, _)| *transfer == TransferType::Primary)
         .count();
     assert!(
-        upkeep >= 8 * 8,
-        "fan-speed and clock upkeep carry on through the rest: {upkeep} TX writes"
+        upkeep >= 4 * 8,
+        "the clock upkeep carries on through the rest: {upkeep} TX writes"
     );
     assert_eq!(reconnects_without_delivery(cluster), 1);
 
@@ -2737,7 +2728,7 @@ async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh
     pair.state().rf_dead = false;
     let (result, _) = run_lianli_session(master, controller, &pair, Duration::from_secs(5)).await;
     assert!(result.is_none(), "the recovered session streams on");
-    assert_eq!(resets_without_delivery(cluster), 0);
+    assert_eq!(resyncs_without_delivery(cluster), 0);
     assert_eq!(reconnects_without_delivery(cluster), 0);
 }
 

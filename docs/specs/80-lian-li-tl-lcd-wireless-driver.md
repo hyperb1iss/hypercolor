@@ -978,14 +978,16 @@ hardware. Whether `15` through the RX revives a V1 `SLV3TX` that has fully
 hung, rather than one whose endpoint has only stalled, is the first thing to
 check when a wedge next happens (§11.12).
 
-A TX can also fail without refusing a write: it takes every packet while its
-fans stop confirming frames. Only the protocol sees that (§6.11), so it asks
-for the reset by writing `15` to the RX itself. The transport treats that
-write as the protocol's verdict: it records a wedge with cause
-`Undelivered`, logs `L-Wireless TX stopped delivering`, sends the reset once,
-and ends the session with a disconnect exactly as for a refused write. The
-first TX write after the reset closes the wedge; whether the fans confirm
-frames again shows in the delivery report.
+A TX can also take every packet while its fans stop confirming frames.
+Only the protocol sees that (§6.11), and it is not a wedge: nothing is
+recorded in `health.rs`, and the TX is not reset. L-Connect resets a dongle
+only after writes to it fail (five in a row, or five empty reads) and never
+on its fans' echoes, and on this hardware the echo-loss reset never earned
+its keep. Three of them did not clear the 2026-09-29 stall below, and on
+2026-10-24 the driver reset the TX 69 times in three and a half hours while
+it refused no write, each reset ending the session and showing the fans'
+onboard rainbow. Until 2026-10-31 the protocol asked for the partner reset
+here (cause `Undelivered`); it now resyncs instead, as below.
 
 The fans can also stop taking frames when the TX is fine. On the owner's rig
 on 2026-09-29 (UTC), 29 minutes into a soak at a steady 28 fps, the fans
@@ -1011,8 +1013,11 @@ streaming preamble.
 The driver therefore recovers in stages, per cluster (by radio MAC), across
 sessions:
 
-1. **TX resets.** Two, as above, each ending the session for a reconnect.
-2. **Rests and reconnects.** Once the resets are spent, the cluster's RGB
+1. **Resyncs.** Two, each a fresh connect at once: the protocol asks the
+   backend to connect afresh (`Protocol::session_restart`), the backend ends
+   the session as a disconnect, writing nothing more, and the lifecycle
+   reconnects. Nothing is written to reset the TX.
+2. **Rests and reconnects.** Once the resyncs are spent, the cluster's RGB
    rests while upkeep holds its fans' speed and clock, then the protocol
    asks the backend for a fresh connect (`Protocol::session_restart`). The
    backend ends the session as a disconnect, writing nothing more, and the
@@ -1029,7 +1034,7 @@ budget. How short a rest suffices is unknown: each rest is logged with its
 length and attempt number, the stalled cluster's record is logged as the RX
 reports it (channel, slot, echo, command sequence, PWM, RPM), and a recovery
 logs `L-Wireless fans confirm frames again after reconnecting` with the
-resets and reconnects it took.
+resyncs and reconnects it took. The record is logged at each resync too.
 
 ### 6.11 Acknowledgement-paced RGB delivery
 
@@ -1084,7 +1089,7 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   holdoff or recovery: with clusters
   halving alone, the others kept the shared queue full, and three
   clusters on a slow radio at a one-second status grew past the 5 s stall
-  verdict into a TX reset in simulation. The minute-long base delay
+  verdict into a resync in simulation. The minute-long base delay
   matters too: with a 10 s memory the base rose with a backlog that grew
   by less than a status interval per span, and two clusters sharing a slow
   radio grew without bound in simulation.
@@ -1143,12 +1148,11 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
 - **Stall verdict.** A cluster that is heard (in a reply within the last
   second, and not omitted from the latest complete table) but confirms
   nothing for 5 s, after a recovery probe went out and that first probe's
-  full timeout expired, gets the partner reset (§6.10), and nothing more is
-  sent. Later probes and cached status replies never move that deadline.
+  full timeout expired, gets a resync (§6.10), and nothing more is sent. Later probes and cached status replies never move that deadline.
   The first return from a brief omission since the last confirmed frame
   restarts the probe budget; later brief returns keep the earlier probes
   and their deadline, and only an absence past 3 s restarts it again. Each
-  cluster (by radio MAC) can cause two such resets per process until it
+  cluster (by radio MAC) can cause two such resyncs per process until it
   confirms a frame again. Once they are spent, the stall is taken to be the
   fans': the cluster's RGB rests, then the session ends for a fresh connect,
   on the growing schedule in §6.10, while clusters that still confirm keep

@@ -41,7 +41,7 @@ use hypercolor_hal::drivers::lianli::wireless::pacing::DeliveryStats;
 use hypercolor_hal::drivers::lianli::wireless::tinyuz;
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseTolerance, TransferType};
 
-/// Radio MACs of their own for every rig: the protocol keeps its TX reset
+/// Radio MACs of their own for every rig: the protocol keeps its resync
 /// budget per cluster for the whole process, and tests run in parallel.
 fn fresh_mac(prefix: [u8; 5]) -> [u8; 6] {
     static NEXT: AtomicU8 = AtomicU8::new(1);
@@ -209,8 +209,8 @@ pub struct FakeCluster {
     pub report_delay: Option<Duration>,
     /// A fan-side stall: the receiver drops every RGB transfer until it
     /// hears a session start (the first clock broadcast of a session) after
-    /// a rest of at least this long with no RGB addressed to it. A TX reset
-    /// alone never clears it, nor does a session start without the rest.
+    /// a rest of at least this long with no RGB addressed to it. A session
+    /// start without the rest never clears it.
     /// `Duration::MAX` never clears.
     pub stall: Option<Duration>,
     last_rgb_at: Duration,
@@ -620,11 +620,14 @@ pub struct Rig {
     last_taken: Option<u64>,
     /// When the actor took each frame, and its index.
     pub taken_log: Vec<(Duration, u64)>,
-    /// Commands the keepalive has returned since the protocol asked for
-    /// the TX reset: none is the contract.
-    pub commands_after_reset: usize,
-    /// Reconnect like the device lifecycle: when a session ends (the TX
-    /// reset, or the protocol asking to be connected afresh), nothing
+    /// Commands the protocol returned after asking for a resync in the same
+    /// session: none is the contract.
+    pub commands_after_resync: usize,
+    /// When the protocol asked for each resync: a fresh connect at once,
+    /// after its probes went unconfirmed.
+    pub resyncs: Vec<Duration>,
+    /// Reconnect like the device lifecycle: when a session ends (the
+    /// protocol asking to be connected afresh), nothing
     /// reaches the controller for this long, then a new protocol runs the
     /// whole connect sequence. `None` leaves the ended session in place.
     pub reconnect_delay: Option<Duration>,
@@ -632,16 +635,17 @@ pub struct Rig {
     pub sessions: Vec<Duration>,
     /// Why each session ended, when the rig reconnected it.
     pub session_ends: Vec<SessionEnd>,
-    reset_in_session: bool,
+    ended_in_session: bool,
     down_until: Option<Duration>,
 }
 
 /// How a session ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEnd {
-    /// The protocol asked for the TX reset.
-    TxReset,
-    /// The protocol asked to be connected afresh.
+    /// The protocol asked for a resync: a fresh connect at once.
+    Resync,
+    /// The protocol asked to be connected afresh after a rest, or for
+    /// fresh routing.
     Restart,
 }
 
@@ -676,11 +680,12 @@ impl Rig {
             frames_taken: 0,
             last_taken: None,
             taken_log: Vec::new(),
-            commands_after_reset: 0,
+            commands_after_resync: 0,
+            resyncs: Vec::new(),
             reconnect_delay: None,
             sessions: Vec::new(),
             session_ends: Vec::new(),
-            reset_in_session: false,
+            ended_in_session: false,
             down_until: None,
         };
         rig.begin_session();
@@ -691,7 +696,7 @@ impl Rig {
     /// keepalive and frame pump.
     fn begin_session(&mut self) {
         self.sessions.push(self.now());
-        self.reset_in_session = false;
+        self.ended_in_session = false;
         self.down_until = None;
         self.radio.begin_session();
         let init = self.protocol.init_sequence();
@@ -709,18 +714,18 @@ impl Rig {
     }
 
     /// After a batch: end the session the way the actor does when the
-    /// protocol asked for the TX reset or a fresh connect, if the rig
-    /// reconnects.
-    fn end_session_if_asked(&mut self, commands: &[ProtocolCommand]) {
+    /// protocol asked for a fresh connect, if the rig reconnects.
+    fn end_session_if_asked(&mut self) {
         let Some(delay) = self.reconnect_delay else {
             return;
         };
-        let end = if commands.iter().any(is_tx_reset) {
-            SessionEnd::TxReset
-        } else if self.protocol.session_restart().is_some() {
-            SessionEnd::Restart
-        } else {
+        let Some(reason) = self.protocol.session_restart() else {
             return;
+        };
+        let end = if is_resync(&reason) {
+            SessionEnd::Resync
+        } else {
+            SessionEnd::Restart
         };
         self.session_ends.push(end);
         self.down_until = Some(self.now() + delay);
@@ -838,14 +843,24 @@ impl Rig {
     }
 
     fn run_batch(&mut self, commands: &[ProtocolCommand]) {
-        if self.reset_in_session {
-            self.commands_after_reset += commands.len();
-        }
-        if commands.iter().any(is_tx_reset) {
-            self.reset_in_session = true;
+        assert!(
+            !commands.iter().any(is_tx_reset),
+            "the protocol never resets the TX; only a refused write does"
+        );
+        if self.ended_in_session {
+            self.commands_after_resync += commands.len();
         }
         self.execute(commands);
-        self.end_session_if_asked(commands);
+        if !self.ended_in_session
+            && self
+                .protocol
+                .session_restart()
+                .is_some_and(|reason| is_resync(&reason))
+        {
+            self.ended_in_session = true;
+            self.resyncs.push(self.now());
+        }
+        self.end_session_if_asked();
     }
 
     /// Run commands the way the USB actor does.
@@ -897,10 +912,17 @@ impl Rig {
     }
 }
 
-/// Whether `commands` hold the TX reset the protocol asks for.
+/// Whether `command` is the vendor's partner reset written to the RX,
+/// which resets the TX.
 #[must_use]
 pub fn is_tx_reset(command: &ProtocolCommand) -> bool {
     command.transfer_type == TransferType::Companion && command.data[0] == USB_CMD_RESET_PARTNER
+}
+
+/// Whether a restart reason is a resync: the fresh connect asked for at
+/// once when probes go unconfirmed, as the pacer words it.
+fn is_resync(reason: &str) -> bool {
+    reason.contains("(resync ")
 }
 
 /// Broadcast slot, re-exported for assertions on upkeep traffic.

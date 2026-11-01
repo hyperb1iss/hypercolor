@@ -10,8 +10,8 @@ use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
 use super::frame::{
-    DONGLE_RESET, Mac, RF_SELECT, RF_SLICES_PER_ENVELOPE, RfSubCommand, USB_CMD_RESET_PARTNER,
-    USB_CMD_SEND_RF, USB_PACKET_LEN, USB_RF_HEADER_LEN,
+    DONGLE_RESET, Mac, RF_SELECT, RF_SLICES_PER_ENVELOPE, RfSubCommand, USB_CMD_SEND_RF,
+    USB_PACKET_LEN, USB_RF_HEADER_LEN,
 };
 use super::health::{self, DongleHalf, WedgeCause};
 use crate::protocol::TransferType;
@@ -168,11 +168,10 @@ const UNKNOWN_CONTROLLER: &str = "<unknown>";
 /// The RX's table poll stays one exchange and is never counted, because its
 /// timeout cannot tell a refused write from a slow reply.
 ///
-/// The protocol has the other verdict: a TX that takes every write while its
-/// fans stop confirming frames. It asks for the reset by writing the partner
-/// reset itself, and this watcher routes that write through the same path
-/// (record, reset, end the session), since a reset half has to be set up
-/// again from scratch either way.
+/// A TX that takes every write while its fans stop confirming frames is not
+/// a wedge, and nothing here resets it: the protocol ends that session for
+/// a fresh connect instead, as L-Connect resets a dongle only for failed
+/// writes.
 pub struct WirelessControllerTransport {
     pair: Box<dyn Transport>,
     controller: String,
@@ -313,28 +312,15 @@ impl WirelessControllerTransport {
         if let Some(wedge) = health::record_alive(&self.controller, half) {
             let wedged_for_ms =
                 u64::try_from(wedge.since.elapsed().as_millis()).unwrap_or(u64::MAX);
-            match wedge.cause {
-                WedgeCause::RefusedWrite => info!(
-                    controller = %self.controller,
-                    half = half.name(),
-                    wedged_for_ms,
-                    stalls = wedge.stalls,
-                    resets_sent = wedge.resets_sent,
-                    "L-Wireless {} recovered: it is taking commands again",
-                    half.name()
-                ),
-                // Taking writes was never the problem; the delivery report
-                // is what shows whether its fans confirm frames again.
-                WedgeCause::Undelivered => info!(
-                    controller = %self.controller,
-                    half = half.name(),
-                    wedged_for_ms,
-                    stalls = wedge.stalls,
-                    resets_sent = wedge.resets_sent,
-                    "L-Wireless {} is taking commands again after its reset",
-                    half.name()
-                ),
-            }
+            info!(
+                controller = %self.controller,
+                half = half.name(),
+                wedged_for_ms,
+                stalls = wedge.stalls,
+                resets_sent = wedge.resets_sent,
+                "L-Wireless {} recovered: it is taking commands again",
+                half.name()
+            );
         }
     }
 
@@ -370,29 +356,6 @@ impl WirelessControllerTransport {
         TransportError::Disconnected {
             detail: format!(
                 "L-Wireless {} wedged: it refused a write for {timeout_ms} ms; {reset}. \
-                 If it does not come back, replug or power-cycle the controller",
-                half.name()
-            ),
-        }
-    }
-
-    /// The protocol's verdict: `half` takes writes but what it sends is no
-    /// longer confirmed. Recorded and reset like a refused write.
-    async fn undelivered(&self, half: DongleHalf) -> TransportError {
-        let wedge = health::record_stall(&self.controller, half, WedgeCause::Undelivered);
-        warn!(
-            controller = %self.controller,
-            half = half.name(),
-            stalls = wedge.stalls,
-            resets_sent = wedge.resets_sent,
-            "L-Wireless {} delivery remains unconfirmed after recovery probes; resetting it through the {}",
-            half.name(),
-            half.partner().name()
-        );
-        let reset = self.reset_through_partner(half).await;
-        TransportError::Disconnected {
-            detail: format!(
-                "L-Wireless {} delivery remains unconfirmed after recovery probes; {reset}. \
                  If it does not come back, replug or power-cycle the controller",
                 half.name()
             ),
@@ -463,12 +426,6 @@ impl WirelessControllerTransport {
     }
 }
 
-/// Whether `data` is the vendor's partner reset, which no protocol command
-/// shares a first byte with.
-fn is_partner_reset(data: &[u8]) -> bool {
-    data.first() == Some(&USB_CMD_RESET_PARTNER)
-}
-
 /// The vendor's partner reset, padded to a controller packet.
 #[must_use]
 pub fn partner_reset_packet() -> Vec<u8> {
@@ -496,10 +453,6 @@ impl Transport for WirelessControllerTransport {
         data: &[u8],
         transfer_type: TransferType,
     ) -> Result<(), TransportError> {
-        if is_partner_reset(data) {
-            let half = DongleHalf::for_transfer(transfer_type).partner();
-            return Err(self.undelivered(half).await);
-        }
         let slice = Self::tx_rf_slice(data, transfer_type);
         self.keep_air_gap(slice).await;
         let result = self.pair.send_with_type(data, transfer_type).await;
@@ -515,10 +468,6 @@ impl Transport for WirelessControllerTransport {
         data: Vec<u8>,
         transfer_type: TransferType,
     ) -> Result<(), TransportError> {
-        if is_partner_reset(&data) {
-            let half = DongleHalf::for_transfer(transfer_type).partner();
-            return Err(self.undelivered(half).await);
-        }
         let slice = Self::tx_rf_slice(&data, transfer_type);
         self.keep_air_gap(slice).await;
         let result = self.pair.send_owned_with_type(data, transfer_type).await;
