@@ -18,7 +18,7 @@ shows every change against the published crate.
 One build setting differs from the published manifest: `Cargo.toml` ends
 with a `[lints.rust]` table that allows warnings. Cargo caps lints for
 crates.io dependencies but not for path dependencies, so without it every
-workspace build would print upstream's rustc warnings (96 under Rust 1.99).
+workspace build would print upstream's rustc warnings (51 under Rust 1.99).
 Deny-level lints still apply.
 
 ## Patches
@@ -79,7 +79,7 @@ is small: the `JSScript` and `ScriptSourceObject` cells toward the zone's GC
 heap trigger, which starts at 27 MB times the heap growth factor, and the
 script's `PrivateScriptData` toward the malloc trigger. Gecko
 covers this kind of garbage with its own idle and timer-driven GC
-scheduling; Servo 0.6 has none and never calls `JS_MaybeGC`. A page driven
+scheduling; Servo 0.7 has none and never calls `JS_MaybeGC`. A page driven
 by one evaluation per frame and little other allocation therefore runs for
 a long time without a major GC while its garbage grows. SpiderMonkey's
 public accounting hook, `JS::AddAssociatedMemory`, needs the owning object,
@@ -97,12 +97,16 @@ from page script. A script thread whose pages receive no embedder
 evaluations behaves exactly as upstream; on one that does, `JS_GC` collects
 the whole runtime, including any same-origin page that shares the thread.
 
-Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still has no
-idle, periodic, or evaluation-driven collection and never calls
-`JS_MaybeGC`. Its explicit `JS_GC` calls are
-`ScriptThreadMessage::TriggerGarbageCollection` (which page script reaches
-through `servointernals` when an embedder exposes it), window suspension,
-`TestUtils.gc()`, and the worklet threads' own heap-size check.
+Upstream status: servo-script 0.7.0 has no idle, periodic, or
+evaluation-driven collection and never calls `JS_MaybeGC`. Its explicit
+`JS_GC` calls are `ScriptThreadMessage::TriggerGarbageCollection` (which
+page script reaches through `servointernals` when an embedder exposes it),
+window suspension, `TestUtils.gc()`, and the worklet threads' own
+heap-size check. Servo `main` at `2b94d76a6971` (2026-11-01) has the same
+gap, except that window suspension now calls `JS_MaybeGC` instead of
+forcing a collection (servo/servo#49425). servo/servo#48283 proposes an
+idle collection after page load, which would not cover a page that keeps
+receiving evaluations.
 
 A forced collection discards the page's JIT code. Outside its testing
 hooks, SpiderMonkey keeps JIT code across a GC only when its compartment
@@ -118,7 +122,7 @@ Drop this directory and the `[patch.crates-io]` entry once a Servo release
 carries equivalent fixes. Until then, bumping Servo means re-vendoring
 `servo-script` at the new version and reapplying each patch above (or
 confirming upstream made it unnecessary) in the same change. A patch entry
-for 0.6.0 does nothing for any other `servo-script` version: Cargo only
+for 0.7.0 does nothing for any other `servo-script` version: Cargo only
 warns that the patch went unused and builds the unpatched crate from
 crates.io. `servo` pins its script crate exactly, so even a patch release
 of `servo` would bypass the vendored copy. Dependabot ignores `servo-script`
