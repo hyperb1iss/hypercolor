@@ -36,6 +36,10 @@ pub const FLICK_MIN_PX: f64 = 24.0;
 /// How long the exit slide runs before the sheet unmounts. Matches the
 /// `.sheet-panel` transition in `input.css`.
 pub const EXIT_MS: u64 = 200;
+/// The drag velocity's time constant while the finger holds still: after
+/// a pause of this long the estimate keeps about a third of its value, and
+/// after a few of them it is gone.
+pub const VELOCITY_DECAY_MS: f64 = 40.0;
 
 /// Whether releasing a drag that moved the sheet `distance` px down, on a
 /// sheet `height` px tall, at `velocity` px per ms (positive is down),
@@ -57,6 +61,17 @@ pub fn smoothed_velocity(previous: f64, dy: f64, dt_ms: f64) -> f64 {
         return previous;
     }
     previous.mul_add(0.4, (dy / dt_ms) * 0.6)
+}
+
+/// The velocity a release carries after the finger rested `idle_ms` since
+/// its last move. A held finger is not flicking: the estimate decays with
+/// the pause, so a release after one is judged by position alone.
+#[must_use]
+pub fn velocity_at_release(velocity: f64, idle_ms: f64) -> f64 {
+    if idle_ms <= 0.0 {
+        return velocity;
+    }
+    velocity * (-idle_ms / VELOCITY_DECAY_MS).exp()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -138,7 +153,8 @@ pub fn BottomSheet(
             .get_untracked()
             .map_or(0.0, |panel| f64::from(panel.offset_height()));
         let distance = offset.get_untracked();
-        if end == GestureEnd::Commit && drag_dismisses(distance, height, drag.velocity) {
+        let velocity = velocity_at_release(drag.velocity, ev.time_stamp() - drag.last_t);
+        if end == GestureEnd::Commit && drag_dismisses(distance, height, velocity) {
             close();
         } else {
             offset.set(0.0);
