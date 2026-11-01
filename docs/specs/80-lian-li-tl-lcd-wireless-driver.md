@@ -642,19 +642,32 @@ inter-envelope header repeat uses.
 Between whole frames the transport keeps the vendor's **air gap**
 (`wireless/transport.rs`, `air_gap`): a frame to another receiver, or of
 another sub-command, waits until 10 ms have passed since the TX took the
-last slice of an RGB frame, or 5 ms after any other frame. Frames of one
-kind to one receiver (a transfer's header repeats and data envelopes)
-follow each other freely, so the gap costs a single-cluster stream only
-the upkeep transitions. The rule is lian-li-linux's `RfPacer`, written
-after a receiver that heard a frame too soon after another receiver's
-latched the earlier frame's trailing bytes as its own address and duty;
-L-Connect spaces its traffic the same way (5 ms between devices in
-`SyncPwm`, 10 ms after an effect upload in `SyncRgbData`). The
-envelope's command-specific bytes [14..18] are what such a receiver reads
-as slot and channel, which is why the clock blob keeps them at the `0x14`
-sentinel (§6.8) and RGB tags set the high bit of [14] (§6.7). On a rig
-with several clusters the gap between their transfers is real time out of
-each frame; measure the delivered rate on hardware rather than assume it.
+last slice of an RGB frame, or 5 ms after any other frame. The rule is
+lian-li-linux's `RfPacer`, written after a receiver that heard a frame too
+soon after another receiver's latched the earlier frame's trailing bytes
+as its own address and duty; L-Connect spaces its traffic the same way
+(5 ms between devices in `SyncPwm`, 10 ms after an effect upload in
+`SyncRgbData`). The envelope's command-specific bytes [14..18] are what
+such a receiver reads as slot and channel, which is why the clock blob
+keeps them at the `0x14` sentinel (§6.8) and RGB tags set the high bit of
+[14] (§6.7). Neither makes a latch harmless: the fans in lian-li-linux
+PR 237 latched out-of-range values (CPU temperatures in the slot byte) and
+still dropped off the receiver, so the gap is the protection and no kind
+of frame is exempt from it.
+
+Frames of one kind to one receiver (a transfer's header repeats and data
+envelopes) follow each other freely, so a single-cluster stream pays the
+gap only at its upkeep transitions. A stream to several clusters pays it
+at every switch from one cluster's transfer to the next, which is real
+time out of each frame: lian-li-linux uploads at most five times a second,
+where that costs nothing, but a live stream switches several times a
+frame. The protocol therefore orders each batch of RGB transfers to switch
+as rarely as it can: a batch starts with the cluster the last transfer
+went to and continues around the table from there (two clusters go A B,
+B A, A B; three go A B C, C A B, B C A), so a frame pays one switch fewer. By the transfer timings a two-cluster rig still
+loses a little against the 30 fps ceiling (roughly 28 fps against 22
+without the ordering); measure the delivered rate on a multi-cluster rig
+rather than assume it.
 
 ### 6.3 RF sub-commands
 
@@ -805,12 +818,14 @@ carry the packet index at [18] and up to 220 compressed bytes at
 of a live transfer is unique per send: an FNV-1a hash of the frame's
 pixels mixed with a send number that runs for the whole process from a
 wall-clock seed, never zero, and never the tag the cluster echoes at that
-moment. Its first byte always has the high bit set: the index rides at
-envelope [14..18], where targeted frames carry the receiver slot, so a
-receiver that latches an RGB frame's bytes as its address reads that byte
-as its slot, and a set high bit makes it no valid slot (lian-li-linux
-`WirelessRgbUpload` sets the same bit). The bit also keeps every send apart
-from the firmware's own indices, `00000000` and `00000001`, which a
+moment. Its first byte always has the high bit set, as lian-li-linux
+`WirelessRgbUpload` sets it: the index rides at envelope [14..18], where
+targeted frames carry the receiver slot, so a receiver that latches an RGB
+frame's bytes as its address reads that byte as its slot, and the bit
+keeps it off every valid one. That is defence in depth, not a guarantee
+(out-of-range latched values still strand fans, §6.2); the air gap is the
+protection. The bit also keeps every send apart from the firmware's own
+indices, `00000000` and `00000001`, which a
 receiver echoes once it falls back to its onboard lighting. The tag a
 receiver echoes in its record (record bytes 20 to 23) therefore names
 exactly one transfer, which makes it the acknowledgement RGB delivery paces

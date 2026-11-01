@@ -84,7 +84,10 @@ pub const AIR_GAP_BETWEEN_FRAMES: Duration = Duration::from_millis(5);
 /// one kind to one target (a transfer's header repeats and data) follow
 /// each other freely. The gaps are lian-li-linux's (`RfPacer`), which
 /// match L-Connect's spacing: 5 ms between devices in its fan-speed loop,
-/// 10 ms after an effect upload.
+/// 10 ms after an effect upload. Out-of-range values latched this way
+/// still park a fan off the receiver (lian-li-linux PR 237), so no kind of
+/// frame is exempt; the protocol orders each batch of RGB transfers to
+/// switch clusters as rarely as it can instead.
 #[must_use]
 pub fn air_gap(previous: Option<(Mac, u8)>, since: Duration, target: Mac, sub: u8) -> Duration {
     let Some((last_target, last_sub)) = previous else {

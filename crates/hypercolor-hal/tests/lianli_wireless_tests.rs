@@ -1,6 +1,7 @@
 //! L-Wireless controller wire format, against spec 80 section 6 and the
 //! bytes captured from a V1 controller (`SLV3TX_V1.6`) on 2026-09-04.
 
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -716,19 +717,48 @@ fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]
         assert_eq!(pwm[0].data[5], RfSubCommand::Pwm as u8);
         assert_eq!(&pwm[0].data[21..25], &HELD_DUTY, "the held duty goes out");
     }
-    for (actual, expected) in commands[pwm_end..rgb_end].iter().zip(expected) {
-        assert_eq!(
-            without_tag(&actual.data),
-            without_tag(&expected.data),
-            "restore the complete latest frame, under a tag of its own"
-        );
-        assert_eq!(actual.post_delay, expected.post_delay);
-        assert_eq!(actual.transfer_type, expected.transfer_type);
-        assert_eq!(actual.expects_response, expected.expects_response);
-    }
+    assert_eq!(
+        transfers_by_target(&commands[pwm_end..rgb_end]),
+        transfers_by_target(expected),
+        "restore the complete latest frame, under a tag of its own"
+    );
     assert_eq!(commands[rgb_end].data[5], RfSubCommand::ClockSync as u8);
     assert_eq!(commands[rgb_end + 4].transfer_type, TransferType::Companion);
     protocol.echo(&commands);
+}
+
+/// One packet of an RGB transfer as a comparison sees it: tag blanked,
+/// with the pacing and plan it went out with.
+type SentPacket = (Vec<u8>, Duration, TransferType, bool);
+
+/// The RGB transfers in `commands`, keyed by the cluster each went to, so
+/// two batches compare whichever cluster each visited first.
+fn transfers_by_target(commands: &[ProtocolCommand]) -> BTreeMap<[u8; 6], Vec<SentPacket>> {
+    let mut transfers: BTreeMap<[u8; 6], Vec<SentPacket>> = BTreeMap::new();
+    let mut current = None;
+    for command in commands {
+        let data = &command.data;
+        if data.len() != USB_PACKET_LEN || data[0] != USB_CMD_SEND_RF {
+            current = None;
+            continue;
+        }
+        if data[1] == 0 {
+            current = (data[4] == RF_SELECT && data[5] == RfSubCommand::SetRgb as u8).then(|| {
+                let mut target = [0_u8; 6];
+                target.copy_from_slice(&data[6..12]);
+                target
+            });
+        }
+        if let Some(target) = current {
+            transfers.entry(target).or_default().push((
+                without_tag(data),
+                command.post_delay,
+                command.transfer_type,
+                command.expects_response,
+            ));
+        }
+    }
+    transfers
 }
 
 /// A packet with its RGB tag blanked: every send carries a tag of its own,
@@ -816,8 +846,12 @@ fn a_frame_goes_to_each_cluster_with_room() {
 
     // Only the first cluster confirms.
     let tags = header_tags(&second);
+    let (_, first_cluster_tag) = tags
+        .iter()
+        .find(|(target, _)| *target == [0x11; 6])
+        .expect("the second frame went to the first cluster");
     let mut confirmed = record([0x11; 6], 0x00, 3, 28);
-    confirmed[20..24].copy_from_slice(&tags[0].1);
+    confirmed[20..24].copy_from_slice(first_cluster_tag);
     protocol
         .parse_response(&table_with(&[confirmed, record([0x22; 6], 0x00, 2, 27)]))
         .expect("table parses");
@@ -888,18 +922,38 @@ fn shutdown_sends_the_final_frame_even_when_the_fans_showed_it_before() {
     assert!(held.is_empty(), "black waits behind the colored transfers");
 
     let shutdown = protocol.shutdown_sequence();
-    let flushed: Vec<Vec<u8>> = shutdown
-        .iter()
-        .map(|command| without_tag(&command.data))
-        .collect();
-    let black_again: Vec<Vec<u8>> = first
-        .iter()
-        .skip(3)
-        .map(|command| without_tag(&command.data))
-        .collect();
+    assert_eq!(shutdown.len(), first.len() - 3, "nothing but the transfers");
     assert_eq!(
-        flushed, black_again,
+        transfers_by_target(&shutdown),
+        transfers_by_target(&first[3..]),
         "black goes out again behind the colored transfer"
+    );
+}
+
+/// Every switch to another cluster waits out the air gap, so a batch
+/// starts with the cluster the last transfer went to: two clusters go
+/// A B, then B A, then A B, one switch a frame instead of two.
+#[test]
+fn consecutive_frames_start_where_the_last_transfer_went() {
+    let protocol = discovered_protocol();
+    let order = |commands: &[ProtocolCommand]| {
+        header_tags(commands)
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect::<Vec<_>>()
+    };
+    let (a, b) = ([0x11; 6], [0x22; 6]);
+    assert_eq!(
+        order(&confirmed_frame(&protocol, &[[1, 1, 1]; 5 * 26])),
+        [a, b]
+    );
+    assert_eq!(
+        order(&confirmed_frame(&protocol, &[[2, 2, 2]; 5 * 26])),
+        [b, a]
+    );
+    assert_eq!(
+        order(&confirmed_frame(&protocol, &[[3, 3, 3]; 5 * 26])),
+        [a, b]
     );
 }
 
@@ -912,15 +966,10 @@ fn upkeep_restores_pause_black_and_empty_frames_without_resurrecting_old_colors(
 
     let _ = confirmed_frame(&protocol, &[[0, 255, 0]; 5 * 26]);
     let empty = confirmed_frame(&protocol, &[]);
+    assert_eq!(empty.len(), black.len(), "nothing but the transfers");
     assert_eq!(
-        empty
-            .iter()
-            .map(|command| without_tag(&command.data))
-            .collect::<Vec<_>>(),
-        black
-            .iter()
-            .map(|command| without_tag(&command.data))
-            .collect::<Vec<_>>(),
+        transfers_by_target(&empty),
+        transfers_by_target(&black),
         "an empty frame pads all known fans with black"
     );
     assert_upkeep_restores_frame(&protocol, &empty);

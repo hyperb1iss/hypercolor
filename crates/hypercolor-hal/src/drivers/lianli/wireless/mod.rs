@@ -180,6 +180,9 @@ struct WirelessState {
     pacer: DeliveryPacer,
     /// Pixel bytes the last encoded frame wrote: the clusters it changed.
     written_frame_bytes: usize,
+    /// The cluster the last RGB transfer went to, where the next batch
+    /// starts so it switches clusters (and pays the air gap) once less.
+    last_rgb_cluster: Option<usize>,
 }
 
 impl WirelessState {
@@ -757,6 +760,33 @@ impl WirelessControllerProtocol {
         state.pacer.fit_clusters(&macs);
     }
 
+    /// Each cluster's index and first LED, in the order a batch of RGB
+    /// transfers visits them. Every switch to another cluster waits out the
+    /// transport's air gap, so a batch starts with the cluster the last
+    /// transfer went to and continues around the table from there: two
+    /// clusters go A B, B A, A B, three go A B C, C A B, B C A, and a frame
+    /// pays one switch fewer than walking the table from the top.
+    fn send_order(state: &WirelessState) -> Vec<(usize, usize)> {
+        let mut offset = 0_usize;
+        let mut order: Vec<(usize, usize)> = state
+            .table
+            .clusters
+            .iter()
+            .enumerate()
+            .map(|(index, cluster)| {
+                let start = offset;
+                offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+                (index, start)
+            })
+            .collect();
+        if let Some(last) = state.last_rgb_cluster
+            && last < order.len()
+        {
+            order.rotate_left(last);
+        }
+        order
+    }
+
     /// Send every cluster whatever the pacer allows now: the newest frame
     /// where its window has room, the restore upkeep left owing, and, with
     /// `resends`, a probe after a timeout. Returns the pixel bytes written.
@@ -774,16 +804,17 @@ impl WirelessControllerProtocol {
         buffer: &mut CommandBuffer<'_>,
     ) -> usize {
         let master = Self::master_mac(state);
-        let Some(colors) = state.latest_colors.as_deref() else {
+        if state.latest_colors.is_none() {
             return 0;
-        };
+        }
         state.pacer.tick(now);
         state.pacer.mark_window_limits(now);
-        let mut offset = 0_usize;
         let mut written = 0_usize;
-        for (index, cluster) in state.table.clusters.iter().enumerate() {
-            let start = offset;
-            offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+        for (index, start) in Self::send_order(state) {
+            let Some(colors) = state.latest_colors.as_deref() else {
+                break;
+            };
+            let cluster = &state.table.clusters[index];
             let Some(kind) = state.pacer.decide(index, now) else {
                 continue;
             };
@@ -795,6 +826,7 @@ impl WirelessControllerProtocol {
                 .pacer
                 .note_sent(index, effect_index_for(&raw), kind, now);
             Self::push_transfer(master, cluster, &raw, wire, frame_number, buffer);
+            state.last_rgb_cluster = Some(index);
             written += raw.len();
         }
         written
@@ -805,13 +837,11 @@ impl WirelessControllerProtocol {
     /// but never past the unresolved bound.
     fn flush_held(state: &mut WirelessState, now: Instant, buffer: &mut CommandBuffer<'_>) {
         let master = Self::master_mac(state);
-        let Some(colors) = state.latest_colors.as_deref() else {
-            return;
-        };
-        let mut offset = 0_usize;
-        for (index, cluster) in state.table.clusters.iter().enumerate() {
-            let start = offset;
-            offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+        for (index, start) in Self::send_order(state) {
+            let Some(colors) = state.latest_colors.as_deref() else {
+                return;
+            };
+            let cluster = &state.table.clusters[index];
             if !state.pacer.held(index) || !state.pacer.has_capacity(index) {
                 continue;
             }
@@ -820,6 +850,7 @@ impl WirelessControllerProtocol {
                 .pacer
                 .note_sent(index, effect_index_for(&raw), SendKind::Frame, now);
             Self::push_transfer(master, cluster, &raw, wire, None, buffer);
+            state.last_rgb_cluster = Some(index);
         }
     }
 

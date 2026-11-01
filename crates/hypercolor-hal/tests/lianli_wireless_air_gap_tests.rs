@@ -100,7 +100,8 @@ impl Transport for Handle {
         timeout: Duration,
         _transfer_type: TransferType,
     ) -> Result<Vec<u8>, TransportError> {
-        tokio::time::sleep(timeout).await;
+        // Nothing is ever queued, and an empty read costs no simulated
+        // time, so status drains never sit inside the gaps measured here.
         Err(TransportError::Timeout {
             timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
         })
@@ -188,17 +189,15 @@ async fn the_clock_after_an_rgb_transfer_waits_ten_milliseconds() {
 #[tokio::test(start_paused = true)]
 async fn rgb_to_another_receiver_waits_and_time_already_spent_counts() {
     let (transport, recorder) = watched();
-    // The session's first clock takes the status drain the transport runs
-    // once a second, so no drain read sits inside the gaps measured here.
-    send_all(&transport, &clock_packets()).await;
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    let first = rgb_packets(FAN_A);
-    send_all(&transport, &first).await;
+    send_all(&transport, &rgb_packets(FAN_A)).await;
     tokio::time::sleep(Duration::from_millis(4)).await;
     let before = recorder.writes.lock().expect("write log").len();
     send_all(&transport, &rgb_packets(FAN_B)).await;
-    let waited = gap_after(&recorder, before);
-    assert_eq!(waited, AIR_GAP_AFTER_RGB, "4 ms elapsed, 6 ms waited");
+    assert_eq!(
+        gap_after(&recorder, before),
+        AIR_GAP_AFTER_RGB,
+        "4 ms elapsed, 6 ms waited"
+    );
 
     let fan_speed = pwm_envelope(FAN_A, MASTER, 1, 8, 1, [128; 4]).usb_packets(8, 1);
     let before = recorder.writes.lock().expect("write log").len();
