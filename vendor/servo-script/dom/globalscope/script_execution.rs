@@ -11,7 +11,7 @@ use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use js::context::JSContext;
 use js::gc::Handle;
 use js::jsapi::{ExceptionStackBehavior, Heap, JSScript, SetScriptPrivate};
-use js::jsval::{PrivateValue, UndefinedValue};
+use js::jsval::UndefinedValue;
 use js::panic::maybe_resume_unwind;
 use js::rust::wrappers2::{
     Compile1, JS_ClearPendingException, JS_ExecuteScript, JS_GetScriptPrivate,
@@ -31,7 +31,9 @@ use crate::dom::bindings::error::{Error, ErrorInfo, ErrorResult, report_pending_
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::window::Window;
-use crate::modules::script_module::{ModuleScript, ModuleTree, RethrowError, ScriptFetchOptions};
+use crate::modules::script_module::{
+    ModuleScript, ModuleTree, RethrowError, ScriptFetchOptions, set_script_source_private,
+};
 use crate::realms::enter_auto_realm;
 use crate::unminify::{ScriptSource, unminify_js};
 
@@ -357,11 +359,8 @@ pub(crate) fn maybe_associate_with_script(
             None,
         ));
 
-        unsafe {
-            SetScriptPrivate(
-                script.get(),
-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
-            );
-        }
+        set_script_source_private(module_script_data, |private| unsafe {
+            SetScriptPrivate(script.get(), private)
+        });
     }
 }
