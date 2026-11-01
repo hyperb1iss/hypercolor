@@ -187,3 +187,34 @@ async fn a_query_reply_is_left_for_the_caller() {
         .expect("the reply is still there");
     assert_eq!(reply[0], query[0], "the query's own reply");
 }
+
+#[tokio::test(start_paused = true)]
+async fn statuses_left_from_a_stream_are_flushed_before_a_master_query() {
+    let (transport, tx) = watched();
+    send_all(&transport, &rgb_packets()).await;
+    assert!(tx.queued() > 0, "the stream left statuses behind");
+
+    let query = get_mac_query(8);
+    transport
+        .send_with_type(&query, TransferType::Primary)
+        .await
+        .expect("the TX takes the query");
+    assert_eq!(tx.queued(), 1, "only the query's own reply is left");
+    let reply = transport
+        .receive_logical(Duration::from_millis(50), TransferType::Primary, None)
+        .await
+        .expect("the reply is there");
+    assert_eq!(reply[0], query[0], "never a stale RF status");
+
+    send_all(&transport, &rgb_packets()).await;
+    let reply = transport
+        .send_receive_logical(
+            &query,
+            Duration::from_millis(50),
+            TransferType::Primary,
+            None,
+        )
+        .await
+        .expect("the exchange answers");
+    assert_eq!(reply[0], query[0], "an exchange flushes first too");
+}

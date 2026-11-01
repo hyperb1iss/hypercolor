@@ -10,8 +10,8 @@ use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
 use super::frame::{
-    DONGLE_RESET, Mac, RF_SELECT, RF_SLICES_PER_ENVELOPE, RfSubCommand, USB_CMD_SEND_RF,
-    USB_PACKET_LEN, USB_RF_HEADER_LEN,
+    DONGLE_RESET, Mac, RF_SELECT, RF_SLICES_PER_ENVELOPE, RfSubCommand, USB_CMD_GET_MAC,
+    USB_CMD_SEND_RF, USB_PACKET_LEN, USB_RF_HEADER_LEN,
 };
 use super::health::{self, DongleHalf, WedgeCause};
 use crate::protocol::TransferType;
@@ -105,13 +105,21 @@ pub fn air_gap(previous: Option<(Mac, u8)>, since: Duration, target: Mac, sub: u
 }
 
 /// The TX answers every command with a status packet, and nothing reads
-/// them while frames stream. L-Connect reads every pending one each second
-/// (`WinUsb.RfRead` drains through `ReadAll` until a read waits 10 ms);
-/// the transport drains them this often, after the last slice of a frame
-/// that is not RGB, which in steady state is the 1 Hz clock broadcast.
+/// them while frames stream. L-Connect reads the TX once a second, after
+/// its master query: `WinUsb.RfRead` flushes WinUSB's pipe buffer, then
+/// `ReadAll` reads until a read waits 10 ms, at most three packets. The
+/// transport drains this often, after the last slice of a frame that is
+/// not RGB, which in steady state is the 1 Hz clock broadcast, and before
+/// every master query, whose reply must not be a stale status.
 pub const TX_STATUS_DRAIN_INTERVAL: Duration = Duration::from_secs(1);
-/// Status packets one drain reads at most.
+/// Status packets one drain reads at most: more than the vendor's three,
+/// short of turning a deep queue into a long stall of the command lane.
 pub const TX_STATUS_DRAIN_LIMIT: usize = 16;
+/// Status packets the flush before a master query reads at most: until the
+/// TX goes quiet in practice, since a connect can spare the time and its
+/// reply must be the query's own. The bound only guards a TX that never
+/// stops answering, and matches LibUsbDotNet's `ReadFlush`.
+pub const TX_STATUS_FLUSH_LIMIT: usize = 128;
 /// A drain ends at the first read that waits this long.
 pub const TX_STATUS_DRAIN_GAP: Duration = Duration::from_millis(10);
 
@@ -251,10 +259,9 @@ impl WirelessControllerTransport {
     }
 
     /// Once a drain interval has passed, read and discard the status
-    /// packets the TX has queued, as L-Connect does every second. Only after
-    /// a frame that is not RGB: never inside an RGB transfer, and never
-    /// after a command whose reply a caller is about to read. A read that
-    /// times out is an empty queue, never a wedge; reads do not count.
+    /// packets the TX has queued. Only after a frame that is not RGB: never
+    /// inside an RGB transfer, and never after a command whose reply a
+    /// caller is about to read.
     async fn drain_tx_status(&self, frame_done: bool) {
         if !frame_done {
             return;
@@ -270,8 +277,26 @@ impl WirelessControllerTransport {
             }
             *drained_at = Some(now);
         }
+        self.flush_tx_status(TX_STATUS_DRAIN_LIMIT).await;
+    }
+
+    /// Before a TX write of a master query: read and discard whatever the
+    /// TX has queued, so the reply read after it is the query's own and
+    /// never a status left from an earlier session's stream.
+    async fn flush_before_query(&self, data: &[u8], transfer_type: TransferType) {
+        if DongleHalf::for_transfer(transfer_type) == DongleHalf::Tx
+            && data.first() == Some(&USB_CMD_GET_MAC)
+        {
+            self.flush_tx_status(TX_STATUS_FLUSH_LIMIT).await;
+        }
+    }
+
+    /// Read and discard the TX's queued status packets, up to `limit`,
+    /// stopping at the first read that waits [`TX_STATUS_DRAIN_GAP`]. A read
+    /// that times out is an empty queue, never a wedge; reads do not count.
+    async fn flush_tx_status(&self, limit: usize) {
         let mut drained = 0_usize;
-        while drained < TX_STATUS_DRAIN_LIMIT {
+        while drained < limit {
             match self
                 .pair
                 .receive_logical(TX_STATUS_DRAIN_GAP, TransferType::Primary, None)
@@ -281,7 +306,7 @@ impl WirelessControllerTransport {
                 Err(_) => break,
             }
         }
-        if drained == TX_STATUS_DRAIN_LIMIT {
+        if drained == limit {
             debug!(
                 controller = %self.controller,
                 drained,
@@ -411,6 +436,7 @@ impl WirelessControllerTransport {
     ) -> Result<Vec<u8>, TransportError> {
         match DongleHalf::for_transfer(transfer_type) {
             DongleHalf::Tx => {
+                self.flush_before_query(data, transfer_type).await;
                 let sent = self.pair.send_with_type(data, transfer_type).await;
                 self.watch_write(DongleHalf::Tx, sent).await?;
                 self.pair
@@ -456,6 +482,7 @@ impl Transport for WirelessControllerTransport {
         data: &[u8],
         transfer_type: TransferType,
     ) -> Result<(), TransportError> {
+        self.flush_before_query(data, transfer_type).await;
         let slice = Self::tx_rf_slice(data, transfer_type);
         self.keep_air_gap(slice).await;
         let result = self.pair.send_with_type(data, transfer_type).await;
@@ -471,6 +498,7 @@ impl Transport for WirelessControllerTransport {
         data: Vec<u8>,
         transfer_type: TransferType,
     ) -> Result<(), TransportError> {
+        self.flush_before_query(&data, transfer_type).await;
         let slice = Self::tx_rf_slice(&data, transfer_type);
         self.keep_air_gap(slice).await;
         let result = self.pair.send_owned_with_type(data, transfer_type).await;
