@@ -172,6 +172,7 @@ jobs:
               # skips a pull request that only edits the shared table.
               - 'sdk/shared/color-vectors.json'
               # Patched sources the daemon builds through [patch.crates-io].
+              - 'vendor/libsqlite3-sys/**'
               - 'vendor/servo-script/**'
               - 'vendor/utoipa-swagger-ui/**'
             python:
