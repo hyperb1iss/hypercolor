@@ -245,7 +245,8 @@ pub fn EffectCard(
 
             // ── Content overlay (clickable, fills the card) ──────────────
             <button
-                class="absolute inset-0 z-10 flex flex-col justify-end px-4 pb-3.5 pt-4 text-left"
+                class="absolute inset-0 z-10 flex flex-col justify-end px-4 pb-3.5 pt-4 text-left \
+                       max-md:px-3 max-md:pb-3"
                 disabled=!runnable
                 on:click=move |_| {
                     if runnable {
@@ -283,10 +284,11 @@ pub fn EffectCard(
                     })
                 }}
 
-                // Description — softer tint so the title stays dominant
+                // Description in a softer tint so the title stays dominant.
+                // Phones show two cards a row, with room for title and meta.
                 <p
                     class="text-[11px] line-clamp-2 leading-relaxed mb-2.5 \
-                           drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)]"
+                           drop-shadow-[0_1px_4px_rgba(0,0,0,0.85)] max-md:hidden"
                     style:color=move || format!("rgba({}, 0.88)", body_tint.get())
                 >
                     {description}

@@ -311,7 +311,7 @@ fn NowPlayingSheet(on_close: Callback<()>) -> impl IntoView {
                             <Icon icon=LuSkipForward width="22px" height="22px" />
                         </button>
                         <A
-                            href=crate::route_ui::route_href("/effects")
+                            href=crate::route_ui::route_href("/effects?view=controls")
                             attr:class="flex h-11 w-11 items-center justify-center rounded-lg text-fg-secondary btn-press"
                             attr:aria-label="Effect controls"
                             on:click=move |_| on_close.run(())

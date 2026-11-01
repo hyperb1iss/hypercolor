@@ -4,12 +4,14 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_router::hooks::use_query_map;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::components::calibration_guide::CalibrationGuide;
 use crate::components::control_panel::capture_group::CaptureSharedControls;
 use crate::components::effect_card::EffectCard;
+use crate::components::empty_state::EmptyState;
 use crate::components::input_access_banner::InputAccessBanner;
 use crate::components::install_effect_panel::InstallEffectPanel;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -278,6 +280,29 @@ pub fn EffectsPage() -> impl IntoView {
                     .zone_effects
                     .with(|zones| zones.iter().any(ZoneEffectState::is_active)))
     });
+    // Phones split the page in two: Browse (the grid) and Controls (the
+    // live preview and controls), so neither scrolls past the other.
+    // `?view=controls` opens Controls; the now-playing sheet links there.
+    let phone = crate::viewport::is_phone_layout();
+    let query = use_query_map();
+    let (phone_view, set_phone_view) = signal(PhoneView::Browse);
+    Effect::new(move |_| {
+        if query.with(|query| query.get("view").as_deref() == Some("controls")) {
+            set_phone_view.set(PhoneView::Controls);
+        }
+    });
+    let phone_browse = Memo::new(move |_| phone.get() && phone_view.get() == PhoneView::Browse);
+    let phone_controls = Memo::new(move |_| phone.get() && phone_view.get() == PhoneView::Controls);
+    // Typing a search means browsing.
+    Effect::new(move |previous: Option<String>| {
+        let current = search.get();
+        if previous.is_some_and(|previous| previous != current) {
+            set_phone_view.set(PhoneView::Browse);
+        }
+        current
+    });
+    // Phones always dock the controls; a float column has no room there.
+    let detached = Memo::new(move |_| controls_detached.get() && !phone.get());
     // Only snapshot-locked scenes get a banner: the daemon rejects their
     // mutations outright, so the unblock path has to be visible. A merely
     // active named scene is normal operation, not a warning.
@@ -482,7 +507,10 @@ pub fn EffectsPage() -> impl IntoView {
                                     "color: rgba(139, 133, 160, 0.6); border-color: rgba(139, 133, 160, 0.12); background: rgba(139, 133, 160, 0.03)"
                                 }
                             }
-                            on:click=move |_| set_filter_dropdown_open.update(|v| *v = !*v)
+                            on:click=move |_| {
+                                set_phone_view.set(PhoneView::Browse);
+                                set_filter_dropdown_open.update(|v| *v = !*v);
+                            }
                         >
                             <Icon icon=LuSlidersHorizontal width="13px" height="13px" />
                             "Filters"
@@ -661,6 +689,13 @@ pub fn EffectsPage() -> impl IntoView {
                 </HeaderToolbar>
             </PageHeader>
 
+            {move || phone.get().then(|| view! {
+                <PhoneViewSwitch
+                    view=phone_view
+                    set_view=set_phone_view
+                    has_active=has_active
+                />
+            })}
             {move || snapshot_locked_warning.get().map(|scene_name| view! {
                 <div class="px-6 pt-4">
                     <StatusBanner
@@ -699,7 +734,11 @@ pub fn EffectsPage() -> impl IntoView {
             // like a now-playing card, full-width grid below, no splitter.
             <div class="ambient-scroll flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4" style:--ambient-hue=crate::ambient::hue_style()>
                 // Left column — effect grid, independent from the detail panels
-                <div class="flex-1 min-w-0 flex flex-col max-md:flex-none" style="min-width: 120px">
+                <div
+                    class="flex-1 min-w-0 flex flex-col max-md:flex-none"
+                    class=("hidden", move || phone_controls.get())
+                    style="min-width: 120px"
+                >
 
                 // Effect grid — independently scrollable, below the locked header
                 <div class="ambient-scroll flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible" style:--ambient-hue=crate::ambient::hue_style()>
@@ -714,10 +753,11 @@ pub fn EffectsPage() -> impl IntoView {
                                     </div>
                                 }.into_any()
                             } else {
+                                // Phones browse two compact cards per row.
                                 let grid_class = if has_active.get() {
-                                    "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3"
+                                    "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3 max-md:grid-cols-2 max-md:gap-2.5"
                                 } else {
-                                    "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4"
+                                    "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4 max-md:grid-cols-2 max-md:gap-2.5"
                                 };
                                 view! {
                                     <div class=grid_class>
@@ -780,8 +820,23 @@ pub fn EffectsPage() -> impl IntoView {
             // Gate this subtree on presence rather than the specific effect ID
             // so switching between effects doesn't remount CanvasPreview and
             // briefly drop the preview subscription.
+            {move || (phone_controls.get() && !has_active.get()).then(|| view! {
+                <EmptyState
+                    icon=LuSlidersHorizontal
+                    title="Nothing playing yet"
+                    hint="Pick an effect in Browse and its live controls land here."
+                >
+                    <button
+                        type="button"
+                        class="rounded-lg border border-edge-subtle bg-surface-overlay/70 px-4 py-2.5 text-sm font-medium text-fg-primary btn-press glow-ring"
+                        on:click=move |_| set_phone_view.set(PhoneView::Browse)
+                    >
+                        "Browse effects"
+                    </button>
+                </EmptyState>
+            })}
             {move || {
-                has_active.get().then(|| {
+                (has_active.get() && !phone_browse.get()).then(|| {
                     view! {
                         <div style="display: contents">
                             // Resize handle between grid and preview
@@ -814,7 +869,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 </div>
 
                                 // Controls (docked mode — inside preview panel)
-                                {move || (!controls_detached.get()).then(|| {
+                                {move || (!detached.get()).then(|| {
                                     view! {
                                         <div
                                             class="ambient-scroll flex-1 min-h-0 overflow-y-auto max-md:flex-none max-md:overflow-visible" style:--ambient-hue=crate::ambient::hue_style()
@@ -850,7 +905,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                         <ControlsZoneName />
                                                         <div class="flex-1" />
                                                         <button
-                                                            class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
+                                                            class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150 max-md:hidden"
                                                             title="Float controls into separate panel"
                                                             aria-label="Float controls into separate panel"
                                                             on:click=move |_| {
@@ -881,7 +936,7 @@ pub fn EffectsPage() -> impl IntoView {
                             </aside>
 
                             // Controls (detached mode — own column with resize handle)
-                            {move || controls_detached.get().then(|| {
+                            {move || detached.get().then(|| {
                                 view! {
                                     <div style="display: contents">
                                         <ResizeHandle
@@ -960,6 +1015,70 @@ pub fn EffectsPage() -> impl IntoView {
                     }
                 })
             }}
+            </div>
+        </div>
+    }
+}
+
+/// Which half of the Effects page a phone shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhoneView {
+    /// The effect grid.
+    Browse,
+    /// The live preview and controls of what is playing.
+    Controls,
+}
+
+/// The phone's Browse / Controls switch, under the page header.
+#[component]
+fn PhoneViewSwitch(
+    view: ReadSignal<PhoneView>,
+    set_view: WriteSignal<PhoneView>,
+    has_active: Memo<bool>,
+) -> impl IntoView {
+    let segment = move |target: PhoneView, label: &'static str, icon: icondata_core::Icon| {
+        let selected = move || view.get() == target;
+        view! {
+            <button
+                type="button"
+                role="tab"
+                aria-selected=move || selected().to_string()
+                class="flex h-10 min-w-0 items-center justify-center gap-2 rounded-md text-sm font-medium \
+                       transition-colors duration-150 btn-press"
+                class=("bg-surface-overlay", selected)
+                class=("text-fg-primary", selected)
+                class=("text-fg-tertiary", move || !selected())
+                style:box-shadow=move || if selected() {
+                    "inset 0 0 0 1px rgba(var(--glow-rgb), 0.28), 0 0 12px rgba(var(--glow-rgb), 0.10)"
+                } else {
+                    "none"
+                }
+                on:click=move |_| set_view.set(target)
+            >
+                <span class="flex shrink-0" class:text-accent=selected>
+                    <Icon icon=icon width="16px" height="16px" />
+                </span>
+                <span class="truncate">{label}</span>
+                {(target == PhoneView::Controls).then(|| view! {
+                    <span
+                        class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent dot-alive"
+                        class:hidden=move || !has_active.get()
+                        aria-hidden="true"
+                    />
+                })}
+            </button>
+        }
+    };
+
+    view! {
+        <div class="shrink-0 px-4 pt-3">
+            <div
+                class="accent-purple grid grid-cols-2 gap-1 rounded-lg border border-edge-subtle bg-surface-sunken/60 p-1"
+                role="tablist"
+                aria-label="Effects view"
+            >
+                {segment(PhoneView::Browse, "Browse", LuLayers)}
+                {segment(PhoneView::Controls, "Controls", LuSlidersHorizontal)}
             </div>
         </div>
     }
