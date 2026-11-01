@@ -131,16 +131,16 @@ wmi = "=0.18.4"
 
 # Servo embedder boundary
 # Servo's memory-report API exposes this callback type without reexporting it.
-base = { package = "servo-base", version = "0.6.0" }
-servo = { version = "0.6.0", default-features = false }
+base = { package = "servo-base", version = "0.7.0" }
+servo = { version = "0.7.0", default-features = false }
 # servo-allocator 0.6 made jemalloc opt-in (use-jemalloc). Core's servo
 # feature enables it on non-Windows targets so the daemon keeps jemalloc
 # as its global allocator. The crate Servo links declares the global
 # allocator, so this pin must name Servo's exact version: a different one
 # resolves to a second, unused copy and leaves the daemon on the system
 # malloc. Bump it only together with servo.
-servo-allocator = "=0.6.0"
-surfman = "0.13"
+servo-allocator = "=0.7.0"
+surfman = "0.14"
 
 # Crypto / auth
 aes-gcm = "0.11.1"
@@ -270,8 +270,8 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 stats_alloc = "0.1.10"
 
 # Servo's script crate, vendored with Hypercolor's patches applied on top of
-# the published 0.6.0 source. vendor/servo-script/HYPERCOLOR.md lists each
-# patch and when to drop the vendor. The patch matches servo-script 0.6.0
+# the published 0.7.0 source. vendor/servo-script/HYPERCOLOR.md lists each
+# patch and when to drop the vendor. The patch matches servo-script 0.7.0
 # only: bumping servo leaves it unused behind a single cargo warning, which
 # scripts/check-vendored-patches.sh turns into a CI failure, so re-vendor or
 # drop it in the same change.

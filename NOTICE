@@ -37,7 +37,7 @@ Vendored Dependencies
   corruption bug in the 3.51.1 copy the published crate bundles
   Original: https://github.com/rusqlite/rusqlite
   License: MIT (SQLite itself is in the public domain)
-- servo-script (vendor/servo-script/): Servo's script crate 0.6.0, vendored to
+- servo-script (vendor/servo-script/): Servo's script crate 0.7.0, vendored to
   carry fixes for memory growth under per-frame JavaScript evaluation
   Original: https://github.com/servo/servo
   License: MPL-2.0

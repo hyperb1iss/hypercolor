@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,7 +29,7 @@ use script_bindings::reflector::reflect_dom_object_with_proto;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
 
-use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback};
 use crate::dom::bindings::codegen::Bindings::NotificationBinding::{
     NotificationAction, NotificationDirection, NotificationMethods, NotificationOptions,
     NotificationPermission, NotificationPermissionCallback,
@@ -46,7 +45,6 @@ use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::{DOMString, USVString};
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::bindings::utils::to_frozen_array;
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::eventtarget::EventTarget;
@@ -54,7 +52,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::performanceresourcetiming::InitiatorType;
 use crate::dom::permissions::{PermissionAlgorithm, Permissions, descriptor_permission_state};
 use crate::dom::permissionstatus::PermissionStatus;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::serviceworkerglobalscope::ServiceWorkerGlobalScope;
 use crate::dom::serviceworkerregistration::ServiceWorkerRegistration;
 use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
@@ -125,7 +123,7 @@ impl Notification {
         cx: &mut JSContext,
         global: &GlobalScope,
         title: DOMString,
-        options: RootedTraceableBox<NotificationOptions>,
+        options: &NotificationOptions,
         origin: ImmutableOrigin,
         base_url: ServoUrl,
         fallback_timestamp: u64,
@@ -136,7 +134,7 @@ impl Notification {
             Box::new(Notification::new_inherited(
                 global,
                 title,
-                &options,
+                options,
                 origin,
                 base_url,
                 fallback_timestamp,
@@ -154,7 +152,7 @@ impl Notification {
     fn new_inherited(
         global: &GlobalScope,
         title: DOMString,
-        options: &RootedTraceableBox<NotificationOptions>,
+        options: &NotificationOptions,
         origin: ImmutableOrigin,
         base_url: ServoUrl,
         fallback_timestamp: u64,
@@ -352,7 +350,7 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
         global: &GlobalScope,
         proto: Option<HandleObject>,
         title: DOMString,
-        options: RootedTraceableBox<NotificationOptions>,
+        options: &NotificationOptions,
     ) -> Fallible<DomRoot<Notification>> {
         // step 1: Check global is a ServiceWorkerGlobalScope
         if global.is::<ServiceWorkerGlobalScope>() {
@@ -401,8 +399,8 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
     fn RequestPermission(
         cx: &mut JSContext,
         global: &GlobalScope,
-        permission_callback: Option<Rc<NotificationPermissionCallback>>,
-    ) -> Rc<Promise> {
+        permission_callback: Option<RootedCallback<NotificationPermissionCallback>>,
+    ) -> RootedPromise {
         // Step 2: Let promise be a new promise in this’s relevant Realm.
         let promise = Promise::new(cx, global);
 
@@ -411,7 +409,7 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
         let notification_permission = request_notification_permission(cx, global);
 
         // Step 3.2: Queue a global task on the DOM manipulation task source given global to run these steps:
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         let uuid = Uuid::new_v4().simple().to_string();
         let uuid_ = uuid.clone();
 
@@ -421,12 +419,15 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
 
         global.task_manager().dom_manipulation_task_source().queue(
             task!(request_permission: move |cx| {
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
                 let global = promise.global();
 
                 // Step 3.2.1: If deprecatedCallback is given,
                 //             then invoke deprecatedCallback with « permissionState » and "report".
-                if let Some(callback) = global.remove_notification_permission_request_callback(uuid_) {
+                if let Some(callback) = global
+                    .remove_notification_permission_request_callback(uuid_)
+                    .as_deref()
+                {
                     let _ = callback.Call__(cx, notification_permission, ExceptionHandling::Report);
                 }
 
@@ -590,7 +591,7 @@ fn create_notification_with_settings_object(
     cx: &mut JSContext,
     global: &GlobalScope,
     title: DOMString,
-    options: RootedTraceableBox<NotificationOptions>,
+    options: &NotificationOptions,
     proto: Option<HandleObject>,
 ) -> Fallible<DomRoot<Notification>> {
     // step 1: Let origin be settings’s origin.
@@ -623,7 +624,7 @@ fn create_notification(
     cx: &mut JSContext,
     global: &GlobalScope,
     title: DOMString,
-    options: RootedTraceableBox<NotificationOptions>,
+    options: &NotificationOptions,
     origin: ImmutableOrigin,
     base_url: ServoUrl,
     fallback_timestamp: u64,

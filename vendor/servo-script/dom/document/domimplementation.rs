@@ -6,7 +6,7 @@ use dom_struct::dom_struct;
 use html5ever::{QualName, local_name, ns};
 use js::context::JSContext;
 use script_bindings::error::Error;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_traits::DocumentActivity;
 
 use crate::dom::bindings::codegen::Bindings::DOMImplementationBinding::DOMImplementationMethods;
@@ -46,10 +46,10 @@ impl DOMImplementation {
 
     pub(crate) fn new(cx: &mut JSContext, document: &Document) -> DomRoot<DOMImplementation> {
         let window = document.window();
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(DOMImplementation::new_inherited(document)),
             window,
-            cx,
         )
     }
 }
@@ -67,8 +67,9 @@ impl DOMImplementationMethods<crate::DomTypeHolder> for DOMImplementation {
         // Step 1. If name is not a valid doctype name, then throw an
         //      "InvalidCharacterError" DOMException.
         if !is_valid_doctype_name(&qualified_name) {
-            debug!("Not a valid doctype name");
-            return Err(Error::InvalidCharacter(None));
+            return Err(Error::InvalidCharacter(Some(
+                "Doctype name contains ASCII whitespace".into(),
+            )));
         }
 
         Ok(DocumentType::new(

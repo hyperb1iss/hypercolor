@@ -16,7 +16,7 @@ The commit that added this directory carries no source edits. Each patch
 below lands in its own later commit, so `git log -p --
 vendor/libsqlite3-sys` shows every change against the published crate.
 
-The engine never names the crate. `servo-net` 0.6.0 depends on `rusqlite`
+The engine never names the crate. `servo-net` 0.7.0 depends on `rusqlite`
 ^0.38 with the `bundled` feature, and `rusqlite` 0.38 depends on this crate,
 so the daemon compiles the SQLite amalgamation under `sqlite3/` into the
 process. Products built on the engine that use `rusqlite` themselves link the

@@ -159,13 +159,17 @@ impl Console {
     pub(crate) fn internal_warn(cx: &mut JSContext, global: &GlobalScope, message: String) {
         Console::send_string_message(cx, global, ConsoleLogLevel::Warn, message);
     }
+
+    pub(crate) fn internal_error(cx: &mut JSContext, global: &GlobalScope, message: String) {
+        Console::send_string_message(cx, global, ConsoleLogLevel::Error, message);
+    }
 }
 
 #[expect(unsafe_code)]
 fn handle_value_to_string(cx: &mut JSContext, value: HandleValue) -> DOMString {
     match std::ptr::NonNull::new(unsafe { JS_ValueToSource(cx, value) }) {
         Some(js_str) => unsafe { jsstr_to_string(cx, js_str) }.into(),
-        None => "<error converting value to string>".into(),
+        None => DOMString::from_static("<error converting value to string>"),
     }
 }
 
@@ -612,7 +616,9 @@ fn maybe_stringify_dom_object(cx: &mut JSContext, value: HandleValue) -> Option<
     }
     rooted!(&in(cx) let class_name = unsafe { ToString(cx, value) });
     let Some(class_name) = NonNull::new(class_name.get()) else {
-        return Some("<error converting DOM object to string>".into());
+        return Some(DOMString::from_static(
+            "<error converting DOM object to string>",
+        ));
     };
     let class_name = unsafe { jsstr_to_string(cx, class_name) }
         .replace("[object ", "")
@@ -644,7 +650,9 @@ fn maybe_stringify_dom_object(cx: &mut JSContext, value: HandleValue) -> Option<
         )
     };
     if !stringify_result {
-        return Some("<error converting DOM object to string>".into());
+        return Some(DOMString::from_static(
+            "<error converting DOM object to string>",
+        ));
     }
     Some(repr.into())
 }

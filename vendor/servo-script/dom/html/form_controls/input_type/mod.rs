@@ -3,10 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use embedder_traits::InputMethodType;
 use js::context::JSContext;
+use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::HTMLInputElementBinding::HTMLInputElementMethods;
 use script_bindings::domstring::DOMString;
 use script_bindings::root::DomRoot;
-use stylo_atoms::Atom;
+use stylo_atoms::{Atom, atom};
 use time::OffsetDateTime;
 
 use crate::dom::element::AttributeMutation;
@@ -56,6 +57,7 @@ use crate::dom::html::form_controls::input_type::time_input_type::TimeInputType;
 use crate::dom::html::form_controls::input_type::url_input_type::UrlInputType;
 use crate::dom::html::form_controls::input_type::week_input_type::WeekInputType;
 use crate::dom::htmlformelement::HTMLFormElement;
+use crate::dom::input_type::text_input_widget::TextInputWidget;
 use crate::dom::node::{BindContext, UnbindContext};
 
 pub(crate) mod button_input_type;
@@ -197,50 +199,49 @@ impl InputActivationType {
 
 impl InputType {
     pub(crate) fn new_from_atom(value: &Atom) -> Self {
-        let value = value.as_ref();
-        if value.eq_ignore_ascii_case("button") {
+        if value.eq_ignore_ascii_case(&atom!("button")) {
             InputType::Button(Default::default())
-        } else if value.eq_ignore_ascii_case("checkbox") {
+        } else if value.eq_ignore_ascii_case(&atom!("checkbox")) {
             InputType::Checkbox(Default::default())
-        } else if value.eq_ignore_ascii_case("color") {
+        } else if value.eq_ignore_ascii_case(&atom!("color")) {
             InputType::Color(Default::default())
-        } else if value.eq_ignore_ascii_case("date") {
+        } else if value.eq_ignore_ascii_case(&atom!("date")) {
             InputType::Date(Default::default())
-        } else if value.eq_ignore_ascii_case("datetime-local") {
+        } else if value.eq_ignore_ascii_case(&atom!("datetime-local")) {
             InputType::DatetimeLocal(Default::default())
-        } else if value.eq_ignore_ascii_case("email") {
+        } else if value.eq_ignore_ascii_case(&atom!("email")) {
             InputType::Email(Default::default())
-        } else if value.eq_ignore_ascii_case("file") {
+        } else if value.eq_ignore_ascii_case(&atom!("file")) {
             InputType::File(Default::default())
-        } else if value.eq_ignore_ascii_case("hidden") {
+        } else if value.eq_ignore_ascii_case(&atom!("hidden")) {
             InputType::Hidden(Default::default())
-        } else if value.eq_ignore_ascii_case("image") {
+        } else if value.eq_ignore_ascii_case(&atom!("image")) {
             InputType::Image(Default::default())
-        } else if value.eq_ignore_ascii_case("month") {
+        } else if value.eq_ignore_ascii_case(&atom!("month")) {
             InputType::Month(Default::default())
-        } else if value.eq_ignore_ascii_case("number") {
+        } else if value.eq_ignore_ascii_case(&atom!("number")) {
             InputType::Number(Default::default())
-        } else if value.eq_ignore_ascii_case("password") {
+        } else if value.eq_ignore_ascii_case(&atom!("password")) {
             InputType::Password(Default::default())
-        } else if value.eq_ignore_ascii_case("radio") {
+        } else if value.eq_ignore_ascii_case(&atom!("radio")) {
             InputType::Radio(Default::default())
-        } else if value.eq_ignore_ascii_case("range") {
+        } else if value.eq_ignore_ascii_case(&atom!("range")) {
             InputType::Range(Default::default())
-        } else if value.eq_ignore_ascii_case("reset") {
+        } else if value.eq_ignore_ascii_case(&atom!("reset")) {
             InputType::Reset(Default::default())
-        } else if value.eq_ignore_ascii_case("search") {
+        } else if value.eq_ignore_ascii_case(&atom!("search")) {
             InputType::Search(Default::default())
-        } else if value.eq_ignore_ascii_case("submit") {
+        } else if value.eq_ignore_ascii_case(&atom!("submit")) {
             InputType::Submit(Default::default())
-        } else if value.eq_ignore_ascii_case("tel") {
+        } else if value.eq_ignore_ascii_case(&atom!("tel")) {
             InputType::Tel(Default::default())
-        } else if value.eq_ignore_ascii_case("text") {
+        } else if value.eq_ignore_ascii_case(&atom!("text")) {
             InputType::Text(Default::default())
-        } else if value.eq_ignore_ascii_case("time") {
+        } else if value.eq_ignore_ascii_case(&atom!("time")) {
             InputType::Time(Default::default())
-        } else if value.eq_ignore_ascii_case("url") {
+        } else if value.eq_ignore_ascii_case(&atom!("url")) {
             InputType::Url(Default::default())
-        } else if value.eq_ignore_ascii_case("week") {
+        } else if value.eq_ignore_ascii_case(&atom!("week")) {
             InputType::Week(Default::default())
         } else {
             InputType::Text(Default::default())
@@ -363,6 +364,8 @@ impl TryFrom<&InputType> for InputMethodType {
 pub(crate) trait SpecificInputType {
     fn sanitize_value(&self, _input: &HTMLInputElement, _value: &mut DOMString) {}
 
+    fn text_input_widget(&self) -> Option<&DomRefCell<TextInputWidget>>;
+
     fn convert_string_to_number(&self, _value: &str) -> Option<f64> {
         None
     }
@@ -402,7 +405,7 @@ pub(crate) trait SpecificInputType {
     }
 
     fn value_for_shadow_dom(&self, _input: &HTMLInputElement) -> DOMString {
-        "".into()
+        DOMString::new()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#signal-a-type-change>

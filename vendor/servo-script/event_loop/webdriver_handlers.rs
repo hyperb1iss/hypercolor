@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::ptr::NonNull;
@@ -26,6 +28,9 @@ use js::rust::wrappers2::{
 use js::rust::{HandleObject, HandleValue, IdVector};
 use net_traits::CookieSource::{HTTP, NonHTTP};
 use net_traits::CoreResourceMsg::{DeleteCookie, DeleteCookies, GetCookiesForUrl, SetCookieForUrl};
+use script_bindings::codegen::GenericBindings::PermissionStatusBinding::{
+    PermissionName, PermissionState,
+};
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::conversions::is_array_like;
 use script_bindings::num::Finite;
@@ -33,6 +38,7 @@ use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
 use servo_base::generic_channel::{self, GenericOneshotSender, GenericSend, GenericSender};
 use servo_base::id::{BrowsingContextId, PipelineId};
+use webdriver::command::SetPermissionState;
 use webdriver::error::ErrorStatus;
 
 use crate::DomTypeHolder;
@@ -301,7 +307,7 @@ fn matching_links<'a>(
             let content = node
                 .downcast::<HTMLElement>()
                 .map(|element| element.InnerText())
-                .map_or("".to_owned(), String::from)
+                .map_or(String::new(), String::from)
                 .trim()
                 .to_owned();
             if partial {
@@ -1360,10 +1366,10 @@ pub(crate) fn handle_will_send_keys(
     // using current text length for both the start and end parameters.
     if !element_has_focus {
         if let Some(input_element) = input_element {
-            let length = input_element.Value().len() as u32;
+            let length = input_element.Value().len_utf16().0;
             let _ = input_element.SetSelectionRange(length, length, None);
         } else if let Some(textarea_element) = element.downcast::<HTMLTextAreaElement>() {
-            let length = textarea_element.Value().len() as u32;
+            let length = textarea_element.Value().len_utf16().0;
             let _ = textarea_element.SetSelectionRange(length, length, None);
         }
     }
@@ -1457,7 +1463,7 @@ pub(crate) fn handle_get_cookies(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/webdriver-spec.html#get-cookie
+/// <https://w3c.github.io/webdriver/webdriver-spec.html#get-cookie>
 pub(crate) fn handle_get_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1488,7 +1494,7 @@ pub(crate) fn handle_get_cookie(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/webdriver-spec.html#add-cookie
+/// <https://w3c.github.io/webdriver/webdriver-spec.html#add-cookie>
 pub(crate) fn handle_add_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1539,7 +1545,7 @@ pub(crate) fn handle_add_cookie(
         .unwrap();
 }
 
-// https://w3c.github.io/webdriver/#delete-all-cookies
+/// <https://w3c.github.io/webdriver/#delete-all-cookies>
 pub(crate) fn handle_delete_cookies(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1561,7 +1567,7 @@ pub(crate) fn handle_delete_cookies(
     reply.send(Ok(())).unwrap();
 }
 
-// https://w3c.github.io/webdriver/#delete-cookie
+/// <https://w3c.github.io/webdriver/#delete-cookie>
 pub(crate) fn handle_delete_cookie(
     documents: &DocumentCollection,
     pipeline: PipelineId,
@@ -1692,7 +1698,7 @@ pub(crate) fn handle_get_text(
                         element
                             .upcast::<Node>()
                             .GetTextContent()
-                            .map_or("".to_owned(), String::from)
+                            .map_or(String::new(), String::from)
                     })
             }),
         )
@@ -1857,7 +1863,7 @@ fn clear_a_resettable_element(cx: &mut JSContext, element: &Element) -> Result<(
 
     // Step 1 - 2. if element is a candidate for constraint
     // validation and value is empty, abort steps.
-    if html_element.is_candidate_for_constraint_validation() {
+    if html_element.is_candidate_for_constraint_validation(cx.no_gc()) {
         if let Some(input_element) = element.downcast::<HTMLInputElement>() {
             if input_element.Value().is_empty() {
                 return Ok(());
@@ -1972,7 +1978,7 @@ fn get_container(element: &Element) -> Option<DomRoot<Element>> {
     Some(DomRoot::from_ref(element))
 }
 
-// https://w3c.github.io/webdriver/#element-click
+/// <https://w3c.github.io/webdriver/#element-click>
 pub(crate) fn handle_element_click(
     cx: &mut JSContext,
     documents: &DocumentCollection,
@@ -2230,5 +2236,46 @@ pub(crate) fn set_protocol_handler_automation_mode(
 ) {
     if let Some(document) = documents.find_document(pipeline) {
         document.set_protocol_handler_automation_mode(mode);
+    }
+}
+
+/// <https://www.w3.org/TR/permissions/#webdriver-command-set-permission>
+pub(crate) fn set_permission(
+    documents: &DocumentCollection,
+    pipeline: PipelineId,
+    name: String,
+    state: SetPermissionState,
+    reply: GenericOneshotSender<Result<(), ErrorStatus>>,
+) {
+    let Ok(name) = name.parse::<PermissionName>() else {
+        if let Err(err) = reply.send(Err(ErrorStatus::InvalidArgument)) {
+            error!("SetPermission Failed to send reply: {err}");
+        }
+        return;
+    };
+    let state = match state {
+        SetPermissionState::Denied => PermissionState::Denied,
+        SetPermissionState::Granted => PermissionState::Granted,
+        SetPermissionState::Prompt => PermissionState::Prompt,
+    };
+
+    let Some(global) = documents.find_global(pipeline) else {
+        if let Err(err) = reply.send(Err(ErrorStatus::NoSuchWindow)) {
+            error!("SetPermission Failed to send reply: {err}");
+        }
+        return;
+    };
+
+    // TODO: Make this per-origin instead of per-document/globalscope according to spec.
+    global
+        .permission_state_invocation_results()
+        .borrow_mut()
+        .insert(name, state);
+
+    // TODO: dispatch "change" event.
+    // This is currently impossible because eventtarget is not registered.
+
+    if let Err(err) = reply.send(Ok(())) {
+        error!("SetPermission Failed to send reply: {err}");
     }
 }
