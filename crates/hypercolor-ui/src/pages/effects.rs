@@ -36,7 +36,7 @@ pub mod phone_view;
 mod support;
 mod zone_controls;
 
-use phone_view::{PhoneView, VIEW_PARAM};
+use phone_view::{PANEL_ID, PhoneView, VIEW_PARAM, view_for_key};
 use support::{LoadingSkeleton, drag_callbacks, expand_control_updates, persist_to_storage};
 use zone_controls::{ControlsZoneName, ZoneControlSchemaCache, ZoneScopedControls};
 
@@ -753,6 +753,10 @@ pub fn EffectsPage() -> impl IntoView {
             <div
                 class="ambient-scroll flex-1 min-h-0 px-6 pb-6 pt-4 flex max-md:flex-col max-md:overflow-y-auto max-md:px-4 max-md:pb-4"
                 style:--ambient-hue=crate::ambient::hue_style()
+                // On phones this is the panel the view tabs control.
+                role=move || phone.get().then_some("tabpanel")
+                id=move || phone.get().then_some(PANEL_ID)
+                aria-labelledby=move || phone.get().then(|| phone_view.get().tab_id())
             >
                 // Left column — effect grid, independent from the detail panels
                 <div
@@ -1041,20 +1045,30 @@ pub fn EffectsPage() -> impl IntoView {
     }
 }
 
-/// The phone's Browse / Controls switch, under the page header.
+/// The phone's Browse and Controls tabs, under the page header.
+///
+/// A tab list rather than a segmented control: the two tabs swap which
+/// content the page shows, and a segmented `aria-pressed` group is for a
+/// setting that changes how the same content behaves. Both tabs control
+/// one tab panel (the page body), which names the selected tab. The
+/// selected tab is the one tab stop; Left, Right, Home, and End select and
+/// focus as they move.
 #[component]
 fn PhoneViewSwitch(
     view: Memo<PhoneView>,
     set_view: Callback<PhoneView>,
     has_active: Memo<bool>,
 ) -> impl IntoView {
-    let segment = move |target: PhoneView, label: &'static str, icon: icondata_core::Icon| {
+    let tab = move |target: PhoneView, label: &'static str, icon: icondata_core::Icon| {
         let selected = move || view.get() == target;
         view! {
             <button
                 type="button"
                 role="tab"
+                id=target.tab_id()
                 aria-selected=move || selected().to_string()
+                aria-controls=PANEL_ID
+                tabindex=move || if selected() { "0" } else { "-1" }
                 class="flex h-10 min-w-0 items-center justify-center gap-2 rounded-md text-sm font-medium \
                        transition-colors duration-150 btn-press"
                 class=("bg-surface-overlay", selected)
@@ -1081,6 +1095,21 @@ fn PhoneViewSwitch(
             </button>
         }
     };
+    let on_keydown = move |ev: web_sys::KeyboardEvent| {
+        let Some(next) = view_for_key(view.get_untracked(), &ev.key()) else {
+            return;
+        };
+        ev.prevent_default();
+        set_view.run(next);
+        if let Some(element) = hypercolor_leptos_ext::events::document()
+            .and_then(|doc| doc.get_element_by_id(next.tab_id()))
+            .and_then(|element| {
+                wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(element).ok()
+            })
+        {
+            let _ = element.focus();
+        }
+    };
 
     view! {
         <div class="shrink-0 px-4 pt-3">
@@ -1088,9 +1117,10 @@ fn PhoneViewSwitch(
                 class="accent-purple grid grid-cols-2 gap-1 rounded-lg border border-edge-subtle bg-surface-sunken/60 p-1"
                 role="tablist"
                 aria-label="Effects view"
+                on:keydown=on_keydown
             >
-                {segment(PhoneView::Browse, "Browse", LuLayers)}
-                {segment(PhoneView::Controls, "Controls", LuSlidersHorizontal)}
+                {tab(PhoneView::Browse, "Browse", LuLayers)}
+                {tab(PhoneView::Controls, "Controls", LuSlidersHorizontal)}
             </div>
         </div>
     }

@@ -11,6 +11,9 @@
 /// The query parameter that carries the view.
 pub const VIEW_PARAM: &str = "view";
 
+/// The element id of the tab panel both view tabs control.
+pub const PANEL_ID: &str = "effects-view-panel";
+
 /// One half of the phone Effects page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhoneView {
@@ -39,5 +42,31 @@ impl PhoneView {
             Self::Browse => "/effects",
             Self::Controls => "/effects?view=controls",
         }
+    }
+
+    /// The element id of this view's tab.
+    #[must_use]
+    pub const fn tab_id(self) -> &'static str {
+        match self {
+            Self::Browse => "effects-view-browse",
+            Self::Controls => "effects-view-controls",
+        }
+    }
+}
+
+/// The view a key pressed on the view tabs selects. The two tabs sit in a
+/// row: Left and Right step to the other one (wrapping, as tabs do), Home
+/// selects the first and End the last. `None` for any other key.
+#[must_use]
+pub fn view_for_key(current: PhoneView, key: &str) -> Option<PhoneView> {
+    let other = match current {
+        PhoneView::Browse => PhoneView::Controls,
+        PhoneView::Controls => PhoneView::Browse,
+    };
+    match key {
+        "ArrowLeft" | "ArrowRight" => Some(other),
+        "Home" => Some(PhoneView::Browse),
+        "End" => Some(PhoneView::Controls),
+        _ => None,
     }
 }

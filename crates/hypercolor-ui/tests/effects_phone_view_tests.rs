@@ -1,6 +1,6 @@
 //! The phone Effects view and its place in the URL.
 
-use hypercolor_ui::pages::effects::phone_view::PhoneView;
+use hypercolor_ui::pages::effects::phone_view::{PhoneView, view_for_key};
 
 #[test]
 fn only_controls_in_the_query_opens_controls() {
@@ -19,4 +19,35 @@ fn each_view_has_its_own_address() {
         let value = view.href().split_once("?view=").map(|(_, value)| value);
         assert_eq!(PhoneView::from_query(value), view, "{view:?}");
     }
+}
+
+#[test]
+fn tab_keys_move_between_the_two_views() {
+    assert_eq!(
+        view_for_key(PhoneView::Browse, "ArrowRight"),
+        Some(PhoneView::Controls)
+    );
+    assert_eq!(
+        view_for_key(PhoneView::Controls, "ArrowRight"),
+        Some(PhoneView::Browse)
+    );
+    assert_eq!(
+        view_for_key(PhoneView::Controls, "ArrowLeft"),
+        Some(PhoneView::Browse)
+    );
+    assert_eq!(
+        view_for_key(PhoneView::Controls, "Home"),
+        Some(PhoneView::Browse)
+    );
+    assert_eq!(
+        view_for_key(PhoneView::Browse, "End"),
+        Some(PhoneView::Controls)
+    );
+    assert_eq!(view_for_key(PhoneView::Browse, "Enter"), None);
+    assert_eq!(view_for_key(PhoneView::Browse, "ArrowDown"), None);
+}
+
+#[test]
+fn each_tab_has_its_own_id() {
+    assert_ne!(PhoneView::Browse.tab_id(), PhoneView::Controls.tab_id());
 }
