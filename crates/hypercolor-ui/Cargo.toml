@@ -64,6 +64,7 @@ web-sys = { version = "0.3", features = [
     "History",
     "CanvasRenderingContext2d",
     "DomRect",
+    "DomRectList",
     "DomRectReadOnly",
     "ImageData",
     "ImageBitmap",
