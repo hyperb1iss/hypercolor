@@ -1531,11 +1531,29 @@ html {
     }
 }
 
+/* Hover-revealed controls cannot be revealed on a touch screen, and at
+   opacity 0 they stay tappable: a blind tap could unfavorite an effect
+   or delete a row. Row actions (`touch-reveal`) show outright there; the
+   dashboard panels' bar (`panel-hover-controls`) goes away, since its
+   layout menu covers showing, hiding, and resetting panels. The query
+   names a coarse pointer too, so an environment that merely reports no
+   hover (a headless browser, say) keeps the desktop look. */
+@media (hover: none) and (pointer: coarse) {
+    .touch-reveal:not(:disabled) {
+        opacity: 1;
+    }
+
+    .panel-hover-controls {
+        display: none;
+    }
+}
+
 /* Controls drawn at cursor size get an invisible finger margin on coarse
    pointers, reaching about 44px without moving any layout. Each one is
    positioned (`relative` or `absolute`) so the margin anchors to it.
    `touch-hit` grows every side; `touch-hit-y` grows only up and down, for
-   chips and tabs packed side by side. */
+   chips and tabs packed side by side. Hover-revealed row actions use
+   `touch-reveal` together with `touch-hit`. */
 @media (pointer: coarse) {
     .touch-hit::before,
     .touch-hit-y::before {

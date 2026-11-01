@@ -444,7 +444,7 @@ pub fn SettingPathList(
                                     <Icon icon=LuFolder width="13px" height="13px" style="color: rgba(128, 255, 234, 0.5)" />
                                     <span class="text-xs text-fg-secondary font-mono flex-1 truncate">{path}</span>
                                     <button
-                                        class="w-5 h-5 rounded flex items-center justify-center text-fg-tertiary/30
+                                        class="touch-reveal touch-hit relative w-5 h-5 rounded flex items-center justify-center text-fg-tertiary/30
                                                hover:text-status-error transition-colors opacity-0 group-hover:opacity-100"
                                         on:click=move |_| {
                                             let mut updated = paths.get();
