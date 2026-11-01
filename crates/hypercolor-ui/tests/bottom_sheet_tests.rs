@@ -48,9 +48,18 @@ fn a_release_right_after_a_move_keeps_its_flick() {
 }
 
 #[test]
+fn a_release_one_frame_after_the_last_move_is_still_a_flick() {
+    // A 50px pull at 0.6px/ms released 16ms after its last move: just
+    // over the flick speed, and a frame is no pause.
+    let released = velocity_at_release(0.6, 16.0);
+    assert!((released - 0.6).abs() < 1e-9, "{released}");
+    assert!(drag_dismisses(50.0, 700.0, released));
+}
+
+#[test]
 fn a_pause_before_release_is_judged_by_position_alone() {
     // Pull 30px fast, hold still, then let go: not a flick.
-    let held = velocity_at_release(1.2, 300.0);
+    let held = velocity_at_release(1.2, 350.0);
     assert!(held < FLICK_VELOCITY / 100.0, "{held}");
     assert!(!drag_dismisses(30.0, 700.0, held));
     // Position still decides on its own.

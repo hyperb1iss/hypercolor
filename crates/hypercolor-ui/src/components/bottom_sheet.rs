@@ -36,9 +36,13 @@ pub const FLICK_MIN_PX: f64 = 24.0;
 /// How long the exit slide runs before the sheet unmounts. Matches the
 /// `.sheet-panel` transition in `input.css`.
 pub const EXIT_MS: u64 = 200;
-/// The drag velocity's time constant while the finger holds still: after
-/// a pause of this long the estimate keeps about a third of its value, and
-/// after a few of them it is gone.
+/// How long a finger can rest after its last move before the velocity
+/// estimate starts to decay: about one frame, the usual gap between a
+/// flick's last move and its release.
+pub const VELOCITY_GRACE_MS: f64 = 20.0;
+/// The drag velocity's time constant once the grace has run out: after a
+/// further pause of this long the estimate keeps about a third of its
+/// value, and after a few of them it is gone.
 pub const VELOCITY_DECAY_MS: f64 = 40.0;
 
 /// Whether releasing a drag that moved the sheet `distance` px down, on a
@@ -64,14 +68,17 @@ pub fn smoothed_velocity(previous: f64, dy: f64, dt_ms: f64) -> f64 {
 }
 
 /// The velocity a release carries after the finger rested `idle_ms` since
-/// its last move. A held finger is not flicking: the estimate decays with
-/// the pause, so a release after one is judged by position alone.
+/// its last move. A release within about a frame of the last move keeps
+/// its full speed, as a flick does. A held finger is not flicking: past
+/// the grace the estimate decays with the pause, so a release after one is
+/// judged by position alone.
 #[must_use]
 pub fn velocity_at_release(velocity: f64, idle_ms: f64) -> f64 {
-    if idle_ms <= 0.0 {
+    let held = idle_ms - VELOCITY_GRACE_MS;
+    if held <= 0.0 {
         return velocity;
     }
-    velocity * (-idle_ms / VELOCITY_DECAY_MS).exp()
+    velocity * (-held / VELOCITY_DECAY_MS).exp()
 }
 
 #[derive(Debug, Clone, Copy)]
