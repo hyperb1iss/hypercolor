@@ -409,8 +409,11 @@ pub fn Sidebar() -> impl IntoView {
 /// - Audio on: waveform icon, glows coral (purple pulse on beat). Click to disable.
 /// - Audio off + audio-reactive effect: muted icon, dim. Click to enable.
 /// - Audio off + non-reactive: hidden entirely.
+///
+/// `touch` sizes it for a finger (the phone now-playing sheet): a 44px
+/// target with a larger glyph. The sidebar keeps the compact default.
 #[component]
-fn SidebarAudioToggle() -> impl IntoView {
+pub(crate) fn SidebarAudioToggle(#[prop(default = false)] touch: bool) -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
     let config_ctx = expect_context::<ConfigContext>();
@@ -459,6 +462,10 @@ fn SidebarAudioToggle() -> impl IntoView {
         }
     });
 
+    const TOUCH_CLASS: &str =
+        "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg btn-press";
+    let glyph = if touch { "18px" } else { "13px" };
+
     view! {
         {move || {
             let audio_on = config_ctx.audio_enabled.get();
@@ -467,25 +474,31 @@ fn SidebarAudioToggle() -> impl IntoView {
             if audio_on {
                 Some(view! {
                     <button
-                        class="shrink-0 p-1 rounded"
+                        class=if touch { TOUCH_CLASS } else { "shrink-0 p-1 rounded" }
                         style=move || {
                             let (color, shadow) = audio_glow.get();
                             format!("color: {color}; filter: drop-shadow({shadow})")
                         }
                         title="Disable audio"
+                        aria-label="Disable audio"
                         on:click=toggle_audio
                     >
-                        <Icon icon=LuAudioLines width="13px" height="13px" />
+                        <Icon icon=LuAudioLines width=glyph height=glyph />
                     </button>
                 }.into_any())
             } else if is_reactive {
                 Some(view! {
                     <button
-                        class="shrink-0 p-1 rounded text-fg-tertiary/30 hover:text-coral/70 transition-colors"
+                        class=if touch {
+                            "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg-tertiary/60 btn-press"
+                        } else {
+                            "shrink-0 p-1 rounded text-fg-tertiary/30 hover:text-coral/70 transition-colors"
+                        }
                         title="Enable audio"
+                        aria-label="Enable audio"
                         on:click=toggle_audio
                     >
-                        <Icon icon=LuVolumeX width="13px" height="13px" />
+                        <Icon icon=LuVolumeX width=glyph height=glyph />
                     </button>
                 }.into_any())
             } else {

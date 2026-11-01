@@ -60,8 +60,32 @@
 
 @media (max-width: 767.98px) {
     .toast-host {
-        bottom: calc(3.5rem + env(safe-area-inset-bottom));
+        bottom: calc(var(--phone-nav-h) + var(--phone-strip-h) + var(--phone-strip-gap) +
+                env(safe-area-inset-bottom));
     }
+}
+
+/* ── Phone shell ──────────────────────────────────────────────────────────
+
+   Below md the bottom tab bar replaces the sidebar, and the now-playing
+   strip docks just above it. `<main>` pads by both, plus the home
+   indicator inset, so no content ever hides behind them. */
+:root {
+    --phone-nav-h: 3.5rem;
+    --phone-strip-h: 3rem;
+    --phone-strip-gap: 0.375rem;
+}
+
+@media (max-width: 767.98px) {
+    .shell-main {
+        padding-bottom: calc(var(--phone-nav-h) + var(--phone-strip-h) +
+                        var(--phone-strip-gap) + env(safe-area-inset-bottom));
+    }
+}
+
+.phone-now-playing {
+    bottom: calc(var(--phone-nav-h) + env(safe-area-inset-bottom));
+    padding-bottom: var(--phone-strip-gap);
 }
 
 /* ── Base Resets ─────────────────────────────────────────────────────────── */

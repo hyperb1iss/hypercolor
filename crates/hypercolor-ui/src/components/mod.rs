@@ -31,6 +31,7 @@ pub mod now_playing;
 pub mod page_header;
 pub mod page_search_bar;
 pub mod perf_charts;
+pub mod phone_now_playing;
 pub mod preset_panel;
 pub mod preview_box;
 pub mod preview_cabinet;
