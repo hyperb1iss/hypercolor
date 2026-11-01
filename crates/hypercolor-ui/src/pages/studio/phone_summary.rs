@@ -1,11 +1,13 @@
 //! Studio on a phone: a zone summary with per-zone effect switching.
 //!
-//! The spatial editor needs room a phone does not have, so below `md`
-//! Studio shows what the scene is doing instead of a cramped canvas: one
+//! The spatial editor needs room a phone does not have, so below `md` (a
+//! phone, or a desktop window narrower than 768px) Studio shows what the
+//! scene is doing instead of a cramped canvas: one
 //! card per LED zone with its devices, what it plays, a pause toggle, and a
 //! button that opens an effect picker for that zone alone. Screens are
-//! listed read-only. Arranging devices, drawing zones, and stacking layers
-//! stay on tablet and desktop widths.
+//! listed read-only. Placing devices, drawing zones, and stacking layers
+//! stay at `md` and up, so the note names the room the editor needs, not a
+//! kind of device.
 //!
 //! The counting and filtering rules are pure ([`member_counts`],
 //! [`member_summary`], [`zone_effect_choices`]) and tested without a DOM.
@@ -187,11 +189,11 @@ pub fn StudioPhoneSummary() -> impl IntoView {
                         </span>
                         <div class="min-w-0">
                             <div class="text-sm font-medium text-fg-primary">
-                                "Arranging lives on bigger screens"
+                                "Arrange on a bigger screen"
                             </div>
                             <p class="mt-1 text-xs leading-relaxed text-fg-tertiary">
-                                "Open Studio on a tablet or computer to place devices, draw zones, \
-                                 and stack layers. Here you can see every zone and switch what each one plays."
+                                "Placing devices, drawing zones, and stacking layers need more room than \
+                                 this. Here you can see every zone and switch what each one plays."
                             </p>
                         </div>
                     </div>
