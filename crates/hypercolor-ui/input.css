@@ -1492,6 +1492,45 @@ body.resizing * {
     mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
 }
 
+/* ── Touch polish (spec 75 wave 3) ────────────────────────────────────────
+
+   A tap never flashes the browser's grey highlight; every control shows
+   its press through its own :active state (btn-press, card-hover, and
+   friends) instead. Custom :hover rules above sit behind (hover: hover)
+   so a tap cannot leave a control stuck in its hover look. */
+html {
+    -webkit-tap-highlight-color: transparent;
+}
+
+@media (width < 48rem) {
+    /* The shell is fixed and the document never scrolls, so rubber-band
+       and pull-to-refresh on it could only reload the app mid-gesture. */
+    html,
+    body {
+        overscroll-behavior: none;
+    }
+
+    /* Scroll owners keep their scroll; reaching an edge never drags the
+       page or the sheet beneath along with it. */
+    .ambient-scroll {
+        overscroll-behavior: contain;
+    }
+
+    /* iOS Safari zooms the page into any text field under 16px on focus
+       and leaves it zoomed. */
+    input[type="text"],
+    input[type="search"],
+    input[type="number"],
+    input[type="email"],
+    input[type="password"],
+    input[type="url"],
+    input:not([type]),
+    textarea,
+    select {
+        font-size: 16px;
+    }
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
