@@ -27,7 +27,7 @@ Deny-level lints still apply.
 
 Files: `modules/script_module.rs` (`set_script_source_private`, used by
 `ModuleTree::create_a_javascript_module_script`) and
-`dom/globalscope/script_execution.rs` (`evaluate_script`).
+`dom/globalscope/script_execution.rs` (`maybe_associate_with_script`).
 
 Upstream hands a fresh `Rc<ModuleScript>` to `SetScriptPrivate` or
 `SetModulePrivate` through `Rc::into_raw` and never reclaims that
@@ -57,9 +57,9 @@ the private (`module_script_from_reference_private` and its callers in
 the script or module is rooted or on the stack, and none of them keeps the
 pointer.
 
-Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still uses
-`Rc::into_raw` in both places, now in
-`components/script/scripting/script_execution.rs`
+Upstream status: servo-script 0.7.0 and Servo `main` at `2b94d76a6971`
+(2026-11-01) still use `Rc::into_raw` in both places. On `main` they live
+in `components/script/scripting/script_execution.rs`
 (`maybe_associate_with_script`) and
 `components/script/scripting/script_module.rs`.
 
