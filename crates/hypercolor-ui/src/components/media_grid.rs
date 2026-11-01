@@ -31,7 +31,7 @@ pub fn MediaGrid(
     on_select: Callback<AssetId>,
 ) -> impl IntoView {
     view! {
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-3.5">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-3.5 max-md:grid-cols-2 max-md:gap-2.5">
             {move || {
                 assets
                     .get()

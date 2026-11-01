@@ -18,6 +18,7 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsValue;
 
 use crate::api;
+use crate::components::bottom_sheet::BottomSheet;
 use crate::components::empty_state::EmptyState;
 use crate::components::media_grid::{MediaGrid, asset_kind};
 use crate::components::media_kind::{
@@ -196,6 +197,17 @@ pub fn MediaPage() -> impl IntoView {
         set_refresh_tick.update(|tick| *tick = tick.wrapping_add(1));
     });
 
+    // Phones keep the grid on screen and open a selected file's details in
+    // a bottom sheet instead of a rail that would sit on top of the grid.
+    let phone = crate::viewport::is_phone_layout();
+    let (detail_open, set_detail_open) = signal(false);
+    let on_select = Callback::new(move |id| {
+        set_selected_id.set(Some(id));
+        if phone.get_untracked() {
+            set_detail_open.set(true);
+        }
+    });
+
     view! {
         <div
             class="relative flex h-full flex-col"
@@ -319,7 +331,7 @@ pub fn MediaPage() -> impl IntoView {
                                             <MediaGrid
                                                 assets=filtered_media
                                                 selected_id=selected_id
-                                                on_select=Callback::new(move |id| set_selected_id.set(Some(id)))
+                                                on_select=on_select
                                             />
                                         }.into_any()
                                     }
@@ -328,14 +340,23 @@ pub fn MediaPage() -> impl IntoView {
                         </Suspense>
                     </main>
 
-                    <Show when=move || show_rail.get()>
-                        <aside class="w-[380px] shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 pt-4 scrollbar-none
-                                      max-md:w-full max-md:order-first max-md:flex-none max-md:overflow-visible max-md:border-l-0 max-md:border-b">
+                    <Show when=move || show_rail.get() && !phone.get()>
+                        <aside class="w-[380px] shrink-0 overflow-y-auto border-l border-edge-subtle/70 bg-surface-sunken/35 px-4 pb-6 pt-4 scrollbar-none">
                             <MediaDetail asset=selected_asset on_changed=on_changed />
                         </aside>
                     </Show>
                 </div>
             </div>
+
+            <Show when=move || phone.get() && detail_open.get() && selected_asset.with(Option::is_some)>
+                <BottomSheet
+                    on_close=Callback::new(move |()| set_detail_open.set(false))
+                    title="Media details"
+                    hide_title=true
+                >
+                    <MediaDetail asset=selected_asset on_changed=on_changed />
+                </BottomSheet>
+            </Show>
 
             <Show when=move || is_dragging.get()>
                 <div class="pointer-events-none absolute inset-0 z-40 accent-purple">
