@@ -1511,9 +1511,22 @@ html {
     }
 
     /* Scroll owners keep their scroll; reaching an edge never drags the
-       page or the sheet beneath along with it. */
-    .ambient-scroll {
+       page or the sheet beneath along with it. Pages scroll in
+       .ambient-scroll; lists, dropdown panels, and drawers use Tailwind's
+       overflow utilities, matched here in any variant. Horizontal strips
+       contain only sideways overscroll, which would otherwise read as a
+       back gesture. */
+    .ambient-scroll,
+    [class*="overflow-auto"],
+    [class*="overflow-y-auto"],
+    [class*="overflow-scroll"],
+    [class*="overflow-y-scroll"] {
         overscroll-behavior: contain;
+    }
+
+    [class*="overflow-x-auto"],
+    [class*="overflow-x-scroll"] {
+        overscroll-behavior-x: contain;
     }
 
     /* iOS Safari zooms the page into any text field under 16px on focus
