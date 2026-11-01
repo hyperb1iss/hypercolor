@@ -1577,13 +1577,23 @@ html {
 }
 
 /* Range inputs on fingers: a taller hit box and a 22px thumb over the
-   same visible track. Padding grows the box; clipping the background to
-   the content box keeps tracks drawn on the input itself unchanged. */
+   same visible track. Padding grows the box, and the background is
+   clipped to the content box so a track drawn on the input itself stays
+   its own thickness. The clip must win over an inline `background`
+   shorthand (the settings and sidebar brightness sliders set their track
+   color inline) and over `.slider-silk`'s shorthand, both of which reset
+   the clip to the border box and paint the whole 44px box; only
+   !important beats an inline style. Padding also eats rounded ends, since
+   the content box's corner radius is the outer radius minus the padding:
+   a vertical radius of half the box (50%) leaves the content box half its
+   own height, and a 3px horizontal radius closes the cap. */
 @media (pointer: coarse) {
-    input[type="range"] {
+    input[type="range"],
+    input[type="range"].slider-silk {
         box-sizing: content-box;
         padding-block: 20px;
-        background-clip: content-box;
+        background-clip: content-box !important;
+        border-radius: 3px / 50%;
     }
 
     input[type="range"]::-webkit-slider-thumb,
