@@ -727,6 +727,11 @@ async fn activation_persists_zones_after_auto_layout_convergence() {
         }
     );
 
+    // Activation writes the runtime session behind its answer.
+    hypercolor_daemon::persistence::AtomicFileWriter::new(&state.runtime_state_path)
+        .expect("runtime state writer should open")
+        .flush(Duration::from_secs(5))
+        .expect("the runtime session write should land");
     let runtime = hypercolor_daemon::runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
         .expect("activation should write runtime state");
