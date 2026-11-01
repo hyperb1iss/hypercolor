@@ -328,7 +328,10 @@ pub fn DevicesPage() -> impl IntoView {
             })
     });
 
-    let _close_listener = window_event_listener(ev::keydown, move |ev| {
+    // Leptos 0.8 never removes a window listener on its own; without the
+    // cleanup every visit to this page left one behind, still writing to
+    // the signals of a page that was gone.
+    let close_listener = window_event_listener(ev::keydown, move |ev| {
         if ev.key() == "Escape" {
             if filter_dropdown_open.get_untracked() {
                 set_filter_dropdown_open.set(false);
@@ -337,6 +340,7 @@ pub fn DevicesPage() -> impl IntoView {
             }
         }
     });
+    on_cleanup(move || close_listener.remove());
 
     view! {
         <div class="flex flex-col h-full">
