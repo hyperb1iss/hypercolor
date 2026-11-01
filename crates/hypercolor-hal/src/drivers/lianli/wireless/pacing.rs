@@ -1443,6 +1443,14 @@ fn recovery_of(mac: Mac) -> Recovery {
         .unwrap_or_default()
 }
 
+/// Whether the cluster `mac` is being recovered from a stall: a resync or
+/// a reconnect was asked for on its behalf since it last confirmed a frame.
+#[must_use]
+pub fn recovering(mac: Mac) -> bool {
+    let recovery = recovery_of(mac);
+    recovery.resyncs > 0 || recovery.reconnects > 0
+}
+
 /// Resyncs asked for on behalf of the cluster `mac` since it last confirmed
 /// a frame.
 #[must_use]

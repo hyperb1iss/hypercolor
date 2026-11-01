@@ -350,6 +350,8 @@ pub struct FakeRadio {
     pub tx_transfers: Vec<(Duration, [u8; 4], [u8; 4])>,
     pub rx_polls: Vec<(Duration, u8)>,
     pub resets: Vec<Duration>,
+    /// Fan-speed envelopes the TX took: when, and the receiver addressed.
+    pub tx_pwm: Vec<(Duration, [u8; 6])>,
     /// When a session-start clock broadcast went out on the air.
     pub session_starts: Vec<Duration>,
     /// A session connected and its first clock broadcast is still to come.
@@ -388,6 +390,7 @@ impl FakeRadio {
             tx_transfers: Vec::new(),
             rx_polls: Vec::new(),
             resets: Vec::new(),
+            tx_pwm: Vec::new(),
             session_starts: Vec::new(),
             session_clock_pending: false,
         }
@@ -531,6 +534,11 @@ impl FakeRadio {
                     if slice == 3 && self.slice_filled.iter().all(|filled| *filled) {
                         let bytes = self.slices[0].take().expect("envelope");
                         if bytes[0] == RF_SELECT {
+                            if bytes[1] == RfSubCommand::Pwm as u8 {
+                                let mut target = [0_u8; 6];
+                                target.copy_from_slice(&bytes[2..8]);
+                                self.tx_pwm.push((now, target));
+                            }
                             if bytes[1] == RfSubCommand::SetRgb as u8
                                 && let Some((tag, content)) = self.tx_assembler.take(&bytes)
                             {

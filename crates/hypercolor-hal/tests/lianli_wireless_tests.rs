@@ -449,7 +449,18 @@ fn discovered_protocol() -> Clocked {
         record([0x22; 6], 0x00, 2, 27),
     ]);
     protocol.parse_response(&reply).expect("table parses");
+    // A second second's table confirms the duty each cluster reported, so
+    // the clusters hold it from here on.
+    protocol.advance(Duration::from_secs(1));
+    protocol.parse_response(&reply).expect("table parses");
     protocol
+}
+
+/// A second on, every routed cluster still reports the duty it first
+/// did, so it holds that duty.
+fn hold_duty(protocol: &Clocked) {
+    protocol.advance(Duration::from_secs(1));
+    report_duty(protocol, HELD_DUTY);
 }
 
 #[test]
@@ -928,6 +939,7 @@ fn upkeep_preserves_right_attached_cluster_order_and_normalizes_input_lengths() 
         ]))
         .expect("one right-attached cluster and one normal cluster");
     let _ = protocol.keepalive_commands();
+    hold_duty(&protocol);
     let colors: Vec<_> = (0_u8..100).map(|index| [index, 0, 0]).collect();
     let exact = confirmed_frame(&protocol, &colors[..78]);
     let excess = protocol.encode_frame(&colors);
@@ -960,6 +972,7 @@ fn a_new_session_discards_cached_colors_before_rediscovery() {
     assert_eq!(&commands[0].data[..4], &[USB_CMD_GET_MAC, 8, 0, 0]);
     assert_eq!(commands[2].data[5], RfSubCommand::ClockSync as u8);
     assert_eq!(commands[6].transfer_type, TransferType::Companion);
+    hold_duty(&protocol);
 
     let fresh = protocol.encode_frame(&[[1, 2, 3]; 26]);
     let mut record = record([0x33; 6], 0, 1, 27);
@@ -1069,6 +1082,38 @@ fn a_duty_within_the_tolerance_is_left_alone() {
         2,
         "six off on one slot is a drift"
     );
+}
+
+#[test]
+fn a_first_report_is_held_only_once_the_tables_keep_reporting_it() {
+    let protocol = Clocked::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("MAC reply parses");
+    let mut glitched = record([0x11; 6], 0x00, 3, 28);
+    glitched[36..40].fill(0);
+    protocol
+        .parse_response(&table_with(&[glitched]))
+        .expect("table parses");
+    let _ = protocol.keepalive_commands();
+    for _ in 0..3 {
+        report_duty(&protocol, HELD_DUTY);
+        let commands = protocol.upkeep();
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.data[5] != RfSubCommand::Pwm as u8),
+            "a zero that did not last is never enforced"
+        );
+    }
+    report_duty(&protocol, DRIFTED_DUTY);
+    let commands = protocol.upkeep();
+    let pwm: Vec<_> = commands
+        .iter()
+        .filter(|command| command.data[1] == 0 && command.data[5] == RfSubCommand::Pwm as u8)
+        .collect();
+    assert_eq!(pwm.len(), 1, "the duty that lasted is the one held");
+    assert_eq!(&pwm[0].data[21..25], &HELD_DUTY);
 }
 
 #[test]

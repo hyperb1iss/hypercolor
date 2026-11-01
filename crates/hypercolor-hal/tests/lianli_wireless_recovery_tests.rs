@@ -154,8 +154,9 @@ fn a_long_fan_stall_is_outlasted_by_growing_rests() {
     );
 }
 
-/// Fans that never come back: two resyncs, the rests run their course, and after the power-cycle message a reconnect still follows
-/// every ten minutes, since the one recovery seen came after a long rest.
+/// Fans that never come back: two resyncs, the rests run their course,
+/// and after the power-cycle message a reconnect still follows every ten
+/// minutes, since the one recovery seen came after a long rest.
 /// Between reconnects the stalled cluster gets no RGB, while the clock
 /// upkeep carries on.
 #[test]
@@ -237,6 +238,22 @@ fn a_radio_that_comes_back_needs_no_rest() {
         "one resync, then streaming"
     );
     assert!(rig.radio.resets.is_empty(), "the TX is never reset");
+    let mac = rig.radio.clusters[0].mac;
+    let resynced_at = rig.sessions[1];
+    assert!(
+        rig.radio.tx_pwm.iter().all(|(at, _)| *at >= resynced_at),
+        "a session at its duty sends no fan speed: {:?}",
+        rig.radio.tx_pwm
+    );
+    assert_eq!(
+        rig.radio
+            .tx_pwm
+            .iter()
+            .map(|(_, target)| *target)
+            .collect::<Vec<_>>(),
+        vec![mac],
+        "the recovering session re-asserts the cluster's duty and address once"
+    );
     let (taken, offered) = streaming_over(&mut rig, Duration::from_secs(10));
     assert!(
         taken * 100 >= usize::try_from(offered).expect("small") * 90,

@@ -118,16 +118,29 @@ const SAVE_CONFIG_GAP: Duration = Duration::from_millis(200);
 /// How far a reported slot duty may sit from the duty a cluster holds
 /// before upkeep sends it again: L-Connect's `NeedSyncPwm` tolerance.
 const DUTY_TOLERANCE: u8 = 5;
+/// A report becomes the duty a cluster holds once the tables still report
+/// it this much later, so one stale or glitched record is never enforced.
+const DUTY_CONFIRM_AFTER: Duration = Duration::from_secs(1);
 
-/// The duty a cluster holds for the session: what it reported the first
-/// time this session heard it bound.
+/// The duty a cluster holds for the session.
 #[derive(Debug, Clone, Copy)]
 struct HeldDuty {
     mac: Mac,
-    duty: [u8; 4],
+    /// The report waiting to be confirmed, and when it was first seen.
+    candidate: [u8; 4],
+    candidate_at: Instant,
+    /// The duty held once the tables kept reporting the candidate for
+    /// [`DUTY_CONFIRM_AFTER`]; nothing is sent before.
+    duty: Option<[u8; 4]>,
+    /// The session began while recovering this cluster from a stall, and
+    /// its held duty has yet to go out once.
+    assert_pending: bool,
     /// The last report sat outside the tolerance, so the drift is logged
     /// once per episode rather than on every tick.
     drifting: bool,
+    /// A candidate was replaced before it settled, logged once: a cluster
+    /// whose report never holds still gets no fan speed at all.
+    unsteady_logged: bool,
 }
 
 /// Whether any slot of `reported` sits more than the tolerance from `held`.
@@ -244,46 +257,83 @@ impl WirelessState {
                 }
             }
         }
-        self.hold_duties();
+        self.hold_duties(now);
         self.observe_echoes(&fresh, now);
     }
 
-    /// Capture the duty of every driven cluster this session has not held
-    /// yet. Values are never invented: what a cluster first reports is what
-    /// it keeps.
-    fn hold_duties(&mut self) {
+    /// Track the duty every driven cluster reports until it holds one.
+    /// Values are never invented: a cluster holds what it reported, once
+    /// the tables kept reporting it for [`DUTY_CONFIRM_AFTER`].
+    fn hold_duties(&mut self, now: Instant) {
         for cluster in &self.table.clusters {
-            if !self.held_duty.iter().any(|held| held.mac == cluster.mac) {
+            let Some(held) = self
+                .held_duty
+                .iter_mut()
+                .find(|held| held.mac == cluster.mac)
+            else {
                 self.held_duty.push(HeldDuty {
                     mac: cluster.mac,
-                    duty: cluster.pwm,
+                    candidate: cluster.pwm,
+                    candidate_at: now,
+                    duty: None,
+                    assert_pending: pacing::recovering(cluster.mac),
                     drifting: false,
+                    unsteady_logged: false,
                 });
+                continue;
+            };
+            if held.duty.is_some() {
+                continue;
+            }
+            if duty_drifted(held.candidate, cluster.pwm) {
+                if !held.unsteady_logged {
+                    held.unsteady_logged = true;
+                    debug!(
+                        mac = %format_mac(cluster.mac),
+                        first = ?held.candidate,
+                        now = ?cluster.pwm,
+                        "wireless cluster duty not steady yet; no fan speed until it holds"
+                    );
+                }
+                held.candidate = cluster.pwm;
+                held.candidate_at = now;
+            } else if now.saturating_duration_since(held.candidate_at) >= DUTY_CONFIRM_AFTER {
+                held.duty = Some(held.candidate);
             }
         }
     }
 
-    /// The duty `cluster` should be sent again, if its report drifted off
-    /// what it holds. A cluster at its duty gets no fan-speed traffic at
-    /// all, as in L-Connect: a fan-speed envelope can knock a receiver back
-    /// to its onboard lighting, so one goes out only when it changes
-    /// something.
-    fn duty_to_resend(&mut self, cluster: &FanCluster) -> Option<[u8; 4]> {
+    /// The duty to send `cluster` now, if any. A cluster at its duty gets
+    /// no fan-speed traffic, as in L-Connect: a fan-speed envelope can
+    /// knock a receiver back to its onboard lighting, so one goes out only
+    /// when the cluster's report drifted off the duty it holds, or once in
+    /// a session that began while recovering the cluster from a stall
+    /// (decided at the session's first sight of it, so fans that confirm
+    /// frames again before the duty is confirmed still get it). That one
+    /// send keeps a recovering connect reaching the fans with fan speed,
+    /// as every connect did when the only recovery seen on hardware
+    /// happened. It carries the slot and channel the cluster reports, so it
+    /// repeats its address rather than correcting a latched one.
+    fn duty_to_send(&mut self, cluster: &FanCluster) -> Option<[u8; 4]> {
         let held = self
             .held_duty
             .iter_mut()
             .find(|held| held.mac == cluster.mac)?;
-        let drifted = duty_drifted(held.duty, cluster.pwm);
+        let duty = held.duty?;
+        let drifted = duty_drifted(duty, cluster.pwm);
         if drifted && !held.drifting {
             info!(
                 mac = %format_mac(cluster.mac),
-                held = ?held.duty,
+                held = ?duty,
                 reported = ?cluster.pwm,
                 "wireless cluster drifted off its fan duty; sending it again"
             );
         }
         held.drifting = drifted;
-        drifted.then_some(held.duty)
+        if std::mem::take(&mut held.assert_pending) {
+            return Some(duty);
+        }
+        drifted.then_some(duty)
     }
 
     /// Hand each driven cluster's echoed tag to the pacer.
@@ -773,10 +823,10 @@ impl WirelessControllerProtocol {
         }
     }
 
-    /// The 1 Hz upkeep: send a cluster whose duty drifted the duty it
-    /// holds, restore that cluster's frame, broadcast the clock, and refresh
-    /// the table. Streaming mode is armed here only when no frame has done
-    /// it yet.
+    /// The 1 Hz upkeep: send a cluster whose duty drifted (or that this
+    /// session is recovering) the duty it holds, restore its frame,
+    /// broadcast the clock, and refresh the table. Streaming mode is armed
+    /// here only when no frame has done it yet.
     ///
     /// The table poll comes after the sends, as every poll does, so its
     /// reply can only confirm a transfer that was already on its way.
@@ -790,7 +840,7 @@ impl WirelessControllerProtocol {
 
         let clusters = state.table.clusters.clone();
         for (index, cluster) in clusters.iter().enumerate() {
-            let Some(duty) = state.duty_to_resend(cluster) else {
+            let Some(duty) = state.duty_to_send(cluster) else {
                 continue;
             };
             let slot_index = u8::try_from(index + 1).unwrap_or(u8::MAX);

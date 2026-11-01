@@ -828,15 +828,21 @@ documented optimization path for static effects.
 
 ### 6.8 Steady-state upkeep: the v1 keepalive policy
 
-Two facts force a policy: fans revert to firmware-default speed when PWM
-traffic goes silent (V2 receivers default 1000 RPM), and missing the 1 Hz
-clock broadcast puts fan firmware into an autonomous fallback that
-occasionally spikes RPM.
+Two facts shape the policy: fans revert to firmware-default speed when
+PWM traffic goes silent for long enough (V2 receivers default 1000 RPM;
+the silence that triggers it is unmeasured on V1, and L-Connect itself
+sends no fan speed while duty holds), and missing the 1 Hz clock broadcast
+puts fan firmware into an autonomous fallback that occasionally spikes
+RPM. A revert shows as a drift in the cluster's reported duty, which is
+what the fan-speed rule below watches for.
 
 **v1 policy — hold-steady, decided:** while Hypercolor owns the dongle, it
 
-1. captures each cluster's per-slot PWM from the first GetDev record the
-   session hears for it, and holds that duty for the session,
+1. captures each cluster's per-slot PWM from the GetDev records the
+   session hears for it, and holds that duty for the session once the
+   tables still report it (within the tolerance below) at least a second
+   after first sight, so one stale or glitched record is never enforced;
+   nothing is sent for the cluster before then,
 2. sends RF_PWM_CMD (payload: envelope + rx_type/channel/slot at
    [14..17], 4 PWM bytes at [17..21]) to a cluster only when a slot it
    reports drifts more than 5 off the duty it holds, the tolerance of
@@ -849,7 +855,14 @@ occasionally spikes RPM.
    stream. L-Connect also skips a device whose effect upload is still
    unconfirmed (`SyncPwm`, `changingEffect`); a live stream always has
    transfers out, so the driver cannot defer that way and pays a restore
-   instead,
+   instead. A session that begins while a cluster is being recovered from
+   a stall (§6.10) also sends that cluster its held duty once, so a
+   recovering connect still reaches the fans with fan speed as every
+   connect did when the only recovery seen on hardware happened. It
+   carries the slot and channel the cluster reports, so it repeats the
+   address rather than correcting a latched one (L-Connect sends its
+   intended `target_rx_type` and `MasterChannel` instead; doing the same
+   is a separate change),
 3. emits RF_CLOCK_SYNC at 1 Hz, the same layout every time, as L-Connect
    2.1.29 builds it (`MasterDevice.SyncMasterClock` over `cpuInfoParam`):
    the 220-byte blob at envelope bytes [14..234], its 50-byte fixed region
@@ -1008,7 +1021,9 @@ sequence, only the first clock broadcast of a session (§6.8) and the
 fan-speed envelopes reach the fans, and both went out in the three
 reconnects that failed. The rest of the sequence is local to the TX and RX:
 the TX's own reset, the master query, the table poll, the RX setup, and the
-streaming preamble.
+streaming preamble. (Since 2026-10-31 the clock has no distinct first
+frame, and fan speed goes out at connect only to a cluster the session is
+recovering, once, §6.8.)
 
 The driver therefore recovers in stages, per cluster (by radio MAC), across
 sessions:
@@ -1148,7 +1163,8 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
 - **Stall verdict.** A cluster that is heard (in a reply within the last
   second, and not omitted from the latest complete table) but confirms
   nothing for 5 s, after a recovery probe went out and that first probe's
-  full timeout expired, gets a resync (§6.10), and nothing more is sent. Later probes and cached status replies never move that deadline.
+  full timeout expired, gets a resync (§6.10), and nothing more is sent.
+  Later probes and cached status replies never move that deadline.
   The first return from a brief omission since the last confirmed frame
   restarts the probe budget; later brief returns keep the earlier probes
   and their deadline, and only an absence past 3 s restarts it again. Each
