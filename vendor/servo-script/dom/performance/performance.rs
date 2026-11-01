@@ -15,7 +15,7 @@ use script_bindings::codegen::GenericBindings::PerformanceBinding::PerformanceMa
 use script_bindings::codegen::GenericBindings::PerformanceMarkBinding::PerformanceMarkMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::codegen::GenericUnionTypes::StringOrPerformanceMeasureOptions;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use time::Duration;
 
@@ -37,7 +37,6 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::performance::performancetiming::PerformanceTiming;
@@ -170,14 +169,14 @@ impl Performance {
     ) -> DomRoot<Performance> {
         let timing = PerformanceTiming::new(cx, global);
         let navigation = PerformanceNavigation::new(cx, global);
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(Performance::new_inherited(
                 navigation_start,
                 &timing,
                 &navigation,
             )),
             global,
-            cx,
         )
     }
 
@@ -597,7 +596,7 @@ impl PerformanceMethods<crate::DomTypeHolder> for Performance {
         &self,
         cx: &mut JSContext,
         mark_name: DOMString,
-        mark_options: RootedTraceableBox<PerformanceMarkOptions>,
+        mark_options: &PerformanceMarkOptions,
     ) -> Fallible<DomRoot<PerformanceMark>> {
         // Step 1. Run the PerformanceMark constructor and let entry be the newly created object.
         let entry =

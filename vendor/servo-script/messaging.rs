@@ -42,10 +42,11 @@ use crate::tasks::task_source::TaskSourceName;
 
 #[expect(clippy::large_enum_variant)]
 #[derive(Debug)]
+// We box only the devtools message because it is the largest and least used message.
 pub(crate) enum MixedMessage {
     FromConstellation(ScriptThreadMessage),
     FromScript(MainThreadScriptMsg),
-    FromDevtools(DevtoolScriptControlMsg),
+    FromDevtools(Box<DevtoolScriptControlMsg>),
     FromImageCache(ImageCacheResponseMessage),
     #[cfg(feature = "webgpu")]
     FromWebGPUServer(WebGPUMsg),
@@ -61,7 +62,7 @@ impl MixedMessage {
                     .parent_info
                     .or(Some(new_pipeline_info.new_pipeline_id)),
                 ScriptThreadMessage::Resize(id, ..) => Some(*id),
-                ScriptThreadMessage::ThemeChange(id, ..) => Some(*id),
+                ScriptThreadMessage::UpdateWebViewState(..) => None,
                 ScriptThreadMessage::ResizeInactive(id, ..) => Some(*id),
                 ScriptThreadMessage::UnloadDocument(id) => Some(*id),
                 ScriptThreadMessage::ExitPipeline(_webview_id, id, ..) => Some(*id),
@@ -72,8 +73,7 @@ impl MixedMessage {
                 ScriptThreadMessage::GetDocumentOrigin(id, _) => Some(*id),
                 ScriptThreadMessage::GetDocumentOriginDetails(id, _) => Some(*id),
                 ScriptThreadMessage::SetDocumentActivity(id, ..) => Some(*id),
-                ScriptThreadMessage::SetThrottled(_, id, ..) => Some(*id),
-                ScriptThreadMessage::SetThrottledInContainingIframe(_, id, ..) => Some(*id),
+                ScriptThreadMessage::SetThrottled(id, ..) => Some(*id),
                 ScriptThreadMessage::NavigateIframe(id, ..) => Some(*id),
                 ScriptThreadMessage::PostMessage { target: id, .. } => Some(*id),
                 ScriptThreadMessage::UpdatePipelineId(_, _, _, id, _) => Some(*id),
@@ -111,6 +111,7 @@ impl MixedMessage {
                 ScriptThreadMessage::DestroyUserContentManager(..) => None,
                 ScriptThreadMessage::UpdatePinchZoomInfos(id, _) => Some(*id),
                 ScriptThreadMessage::SetAccessibilityActive(..) => None,
+                ScriptThreadMessage::ForwardAccessibilityAction(id, _) => Some(*id),
                 ScriptThreadMessage::TriggerGarbageCollection => None,
             },
             MixedMessage::FromScript(inner_msg) => match inner_msg {
@@ -370,7 +371,9 @@ impl QueuedTaskConversion for MainThreadScriptMsg {
 
 impl OpaqueSender<CommonScriptMsg> for ScriptEventLoopSender {
     fn send(&self, message: CommonScriptMsg) {
-        self.send(message).unwrap()
+        if self.send(message).is_err() {
+            log::warn!("Error communicating with the target thread from the profiler");
+        }
     }
 }
 
@@ -481,12 +484,12 @@ impl ScriptThreadReceivers {
                         .unwrap(),
                 )
             } else if index == devtools_index {
-                MixedMessage::FromDevtools(
+                MixedMessage::FromDevtools(Box::new(
                     operation
                         .recv(&self.devtools_server_receiver)
                         .unwrap()
                         .unwrap(),
-                )
+                ))
             } else if index == image_cache_index {
                 MixedMessage::FromImageCache(operation.recv(&self.image_cache_receiver).unwrap())
             } else {
@@ -534,7 +537,7 @@ impl ScriptThreadReceivers {
             return MixedMessage::FromScript(message).into();
         }
         if let Ok(message) = self.devtools_server_receiver.try_recv() {
-            return MixedMessage::FromDevtools(message.unwrap()).into();
+            return MixedMessage::FromDevtools(Box::new(message.unwrap())).into();
         }
         if let Ok(message) = self.image_cache_receiver.try_recv() {
             return MixedMessage::FromImageCache(message).into();

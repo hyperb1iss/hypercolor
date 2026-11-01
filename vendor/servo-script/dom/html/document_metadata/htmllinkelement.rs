@@ -101,17 +101,18 @@ pub(crate) struct HTMLLinkElement {
 
     /// <https://html.spec.whatwg.org/multipage/#a-style-sheet-that-is-blocking-scripts>
     parser_inserted: Cell<bool>,
-    /// The number of loads that this link element has triggered (could be more
-    /// than one because of imports) and have not yet finished.
-    pending_loads: Cell<u32>,
     /// Whether any of the loads have failed.
     any_failed_load: Cell<bool>,
-    /// A monotonically increasing counter that keeps track of which stylesheet to apply.
-    request_generation_id: Cell<RequestGenerationId>,
     /// <https://html.spec.whatwg.org/multipage/#explicitly-enabled>
     is_explicitly_enabled: Cell<bool>,
     /// Whether the previous type matched with the destination
     previous_type_matched: Cell<bool>,
+    /// The number of loads that this link element has triggered (could be more
+    /// than one because of imports) and have not yet finished.
+    pending_loads: Cell<u32>,
+    /// A monotonically increasing counter that keeps track of which stylesheet to apply.
+    request_generation_id: Cell<RequestGenerationId>,
+
     /// Whether the previous media environment matched with the media query
     previous_media_environment_matched: Cell<bool>,
     /// Line number this element was created on
@@ -186,7 +187,7 @@ impl HTMLLinkElement {
     // FIXME(emilio): These methods are duplicated with
     // HTMLStyleElement::set_stylesheet.
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
-    pub(crate) fn set_stylesheet(&self, new_stylesheet: Arc<Stylesheet>) {
+    pub(crate) fn set_stylesheet(&self, no_gc: &NoGC, new_stylesheet: Arc<Stylesheet>) {
         let owner = self.stylesheet_list_owner();
         if let Some(old_stylesheet) = self.stylesheet.borrow_mut().replace(new_stylesheet.clone()) {
             owner.remove_stylesheet(
@@ -194,7 +195,7 @@ impl HTMLLinkElement {
                 &old_stylesheet,
             );
         }
-        owner.add_owned_stylesheet(self.upcast(), new_stylesheet);
+        owner.add_owned_stylesheet(no_gc, self.upcast(), new_stylesheet);
     }
 
     pub(crate) fn get_stylesheet(&self) -> Option<Arc<Stylesheet>> {
@@ -211,7 +212,7 @@ impl HTMLLinkElement {
                     cx,
                     &self.owner_window(),
                     Some(self.upcast::<Element>()),
-                    "text/css".into(),
+                    DOMString::from_static("text/css"),
                     Some(self.Href().into()),
                     None, // todo handle title
                     sheet,
@@ -286,7 +287,7 @@ impl VirtualMethods for HTMLLinkElement {
         // For stylesheets, we should only refetch when the actual attribute value
         // has been changed.
         if self.relations.get().contains(LinkRelations::STYLESHEET) &&
-            let AttributeMutation::Set(Some(previous_value), _) = mutation &&
+            let AttributeMutation::Set(Some(previous_value)) = mutation &&
             **previous_value == **attr.value()
         {
             return;
@@ -383,7 +384,7 @@ impl VirtualMethods for HTMLLinkElement {
                 // When the as attribute of the link element of an external resource link
                 // that is already browsing-context connected is changed.
                 if self.relations.get().contains(LinkRelations::PRELOAD) &&
-                    let AttributeMutation::Set(Some(_), _) = mutation
+                    let AttributeMutation::Set(Some(_)) = mutation
                 {
                     self.handle_preload_url();
                 }
@@ -420,7 +421,7 @@ impl VirtualMethods for HTMLLinkElement {
                     !self.previous_media_environment_matched.get()
                 {
                     match mutation {
-                        AttributeMutation::Removed | AttributeMutation::Set(Some(_), _) => {
+                        AttributeMutation::Removed | AttributeMutation::Set(Some(_)) => {
                             self.handle_preload_url()
                         },
                         _ => {},
@@ -433,7 +434,7 @@ impl VirtualMethods for HTMLLinkElement {
                     let mut guard = shared_lock.write();
                     let media = stylesheet.media.write_with(&mut guard);
                     match mutation {
-                        AttributeMutation::Set(..) => {
+                        AttributeMutation::Set(_) => {
                             *media = MediaList::parse_media_list(&attr.value(), document.window())
                         },
                         AttributeMutation::Removed => *media = StyleMediaList::empty(),
@@ -991,9 +992,9 @@ impl HTMLLinkElement {
         let document = self.owner_document();
         let global = document.global();
 
-        // A module preload destination is "json", "style", or a script-like destination.
+        // A module preload destination is "json", "style", "text" or a script-like destination.
         let is_a_modulepreload_destination = match destination {
-            Destination::Json | Destination::Style => true,
+            Destination::Json | Destination::Style | Destination::Text => true,
             // https://fetch.spec.whatwg.org/#ref-for-request-destination-script-like
             // While "xslt" can cause script execution, it is not relevant here.
             Destination::Xslt => false,
@@ -1112,11 +1113,14 @@ impl StylesheetOwner for HTMLLinkElement {
         self.parser_inserted() ||
             self.blocking
                 .get()
-                .is_some_and(|list| list.Contains("render".into()))
+                .is_some_and(|list| list.Contains(DOMString::from_static("render")))
     }
 
     fn referrer_policy(&self, cx: &mut js::context::JSContext) -> ReferrerPolicy {
-        if self.RelList(cx).Contains("noreferrer".into()) {
+        if self
+            .RelList(cx)
+            .Contains(DOMString::from_static("noreferrer"))
+        {
             return ReferrerPolicy::NoReferrer;
         }
 

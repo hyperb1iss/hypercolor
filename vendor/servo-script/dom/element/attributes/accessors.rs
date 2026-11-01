@@ -10,8 +10,8 @@ use stylo_atoms::Atom;
 
 use crate::dom::bindings::codegen::UnionTypes::{TrustedHTMLOrString, TrustedScriptURLOrUSVString};
 use crate::dom::bindings::str::{DOMString, USVString};
+use crate::dom::element::Element;
 use crate::dom::element::attributes::storage::AttrRef;
-use crate::dom::element::{AttributeMutationReason, Element};
 use crate::dom::node::NodeTraits;
 
 impl Element {
@@ -267,6 +267,8 @@ impl Element {
         target_element: &Element,
     ) {
         // Step 2.5. For each attribute of node’s attribute list:
+        let attribute_count = self.attrs().borrow().len();
+        target_element.attrs().reserve_exact(attribute_count);
         for attr in self.attrs().borrow().iter() {
             // Step 2.5.1. Let copyAttribute be the result of cloning a single node given attribute, document, and null.
             let new_value = self.compute_attribute_value_with_style_fast_path(attr);
@@ -278,7 +280,6 @@ impl Element {
                 attr.name().clone(),
                 attr.namespace().clone(),
                 attr.prefix().cloned(),
-                AttributeMutationReason::ByCloning,
             );
         }
     }

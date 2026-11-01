@@ -4,7 +4,6 @@
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::rc::Rc;
 
 use cookie::{Cookie, SameSite};
 use dom_struct::dom_struct;
@@ -16,10 +15,11 @@ use net_traits::CookieSource::NonHTTP;
 use net_traits::{CookieAsyncResponse, CookieData, CoreResourceMsg};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::CookieStoreBinding::CookieSameSite;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_base::generic_channel::{GenericCallback, GenericSend, GenericSender};
 use servo_base::id::CookieStoreId;
 use servo_url::ServoUrl;
+use style::str::starts_with_ignore_ascii_case;
 use time::OffsetDateTime;
 
 use crate::dom::bindings::codegen::Bindings::CookieStoreBinding::{
@@ -35,6 +35,7 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::window::Window;
+use crate::dom::{RootedPromise, TracedPromise};
 use crate::tasks::task_source::SendableTaskSource;
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -64,8 +65,7 @@ impl Drop for DroppableCookieStore {
 #[dom_struct]
 pub(crate) struct CookieStore {
     eventtarget: EventTarget,
-    #[conditional_malloc_size_of]
-    in_flight: DomRefCell<VecDeque<Rc<Promise>>>,
+    in_flight: DomRefCell<VecDeque<TracedPromise>>,
     droppable: DroppableCookieStore,
 }
 
@@ -79,7 +79,7 @@ impl CookieListener {
     pub(crate) fn handle(&self, message: CookieAsyncResponse) {
         let context = self.context.clone();
         self.task_source.queue(task!(cookie_message: move |cx| {
-            let Some(promise) = context.root().in_flight.safe_borrow_mut(cx.no_gc()).pop_front() else {
+            let Some(promise) = context.root().in_flight.safe_borrow_mut(cx.no_gc()).pop_front().map(|promise| promise.root(cx)) else {
                 warn!("No promise exists for cookie store response");
                 return;
             };
@@ -124,12 +124,12 @@ impl CookieStore {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<CookieStore> {
-        let store = reflect_dom_object_with_cx(
+        let store = reflect_dom_object(
+            cx,
             Box::new(CookieStore::new_inherited(
                 global.resource_threads().core_thread.clone(),
             )),
             global,
-            cx,
         );
         store.setup_route();
         store
@@ -181,7 +181,7 @@ fn cookie_to_list_item(cookie: Cookie) -> CookieListItem {
 
 impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-get>
-    fn Get(&self, cx: &mut JSContext, name: USVString) -> Rc<Promise> {
+    fn Get(&self, cx: &mut JSContext, name: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -216,7 +216,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -224,7 +224,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-get-options>
-    fn Get_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> Rc<Promise> {
+    fn Get_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -298,14 +298,14 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         p
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-getall>
-    fn GetAll(&self, cx: &mut JSContext, name: USVString) -> Rc<Promise> {
+    fn GetAll(&self, cx: &mut JSContext, name: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -340,7 +340,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -348,7 +348,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-getall-options>
-    fn GetAll_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> Rc<Promise> {
+    fn GetAll_(&self, cx: &mut JSContext, options: &CookieStoreGetOptions) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -415,7 +415,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 8. Return p
@@ -423,7 +423,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-set>
-    fn Set(&self, cx: &mut JSContext, name: USVString, value: USVString) -> Rc<Promise> {
+    fn Set(&self, cx: &mut JSContext, name: USVString, value: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -471,7 +471,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -479,7 +479,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-set-options>
-    fn Set_(&self, cx: &mut JSContext, options: &CookieInit) -> Rc<Promise> {
+    fn Set_(&self, cx: &mut JSContext, options: &CookieInit) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -520,7 +520,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p
@@ -528,7 +528,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-delete>
-    fn Delete(&self, cx: &mut JSContext, name: USVString) -> Rc<Promise> {
+    fn Delete(&self, cx: &mut JSContext, name: USVString) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -558,7 +558,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -566,7 +566,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-cookiestore-delete-options>
-    fn Delete_(&self, cx: &mut JSContext, options: &CookieStoreDeleteOptions) -> Rc<Promise> {
+    fn Delete_(&self, cx: &mut JSContext, options: &CookieStoreDeleteOptions) -> RootedPromise {
         // 1. Let settings be this’s relevant settings object.
         let global = self.global();
 
@@ -596,7 +596,7 @@ impl CookieStoreMethods<crate::DomTypeHolder> for CookieStore {
         } else {
             self.in_flight
                 .safe_borrow_mut(cx.no_gc())
-                .push_back(p.clone());
+                .push_back(p.to_traced());
         }
 
         // 7. Return p.
@@ -637,20 +637,22 @@ impl CookieStore {
                 return None;
             }
             // 5.3 If value, byte-lowercased, starts with `__host-`, `__host-http-`, `__http-`, or `__secure-`, then return failure.
-            let lowercased_value = value.to_ascii_lowercase();
             if ["__host-", "__host-http-", "__http-", "__secure-"]
-                .iter()
-                .any(|prefix| lowercased_value.starts_with(prefix))
+                .into_iter()
+                .any(|prefix| starts_with_ignore_ascii_case(&value, prefix))
             {
                 return None;
             }
         }
 
         // 6. If name, byte-lowercased, starts with `__host-http-` or `__http-`, then return failure.
-        let lowercased_name = name.to_ascii_lowercase();
-        if lowercased_name.starts_with("__host-http-") || lowercased_name.starts_with("__http-") {
+        if ["__host-http-", "__http-"]
+            .into_iter()
+            .any(|prefix| starts_with_ignore_ascii_case(&name, prefix))
+        {
             return None;
         }
+        let name_starts_with_host = starts_with_ignore_ascii_case(&name, "__host-");
 
         // 9. If the byte sequence length of encodedName plus the byte sequence length of encodedValue is greater than the maximum name/value pair size, then return failure.
         if name.len() + value.len() > 4096 {
@@ -678,7 +680,7 @@ impl CookieStore {
                 return None;
             }
             // 12.2 If name, byte-lowercased, starts with `__host-`, then return failure.
-            if lowercased_name.starts_with("__host-") {
+            if name_starts_with_host {
                 return None;
             }
 
@@ -736,7 +738,7 @@ impl CookieStore {
             return None;
         }
         // 17. If path is not U+002F (/), and name, byte-lowercased, starts with `__host-`, then return failure.
-        if path != "/" && lowercased_name.starts_with("__host-") {
+        if path != "/" && name_starts_with_host {
             return None;
         }
         // 19. If the byte sequence length of encodedPath is greater than the maximum attribute value size, then return failure.

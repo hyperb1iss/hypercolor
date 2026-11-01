@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -16,7 +17,7 @@ use fonts::FontContext;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
 use js::jsval::UndefinedValue;
-use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleValue};
+use js::rust::{CustomAutoRooterGuard, HandleValue};
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
@@ -38,7 +39,7 @@ use style::thread_state::{self, ThreadState};
 use crate::conversions::Convert;
 use crate::dom::abstractworker::{MessageData, SimpleWorkerErrorHandler, WorkerScriptMsg};
 use crate::dom::abstractworkerglobalscope::{WorkerEventLoopMethods, run_worker_event_loop};
-use crate::dom::bindings::callback::ExceptionHandling;
+use crate::dom::bindings::callback::{ExceptionHandling, RootedCallback, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::DedicatedWorkerGlobalScopeBinding;
 use crate::dom::bindings::codegen::Bindings::DedicatedWorkerGlobalScopeBinding::DedicatedWorkerGlobalScopeMethods;
@@ -204,7 +205,7 @@ impl QueuedTaskConversion for DedicatedWorkerScriptMsg {
 
 unsafe_no_jsmanaged_fields!(TaskQueue<DedicatedWorkerScriptMsg>);
 
-// https://html.spec.whatwg.org/multipage/#dedicatedworkerglobalscope
+/// <https://html.spec.whatwg.org/multipage/#dedicatedworkerglobalscope>
 #[dom_struct]
 pub(crate) struct DedicatedWorkerGlobalScope {
     workerglobalscope: WorkerGlobalScope,
@@ -229,10 +230,10 @@ pub(crate) struct DedicatedWorkerGlobalScope {
     animation_frame_ident: Cell<u32>,
     /// Pending animation frame callbacks for a later worker rendering update.
     #[ignore_malloc_size_of = "closures are hard"]
-    animation_frame_list: DomRefCell<VecDeque<(u32, Rc<FrameRequestCallback>)>>,
+    animation_frame_list: DomRefCell<VecDeque<(u32, TracedCallback<FrameRequestCallback>)>>,
     /// Callbacks snapshotted for the current worker rendering update.
     #[ignore_malloc_size_of = "closures are hard"]
-    current_animation_frame_list: DomRefCell<VecDeque<(u32, Rc<FrameRequestCallback>)>>,
+    current_animation_frame_list: DomRefCell<VecDeque<(u32, TracedCallback<FrameRequestCallback>)>>,
     /// Whether we're in the process of running animation callbacks.
     running_animation_callbacks: Cell<bool>,
     /// Whether Constellation currently treats this worker as having callbacks.
@@ -729,7 +730,7 @@ impl DedicatedWorkerGlobalScope {
     }
 
     fn remove_animation_frame_callback_from(
-        list: &DomRefCell<VecDeque<(u32, Rc<FrameRequestCallback>)>>,
+        list: &DomRefCell<VecDeque<(u32, TracedCallback<FrameRequestCallback>)>>,
         ident: u32,
     ) {
         let mut list = list.borrow_mut();
@@ -746,7 +747,7 @@ impl DedicatedWorkerGlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#dom-animationframeprovider-requestanimationframe>
     pub(crate) fn request_animation_frame(
         &self,
-        callback: Rc<FrameRequestCallback>,
+        callback: RootedCallback<FrameRequestCallback>,
     ) -> Fallible<u32> {
         // Step 1. If this is not supported, then throw a "NotSupportedError" DOMException.
         if !self.animation_frame_provider_supported() {
@@ -767,7 +768,7 @@ impl DedicatedWorkerGlobalScope {
         // Step 5. Set callbacks[handle] to callback.
         self.animation_frame_list
             .borrow_mut()
-            .push_back((ident, callback));
+            .push_back((ident, callback.to_traced()));
         log::debug!("Queued dedicated worker animation frame callback: handle={ident} ---->");
         self.set_animation_frame_callbacks_active(true);
 
@@ -814,8 +815,8 @@ impl DedicatedWorkerGlobalScope {
             let mut pending = self.animation_frame_list.borrow_mut();
             let mut current = self.current_animation_frame_list.borrow_mut();
             for _ in 0..callback_count {
-                if let Some(callback) = pending.pop_front() {
-                    current.push_back(callback);
+                if let Some(ref callback) = pending.pop_front() {
+                    current.push_back(callback.clone());
                 }
             }
         }
@@ -827,13 +828,13 @@ impl DedicatedWorkerGlobalScope {
         for _ in 0..callback_count {
             // Step 3.1. Let callback be callbacks[handle].
             // Step 3.2. Remove callbacks[handle].
-            let callback = self
+            rooted!(&in(cx) let callback = self
                 .current_animation_frame_list
                 .borrow_mut()
                 .pop_front()
-                .map(|(_, callback)| callback);
+                .map(|(_, callback)| callback));
 
-            if let Some(callback) = callback {
+            if let Some(ref callback) = *callback {
                 // Step 3.3. Invoke callback with « now » and "`report`".
                 let _ = callback.Call__(cx, Finite::wrap(*timing), ExceptionHandling::Report);
             }
@@ -1143,17 +1144,14 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
         &self,
         cx: &mut JSContext,
         message: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
     ) -> ErrorResult {
-        let mut rooted = CustomAutoRooter::new(
+        auto_root!(&in(cx) let guard =
             options
                 .transfer
                 .iter()
                 .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
-                .collect(),
-        );
-        #[expect(unsafe_code)]
-        let guard = unsafe { CustomAutoRooterGuard::new(cx.raw_cx(), &mut rooted) };
+                .collect::<Vec<_>>());
         self.post_message_impl(cx, message, guard)
     }
 
@@ -1164,7 +1162,10 @@ impl DedicatedWorkerGlobalScopeMethods<crate::DomTypeHolder> for DedicatedWorker
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-animationframeprovider-requestanimationframe>
-    fn RequestAnimationFrame(&self, callback: Rc<FrameRequestCallback>) -> Fallible<u32> {
+    fn RequestAnimationFrame(
+        &self,
+        callback: RootedCallback<FrameRequestCallback>,
+    ) -> Fallible<u32> {
         self.request_animation_frame(callback)
     }
 

@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, expect(crown::jscontext_first_arg))]
+
 use std::io::{Read, Seek, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -303,7 +305,7 @@ impl StylesheetContext {
                 //
                 // Note that even in the failure case, we should create an empty stylesheet.
                 // That's why `set_stylesheet` also removes the previous stylesheet
-                link.set_stylesheet(stylesheet);
+                link.set_stylesheet(cx.no_gc(), stylesheet);
             },
             StylesheetContextSource::Import(import_rule) => {
                 let mut guard = document.style_shared_author_lock().write();
@@ -450,7 +452,7 @@ impl FetchResponseListener for StylesheetContext {
     }
 
     fn process_content_length(&mut self, _request_id: RequestId, size: usize) {
-        self.data.reserve(size - self.data.len());
+        self.data.reserve(size.saturating_sub(self.data.len()));
     }
 }
 
@@ -669,7 +671,7 @@ impl StyleStylesheetLoader for ElementStylesheetLoader<'_> {
                     media,
                     resolved_url.into(),
                     None,
-                    "".to_owned(),
+                    String::new(),
                 );
             },
             ElementStylesheetLoader::Asynchronous(AsynchronousStylesheetLoader {
@@ -689,7 +691,7 @@ impl StyleStylesheetLoader for ElementStylesheetLoader<'_> {
                         media,
                         resolved_url.into(),
                         None,
-                        "".to_owned()
+                        String::new()
                     );
                 });
                 let _ =

@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::Ref;
-use std::rc::Rc;
 use std::str::FromStr;
 
 use cssparser::match_ignore_ascii_case;
@@ -26,8 +25,9 @@ use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use servo_url::ServoUrl;
 
 use crate::conversions::Convert;
+use crate::dom::RootedPromise;
 use crate::dom::abortsignal::AbortSignal;
-use crate::dom::bindings::codegen::Bindings::HeadersBinding::{HeadersInit, HeadersMethods};
+use crate::dom::bindings::codegen::Bindings::HeadersBinding::HeadersMethods;
 use crate::dom::bindings::codegen::Bindings::RequestBinding::{
     ReferrerPolicy, RequestCache, RequestCredentials, RequestDestination, RequestDuplex,
     RequestInfo, RequestInit, RequestMethods, RequestMode, RequestRedirect,
@@ -36,10 +36,8 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{ByteString, DOMString, USVString};
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::headers::{Guard, Headers};
-use crate::dom::promise::Promise;
 use crate::dom::stream::readablestream::ReadableStream;
 use crate::fetch::body::{
     BodyMixin, BodyType, Extractable, body_text_stream, clone_body_stream_for_dom_body,
@@ -379,26 +377,10 @@ impl Request {
         // Step 33. If init is not empty, then:
         //
         // but spec says this should only be when non-empty init?
-        let headers_copy = init
-            .headers
-            .as_ref()
-            .map(|possible_header| match possible_header {
-                HeadersInit::ByteStringSequenceSequence(init_sequence) => {
-                    HeadersInit::ByteStringSequenceSequence(init_sequence.clone())
-                },
-                HeadersInit::ByteStringByteStringRecord(init_map) => {
-                    HeadersInit::ByteStringByteStringRecord(init_map.clone())
-                },
-            });
 
         // Step 33.3
         // We cannot empty `r.Headers().header_list` because
-        // we would undo the Step 25 above.  One alternative is to set
-        // `headers_copy` as a deep copy of `r.Headers()`. However,
-        // `r.Headers()` is a `DomRoot<T>`, and therefore it is difficult
-        // to obtain a mutable reference to `r.Headers()`. Without the
-        // mutable reference, we cannot mutate `r.Headers()` to be the
-        // deep copied headers in Step 25.
+        // we would undo the Step 25 above.
 
         // Step 32. If this’s request’s mode is "no-cors", then:
         if request.request.borrow().mode == NetTraitsRequestMode::NoCors {
@@ -414,7 +396,7 @@ impl Request {
             request.Headers(cx).set_guard(Guard::RequestNoCors);
         }
 
-        match headers_copy {
+        match init.headers.as_ref() {
             None => {
                 // Step 33.4. If headers is a Headers object, then for each header of its header list, append header to this’s headers.
                 //
@@ -429,7 +411,7 @@ impl Request {
                 }
             },
             // Step 33.5. Otherwise, fill this’s headers with headers.
-            Some(headers_copy) => request.Headers(cx).fill(Some(headers_copy))?,
+            Some(headers) => request.Headers(cx).fill(Some(headers))?,
         }
 
         // Step 33.5 depending on how we got here
@@ -635,9 +617,9 @@ impl RequestMethods<crate::DomTypeHolder> for Request {
         global: &GlobalScope,
         proto: Option<HandleObject>,
         input: RequestInfo,
-        init: RootedTraceableBox<RequestInit>,
+        init: &RequestInit,
     ) -> Fallible<DomRoot<Request>> {
-        Self::constructor(cx, global, proto, input, &init)
+        Self::constructor(cx, global, proto, input, init)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-request-method>
@@ -666,7 +648,7 @@ impl RequestMethods<crate::DomTypeHolder> for Request {
     fn Referrer(&self) -> USVString {
         let r = self.request.borrow();
         USVString(match r.referrer {
-            Referrer::NoReferrer => String::from(""),
+            Referrer::NoReferrer => String::new(),
             Referrer::Client(_) => String::from("about:client"),
             Referrer::ReferrerUrl(ref u) => {
                 let u_c = u.clone();
@@ -773,32 +755,32 @@ impl RequestMethods<crate::DomTypeHolder> for Request {
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-text>
-    fn Text(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Text(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Text)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-blob>
-    fn Blob(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Blob(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Blob)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-formdata>
-    fn FormData(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn FormData(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::FormData)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-json>
-    fn Json(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Json(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Json)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-arraybuffer>
-    fn ArrayBuffer(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn ArrayBuffer(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::ArrayBuffer)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-body-bytes>
-    fn Bytes(&self, cx: &mut js::context::JSContext) -> Rc<Promise> {
+    fn Bytes(&self, cx: &mut js::context::JSContext) -> RootedPromise {
         consume_body(cx, self, BodyType::Bytes)
     }
 
@@ -897,6 +879,7 @@ impl Convert<Destination> for RequestDestination {
             RequestDestination::Script => Destination::Script,
             RequestDestination::Sharedworker => Destination::SharedWorker,
             RequestDestination::Style => Destination::Style,
+            RequestDestination::Text => Destination::Text,
             RequestDestination::Track => Destination::Track,
             RequestDestination::Video => Destination::Video,
             RequestDestination::Worker => Destination::Worker,
@@ -926,6 +909,7 @@ impl Convert<RequestDestination> for Destination {
             },
             Destination::SharedWorker => RequestDestination::Sharedworker,
             Destination::Style => RequestDestination::Style,
+            Destination::Text => RequestDestination::Text,
             Destination::Track => RequestDestination::Track,
             Destination::Video => RequestDestination::Video,
             Destination::Worker => RequestDestination::Worker,

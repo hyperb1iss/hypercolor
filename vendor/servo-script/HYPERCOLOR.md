@@ -1,17 +1,18 @@
 # Hypercolor patches to servo-script
 
-This directory vendors `servo-script` 0.6.0, Servo's `components/script`
+This directory vendors `servo-script` 0.7.0, Servo's `components/script`
 crate, from crates.io. The files are the published package exactly as
-`servo-script-0.6.0.crate` unpacks (checksum
-`c08de23e00326c3f698ebe2a39bc4d51fbf7507af128c8cbb295b1ae6ae2f13c`, upstream
-commit `c78d2c206f80a1c8b67eefa97f773bba513205d3` per
+`servo-script-0.7.0.crate` unpacks (checksum
+`84ab625df5e83104d2b1ef7066f6fbc879d24be07c14438eb25f427657ed7fee`, upstream
+commit `aac43a3f31a259f04a574f5ec4e959c943ad7cc7` per
 `.cargo_vcs_info.json`), plus this file. The root `Cargo.toml` swaps it in
 through `[patch.crates-io]`, so every other Servo crate still comes from
 crates.io. The crate is excluded from the workspace and keeps upstream's
 formatting and MPL-2.0 license headers.
 
-The commit that added this directory carries no source edits. Each patch
-below lands in its own later commit, so `git log -p -- vendor/servo-script`
+The commit that moved this directory to a new Servo release carries the
+published crate with no source edits. Each patch below lands in its own
+later commit, so `git log -p -- vendor/servo-script` from that commit on
 shows every change against the published crate.
 
 One build setting differs from the published manifest: `Cargo.toml` ends

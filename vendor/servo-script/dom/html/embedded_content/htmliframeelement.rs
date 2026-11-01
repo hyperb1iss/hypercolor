@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -15,7 +17,7 @@ use js::context::JSContext;
 use js::rust::HandleObject;
 use net_traits::ReferrerPolicy;
 use net_traits::request::Destination;
-use profile_traits::ipc as ProfiledIpc;
+use profile_traits::generic_channel::channel;
 use script_bindings::cell::DomRefCell;
 use script_traits::{NewPipelineInfo, UpdatePipelineIdReason};
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
@@ -93,7 +95,6 @@ pub(crate) struct HTMLIFrameElement {
     #[no_trace]
     sandboxing_flag_set: Cell<Option<SandboxingFlagSet>>,
     load_blocker: DomRefCell<Option<LoadBlocker>>,
-    throttled: Cell<bool>,
     #[conditional_malloc_size_of]
     script_window_proxies: Rc<ScriptWindowProxies>,
     /// <https://html.spec.whatwg.org/multipage/#current-navigation-was-lazy-loaded>
@@ -284,7 +285,6 @@ impl HTMLIFrameElement {
                     load_data: load_data.clone(),
                     old_pipeline_id,
                     viewport_details,
-                    embedder_theme: window.embedder_theme(),
                 };
                 window
                     .as_global_scope()
@@ -293,15 +293,14 @@ impl HTMLIFrameElement {
                     .unwrap();
 
                 let new_pipeline_info = NewPipelineInfo {
+                    webview_state: (*window.webview_state()).clone(),
                     parent_info: Some(window.pipeline_id()),
                     new_pipeline_id,
                     browsing_context_id,
-                    webview_id,
                     opener: None,
                     load_data,
                     viewport_details,
                     user_content_manager_id: None,
-                    embedder_theme: window.embedder_theme(),
                     target_snapshot_params,
                     frame_name: self.frozen_name.borrow().clone(),
                 };
@@ -317,7 +316,6 @@ impl HTMLIFrameElement {
                     load_data,
                     old_pipeline_id,
                     viewport_details,
-                    embedder_theme: window.embedder_theme(),
                 };
                 window
                     .as_global_scope()
@@ -674,7 +672,6 @@ impl HTMLIFrameElement {
             sandbox: Default::default(),
             sandboxing_flag_set: Cell::new(None),
             load_blocker: DomRefCell::new(None),
-            throttled: Cell::new(false),
             script_window_proxies: ScriptThread::window_proxies(),
             current_navigation_was_lazy_loaded: Default::default(),
             lazy_load_resumption_steps: Default::default(),
@@ -720,12 +717,6 @@ impl HTMLIFrameElement {
         self.sandboxing_flag_set
             .get()
             .unwrap_or_else(SandboxingFlagSet::empty)
-    }
-
-    pub(crate) fn set_throttled(&self, throttled: bool) {
-        if self.throttled.get() != throttled {
-            self.throttled.set(throttled);
-        }
     }
 
     /// Note a pending navigation.
@@ -837,7 +828,7 @@ impl HTMLIFrameElement {
                         .value()
                         .as_tokens()
                         .iter()
-                        .map(|atom| atom.to_string().to_ascii_lowercase())
+                        .map(|atom| atom.to_ascii_lowercase().to_string())
                         .collect();
                     parse_a_sandboxing_directive(&tokens)
                 });
@@ -883,8 +874,7 @@ impl HTMLIFrameElement {
         // TODO
 
         // Step 5. Destroy a document and its descendants given navigable's active document.
-        let (sender, receiver) =
-            ProfiledIpc::channel(self.global().time_profiler_chan().clone()).unwrap();
+        let (sender, receiver) = channel(self.global().time_profiler_chan().clone()).unwrap();
         let msg = ScriptToConstellationMessage::RemoveIFrame(browsing_context_id, sender);
         self.owner_window()
             .as_global_scope()
@@ -1232,7 +1222,7 @@ impl VirtualMethods for HTMLIFrameElement {
             super_type.bind_to_tree(cx, context);
         }
 
-        self.owner_document().iframes_mut().add(self);
+        self.owner_document().iframes().add(cx.no_gc(), self);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-iframe-element:html-element-removing-steps>
@@ -1245,7 +1235,7 @@ impl VirtualMethods for HTMLIFrameElement {
         // navigable given removedNode
         self.destroy_child_navigable(cx);
 
-        self.owner_document().iframes_mut().remove(self);
+        self.owner_document().iframes().remove(cx.no_gc(), self);
     }
 }
 

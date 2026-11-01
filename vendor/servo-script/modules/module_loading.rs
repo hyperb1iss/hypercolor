@@ -30,6 +30,7 @@ use js::rust::wrappers2::{
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::request::{Destination, Referrer, RequestClient};
 use script_bindings::cell::DomRefCell;
+use script_bindings::inheritance::Castable;
 use script_bindings::settings_stack::run_a_callback;
 
 use crate::DomTypeHolder;
@@ -37,8 +38,9 @@ use crate::dom::bindings::error::throw_dom_exception;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
 use crate::dom::promise::promisenativehandler::{Callback, PromiseNativeHandler};
+use crate::dom::promise::{Promise, RootedPromise, TracedPromise};
+use crate::dom::window::Window;
 use crate::modules::script_module::{
     ModuleHandler, ModuleObject, ModuleTree, RethrowError, ScriptFetchOptions,
     fetch_a_single_module_script, module_script_from_reference_private,
@@ -48,10 +50,12 @@ use crate::runtime::script_runtime::IntroductionType;
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 #[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct OnRejectedHandler {
-    #[conditional_malloc_size_of]
-    promise: Rc<Promise>,
+    promise: TracedPromise,
 }
+
+impl js::gc::Rootable for OnRejectedHandler {}
 
 impl Callback for OnRejectedHandler {
     fn callback(&self, cx: &mut CurrentRealm, v: Handle<JSVal>) {
@@ -257,7 +261,7 @@ fn finish_loading_imported_module(
 }
 
 /// <https://tc39.es/ecma262/#sec-ContinueDynamicImport>
-fn continue_dynamic_import(realm: &mut CurrentRealm, promise: Rc<Promise>, module: ModuleObject) {
+fn continue_dynamic_import(realm: &mut CurrentRealm, promise: RootedPromise, module: ModuleObject) {
     // Step 1. If moduleCompletion is an abrupt completion, then
     // a. Perform ! Call(promiseCapability.[[Reject]], undefined, « moduleCompletion.[[Value]] »).
     // b. Return unused.
@@ -295,7 +299,7 @@ fn continue_dynamic_import(realm: &mut CurrentRealm, promise: Rc<Promise>, modul
     // module, promiseCapability, and onRejected and performs the following steps when called:
     // Step 7. Let linkAndEvaluate be CreateBuiltinFunction(linkAndEvaluateClosure, 0, "", « »).
     let link_and_evaluate = ModuleHandler::new_boxed(Box::new(
-        task!(link_and_evaluate: |cx, global_scope: DomRoot<GlobalScope>, inner_promise: Rc<Promise>, module: ModuleObject| {
+        task!(link_and_evaluate: |cx, global_scope: DomRoot<GlobalScope>, inner_promise: RootedPromise, module: ModuleObject| {
             let mut realm = enter_auto_realm(cx, &*global_scope);
             let cx = &mut realm.current_realm();
 
@@ -329,7 +333,7 @@ fn continue_dynamic_import(realm: &mut CurrentRealm, promise: Rc<Promise>, modul
             // module and promiseCapability and performs the following steps when called:
             // e. Let onFulfilled be CreateBuiltinFunction(fulfilledClosure, 0, "", « »).
             let on_fulfilled = ModuleHandler::new_boxed(Box::new(
-                task!(on_fulfilled: |cx, fulfilled_promise: Rc<Promise>, module: ModuleObject| {
+                task!(on_fulfilled: |cx, fulfilled_promise: RootedPromise, module: ModuleObject| {
 
                     // i. Let namespace be GetModuleNamespace(module).
                     rooted!(&in(cx) let rval = unsafe { GetModuleNamespace(cx, module.handle()) });
@@ -341,12 +345,14 @@ fn continue_dynamic_import(realm: &mut CurrentRealm, promise: Rc<Promise>, modul
                     // iii. Return NormalCompletion(undefined).
             })));
 
+            rooted!(&in(cx) let mut rejected_handler = Some(OnRejectedHandler { promise: inner_promise.to_traced() }));
+
             // f. Perform PerformPromiseThen(evaluatePromise, onFulfilled, onRejected).
             let handler = PromiseNativeHandler::new(
                 cx,
                 &global_scope,
                 Some(on_fulfilled),
-                Some(Box::new(OnRejectedHandler { promise: inner_promise }))
+                rejected_handler.take().map(|h| Box::new(h) as Box<dyn Callback>),
             );
             evaluate_promise.append_native_handler(cx, &handler);
 
@@ -360,7 +366,9 @@ fn continue_dynamic_import(realm: &mut CurrentRealm, promise: Rc<Promise>, modul
             realm,
             &global,
             Some(link_and_evaluate),
-            Some(Box::new(OnRejectedHandler { promise })),
+            Some(Box::new(OnRejectedHandler {
+                promise: promise.to_traced(),
+            })),
         );
         load_promise.append_native_handler(realm, &handler);
     });
@@ -408,7 +416,6 @@ pub(crate) fn host_load_imported_module(
         ),
     };
 
-    // TODO: investigate providing a `ModuleOwner` to classic scripts.
     let script_owner = referencing_script.and_then(|script| script.owner.clone());
 
     // Step 6.2. Set settingsObject to referencingScript's settings object.
@@ -426,7 +433,7 @@ pub(crate) fn host_load_imported_module(
     let module_type = unsafe { GetModuleRequestType(cx, module_request) };
 
     // Step 7.1.5. If the result of running the module type allowed steps given moduleType and settingsObject is false:
-    if let ModuleType::Unknown = module_type {
+    if !module_type_allowed(&global_scope, module_type) {
         // Step 7.1.5.1. Let error be a new TypeError exception.
         throw_type_error(cx, c"Found invalid module type attribute");
 
@@ -573,6 +580,20 @@ pub(crate) fn host_load_imported_module(
     );
 }
 
+/// <https://html.spec.whatwg.org/multipage/#module-type-allowed>
+fn module_type_allowed(global: &GlobalScope, module_type: ModuleType) -> bool {
+    match module_type {
+        // Step 1. If moduleType is not "javascript-or-wasm", "css", "json", or "text", then return
+        // false.
+        ModuleType::Unknown | ModuleType::Bytes => false,
+        // Step 2. If moduleType is "css" and the CSSStyleSheet interface is not exposed in
+        // settings's realm, then return false.
+        ModuleType::CSS => global.is::<Window>(),
+        // Step 3. Return true.
+        ModuleType::JavaScript | ModuleType::JSON | ModuleType::Text => true,
+    }
+}
+
 /// <https://html.spec.whatwg.org/multipage/#fetch-a-single-imported-module-script>
 #[expect(clippy::too_many_arguments)]
 fn fetch_a_single_imported_module_script(
@@ -594,10 +615,10 @@ fn fetch_a_single_imported_module_script(
     // Step 3. If the result of running the module type allowed steps given moduleType and settingsObject is false,
     // then run onComplete given null, and return.
     match module_type {
-        ModuleType::Unknown | ModuleType::Bytes | ModuleType::Text | ModuleType::CSS => {
+        ModuleType::Unknown | ModuleType::Bytes => {
             return on_complete(cx, None);
         },
-        ModuleType::JavaScript | ModuleType::JSON => (),
+        ModuleType::JavaScript | ModuleType::JSON | ModuleType::CSS | ModuleType::Text => (),
     }
 
     // Step 4. Fetch a single module script given url, fetchClient, destination, options, settingsObject, referrer,

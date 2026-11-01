@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::{OnceCell, RefCell, RefMut};
 use std::collections::HashSet;
 use std::default::Default;
@@ -30,6 +32,7 @@ use net_traits::request::{
 };
 use net_traits::{FetchMetadata, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming};
 use profile_traits::mem::{ProcessReports, perform_memory_report};
+use script_bindings::callback::RootedCallback;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::conversions::root_from_handlevalue;
 use script_bindings::reflector::DomObject;
@@ -65,7 +68,7 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
-use crate::dom::bindings::trace::RootedTraceableBox;
+use crate::dom::bindings::trace::HashMapTracedValues;
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
 #[cfg(feature = "webcrypto")]
 use crate::dom::crypto::Crypto;
@@ -78,7 +81,7 @@ use crate::dom::htmlscriptelement::{SCRIPT_JS_MIMES, Script};
 use crate::dom::idbfactory::IDBFactory;
 use crate::dom::performance::performance::Performance;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promise::Promise;
+use crate::dom::promise::RootedPromise;
 use crate::dom::reporting::reportingendpoint::{ReportingEndpoint, SendReportsToEndpoints};
 use crate::dom::reporting::reportingobserver::ReportingObserver;
 use crate::dom::script_execution::ScriptOptions;
@@ -100,7 +103,7 @@ use crate::fetch::network_listener::{
     FetchResponseListener, ResourceTimingListener, submit_timing,
 };
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
-use crate::modules::script_module::ScriptFetchOptions;
+use crate::modules::script_module::{ModuleRequest, ModuleStatus, ScriptFetchOptions};
 use crate::realms::enter_auto_realm;
 use crate::runtime::job_queue::{MicrotaskRunnable, UserMicrotask, job_queue_microtask_checkpoint};
 use crate::runtime::script_runtime::{IntroductionType, Runtime, get_reports};
@@ -279,7 +282,8 @@ impl FetchResponseListener for ScriptFetchContext {
     }
 
     fn process_content_length(&mut self, _request_id: RequestId, size: usize) {
-        self.body_bytes.reserve(size - self.body_bytes.len());
+        self.body_bytes
+            .reserve(size.saturating_sub(self.body_bytes.len()));
     }
 }
 
@@ -293,7 +297,7 @@ impl ResourceTimingListener for ScriptFetchContext {
     }
 }
 
-// https://html.spec.whatwg.org/multipage/#the-workerglobalscope-common-interface
+/// <https://html.spec.whatwg.org/multipage/#the-workerglobalscope-common-interface>
 #[dom_struct]
 pub(crate) struct WorkerGlobalScope {
     globalscope: GlobalScope,
@@ -380,6 +384,11 @@ pub(crate) struct WorkerGlobalScope {
     #[conditional_malloc_size_of]
     #[no_trace]
     font_context: Arc<FontContext>,
+
+    /// module map is used when importing JavaScript modules
+    /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
+    #[ignore_malloc_size_of = "mozjs"]
+    module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
 }
 
 impl WorkerGlobalScope {
@@ -454,7 +463,14 @@ impl WorkerGlobalScope {
             )),
             origin: MutableOrigin::new(init.origin),
             font_context,
+            module_map: Default::default(),
         }
+    }
+
+    pub(crate) fn module_map(
+        &self,
+    ) -> &DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>> {
+        &self.module_map
     }
 
     pub(crate) fn font_context(&self) -> Arc<FontContext> {
@@ -995,11 +1011,11 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-queuemicrotask>
-    fn QueueMicrotask(&self, cx: &mut JSContext, callback: Rc<VoidFunction>) {
+    fn QueueMicrotask(&self, cx: &mut JSContext, callback: RootedCallback<VoidFunction>) {
         self.enqueue_microtask(
             cx,
             Box::new(UserMicrotask {
-                callback,
+                callback: callback.to_traced(),
                 global: Dom::from_ref(&self.globalscope),
             }),
         );
@@ -1011,7 +1027,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         realm: &mut CurrentRealm,
         image: ImageBitmapSource,
         options: &ImageBitmapOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         ImageBitmap::create_image_bitmap(self.upcast(), image, 0, 0, None, None, options, realm)
     }
 
@@ -1025,7 +1041,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         sw: i32,
         sh: i32,
         options: &ImageBitmapOptions,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         ImageBitmap::create_image_bitmap(
             self.upcast(),
             image,
@@ -1043,8 +1059,8 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         &self,
         realm: &mut CurrentRealm,
         input: RequestOrUSVString,
-        init: RootedTraceableBox<RequestInit>,
-    ) -> Rc<Promise> {
+        init: &RequestInit,
+    ) -> RootedPromise {
         Fetch(self.upcast(), input, init, realm)
     }
 
@@ -1077,7 +1093,7 @@ impl WorkerGlobalScopeMethods<crate::DomTypeHolder> for WorkerGlobalScope {
         &self,
         cx: &mut JSContext,
         value: HandleValue,
-        options: RootedTraceableBox<StructuredSerializeOptions>,
+        options: &StructuredSerializeOptions,
         retval: MutableHandleValue,
     ) -> Fallible<()> {
         self.upcast::<GlobalScope>()
