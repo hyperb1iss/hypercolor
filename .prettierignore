@@ -14,6 +14,8 @@ e2e/test-results/
 bun.lock
 
 # Vendored upstream sources stay byte-identical to the published crate
+vendor/libsqlite3-sys/**
+!vendor/libsqlite3-sys/HYPERCOLOR.md
 vendor/servo-script/**
 !vendor/servo-script/HYPERCOLOR.md
 vendor/utoipa-swagger-ui/**
