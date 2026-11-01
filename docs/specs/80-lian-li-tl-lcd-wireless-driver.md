@@ -902,9 +902,23 @@ That is the minimum the protocol needs, per second: one clock envelope
 (four TX packets) and one two-page table poll on the RX, plus a PWM
 envelope and a restore (twelve TX packets per three-fan cluster) only for
 a cluster whose duty drifted. A still scene with one cluster at its duty
-therefore costs 4 TX packets and one RX poll a second. The master query L-Connect
-repeats every second is not needed: nothing in this driver moves the TX
-off its channel after init.
+therefore costs 4 TX packets and one RX poll a second.
+
+The TX answers every command with a status packet (§6), and nothing
+reads them while frames stream. L-Connect's 1 Hz master query is also
+its drain: `WinUsb.RfRead` reads through `ReadAll`, which keeps reading
+until a read waits 10 ms, so every second it empties the TX's queue. This
+driver does not repeat the query, because nothing moves the TX off its
+channel after init and repeated channel selection is the suspect in the
+bench freezes (item 5). The driver-owned transport drains instead
+(`wireless/transport.rs`): once a second, after the last slice of a frame
+that is not RGB (in steady state, the clock broadcast), it reads and
+discards up to 16 status packets, stopping at the first read that waits
+10 ms. It never drains inside an RGB transfer or after a command whose
+reply a caller reads, and a drain read that times out is an empty queue,
+not a wedge. While frames stream the queue refills within milliseconds,
+so this matches the vendor's cadence without keeping the queue empty;
+whether a full status queue is what hangs a V1 TX is unknown (§11.12).
 
 ### 6.9 tinyuz compression
 
@@ -1436,8 +1450,10 @@ Registration and data surfaces:
     fans: real GetDev records, the live RGB tick rate (§11.4), the
     clock-blob tolerance (§11.3), receiver serial uniqueness (§11.7), and
     whether the TX's per-command status packets, which the RF send path
-    never reads (the reference does not read them either), ever back up
-    the device under sustained streaming.
+    never read (lian-li-linux does not read them either; L-Connect drains
+    them once a second, §6.8), ever back up the device under sustained
+    streaming. The transport has drained them once a second since
+    2026-10-31.
 11. **DES/`slv3tuzx` in open source.** The key is already public in multiple
     repos and in every L-Connect install; shipping it is documentation of an
     interoperability fact, not a secret. Noting for license/audit review.
@@ -1450,9 +1466,11 @@ Registration and data surfaces:
     hang is the suspected cause. The trigger is unconfirmed. Two measured facts bound it. First, in steady state the
     driver sends about 358 TX packets a second (about 28 frames of twelve
     packets plus upkeep), which is about 90 RF envelopes a second, and reads
-    nothing back from the TX. L-Connect also leaves the TX's per-command
-    status packets unread outside its 1 Hz master query, so the unread
-    replies are not a Hypercolor-only deviation. Second, no hardware-tested
+    nothing back from the TX. L-Connect reads them: its 1 Hz master query
+    reads through `WinUsb.ReadAll`, which drains every pending status
+    packet until a read waits 10 ms (corrected 2026-10-31 from the 2.1.29
+    decompile; this item first said L-Connect left them unread). The
+    driver now drains on the same cadence (§6.8). Second, no hardware-tested
     reference streams per-frame RGB this fast: L-Connect sends RGB only
     until the receiver echoes the wanted effect index, the reference Linux
     driver uploads looping animations once, and the OpenRGB fork ticks at

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::frame::{
     DONGLE_RESET, Mac, RF_SELECT, RF_SLICES_PER_ENVELOPE, RfSubCommand, USB_CMD_RESET_PARTNER,
@@ -101,13 +101,24 @@ pub fn air_gap(previous: Option<(Mac, u8)>, since: Duration, target: Mac, sub: u
     gap.saturating_sub(since)
 }
 
+/// The TX answers every command with a status packet, and nothing reads
+/// them while frames stream. L-Connect reads every pending one each second
+/// (`WinUsb.RfRead` drains through `ReadAll` until a read waits 10 ms);
+/// the transport drains them this often, after the last slice of a frame
+/// that is not RGB, which in steady state is the 1 Hz clock broadcast.
+pub const TX_STATUS_DRAIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Status packets one drain reads at most.
+pub const TX_STATUS_DRAIN_LIMIT: usize = 16;
+/// A drain ends at the first read that waits this long.
+pub const TX_STATUS_DRAIN_GAP: Duration = Duration::from_millis(10);
+
 /// Where a TX packet sits in an RF frame.
 #[derive(Debug, Clone, Copy)]
 enum RfSlice {
     /// The first slice, which names the frame's target and sub-command.
     First { target: Mac, sub: u8 },
-    /// A later slice of the frame in progress.
-    Later,
+    /// A later slice of the frame in progress; `last` for its fourth.
+    Later { last: bool },
 }
 
 /// Where `packet` sits in an RF frame, if it is a slice of one.
@@ -121,7 +132,9 @@ fn rf_slice(packet: &[u8]) -> Option<RfSlice> {
             target: envelope.get(2..8)?.try_into().ok()?,
             sub: *envelope.get(1)?,
         }),
-        index if (1..RF_SLICES_PER_ENVELOPE).contains(&index) => Some(RfSlice::Later),
+        index if (1..RF_SLICES_PER_ENVELOPE).contains(&index) => Some(RfSlice::Later {
+            last: index + 1 == RF_SLICES_PER_ENVELOPE,
+        }),
         _ => None,
     }
 }
@@ -165,6 +178,8 @@ pub struct WirelessControllerTransport {
     controller: String,
     /// The RF frame the TX took last, for the air gap.
     on_air: Mutex<Option<AirFrame>>,
+    /// When the TX's status packets were last drained.
+    drained_at: Mutex<Option<Instant>>,
 }
 
 impl WirelessControllerTransport {
@@ -176,6 +191,7 @@ impl WirelessControllerTransport {
             pair,
             controller: controller.into(),
             on_air: Mutex::new(None),
+            drained_at: Mutex::new(None),
         }
     }
 
@@ -208,10 +224,11 @@ impl WirelessControllerTransport {
         }
     }
 
-    /// After a TX write the TX took: note the RF frame it belongs to.
-    fn note_on_air(&self, slice: Option<RfSlice>) {
+    /// After a TX write the TX took: note the RF frame it belongs to, and
+    /// say whether the write finished a frame that is not RGB.
+    fn note_on_air(&self, slice: Option<RfSlice>) -> bool {
         let Some(slice) = slice else {
-            return;
+            return false;
         };
         let mut on_air = self.on_air.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
@@ -222,12 +239,54 @@ impl WirelessControllerTransport {
                     sub,
                     last_slice_at: now,
                 });
+                false
             }
-            RfSlice::Later => {
-                if let Some(frame) = on_air.as_mut() {
-                    frame.last_slice_at = now;
-                }
+            RfSlice::Later { last } => on_air.as_mut().is_some_and(|frame| {
+                frame.last_slice_at = now;
+                last && frame.sub != RfSubCommand::SetRgb as u8
+            }),
+        }
+    }
+
+    /// Once a drain interval has passed, read and discard the status
+    /// packets the TX has queued, as L-Connect does every second. Only after
+    /// a frame that is not RGB: never inside an RGB transfer, and never
+    /// after a command whose reply a caller is about to read. A read that
+    /// times out is an empty queue, never a wedge; reads do not count.
+    async fn drain_tx_status(&self, frame_done: bool) {
+        if !frame_done {
+            return;
+        }
+        {
+            let mut drained_at = self
+                .drained_at
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let now = Instant::now();
+            if drained_at.is_some_and(|at| now.duration_since(at) < TX_STATUS_DRAIN_INTERVAL) {
+                return;
             }
+            *drained_at = Some(now);
+        }
+        let mut drained = 0_usize;
+        while drained < TX_STATUS_DRAIN_LIMIT {
+            match self
+                .pair
+                .receive_logical(TX_STATUS_DRAIN_GAP, TransferType::Primary, None)
+                .await
+            {
+                Ok(_) => drained += 1,
+                Err(_) => break,
+            }
+        }
+        if drained == TX_STATUS_DRAIN_LIMIT {
+            debug!(
+                controller = %self.controller,
+                drained,
+                "L-Wireless TX status queue still full after a drain"
+            );
+        } else {
+            trace!(controller = %self.controller, drained, "L-Wireless TX status drained");
         }
     }
 
@@ -446,7 +505,8 @@ impl Transport for WirelessControllerTransport {
         let result = self.pair.send_with_type(data, transfer_type).await;
         self.watch_write(DongleHalf::for_transfer(transfer_type), result)
             .await?;
-        self.note_on_air(slice);
+        let frame_done = self.note_on_air(slice);
+        self.drain_tx_status(frame_done).await;
         Ok(())
     }
 
@@ -464,7 +524,8 @@ impl Transport for WirelessControllerTransport {
         let result = self.pair.send_owned_with_type(data, transfer_type).await;
         self.watch_write(DongleHalf::for_transfer(transfer_type), result)
             .await?;
-        self.note_on_air(slice);
+        let frame_done = self.note_on_air(slice);
+        self.drain_tx_status(frame_done).await;
         Ok(())
     }
 
