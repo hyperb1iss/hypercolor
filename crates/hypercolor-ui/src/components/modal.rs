@@ -99,8 +99,11 @@ pub fn Modal(
 
     // Escape closes; Tab cycles within the dialog instead of escaping it.
     // `default_prevented` lets inner widgets (dropdowns) consume Escape for
-    // themselves without also dismissing the modal.
-    let _keydown = window_event_listener(ev::keydown, move |event| match event.key().as_str() {
+    // themselves without also dismissing the modal. Leptos 0.8 never
+    // removes a window listener on its own, so the handle is removed when
+    // the modal unmounts; a leaked one would keep answering Escape and Tab
+    // for a dialog that is gone.
+    let keydown = window_event_listener(ev::keydown, move |event| match event.key().as_str() {
         "Escape" if !event.default_prevented() && can_dismiss() => {
             event.prevent_default();
             on_close.run(());
@@ -136,6 +139,7 @@ pub fn Modal(
         }
         _ => {}
     });
+    on_cleanup(move || keydown.remove());
 
     view! {
         <Portal>
