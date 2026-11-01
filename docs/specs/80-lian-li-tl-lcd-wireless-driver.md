@@ -639,6 +639,23 @@ on each chunk command; the encoder owns this pacing, not the caller). The
 reference driver ships 1 ms between slices; 2 ms is what its RGB path's
 inter-envelope header repeat uses.
 
+Between whole frames the transport keeps the vendor's **air gap**
+(`wireless/transport.rs`, `air_gap`): a frame to another receiver, or of
+another sub-command, waits until 10 ms have passed since the TX took the
+last slice of an RGB frame, or 5 ms after any other frame. Frames of one
+kind to one receiver (a transfer's header repeats and data envelopes)
+follow each other freely, so the gap costs a single-cluster stream only
+the upkeep transitions. The rule is lian-li-linux's `RfPacer`, written
+after a receiver that heard a frame too soon after another receiver's
+latched the earlier frame's trailing bytes as its own address and duty;
+L-Connect spaces its traffic the same way (5 ms between devices in
+`SyncPwm`, 10 ms after an effect upload in `SyncRgbData`). The
+envelope's command-specific bytes [14..18] are what such a receiver reads
+as slot and channel, which is why the clock blob keeps them at the `0x14`
+sentinel (§6.8) and RGB tags set the high bit of [14] (§6.7). On a rig
+with several clusters the gap between their transfers is real time out of
+each frame; measure the delivered rate on hardware rather than assume it.
+
 ### 6.3 RF sub-commands
 
 | Name | Byte | Purpose |

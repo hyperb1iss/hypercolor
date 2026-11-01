@@ -1,13 +1,18 @@
 //! The controller's transport: the TX bulk device paired with its RX
 //! sibling behind the same internal hub, watched for a half that stops
-//! taking commands.
+//! taking commands, with the vendor's air gap kept between RF frames.
 
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
-use super::frame::{DONGLE_RESET, USB_CMD_RESET_PARTNER, USB_PACKET_LEN};
+use super::frame::{
+    DONGLE_RESET, Mac, RF_SELECT, RF_SLICES_PER_ENVELOPE, RfSubCommand, USB_CMD_RESET_PARTNER,
+    USB_CMD_SEND_RF, USB_PACKET_LEN, USB_RF_HEADER_LEN,
+};
 use super::health::{self, DongleHalf, WedgeCause};
 use crate::protocol::TransferType;
 use crate::registry::{UsbTransportFuture, UsbTransportOpenRequest};
@@ -61,6 +66,73 @@ pub fn open_wireless_controller(request: UsbTransportOpenRequest) -> UsbTranspor
 
 /// Name both the pair and its watcher report.
 const TRANSPORT_NAME: &str = "lianli-wireless";
+
+/// The vendor's air gap after an RGB frame, before a frame to another
+/// receiver or of another kind.
+pub const AIR_GAP_AFTER_RGB: Duration = Duration::from_millis(10);
+/// The air gap after any other frame, before a frame to another receiver
+/// or of another kind.
+pub const AIR_GAP_BETWEEN_FRAMES: Duration = Duration::from_millis(5);
+
+/// How long an RF frame to `target` carrying `sub` must still wait, when
+/// the TX took the last slice of `previous` (its target and sub-command)
+/// `since` ago.
+///
+/// A receiver that hears a frame too soon after another receiver's frame
+/// can latch the earlier frame's trailing bytes as its address and duty, so
+/// a frame to a new target or of a new kind waits out the gap; frames of
+/// one kind to one target (a transfer's header repeats and data) follow
+/// each other freely. The gaps are lian-li-linux's (`RfPacer`), which
+/// match L-Connect's spacing: 5 ms between devices in its fan-speed loop,
+/// 10 ms after an effect upload.
+#[must_use]
+pub fn air_gap(previous: Option<(Mac, u8)>, since: Duration, target: Mac, sub: u8) -> Duration {
+    let Some((last_target, last_sub)) = previous else {
+        return Duration::ZERO;
+    };
+    if last_target == target && last_sub == sub {
+        return Duration::ZERO;
+    }
+    let gap = if last_sub == RfSubCommand::SetRgb as u8 {
+        AIR_GAP_AFTER_RGB
+    } else {
+        AIR_GAP_BETWEEN_FRAMES
+    };
+    gap.saturating_sub(since)
+}
+
+/// Where a TX packet sits in an RF frame.
+#[derive(Debug, Clone, Copy)]
+enum RfSlice {
+    /// The first slice, which names the frame's target and sub-command.
+    First { target: Mac, sub: u8 },
+    /// A later slice of the frame in progress.
+    Later,
+}
+
+/// Where `packet` sits in an RF frame, if it is a slice of one.
+fn rf_slice(packet: &[u8]) -> Option<RfSlice> {
+    let envelope = packet.get(USB_RF_HEADER_LEN..)?;
+    if packet[0] != USB_CMD_SEND_RF {
+        return None;
+    }
+    match usize::from(packet[1]) {
+        0 if envelope.first() == Some(&RF_SELECT) => Some(RfSlice::First {
+            target: envelope.get(2..8)?.try_into().ok()?,
+            sub: *envelope.get(1)?,
+        }),
+        index if (1..RF_SLICES_PER_ENVELOPE).contains(&index) => Some(RfSlice::Later),
+        _ => None,
+    }
+}
+
+/// The RF frame the TX took last.
+#[derive(Debug, Clone, Copy)]
+struct AirFrame {
+    target: Mac,
+    sub: u8,
+    last_slice_at: Instant,
+}
 /// Health key for a TX the scanner handed over without a USB path.
 const UNKNOWN_CONTROLLER: &str = "<unknown>";
 
@@ -91,6 +163,8 @@ const UNKNOWN_CONTROLLER: &str = "<unknown>";
 pub struct WirelessControllerTransport {
     pair: Box<dyn Transport>,
     controller: String,
+    /// The RF frame the TX took last, for the air gap.
+    on_air: Mutex<Option<AirFrame>>,
 }
 
 impl WirelessControllerTransport {
@@ -101,6 +175,59 @@ impl WirelessControllerTransport {
         Self {
             pair,
             controller: controller.into(),
+            on_air: Mutex::new(None),
+        }
+    }
+
+    /// Where a write sits in an RF frame, if it is a TX write of one.
+    fn tx_rf_slice(data: &[u8], transfer_type: TransferType) -> Option<RfSlice> {
+        (DongleHalf::for_transfer(transfer_type) == DongleHalf::Tx)
+            .then(|| rf_slice(data))
+            .flatten()
+    }
+
+    /// Before a TX write: if it starts an RF frame, wait out whatever is
+    /// left of the air gap after the frame before it.
+    async fn keep_air_gap(&self, slice: Option<RfSlice>) {
+        let Some(RfSlice::First { target, sub }) = slice else {
+            return;
+        };
+        let wait = {
+            let on_air = self.on_air.lock().unwrap_or_else(PoisonError::into_inner);
+            on_air.map_or(Duration::ZERO, |frame| {
+                air_gap(
+                    Some((frame.target, frame.sub)),
+                    frame.last_slice_at.elapsed(),
+                    target,
+                    sub,
+                )
+            })
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// After a TX write the TX took: note the RF frame it belongs to.
+    fn note_on_air(&self, slice: Option<RfSlice>) {
+        let Some(slice) = slice else {
+            return;
+        };
+        let mut on_air = self.on_air.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        match slice {
+            RfSlice::First { target, sub } => {
+                *on_air = Some(AirFrame {
+                    target,
+                    sub,
+                    last_slice_at: now,
+                });
+            }
+            RfSlice::Later => {
+                if let Some(frame) = on_air.as_mut() {
+                    frame.last_slice_at = now;
+                }
+            }
         }
     }
 
@@ -314,9 +441,13 @@ impl Transport for WirelessControllerTransport {
             let half = DongleHalf::for_transfer(transfer_type).partner();
             return Err(self.undelivered(half).await);
         }
+        let slice = Self::tx_rf_slice(data, transfer_type);
+        self.keep_air_gap(slice).await;
         let result = self.pair.send_with_type(data, transfer_type).await;
         self.watch_write(DongleHalf::for_transfer(transfer_type), result)
-            .await
+            .await?;
+        self.note_on_air(slice);
+        Ok(())
     }
 
     async fn send_owned_with_type(
@@ -328,9 +459,13 @@ impl Transport for WirelessControllerTransport {
             let half = DongleHalf::for_transfer(transfer_type).partner();
             return Err(self.undelivered(half).await);
         }
+        let slice = Self::tx_rf_slice(&data, transfer_type);
+        self.keep_air_gap(slice).await;
         let result = self.pair.send_owned_with_type(data, transfer_type).await;
         self.watch_write(DongleHalf::for_transfer(transfer_type), result)
-            .await
+            .await?;
+        self.note_on_air(slice);
+        Ok(())
     }
 
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {

@@ -43,6 +43,7 @@ hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio", version = "
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 criterion = { workspace = true }
 tempfile = { workspace = true }
 
