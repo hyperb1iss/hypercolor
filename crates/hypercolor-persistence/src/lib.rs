@@ -237,9 +237,10 @@ impl std::fmt::Display for FlushProgress {
             )?;
         }
         if let Some(foreground) = self.foreground {
-            write!(f, ", foreground {foreground} not started")?;
+            write!(f, ", foreground commit {foreground} not started")?;
         }
-        write!(f, ", {} attempts finished", self.finished_attempts)?;
+        let plural = if self.finished_attempts == 1 { "" } else { "s" };
+        write!(f, ", {} attempt{plural} finished", self.finished_attempts)?;
         if let Some(ago) = self.last_finished {
             write!(f, ", the last {}ms ago", ago.as_millis())?;
         }
@@ -2178,6 +2179,47 @@ mod tests {
         writer
             .flush(Duration::from_secs(5))
             .expect("nothing is left pending");
+    }
+}
+
+#[cfg(test)]
+mod flush_progress_tests {
+    use super::*;
+
+    #[test]
+    fn a_stuck_attempt_reads_as_one_in_flight() {
+        let progress = FlushProgress {
+            target: 7,
+            landed: 5,
+            pending: Some(7),
+            active: Some((7, Duration::from_millis(5_120))),
+            foreground: None,
+            finished_attempts: 1,
+            last_finished: Some(Duration::from_millis(5_200)),
+        };
+        assert_eq!(
+            progress.to_string(),
+            "waiting for generation 7, landed 5, pending 7, attempt at 7 running 5120ms, \
+             1 attempt finished, the last 5200ms ago"
+        );
+    }
+
+    #[test]
+    fn an_unstarted_foreground_commit_is_named() {
+        let progress = FlushProgress {
+            target: 3,
+            landed: 2,
+            pending: Some(3),
+            active: None,
+            foreground: Some(3),
+            finished_attempts: 0,
+            last_finished: None,
+        };
+        assert_eq!(
+            progress.to_string(),
+            "waiting for generation 3, landed 2, pending 3, foreground commit 3 not started, \
+             0 attempts finished"
+        );
     }
 }
 
