@@ -271,7 +271,7 @@ pub fn MediaPage() -> impl IntoView {
                     <PageSearchBar placeholder="Search media..." value=search set_value=set_search />
                     // Chips scroll in their own strip on phones (buttons
                     // only, no dropdowns, so the clip box is safe).
-                    <div class="flex shrink-0 items-center gap-1.5 max-md:shrink max-md:min-w-0 max-md:overflow-x-auto scrollbar-none">
+                    <div class="flex shrink-0 items-center gap-1.5 max-md:shrink max-md:min-w-0 max-md:overflow-x-auto max-md:edge-fade-x scrollbar-none">
                         {filter_chips(MEDIA_FILTERS, kind_filter, set_kind_filter)}
                     </div>
                 </HeaderToolbar>

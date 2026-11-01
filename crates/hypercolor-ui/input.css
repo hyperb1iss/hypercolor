@@ -1443,6 +1443,13 @@ body.resizing * {
     100% { filter: blur(6px) hue-rotate(360deg); }
 }
 
+/* A horizontal scroll strip fades at its trailing edge, so an item cut
+   off there reads as "more this way" rather than as a clipping bug. */
+@utility edge-fade-x {
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
