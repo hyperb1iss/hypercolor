@@ -355,23 +355,22 @@ pub fn describe_zone_failure(what: &str, error: &ApiError) -> String {
             message: Some(message),
             ..
         } if message.contains("unknown field `index`") => {
-            "This Hypercolor daemon can't reorder zones yet. Update Hypercolor to reorder."
-                .to_owned()
+            "This installation can't reorder zones yet. Update Hypercolor to reorder.".to_owned()
         }
         ApiError::Http {
             message: Some(message),
             ..
         } if message.starts_with("Failed to deserialize") => {
-            format!("{what}: the daemon didn't accept the request")
+            format!("{what}: Hypercolor didn't accept the request")
         }
         ApiError::Http {
             message: Some(message),
             ..
         } => format!("{what}: {}", message.trim_end_matches('.')),
         ApiError::Http { status, .. } => format!("{what} (HTTP {status})"),
-        ApiError::Network(_) => format!("{what}: the daemon could not be reached"),
+        ApiError::Network(_) => format!("{what}: Hypercolor could not be reached"),
         ApiError::Parse(_) | ApiError::Serialize(_) => {
-            format!("{what}: the daemon sent an unexpected reply")
+            format!("{what}: Hypercolor sent an unexpected reply")
         }
     }
 }

@@ -294,7 +294,7 @@ fn zone_write_failures_read_as_words() {
     );
     assert_eq!(
         describe_zone_failure("Couldn't reorder zones", &old_daemon),
-        "This Hypercolor daemon can't reorder zones yet. Update Hypercolor to reorder."
+        "This installation can't reorder zones yet. Update Hypercolor to reorder."
     );
     assert_eq!(
         describe_zone_failure(
@@ -304,7 +304,7 @@ fn zone_write_failures_read_as_words() {
                 "Failed to deserialize the JSON body into the target type: name: bad"
             )
         ),
-        "Zone update failed: the daemon didn't accept the request"
+        "Zone update failed: Hypercolor didn't accept the request"
     );
     assert_eq!(
         describe_zone_failure("Couldn't reorder zones", &http(404, "Zone not found.")),
@@ -316,6 +316,6 @@ fn zone_write_failures_read_as_words() {
     );
     assert_eq!(
         describe_zone_failure("Zone update failed", &ApiError::Network("reset".into())),
-        "Zone update failed: the daemon could not be reached"
+        "Zone update failed: Hypercolor could not be reached"
     );
 }

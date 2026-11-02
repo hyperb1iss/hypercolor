@@ -81,10 +81,10 @@ impl<T> Answer<T> {
         match self {
             Self::Final { outcome, .. } => outcome,
             Self::OtherRun => Err(ApiError::Network(
-                "the daemon restarted before it answered".to_owned(),
+                "Hypercolor restarted before it answered".to_owned(),
             )),
             Self::Forgotten => Err(ApiError::Network(
-                "the daemon no longer knows whether the write went through".to_owned(),
+                "Hypercolor no longer knows whether the write went through".to_owned(),
             )),
             Self::Lost(error) => Err(error),
         }
@@ -156,9 +156,9 @@ fn lost_error<T>(outcome: ApiResult<MutationOutcome<T>>, status: Option<u16>) ->
     match (outcome, status) {
         (Err(error), None) => error,
         (_, Some(status)) => {
-            ApiError::Network(format!("no answer from the daemon (HTTP {status})"))
+            ApiError::Network(format!("no answer from Hypercolor (HTTP {status})"))
         }
-        (Ok(_), None) => ApiError::Network("no answer from the daemon".to_owned()),
+        (Ok(_), None) => ApiError::Network("no answer from Hypercolor".to_owned()),
     }
 }
 

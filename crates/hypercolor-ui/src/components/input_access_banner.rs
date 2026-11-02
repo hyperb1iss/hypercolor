@@ -135,9 +135,9 @@ pub fn InputAccessBanner() -> impl IntoView {
                                 view! {
                                     <span>
                                         "Hypercolor is running without an interactive desktop, \
-                                         so it can't see your keyboard or mouse. Run the \
-                                         Hypercolor daemon in your own session instead of as \
-                                         a Windows service."
+                                         so it can't see your keyboard or mouse. Run \
+                                         Hypercolor in your own session instead of as a \
+                                         Windows service."
                                     </span>
                                 }.into_any()
                             } else {
