@@ -94,9 +94,9 @@ pub fn InputSection(
         }))
     });
     let route_options = Signal::stored(vec![
-        ("host".to_owned(), "Host only".to_owned()),
+        ("host".to_owned(), "Where Hypercolor runs".to_owned()),
         ("browser".to_owned(), "Addressed browser".to_owned()),
-        ("merge".to_owned(), "Merge host + browser".to_owned()),
+        ("merge".to_owned(), "Both".to_owned()),
     ]);
 
     let input_status = LocalResource::new(move || {
@@ -132,8 +132,8 @@ pub fn InputSection(
         <section id="section-input" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Input Access" icon=LuKeyboard />
             <SettingToggle
-                label="Host input access"
-                description="Allow explicitly input-reactive effects to receive host keyboard or pointer state"
+                label="Keyboard and mouse input"
+                description="Allow explicitly input-reactive effects to receive the keyboard and pointer where Hypercolor runs"
                 key="input.enabled"
                 value=enabled
                 on_change=on_change
@@ -154,7 +154,7 @@ pub fn InputSection(
                     on_change=on_change
                 />
                 <SettingDropdown
-                    label="Effects on the connected computer"
+                    label="Effects on your devices"
                     description="Choose which interaction source authoritative device output receives"
                     key="input.daemon_route"
                     value=daemon_route
@@ -163,7 +163,7 @@ pub fn InputSection(
                 />
                 <SettingDropdown
                     label="Interactive previews"
-                    description="Route each preview to its addressed browser input, host input, or both"
+                    description="Route each preview to its addressed browser's input, the input where Hypercolor runs, or both"
                     key="input.preview_route"
                     value=preview_route
                     options=route_options

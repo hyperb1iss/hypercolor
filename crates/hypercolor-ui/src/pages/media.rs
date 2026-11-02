@@ -448,7 +448,7 @@ fn MediaEmptyHero(
                     "Your media library is empty"
                 </h2>
                 <p class="mt-1.5 max-w-sm text-xs leading-relaxed text-fg-tertiary">
-                    "Drop files anywhere on this page, or browse from your computer. "
+                    "Drop files anywhere on this page, or browse for them. "
                     "Everything here becomes a layer you can composite in Studio."
                 </p>
                 <button

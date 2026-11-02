@@ -72,7 +72,7 @@ pub fn ReleaseSettings() -> impl IntoView {
                     </button>
                 </div>
                 <p class="mt-2 text-xs text-fg-tertiary">
-                    "Updates are for the computer running Hypercolor. If you installed with a package manager, update through it."
+                    "Updates install where Hypercolor runs. If you installed with a package manager, update through it."
                 </p>
                 {move || context.error.get().map(|error| view! {
                     <p class="mt-3 text-xs text-status-error" role="alert">{error}</p>
