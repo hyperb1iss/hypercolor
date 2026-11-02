@@ -80,7 +80,7 @@ pub fn input_status_remediation(input: &InputStatus) -> Option<String> {
     match input_access_remedy(true, input) {
         Some(InputAccessRemedy::EnableConsent) => {
             return Some(
-                "Enable host input access to open keyboard or pointer backends.".to_owned(),
+                "Turn on keyboard and mouse input to open keyboard or pointer backends.".to_owned(),
             );
         }
         Some(InputAccessRemedy::InstallRules) => {
@@ -186,7 +186,7 @@ pub fn input_status_line(input: &InputStatus) -> Option<(StatusLineTone, String)
         }
         InputPipelineState::Unavailable => Some((
             StatusLineTone::Warn,
-            "Host input isn't available on this system.".to_owned(),
+            "Keyboard and mouse input isn't available on this system.".to_owned(),
         )),
     }
 }

@@ -164,7 +164,7 @@ pub fn BackupsSection() -> impl IntoView {
     view! {
         <section id="section-backups">
             <SectionHeader title="Backup files" icon=LuSave />
-            <p class="text-sm text-fg-secondary mb-4">"Save your scenes, layouts, favorites, and lighting settings in one file. Installed effects and media stay on this computer."</p>
+            <p class="text-sm text-fg-secondary mb-4">"Save your scenes, layouts, favorites, and lighting settings in one file. Installed effects and media stay on this installation."</p>
             <div class="flex flex-wrap gap-3">
                 <Show when=move || can_download.get()>
                     <button class="px-3 py-2 rounded-lg text-sm border border-[var(--border-default)] text-fg-primary bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)] disabled:opacity-50 disabled:cursor-not-allowed" disabled=move || busy.get() on:click=export.clone()>"Download backup"</button>
@@ -176,7 +176,7 @@ pub fn BackupsSection() -> impl IntoView {
             </div>
             {remote.then(|| view! {
                 <Show when=move || !can_download.get()>
-                    <p class="mt-3 text-sm text-fg-secondary">"Manage backup files in Hypercolor on this computer."</p>
+                    <p class="mt-3 text-sm text-fg-secondary">"Manage backup files on the installation itself."</p>
                 </Show>
             })}
             {move || preview.get().map(|candidate| view! {
