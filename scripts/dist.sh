@@ -28,6 +28,7 @@ RELEASE_VERSION=""
 BUILD_ROOT=""
 TCC_CANARY=0
 DURABLE_STORE_OVERLAYS=()
+THIRD_PARTY_NOTICES=""
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
@@ -80,6 +81,10 @@ while [[ $# -gt 0 ]]; do
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     --version)          RELEASE_VERSION="$2"; shift 2 ;;
     --durable-stores)   DURABLE_STORE_OVERLAYS+=("$2"); shift 2 ;;
+    --third-party-notices)
+      [[ -z "${THIRD_PARTY_NOTICES}" ]] || die "--third-party-notices may be given once"
+      [[ -n "${2:-}" ]] || die "--third-party-notices needs a directory"
+      THIRD_PARTY_NOTICES="$2"; shift 2 ;;
     -h|--help)
       cat <<'EOF'
 Usage: ./scripts/dist.sh [options]
@@ -101,6 +106,11 @@ Options:
                        the durable store inventory a Linux release ships
                        (JSON {"stores": [...]}; repeatable; a store already
                        declared is refused)
+  --third-party-notices <dir>
+                       Ship the license and patent notices of third-party
+                       code a downstream build links, as third-party/ beside
+                       LICENSE and NOTICE (absolute path; regular files and
+                       directories only, at least one file)
   -h, --help           Show this help
 EOF
       exit 0
@@ -119,6 +129,15 @@ if [[ -n "${BIN_DIR}" ]]; then
   if [[ ${#MISSING_BINS[@]} -ne 0 ]]; then
     die "--bin-dir is missing executable binaries: ${MISSING_BINS[*]}"
   fi
+fi
+
+if [[ -n "${THIRD_PARTY_NOTICES}" ]]; then
+  [[ "${THIRD_PARTY_NOTICES}" == /* ]] || die "--third-party-notices must be an absolute path (the script runs from the repo root): ${THIRD_PARTY_NOTICES}"
+  [[ -d "${THIRD_PARTY_NOTICES}" && ! -L "${THIRD_PARTY_NOTICES}" ]] || die "--third-party-notices is not a directory: ${THIRD_PARTY_NOTICES}"
+  # The release manifest binds regular files and directories only.
+  UNSUPPORTED_NOTICE="$(find "${THIRD_PARTY_NOTICES}" -mindepth 1 ! -type f ! -type d -print -quit)"
+  [[ -z "${UNSUPPORTED_NOTICE}" ]] || die "--third-party-notices holds a member that is neither a file nor a directory: ${UNSUPPORTED_NOTICE}"
+  [[ -n "$(find "${THIRD_PARTY_NOTICES}" -type f -print -quit)" ]] || die "--third-party-notices holds no files: ${THIRD_PARTY_NOTICES}"
 fi
 
 require_cmd cargo
@@ -382,6 +401,16 @@ if [[ "${IS_MACOS}" -eq 1 ]]; then
 fi
 
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
+
+# A downstream build that links third-party code ships that code's notices
+# beside Hypercolor's own, readable by everyone whatever the source modes;
+# the manifest binds them like any other member.
+if [[ -n "${THIRD_PARTY_NOTICES}" ]]; then
+  mkdir -p "${DIST_DIR}/third-party"
+  cp -R "${THIRD_PARTY_NOTICES}/." "${DIST_DIR}/third-party/"
+  find "${DIST_DIR}/third-party" -type d -exec chmod 0755 {} +
+  find "${DIST_DIR}/third-party" -type f -exec chmod 0644 {} +
+fi
 
 DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
 RUST_TARGET="${RUST_TARGET}" IS_LINUX="${IS_LINUX}" \
