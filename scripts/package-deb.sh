@@ -113,6 +113,7 @@ fi
 install -Dm644 "${DIST_DIR}/LICENSE" "${PACKAGE_ROOT}/usr/share/doc/hypercolor/copyright"
 install -Dm644 "${DIST_DIR}/NOTICE" "${PACKAGE_ROOT}/usr/share/doc/hypercolor/NOTICE"
 install -Dm644 "${DIST_DIR}/README.md" "${PACKAGE_ROOT}/usr/share/doc/hypercolor/README.md"
+copy_tree "${DIST_DIR}/third-party" "${PACKAGE_ROOT}/usr/share/doc/hypercolor/third-party"
 
 INSTALLED_SIZE="$(du -sk "${PACKAGE_ROOT}" | cut -f1)"
 mkdir -p "${PACKAGE_ROOT}/DEBIAN"
