@@ -130,6 +130,17 @@ device_ips = ["192.168.10.70"]
 
 Devices at these addresses are contacted directly; mDNS is used in addition when available.
 
+### LIFX
+
+LIFX discovers by UDP broadcast rather than mDNS, so it fails in the same places broadcast does (separate subnets, AP isolation). It also uses `device_ips`:
+
+```toml
+[drivers.lifx]
+device_ips = ["192.168.10.80"]
+```
+
+Set `broadcast_discovery = false` as well if you want Hypercolor to contact only the listed lights.
+
 ### Philips Hue
 
 Hue uses `bridge_ips` to locate the Hue Bridge when mDNS is unavailable:
