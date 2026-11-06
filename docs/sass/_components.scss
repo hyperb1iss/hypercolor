@@ -799,6 +799,19 @@ kbd {
 // API Endpoint Cards — glass bg, colored method badges
 // ---------------------------------------------------------------------------
 
+// A long route must break anywhere so a card header never widens a
+// phone-width page. The doubled class outranks `.doc :not(pre) > code`.
+.doc .api-endpoint__path {
+  overflow-wrap: anywhere;
+}
+
+// Explicit schema anchors on the generated REST schemas page sit just above
+// their heading; the offset keeps a jumped-to type clear of the sticky nav.
+.schema-anchor {
+  display: block;
+  scroll-margin-top: 80px;
+}
+
 .api-endpoint {
   background: var(--glass-bg);
   backdrop-filter: blur(8px);
@@ -820,6 +833,7 @@ kbd {
 
   &__header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
   }
@@ -845,7 +859,6 @@ kbd {
     font-family: var(--font-mono);
     font-size: 0.9rem;
     color: var(--text-primary);
-    overflow-wrap: anywhere;
   }
 
   // Generated cards carry the operation summary and a deep link. The summary

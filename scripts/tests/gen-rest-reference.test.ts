@@ -63,9 +63,9 @@ function reference(schemas: Record<string, Schema>): Reference {
 
 /** The rendered markdown for one schema on the schemas page. */
 function schemaSection(page: string, name: string): string {
-    const start = page.indexOf(`### ${name} {#${name}}`)
+    const start = page.indexOf(`<div class="schema-anchor" id="${name}"></div>`)
     expect(start).toBeGreaterThanOrEqual(0)
-    const next = page.indexOf('\n### ', start + 1)
+    const next = page.indexOf('<div class="schema-anchor"', start + 1)
     return page.slice(start, next === -1 ? undefined : next)
 }
 
@@ -85,8 +85,9 @@ describe('ordering', () => {
                     AppliedControlChange: { type: 'object', properties: { key: { type: 'string' } } },
                 }),
             )
-            expect(page.indexOf('### AppliedControlChange ')).toBeLessThan(
-                page.indexOf('### ApplyControlChangesResponse '),
+            expect(page.indexOf('\n### AppliedControlChange\n')).toBeGreaterThan(0)
+            expect(page.indexOf('\n### AppliedControlChange\n')).toBeLessThan(
+                page.indexOf('\n### ApplyControlChangesResponse\n'),
             )
         } finally {
             String.prototype.localeCompare = original
@@ -168,6 +169,29 @@ describe('description escaping', () => {
             }),
         )
         expect(page).not.toContain('<img')
+    })
+})
+
+describe('Zola compatibility', () => {
+    // Zola 0.23.3, which CI pins, reads `{#` in page content as a Tera comment.
+    test('generated pages carry no Tera comment opener', () => {
+        const ref = reference({ Thing: { type: 'object', properties: { id: { type: 'string' } } } })
+        expect(renderRest(ref)).not.toContain('{#')
+        expect(renderSchemas(ref)).not.toContain('{#')
+    })
+
+    test('schemas keep a stable anchor equal to their name', () => {
+        const page = renderSchemas(reference({ ApplyEffectRequest: { type: 'object', properties: {} } }))
+        expect(page).toContain('<div class="schema-anchor" id="ApplyEffectRequest"></div>\n\n### ApplyEffectRequest\n')
+    })
+
+    test('a Tera comment opener in a description fails generation', () => {
+        expect(() => reference({}).prose('a {# b')).toThrow(/template syntax/)
+    })
+
+    test('a Tera comment opener in the notes fails generation', () => {
+        const ref = new Reference(documentWith({}), parseNotes('# @intro\n\n## Heading {#custom}\n'))
+        expect(() => renderRest(ref)).toThrow(/Tera comment/)
     })
 })
 

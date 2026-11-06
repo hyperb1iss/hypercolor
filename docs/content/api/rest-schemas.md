@@ -17,9 +17,11 @@ hand: change the route's OperationDoc or the notes, then run
 
 Every type the [REST reference](@/api/rest.md) links to, generated from the daemon's [OpenAPI document](@/api/openapi.md). Types are grouped by the resource whose operations use them. Types used by several resources sit under Shared, and the response envelope's own types sit under Envelope.
 
-## System {#group-system}
+## System
 
-### AudioDeviceInfo {#AudioDeviceInfo}
+<div class="schema-anchor" id="AudioDeviceInfo"></div>
+
+### AudioDeviceInfo
 
 One selectable audio input source.
 
@@ -29,7 +31,9 @@ One selectable audio input source.
 | `id` | string | yes |
 | `name` | string | yes |
 
-### AudioDevicesResponse {#AudioDevicesResponse}
+<div class="schema-anchor" id="AudioDevicesResponse"></div>
+
+### AudioDevicesResponse
 
 The audio input inventory plus the configured selection.
 
@@ -40,7 +44,9 @@ The audio input inventory plus the configured selection.
 
 Used by [`GET /api/v1/system/audio-devices`](@/api/rest.md#list_audio_devices) response.
 
-### AuditEntry {#AuditEntry}
+<div class="schema-anchor" id="AuditEntry"></div>
+
+### AuditEntry
 
 One state-changing request, as the daemon recorded it.
 
@@ -61,7 +67,9 @@ the user agent, or tool arguments.
 | `transport` | [`AuditTransport`](@/api/rest-schemas.md#AuditTransport) | yes |  |
 | `user_agent` | string | yes | Client `User-Agent`, capped at 256 characters, empty when absent. |
 
-### AuditEntryListResponse {#AuditEntryListResponse}
+<div class="schema-anchor" id="AuditEntryListResponse"></div>
+
+### AuditEntryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -77,19 +85,25 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/system/audit`](@/api/rest.md#get_audit_log) response.
 
-### AuditTransport {#AuditTransport}
+<div class="schema-anchor" id="AuditTransport"></div>
+
+### AuditTransport
 
 Transport a state-changing request arrived on.
 
 One of `http`, `websocket`, `mcp`.
 
-### DaemonStartupPhase {#DaemonStartupPhase}
+<div class="schema-anchor" id="DaemonStartupPhase"></div>
+
+### DaemonStartupPhase
 
 Coarse daemon startup phases, in the order the daemon enters them.
 
 One of `initializing`, `probing_gpu`, `resolving_identity`, `opening_asset_library`, `scanning_effects`, `loading_stores`, `registering_backends`, `starting_inputs`, `starting_render_thread`, `starting_services`, `preparing_api`, `unknown`.
 
-### DaemonStartupProgress {#DaemonStartupProgress}
+<div class="schema-anchor" id="DaemonStartupProgress"></div>
+
+### DaemonStartupProgress
 
 How far a starting daemon has come, reported by `/health` before the
 full API is served.
@@ -100,7 +114,9 @@ full API is served.
 | `phase` | [`DaemonStartupPhase`](@/api/rest-schemas.md#DaemonStartupPhase) | yes | The phase startup is currently in. |
 | `sequence` | integer (int64) | yes | Monotonic counter that advances every time startup completes a unit of work: entering a phase, or finishing a step inside one (such as compiling one compositor pipeline). A client compares successive values to tell a slow startup from a stuck one. |
 
-### EffectHealthStatus {#EffectHealthStatus}
+<div class="schema-anchor" id="EffectHealthStatus"></div>
+
+### EffectHealthStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -177,7 +193,9 @@ full API is served.
 | `sparkleflinger_media_texture_allocations_total` | integer (int64) | yes |
 | `sparkleflinger_media_texture_upload_bytes_total` | integer (int64) | yes |
 
-### FullFrameCopySessionStatus {#FullFrameCopySessionStatus}
+<div class="schema-anchor" id="FullFrameCopySessionStatus"></div>
+
+### FullFrameCopySessionStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -185,7 +203,9 @@ full API is served.
 | `count` | integer (int64) | yes |
 | `frames` | integer (int64) | yes |
 
-### GpuCompositorProbeStatus {#GpuCompositorProbeStatus}
+<div class="schema-anchor" id="GpuCompositorProbeStatus"></div>
+
+### GpuCompositorProbeStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -201,7 +221,9 @@ full API is served.
 | `software_adapter_reason` | string or null | no |
 | `texture_format` | string | yes |
 
-### GpuPassTimingStatus {#GpuPassTimingStatus}
+<div class="schema-anchor" id="GpuPassTimingStatus"></div>
+
+### GpuPassTimingStatus
 
 Cumulative GPU execution time for one class of compute passes.
 
@@ -220,7 +242,9 @@ passes. No duration is fabricated for passes without a completed timestamp.
 | `stage` | string | yes |
 | `total_ns` | integer (int64) | yes |
 
-### GpuPassTimingsStatus {#GpuPassTimingsStatus}
+<div class="schema-anchor" id="GpuPassTimingsStatus"></div>
+
+### GpuPassTimingsStatus
 
 GPU timestamp coverage for SparkleFlinger's compute passes.
 
@@ -235,7 +259,9 @@ and queue latency. Counters belong to the current compositor instance.
 | `supported` | boolean | yes |  |
 | `unavailable_reason` | string or null | no |  |
 
-### GpuTransferStatus {#GpuTransferStatus}
+<div class="schema-anchor" id="GpuTransferStatus"></div>
+
+### GpuTransferStatus
 
 Successful GPU mappings consumed by CPU publications or LED decoding.
 Bytes count the mapped payload consumed, excluding RGBA row padding.
@@ -252,7 +278,9 @@ Counters are process totals and reset when the daemon restarts.
 | `sampling_canvas_readback_bytes` | integer (int64) | yes |  |
 | `sampling_canvas_readback_count` | integer (int64) | yes | Full RGBA canvases consumed by CPU sampling or scene/display assembly. |
 
-### HealthChecks {#HealthChecks}
+<div class="schema-anchor" id="HealthChecks"></div>
+
+### HealthChecks
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -260,7 +288,9 @@ Counters are process totals and reset when the daemon restarts.
 | `event_bus` | string | yes |
 | `render_loop` | string | yes |
 
-### HealthResponse {#HealthResponse}
+<div class="schema-anchor" id="HealthResponse"></div>
+
+### HealthResponse
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -272,14 +302,18 @@ Counters are process totals and reset when the daemon restarts.
 
 Used by [`GET /health`](@/api/rest.md#health_check) response.
 
-### LatencyHistogramBucketStatus {#LatencyHistogramBucketStatus}
+<div class="schema-anchor" id="LatencyHistogramBucketStatus"></div>
+
+### LatencyHistogramBucketStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
 | `bucket_index` | integer (int32) | yes |
 | `count` | integer (int64) | yes |
 
-### LatencyHistogramStatus {#LatencyHistogramStatus}
+<div class="schema-anchor" id="LatencyHistogramStatus"></div>
+
+### LatencyHistogramStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -288,7 +322,9 @@ Used by [`GET /health`](@/api/rest.md#health_check) response.
 | `overflow_bucket_index` | integer (int32) | yes |
 | `snapshot_frame_token` | integer (int64) or null | no |
 
-### LatencyPercentilesStatus {#LatencyPercentilesStatus}
+<div class="schema-anchor" id="LatencyPercentilesStatus"></div>
+
+### LatencyPercentilesStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -299,7 +335,9 @@ Used by [`GET /health`](@/api/rest.md#health_check) response.
 | `p99_ms` | number (double) | yes |
 | `sample_count` | integer (int64) | yes |
 
-### LatestFrameStatus {#LatestFrameStatus}
+<div class="schema-anchor" id="LatestFrameStatus"></div>
+
+### LatestFrameStatus
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -362,15 +400,21 @@ Used by [`GET /health`](@/api/rest.md#health_check) response.
 | `wake_late_ms` | number (double) | yes |  |
 | `zone_composition_skips` | integer (int32) | no | Scene zones whose layers matched their held frame, so they skipped composing this frame. Absent from older daemons. |
 
-### MacosCapabilityOwner {#MacosCapabilityOwner}
+<div class="schema-anchor" id="MacosCapabilityOwner"></div>
+
+### MacosCapabilityOwner
 
 One of `app_sidecar`, `app`, `launchd_service`, `homebrew_service`, `broker`, `standalone`.
 
-### MacosDaemonHandoverPhase {#MacosDaemonHandoverPhase}
+<div class="schema-anchor" id="MacosDaemonHandoverPhase"></div>
+
+### MacosDaemonHandoverPhase
 
 One of `prepared`, `autostarts_configured`, `stop_requested`, `outgoing_owner_stopped`, `awaiting_guard_release`, `guard_released`, `start_requested`, `requested_owner_started`, `commit_pending`, `committed`, `rollback_pending`, `rollback_autostarts_restored`, `rollback_stop_requested`, `rollback_owner_stopped`, `rollback_awaiting_guard_release`, `rollback_guard_released`, `rollback_start_requested`, `prior_owner_started`, `rollback_commit_pending`, `rolled_back`.
 
-### MacosDaemonOwnerConflictStatus {#MacosDaemonOwnerConflictStatus}
+<div class="schema-anchor" id="MacosDaemonOwnerConflictStatus"></div>
+
+### MacosDaemonOwnerConflictStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -378,7 +422,9 @@ One of `prepared`, `autostarts_configured`, `stop_requested`, `outgoing_owner_st
 | `contender` | [`MacosCapabilityOwner`](@/api/rest-schemas.md#MacosCapabilityOwner) | yes |
 | `observed_at_ms` | integer (int64) | yes |
 
-### MacosDaemonOwnerRecoveryRequiredStatus {#MacosDaemonOwnerRecoveryRequiredStatus}
+<div class="schema-anchor" id="MacosDaemonOwnerRecoveryRequiredStatus"></div>
+
+### MacosDaemonOwnerRecoveryRequiredStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -386,7 +432,9 @@ One of `prepared`, `autostarts_configured`, `stop_requested`, `outgoing_owner_st
 | `prior_owner` | [`MacosCapabilityOwner`](@/api/rest-schemas.md#MacosCapabilityOwner) | yes |
 | `requested_owner` | [`MacosCapabilityOwner`](@/api/rest-schemas.md#MacosCapabilityOwner) | yes |
 
-### MacosDaemonOwnershipStatus {#MacosDaemonOwnershipStatus}
+<div class="schema-anchor" id="MacosDaemonOwnershipStatus"></div>
+
+### MacosDaemonOwnershipStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -395,7 +443,9 @@ One of `prepared`, `autostarts_configured`, `stop_requested`, `outgoing_owner_st
 | `owner_epoch` | integer (int64) | yes |
 | `recovery_required` | [`MacosDaemonOwnerRecoveryRequiredStatus`](@/api/rest-schemas.md#MacosDaemonOwnerRecoveryRequiredStatus) or null | no |
 
-### OpenRgbEndpointStatus {#OpenRgbEndpointStatus}
+<div class="schema-anchor" id="OpenRgbEndpointStatus"></div>
+
+### OpenRgbEndpointStatus
 
 SDK handshake result for one configured endpoint.
 
@@ -407,7 +457,9 @@ SDK handshake result for one configured endpoint.
 | `protocol_version` | integer (int32) or null | no |
 | `reachable` | boolean | yes |
 
-### OpenRgbInstallHint {#OpenRgbInstallHint}
+<div class="schema-anchor" id="OpenRgbInstallHint"></div>
+
+### OpenRgbInstallHint
 
 Installation command and platform guidance suitable for display.
 
@@ -416,7 +468,9 @@ Installation command and platform guidance suitable for display.
 | `command` | string | yes |
 | `note` | string | yes |
 
-### OpenRgbPermissionStatus {#OpenRgbPermissionStatus}
+<div class="schema-anchor" id="OpenRgbPermissionStatus"></div>
+
+### OpenRgbPermissionStatus
 
 A host prerequisite and its actionable remedy.
 
@@ -427,7 +481,9 @@ A host prerequisite and its actionable remedy.
 | `ok` | boolean | yes |
 | `remedy` | string or null | no |
 
-### OpenRgbStatus {#OpenRgbStatus}
+<div class="schema-anchor" id="OpenRgbStatus"></div>
+
+### OpenRgbStatus
 
 Host and bridge state for guided setup.
 
@@ -447,7 +503,9 @@ Host and bridge state for guided setup.
 
 Used by [`GET /api/v1/system/openrgb`](@/api/rest.md#get_openrgb_status) response.
 
-### PreviewDemandStatus {#PreviewDemandStatus}
+<div class="schema-anchor" id="PreviewDemandStatus"></div>
+
+### PreviewDemandStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -460,7 +518,9 @@ Used by [`GET /api/v1/system/openrgb`](@/api/rest.md#get_openrgb_status) respons
 | `max_width` | integer (int32) | yes |
 | `subscribers` | integer (int32) | yes |
 
-### PreviewRuntimeStatus {#PreviewRuntimeStatus}
+<div class="schema-anchor" id="PreviewRuntimeStatus"></div>
+
+### PreviewRuntimeStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -481,7 +541,9 @@ Used by [`GET /api/v1/system/openrgb`](@/api/rest.md#get_openrgb_status) respons
 | `zone_preview_frames_published` | integer (int64) | yes |
 | `zone_preview_receivers` | integer (int32) | yes |
 
-### RenderAccelerationStatus {#RenderAccelerationStatus}
+<div class="schema-anchor" id="RenderAccelerationStatus"></div>
+
+### RenderAccelerationStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -492,7 +554,9 @@ Used by [`GET /api/v1/system/openrgb`](@/api/rest.md#get_openrgb_status) respons
 | `servo_gpu_import_attempting` | boolean | yes |
 | `servo_gpu_import_mode` | string | yes |
 
-### RenderLoopStatus {#RenderLoopStatus}
+<div class="schema-anchor" id="RenderLoopStatus"></div>
+
+### RenderLoopStatus
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -507,7 +571,9 @@ Used by [`GET /api/v1/system/openrgb`](@/api/rest.md#get_openrgb_status) respons
 | `target_fps` | integer (int32) | yes |  |
 | `total_frames` | integer (int64) | yes |  |
 
-### RenderSurfaceStatus {#RenderSurfaceStatus}
+<div class="schema-anchor" id="RenderSurfaceStatus"></div>
+
+### RenderSurfaceStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -529,7 +595,9 @@ Used by [`GET /api/v1/system/openrgb`](@/api/rest.md#get_openrgb_status) respons
 | `scene_pool_published_slots` | integer (int32) | yes |
 | `scene_pool_slot_count` | integer (int32) | yes |
 
-### ScreenCaptureCapacityStatus {#ScreenCaptureCapacityStatus}
+<div class="schema-anchor" id="ScreenCaptureCapacityStatus"></div>
+
+### ScreenCaptureCapacityStatus
 
 Installed byte fences for transactional screen publication admission.
 
@@ -554,7 +622,9 @@ Installed byte fences for transactional screen publication admission.
 | `steady_total_byte_budget` | integer (int64) or null | no |
 | `transition_publication_backend_capacity` | integer (int64) or null | no |
 
-### SensorReading {#SensorReading}
+<div class="schema-anchor" id="SensorReading"></div>
+
+### SensorReading
 
 A single host sensor reading.
 
@@ -567,13 +637,17 @@ A single host sensor reading.
 | `unit` | [`SensorUnit`](@/api/rest-schemas.md#SensorUnit) | yes | Sensor unit. |
 | `value` | number (float) | yes | Current sensor value. |
 
-### SensorUnit {#SensorUnit}
+<div class="schema-anchor" id="SensorUnit"></div>
+
+### SensorUnit
 
 Units exposed by system sensors.
 
 One of `celsius`, `percent`, `megabytes`, `rpm`, `watts`, `mhz`.
 
-### ServerInfo {#ServerInfo}
+<div class="schema-anchor" id="ServerInfo"></div>
+
+### ServerInfo
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -584,14 +658,18 @@ One of `celsius`, `percent`, `megabytes`, `rpm`, `watts`, `mhz`.
 | `server_session_id` | string or null | no |
 | `version` | string | yes |
 
-### SessionPerformanceStatus {#SessionPerformanceStatus}
+<div class="schema-anchor" id="SessionPerformanceStatus"></div>
+
+### SessionPerformanceStatus
 
 | Field | Type | Required |
 | --- | --- | --- |
 | `full_frame_cpu_copies` | [`FullFrameCopySessionStatus`](@/api/rest-schemas.md#FullFrameCopySessionStatus) | yes |
 | `input_stage` | [`LatencyPercentilesStatus`](@/api/rest-schemas.md#LatencyPercentilesStatus) | yes |
 
-### SoftwareConflict {#SoftwareConflict}
+<div class="schema-anchor" id="SoftwareConflict"></div>
+
+### SoftwareConflict
 
 RGB software running on the host that competes with Hypercolor for
 devices.
@@ -606,7 +684,9 @@ devices.
 | `remedy` | string | yes | What the user should do about it. |
 | `smbus` | boolean | yes | Whether it drives SMBus lighting (motherboard, RAM, GPU). |
 
-### SoftwareConflictsStatus {#SoftwareConflictsStatus}
+<div class="schema-anchor" id="SoftwareConflictsStatus"></div>
+
+### SoftwareConflictsStatus
 
 What the latest conflict scan found.
 
@@ -619,7 +699,9 @@ What the latest conflict scan found.
 
 Used by [`GET /api/v1/system/conflicts`](@/api/rest.md#get_software_conflicts) response, [`POST /api/v1/system/conflicts/scan`](@/api/rest.md#scan_software_conflicts) response.
 
-### SystemResource {#SystemResource}
+<div class="schema-anchor" id="SystemResource"></div>
+
+### SystemResource
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -628,7 +710,9 @@ Used by [`GET /api/v1/system/conflicts`](@/api/rest.md#get_software_conflicts) r
 
 Used by [`GET /api/v1/system`](@/api/rest.md#get_system) response.
 
-### SystemSnapshot {#SystemSnapshot}
+<div class="schema-anchor" id="SystemSnapshot"></div>
+
+### SystemSnapshot
 
 Published system snapshot shared across render, API, and overlays.
 
@@ -648,7 +732,9 @@ Published system snapshot shared across render, API, and overlays.
 
 Used by [`GET /api/v1/system/sensors`](@/api/rest.md#get_sensors) response.
 
-### SystemStatus {#SystemStatus}
+<div class="schema-anchor" id="SystemStatus"></div>
+
+### SystemStatus
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -680,9 +766,11 @@ Used by [`GET /api/v1/system/sensors`](@/api/rest.md#get_sensors) response.
 | `uptime_seconds` | integer (int64) | yes |  |
 | `version` | string | yes |  |
 
-## Drivers {#group-drivers}
+## Drivers
 
-### DriverCapabilitySet {#DriverCapabilitySet}
+<div class="schema-anchor" id="DriverCapabilitySet"></div>
+
+### DriverCapabilitySet
 
 Capability flags exposed by a driver module.
 
@@ -698,7 +786,9 @@ Capability flags exposed by a driver module.
 | `protocol_catalog` | boolean | yes | Contributes protocols to a shared backend. |
 | `runtime_cache` | boolean | yes | Keeps runtime cache state. |
 
-### DriverConfigResponse {#DriverConfigResponse}
+<div class="schema-anchor" id="DriverConfigResponse"></div>
+
+### DriverConfigResponse
 
 Response for `GET /api/v1/drivers/{id}/config`.
 
@@ -712,7 +802,9 @@ Response for `GET /api/v1/drivers/{id}/config`.
 
 Used by [`GET /api/v1/drivers/{id}/config`](@/api/rest.md#get_driver_config) response.
 
-### DriverModuleDescriptor {#DriverModuleDescriptor}
+<div class="schema-anchor" id="DriverModuleDescriptor"></div>
+
+### DriverModuleDescriptor
 
 Stable module descriptor for native and future Wasm driver registries.
 
@@ -728,13 +820,17 @@ Stable module descriptor for native and future Wasm driver registries.
 | `transports` | array of [`DriverTransportDescriptor`](@/api/rest-schemas.md#DriverTransportDescriptor) | yes | Transport categories used by this driver and their platform support. |
 | `vendor_name` | string or null | no | Optional vendor or organization name. |
 
-### DriverModuleKind {#DriverModuleKind}
+<div class="schema-anchor" id="DriverModuleKind"></div>
+
+### DriverModuleKind
 
 High-level module category used for driver registry introspection.
 
 One of `network`, `hal`, `bridge`, `host`, `virtual`.
 
-### DriverProtocolDescriptor {#DriverProtocolDescriptor}
+<div class="schema-anchor" id="DriverProtocolDescriptor"></div>
+
+### DriverProtocolDescriptor
 
 Protocol descriptor contributed by a driver module.
 
@@ -751,7 +847,9 @@ Protocol descriptor contributed by a driver module.
 | `transport` | [`DriverTransportKind`](@/api/rest-schemas.md#DriverTransportKind) | yes | Transport category used by this protocol. |
 | `vendor_id` | integer (int32) or null | no | USB vendor ID when the protocol maps to a concrete USB device. |
 
-### DriverSummary {#DriverSummary}
+<div class="schema-anchor" id="DriverSummary"></div>
+
+### DriverSummary
 
 One registered driver module.
 
@@ -765,7 +863,9 @@ One registered driver module.
 | `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |
 | `protocols` | array of [`DriverProtocolDescriptor`](@/api/rest-schemas.md#DriverProtocolDescriptor) | no |
 
-### DriverSummaryListResponse {#DriverSummaryListResponse}
+<div class="schema-anchor" id="DriverSummaryListResponse"></div>
+
+### DriverSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -781,7 +881,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/drivers`](@/api/rest.md#list_drivers) response.
 
-### DriverTransportAvailability {#DriverTransportAvailability}
+<div class="schema-anchor" id="DriverTransportAvailability"></div>
+
+### DriverTransportAvailability
 
 Whether a driver transport can run on the current platform.
 
@@ -795,7 +897,9 @@ One of these variants, told apart by `status`:
 | --- | --- | --- | --- |
 | `platform` | string | yes | Human-readable operating-system name. |
 
-### DriverTransportDescriptor {#DriverTransportDescriptor}
+<div class="schema-anchor" id="DriverTransportDescriptor"></div>
+
+### DriverTransportDescriptor
 
 One transport category advertised by a driver module.
 
@@ -804,9 +908,11 @@ One transport category advertised by a driver module.
 | `availability` | [`DriverTransportAvailability`](@/api/rest-schemas.md#DriverTransportAvailability) | yes | Runtime availability on the current platform. |
 | `kind` | [`DriverTransportKind`](@/api/rest-schemas.md#DriverTransportKind) | yes | Transport category used for routing and presentation. |
 
-## Devices {#group-devices}
+## Devices
 
-### BridgeDeviceSummary {#BridgeDeviceSummary}
+<div class="schema-anchor" id="BridgeDeviceSummary"></div>
+
+### BridgeDeviceSummary
 
 How an out-of-process bridge (OpenRGB) reaches one device.
 
@@ -826,7 +932,9 @@ when the bridge itself still advertises the controller as writable.
 | `output_enabled` | boolean | yes | Whether frames may be written through this route. |
 | `protocol_version` | integer (int32) or null | no | Negotiated bridge protocol version. |
 
-### ComponentBinding {#ComponentBinding}
+<div class="schema-anchor" id="ComponentBinding"></div>
+
+### ComponentBinding
 
 Binding from a controller slot to a chosen attachment template.
 
@@ -839,7 +947,9 @@ Binding from a controller slot to a chosen attachment template.
 | `slot_id` | string | yes | Slot receiving the attachment. |
 | `template_id` | string | yes | Template identifier selected for this slot. |
 
-### ComponentBindingSummary {#ComponentBindingSummary}
+<div class="schema-anchor" id="ComponentBindingSummary"></div>
+
+### ComponentBindingSummary
 
 One resolved attachment binding, with the template it instantiates and
 the LED range it occupies on the controller.
@@ -855,7 +965,9 @@ the LED range it occupies on the controller.
 | `template_id` | string | yes |
 | `template_name` | string | yes |
 
-### ComponentSlot {#ComponentSlot}
+<div class="schema-anchor" id="ComponentSlot"></div>
+
+### ComponentSlot
 
 One physical controller attachment point.
 
@@ -869,7 +981,9 @@ One physical controller attachment point.
 | `name` | string | yes | User-facing port/channel name. |
 | `suggested_categories` | array of [`ComponentCategory`](@/api/rest-schemas.md#ComponentCategory) | no | Template categories that make sense here. |
 
-### ComponentSuggestedZone {#ComponentSuggestedZone}
+<div class="schema-anchor" id="ComponentSuggestedZone"></div>
+
+### ComponentSuggestedZone
 
 Attachment-derived zone suggestion for layout import and preview flows.
 
@@ -887,7 +1001,9 @@ Attachment-derived zone suggestion for layout import and preview flows.
 | `template_name` | string | yes | Bound attachment template display name. |
 | `topology` | [`LedTopology`](@/api/rest-schemas.md#LedTopology) | yes | Imported topology for spatial sampling. |
 
-### DeleteAttachmentsResponse {#DeleteAttachmentsResponse}
+<div class="schema-anchor" id="DeleteAttachmentsResponse"></div>
+
+### DeleteAttachmentsResponse
 
 Response for `DELETE /api/v1/devices/{id}/attachments`.
 
@@ -901,7 +1017,9 @@ which is a success rather than a 404.
 
 Used by [`DELETE /api/v1/devices/{id}/attachments`](@/api/rest.md#delete_attachments) response.
 
-### DeleteDeviceResponse {#DeleteDeviceResponse}
+<div class="schema-anchor" id="DeleteDeviceResponse"></div>
+
+### DeleteDeviceResponse
 
 Response for `DELETE /api/v1/devices/{id}`.
 
@@ -915,7 +1033,9 @@ prefix the caller addressed the device by.
 
 Used by [`POST /api/v1/devices/forget`](@/api/rest.md#forget_device) response, [`DELETE /api/v1/devices/{id}`](@/api/rest.md#delete_device) response.
 
-### DeletePairingResponse {#DeletePairingResponse}
+<div class="schema-anchor" id="DeletePairingResponse"></div>
+
+### DeletePairingResponse
 
 Response for `DELETE /api/v1/devices/{id}/pair`.
 
@@ -928,13 +1048,17 @@ Response for `DELETE /api/v1/devices/{id}/pair`.
 
 Used by [`DELETE /api/v1/devices/{id}/pair`](@/api/rest.md#delete_pairing) response.
 
-### DeviceAuthState {#DeviceAuthState}
+<div class="schema-anchor" id="DeviceAuthState"></div>
+
+### DeviceAuthState
 
 Summary of whether a device needs authentication before it can be used.
 
 One of `open`, `required`, `configured`, `error`.
 
-### DeviceAuthSummary {#DeviceAuthSummary}
+<div class="schema-anchor" id="DeviceAuthSummary"></div>
+
+### DeviceAuthSummary
 
 Driver-owned authentication summary for one tracked device.
 
@@ -945,7 +1069,9 @@ Driver-owned authentication summary for one tracked device.
 | `last_error` | string or null | no |
 | `state` | [`DeviceAuthState`](@/api/rest-schemas.md#DeviceAuthState) | yes |
 
-### DeviceComponentsResponse {#DeviceComponentsResponse}
+<div class="schema-anchor" id="DeviceComponentsResponse"></div>
+
+### DeviceComponentsResponse
 
 Response for `GET /api/v1/devices/{id}/attachments`.
 
@@ -963,7 +1089,9 @@ attachments imply.
 
 Used by [`GET /api/v1/devices/{id}/attachments`](@/api/rest.md#get_attachments) response.
 
-### DeviceComponentsUpdateResponse {#DeviceComponentsUpdateResponse}
+<div class="schema-anchor" id="DeviceComponentsUpdateResponse"></div>
+
+### DeviceComponentsUpdateResponse
 
 Response for `PUT /api/v1/devices/{id}/attachments`.
 
@@ -982,7 +1110,9 @@ ranges the new bindings describe.
 
 Used by [`PUT /api/v1/devices/{id}/attachments`](@/api/rest.md#update_attachments) response.
 
-### DeviceConnectionSummary {#DeviceConnectionSummary}
+<div class="schema-anchor" id="DeviceConnectionSummary"></div>
+
+### DeviceConnectionSummary
 
 Transport details for one device.
 
@@ -994,7 +1124,9 @@ Transport details for one device.
 | `label` | string or null | no |
 | `transport` | string | no |
 
-### DeviceCoverageRowListResponse {#DeviceCoverageRowListResponse}
+<div class="schema-anchor" id="DeviceCoverageRowListResponse"></div>
+
+### DeviceCoverageRowListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -1010,7 +1142,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/devices/coverage`](@/api/rest.md#get_device_coverage) response.
 
-### DeviceOrigin {#DeviceOrigin}
+<div class="schema-anchor" id="DeviceOrigin"></div>
+
+### DeviceOrigin
 
 Origin metadata that separates device ownership from output routing.
 
@@ -1021,7 +1155,9 @@ Origin metadata that separates device ownership from output routing.
 | `protocol_id` | string or null | no | Optional protocol implementation selected by the driver/backend. |
 | `transport` | [`DriverTransportKind`](@/api/rest-schemas.md#DriverTransportKind) | yes | Transport category used by this device. |
 
-### DeviceRef {#DeviceRef}
+<div class="schema-anchor" id="DeviceRef"></div>
+
+### DeviceRef
 
 Lightweight reference to a discovered device.
 
@@ -1032,7 +1168,9 @@ Lightweight reference to a discovered device.
 | `name` | string | yes |
 | `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |
 
-### DeviceSummary {#DeviceSummary}
+<div class="schema-anchor" id="DeviceSummary"></div>
+
+### DeviceSummary
 
 One device in the list/detail responses.
 
@@ -1056,7 +1194,9 @@ One device in the list/detail responses.
 
 Used by [`GET /api/v1/devices/{id}`](@/api/rest.md#get_device) response, [`PUT /api/v1/devices/{id}`](@/api/rest.md#update_device) response.
 
-### DeviceSummaryListResponse {#DeviceSummaryListResponse}
+<div class="schema-anchor" id="DeviceSummaryListResponse"></div>
+
+### DeviceSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -1072,7 +1212,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/devices`](@/api/rest.md#list_devices) response.
 
-### DiscoverRequest {#DiscoverRequest}
+<div class="schema-anchor" id="DiscoverRequest"></div>
+
+### DiscoverRequest
 
 Optional body for `POST /api/v1/devices/discover`.
 
@@ -1084,7 +1226,9 @@ Optional body for `POST /api/v1/devices/discover`.
 
 Used by [`POST /api/v1/devices/discover`](@/api/rest.md#discover_devices) request.
 
-### DiscoverResponse {#DiscoverResponse}
+<div class="schema-anchor" id="DiscoverResponse"></div>
+
+### DiscoverResponse
 
 Response from `POST /api/v1/devices/discover`.
 
@@ -1097,7 +1241,9 @@ One of these variants, told apart by `status`:
 
 Used by [`POST /api/v1/devices/discover`](@/api/rest.md#discover_devices) response.
 
-### DiscoveryScanResult {#DiscoveryScanResult}
+<div class="schema-anchor" id="DiscoveryScanResult"></div>
+
+### DiscoveryScanResult
 
 Detailed result from a completed discovery scan.
 
@@ -1112,7 +1258,9 @@ Detailed result from a completed discovery scan.
 | `total_known` | integer | yes |
 | `vanished_devices` | array of string | yes |
 
-### DiscoveryScannerResult {#DiscoveryScannerResult}
+<div class="schema-anchor" id="DiscoveryScannerResult"></div>
+
+### DiscoveryScannerResult
 
 Per-scanner diagnostics from a completed discovery scan.
 
@@ -1124,7 +1272,9 @@ Per-scanner diagnostics from a completed discovery scan.
 | `scanner` | string | yes |
 | `status` | string | yes |
 
-### ForgetDeviceRequest {#ForgetDeviceRequest}
+<div class="schema-anchor" id="ForgetDeviceRequest"></div>
+
+### ForgetDeviceRequest
 
 Forget saved controller content by its stable layout binding, even offline.
 
@@ -1134,7 +1284,9 @@ Forget saved controller content by its stable layout binding, even offline.
 
 Used by [`POST /api/v1/devices/forget`](@/api/rest.md#forget_device) request.
 
-### IdentifyAttachmentRequest {#IdentifyAttachmentRequest}
+<div class="schema-anchor" id="IdentifyAttachmentRequest"></div>
+
+### IdentifyAttachmentRequest
 
 Request body for
 `POST /api/v1/devices/{id}/attachments/{slot}/identify`.
@@ -1151,7 +1303,9 @@ Every field of [`IdentifyRequest`](@/api/rest-schemas.md#IdentifyRequest), plus:
 
 Used by [`POST /api/v1/devices/{id}/attachments/{slot}/identify`](@/api/rest.md#identify_attachment) request.
 
-### IdentifyAttachmentResponse {#IdentifyAttachmentResponse}
+<div class="schema-anchor" id="IdentifyAttachmentResponse"></div>
+
+### IdentifyAttachmentResponse
 
 Response for
 `POST /api/v1/devices/{id}/attachments/{slot}/identify`.
@@ -1171,7 +1325,9 @@ binding rather than one of them.
 
 Used by [`POST /api/v1/devices/{id}/attachments/{slot}/identify`](@/api/rest.md#identify_attachment) response.
 
-### IdentifyDeviceResponse {#IdentifyDeviceResponse}
+<div class="schema-anchor" id="IdentifyDeviceResponse"></div>
+
+### IdentifyDeviceResponse
 
 Response for `POST /api/v1/devices/{id}/identify`.
 
@@ -1188,7 +1344,9 @@ that it started and echoes the parameters actually used. `color` is
 
 Used by [`POST /api/v1/devices/{id}/identify`](@/api/rest.md#identify_device) response.
 
-### IdentifyRequest {#IdentifyRequest}
+<div class="schema-anchor" id="IdentifyRequest"></div>
+
+### IdentifyRequest
 
 Request body for `POST /api/v1/devices/{id}/identify`.
 
@@ -1199,7 +1357,9 @@ Request body for `POST /api/v1/devices/{id}/identify`.
 
 Used by [`POST /api/v1/devices/{id}/identify`](@/api/rest.md#identify_device) request, [`POST /api/v1/devices/{id}/segments/{segment}/identify`](@/api/rest.md#identify_segment) request.
 
-### IdentifySegmentResponse {#IdentifySegmentResponse}
+<div class="schema-anchor" id="IdentifySegmentResponse"></div>
+
+### IdentifySegmentResponse
 
 Response for `POST /api/v1/devices/{id}/segments/{segment}/identify`.
 
@@ -1214,7 +1374,9 @@ Response for `POST /api/v1/devices/{id}/segments/{segment}/identify`.
 
 Used by [`POST /api/v1/devices/{id}/segments/{segment}/identify`](@/api/rest.md#identify_segment) response.
 
-### PairDeviceResponse {#PairDeviceResponse}
+<div class="schema-anchor" id="PairDeviceResponse"></div>
+
+### PairDeviceResponse
 
 Response for `POST /api/v1/devices/{id}/pair`.
 
@@ -1230,7 +1392,9 @@ its state enough to be worth re-rendering, and is omitted otherwise.
 
 Used by [`POST /api/v1/devices/{id}/pair`](@/api/rest.md#pair_device) response.
 
-### PairingDescriptor {#PairingDescriptor}
+<div class="schema-anchor" id="PairingDescriptor"></div>
+
+### PairingDescriptor
 
 Backend-provided pairing UI/CLI descriptor.
 
@@ -1242,7 +1406,9 @@ Backend-provided pairing UI/CLI descriptor.
 | `kind` | [`PairingFlowKind`](@/api/rest-schemas.md#PairingFlowKind) | yes |
 | `title` | string | yes |
 
-### PairingFieldDescriptor {#PairingFieldDescriptor}
+<div class="schema-anchor" id="PairingFieldDescriptor"></div>
+
+### PairingFieldDescriptor
 
 Descriptor for one pairing form field.
 
@@ -1254,13 +1420,17 @@ Descriptor for one pairing form field.
 | `placeholder` | string or null | no |
 | `secret` | boolean | yes |
 
-### PairingFlowKind {#PairingFlowKind}
+<div class="schema-anchor" id="PairingFlowKind"></div>
+
+### PairingFlowKind
 
 How the UI or CLI should present a pairing flow.
 
 One of `physical_action`, `credentials_form`.
 
-### SegmentSummary {#SegmentSummary}
+<div class="schema-anchor" id="SegmentSummary"></div>
+
+### SegmentSummary
 
 One LED segment of a device (hardware topology, not scene render zones).
 
@@ -1272,7 +1442,9 @@ One LED segment of a device (hardware topology, not scene render zones).
 | `topology` | string | yes |
 | `topology_hint` | [`SegmentTopologySummary`](@/api/rest-schemas.md#SegmentTopologySummary) or null | no |
 
-### SegmentTopologySummary {#SegmentTopologySummary}
+<div class="schema-anchor" id="SegmentTopologySummary"></div>
+
+### SegmentTopologySummary
 
 Structured topology hint for a device segment.
 
@@ -1287,7 +1459,9 @@ One of these variants, told apart by `type`:
 | `"display"` | `circular`: boolean<br>`height`: integer (int32)<br>`width`: integer (int32) |
 | `"custom"` | none |
 
-### UnclaimedDevice {#UnclaimedDevice}
+<div class="schema-anchor" id="UnclaimedDevice"></div>
+
+### UnclaimedDevice
 
 A USB device the host can see that no enabled native driver claims.
 
@@ -1308,7 +1482,9 @@ nothing on them can carry lighting.
 | `serial` | string or null | no |  |
 | `vendor_id` | integer (int32) | yes |  |
 
-### UnclaimedDeviceListResponse {#UnclaimedDeviceListResponse}
+<div class="schema-anchor" id="UnclaimedDeviceListResponse"></div>
+
+### UnclaimedDeviceListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -1324,7 +1500,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/devices/unclaimed`](@/api/rest.md#list_unclaimed_devices) response.
 
-### UpdateAttachmentsRequest {#UpdateAttachmentsRequest}
+<div class="schema-anchor" id="UpdateAttachmentsRequest"></div>
+
+### UpdateAttachmentsRequest
 
 Request body for `PUT /api/v1/devices/{id}/attachments`.
 
@@ -1337,7 +1515,9 @@ The binding list replaces the device's attachments wholesale.
 
 Used by [`PUT /api/v1/devices/{id}/attachments`](@/api/rest.md#update_attachments) request.
 
-### UpdateDeviceRequest {#UpdateDeviceRequest}
+<div class="schema-anchor" id="UpdateDeviceRequest"></div>
+
+### UpdateDeviceRequest
 
 Request body for `PUT /api/v1/devices/{id}`.
 
@@ -1350,9 +1530,11 @@ Request body for `PUT /api/v1/devices/{id}`.
 
 Used by [`PUT /api/v1/devices/{id}`](@/api/rest.md#update_device) request.
 
-## Control surfaces {#group-controls}
+## Control surfaces
 
-### ActionConfirmation {#ActionConfirmation}
+<div class="schema-anchor" id="ActionConfirmation"></div>
+
+### ActionConfirmation
 
 Action confirmation metadata.
 
@@ -1361,13 +1543,17 @@ Action confirmation metadata.
 | `level` | [`ActionConfirmationLevel`](@/api/rest-schemas.md#ActionConfirmationLevel) | yes | Confirmation severity. |
 | `message` | string | yes | Human-readable message. |
 
-### ActionConfirmationLevel {#ActionConfirmationLevel}
+<div class="schema-anchor" id="ActionConfirmationLevel"></div>
+
+### ActionConfirmationLevel
 
 Confirmation severity for actions.
 
 One of `normal`, `destructive`, `hardware_persistent`.
 
-### AppliedControlChange {#AppliedControlChange}
+<div class="schema-anchor" id="AppliedControlChange"></div>
+
+### AppliedControlChange
 
 Accepted field change.
 
@@ -1376,7 +1562,9 @@ Accepted field change.
 | `field_id` | [`String`](@/api/rest-schemas.md#String) | yes | Field that changed. |
 | `value` | object | yes | Applied value. |
 
-### ApplyControlChangesResponse {#ApplyControlChangesResponse}
+<div class="schema-anchor" id="ApplyControlChangesResponse"></div>
+
+### ApplyControlChangesResponse
 
 Response from applying control changes.
 
@@ -1392,7 +1580,9 @@ Response from applying control changes.
 
 Used by [`PATCH /api/v1/control-surfaces/{id}/values`](@/api/rest.md#apply_control_surface_values) response.
 
-### ApplyImpact {#ApplyImpact}
+<div class="schema-anchor" id="ApplyImpact"></div>
+
+### ApplyImpact
 
 Dynamic impact required to apply a control change.
 
@@ -1409,17 +1599,23 @@ One of these variants:
 | `"hardware_persist"` |  | Persist state into physical hardware. |
 | `{ "custom": … }` | `custom`: string | Driver-defined dynamic impact. |
 
-### BTreeMap {#BTreeMap}
+<div class="schema-anchor" id="BTreeMap"></div>
+
+### BTreeMap
 
 Type: map of object.
 
-### ControlAccess {#ControlAccess}
+<div class="schema-anchor" id="ControlAccess"></div>
+
+### ControlAccess
 
 Field access mode.
 
 One of `read_only`, `read_write`, `write_only`.
 
-### ControlActionDescriptor {#ControlActionDescriptor}
+<div class="schema-anchor" id="ControlActionDescriptor"></div>
+
+### ControlActionDescriptor
 
 Action descriptor for one-shot commands.
 
@@ -1437,7 +1633,9 @@ Action descriptor for one-shot commands.
 | `owner` | [`ControlOwner`](@/api/rest-schemas.md#ControlOwner) | yes | Action owner. |
 | `result_type` | object or null | no | Optional typed result. |
 
-### ControlActionResult {#ControlActionResult}
+<div class="schema-anchor" id="ControlActionResult"></div>
+
+### ControlActionResult
 
 Result from invoking an action.
 
@@ -1451,13 +1649,17 @@ Result from invoking an action.
 
 Used by [`POST /api/v1/control-surfaces/{id}/actions/{action}`](@/api/rest.md#invoke_control_surface_action) response.
 
-### ControlActionStatus {#ControlActionStatus}
+<div class="schema-anchor" id="ControlActionStatus"></div>
+
+### ControlActionStatus
 
 Action execution status.
 
 One of `accepted`, `running`, `completed`, `failed`.
 
-### ControlApplyError {#ControlApplyError}
+<div class="schema-anchor" id="ControlApplyError"></div>
+
+### ControlApplyError
 
 Typed control apply error.
 
@@ -1507,7 +1709,9 @@ One of these variants, told apart by `kind`:
 | --- | --- | --- | --- |
 | `message` | string | yes | Human-readable detail. |
 
-### ControlFieldDescriptor {#ControlFieldDescriptor}
+<div class="schema-anchor" id="ControlFieldDescriptor"></div>
+
+### ControlFieldDescriptor
 
 Field descriptor for one typed control.
 
@@ -1527,7 +1731,9 @@ Field descriptor for one typed control.
 | `value_type` | object | yes | Expected value type. |
 | `visibility` | [`ControlVisibility`](@/api/rest-schemas.md#ControlVisibility) | yes | Visibility tier. |
 
-### ControlGroupDescriptor {#ControlGroupDescriptor}
+<div class="schema-anchor" id="ControlGroupDescriptor"></div>
+
+### ControlGroupDescriptor
 
 Semantic group descriptor.
 
@@ -1539,13 +1745,17 @@ Semantic group descriptor.
 | `label` | string | yes | Human-readable label. |
 | `ordering` | integer (int32) | yes | Stable ordering hint. |
 
-### ControlGroupKind {#ControlGroupKind}
+<div class="schema-anchor" id="ControlGroupKind"></div>
+
+### ControlGroupKind
 
 Semantic group kind.
 
 One of `general`, `connection`, `output`, `color`, `topology`, `performance`, `diagnostics`, `advanced`, `danger`, `custom`.
 
-### ControlObjectField {#ControlObjectField}
+<div class="schema-anchor" id="ControlObjectField"></div>
+
+### ControlObjectField
 
 Field inside an object control value.
 
@@ -1557,7 +1767,9 @@ Field inside an object control value.
 | `required` | boolean | yes | Whether this field is required. |
 | `value_type` | object | yes | Expected value type. |
 
-### ControlOwner {#ControlOwner}
+<div class="schema-anchor" id="ControlOwner"></div>
+
+### ControlOwner
 
 Field, action, or group owner.
 
@@ -1572,13 +1784,17 @@ One of these variants:
 | `driver` | object | yes | Driver-owned behavior. |
 | `driver.driver_id` | string | yes | Stable driver module identifier. |
 
-### ControlPersistence {#ControlPersistence}
+<div class="schema-anchor" id="ControlPersistence"></div>
+
+### ControlPersistence
 
 Persistence target for a control field.
 
 One of `driver_config`, `device_config`, `runtime_only`, `hardware_stored`.
 
-### ControlSurfaceDocument {#ControlSurfaceDocument}
+<div class="schema-anchor" id="ControlSurfaceDocument"></div>
+
+### ControlSurfaceDocument
 
 Complete API document for a driver or device control surface.
 
@@ -1597,7 +1813,9 @@ Complete API document for a driver or device control surface.
 
 Used by [`GET /api/v1/control-surfaces/{id}`](@/api/rest.md#get_control_surface) response, [`GET /api/v1/devices/{id}/controls`](@/api/rest.md#get_device_control_surface) response, [`GET /api/v1/drivers/{id}/controls`](@/api/rest.md#get_driver_control_surface) response.
 
-### ControlSurfaceListResponse {#ControlSurfaceListResponse}
+<div class="schema-anchor" id="ControlSurfaceListResponse"></div>
+
+### ControlSurfaceListResponse
 
 Response body for `GET /api/v1/control-surfaces`.
 
@@ -1607,7 +1825,9 @@ Response body for `GET /api/v1/control-surfaces`.
 
 Used by [`GET /api/v1/control-surfaces`](@/api/rest.md#list_control_surfaces) response.
 
-### ControlSurfaceScope {#ControlSurfaceScope}
+<div class="schema-anchor" id="ControlSurfaceScope"></div>
+
+### ControlSurfaceScope
 
 Scope owned by a control surface.
 
@@ -1628,13 +1848,17 @@ One of these variants:
 | `device.device_id` | [`DeviceId`](@/api/rest-schemas.md#DeviceId) | yes | Stable device identifier. |
 | `device.driver_id` | string | yes | Driver module that owns the device semantics. |
 
-### ControlVisibility {#ControlVisibility}
+<div class="schema-anchor" id="ControlVisibility"></div>
+
+### ControlVisibility
 
 Field visibility tier.
 
 One of `standard`, `advanced`, `diagnostics`, `hidden`.
 
-### InvokeControlActionRequest {#InvokeControlActionRequest}
+<div class="schema-anchor" id="InvokeControlActionRequest"></div>
+
+### InvokeControlActionRequest
 
 Request body for
 `POST /api/v1/control-surfaces/{id}/actions/{action}`.
@@ -1645,7 +1869,9 @@ Request body for
 
 Used by [`POST /api/v1/control-surfaces/{id}/actions/{action}`](@/api/rest.md#invoke_control_surface_action) request.
 
-### RejectedControlChange {#RejectedControlChange}
+<div class="schema-anchor" id="RejectedControlChange"></div>
+
+### RejectedControlChange
 
 Rejected field change.
 
@@ -1655,17 +1881,23 @@ Rejected field change.
 | `error` | [`ControlApplyError`](@/api/rest-schemas.md#ControlApplyError) | yes | Typed error. |
 | `field_id` | [`String`](@/api/rest-schemas.md#String) | yes | Field that failed validation or apply. |
 
-### String {#String}
+<div class="schema-anchor" id="String"></div>
+
+### String
 
 Type: string.
 
-### u64 {#u64}
+<div class="schema-anchor" id="u64"></div>
+
+### u64
 
 Type: integer (int64).
 
-## Effects {#group-effects}
+## Effects
 
-### ApplyEffectRequest {#ApplyEffectRequest}
+<div class="schema-anchor" id="ApplyEffectRequest"></div>
+
+### ApplyEffectRequest
 
 `POST /effects/{id}/apply` — the sugar request (Spec 78 §2.3).
 
@@ -1684,7 +1916,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/effects/{id}/apply`](@/api/rest.md#apply_effect) request, [`POST /api/v1/effects/{id}/presets/{preset}/apply`](@/api/rest.md#apply_effect_preset) request.
 
-### ApplyEffectResponse {#ApplyEffectResponse}
+<div class="schema-anchor" id="ApplyEffectResponse"></div>
+
+### ApplyEffectResponse
 
 `POST /effects/{id}/apply` — the sugar response: the updated zone
 resource carrying the new layer's id, and the applied transition.
@@ -1702,7 +1936,9 @@ mints a fresh layer id and is deliberately not idempotent.
 
 Used by [`POST /api/v1/effects/{id}/apply`](@/api/rest.md#apply_effect) response, [`POST /api/v1/effects/{id}/presets/{preset}/apply`](@/api/rest.md#apply_effect_preset) response.
 
-### EffectCapabilitySet {#EffectCapabilitySet}
+<div class="schema-anchor" id="EffectCapabilitySet"></div>
+
+### EffectCapabilitySet
 
 Typed source requirements declared by an effect.
 
@@ -1712,7 +1948,9 @@ Typed source requirements declared by an effect.
 | `input_reactive` | boolean | no |
 | `screen_reactive` | boolean | no |
 
-### EffectConsoleEntry {#EffectConsoleEntry}
+<div class="schema-anchor" id="EffectConsoleEntry"></div>
+
+### EffectConsoleEntry
 
 One message an effect page printed, as `GET /api/v1/effects/console`
 reports it.
@@ -1728,7 +1966,9 @@ reports it.
 | `source_file` | string | yes | File name of the effect's HTML source. |
 | `timestamp_ms` | integer (int64) | yes | Wall-clock time the message was recorded, in Unix milliseconds. |
 
-### EffectConsoleLevel {#EffectConsoleLevel}
+<div class="schema-anchor" id="EffectConsoleLevel"></div>
+
+### EffectConsoleLevel
 
 Severity floor for `GET /api/v1/effects/console`.
 
@@ -1739,7 +1979,9 @@ One of `debug`, `log`, `warn`, `error`.
 
 Used by [`GET /api/v1/effects/console`](@/api/rest.md#get_effect_console) parameter.
 
-### EffectConsoleResponse {#EffectConsoleResponse}
+<div class="schema-anchor" id="EffectConsoleResponse"></div>
+
+### EffectConsoleResponse
 
 Response for `GET /api/v1/effects/console`.
 
@@ -1754,7 +1996,9 @@ paged list: pass `next_seq` back as `after` to read only newer output.
 
 Used by [`GET /api/v1/effects/console`](@/api/rest.md#get_effect_console) response.
 
-### EffectDetailResponse {#EffectDetailResponse}
+<div class="schema-anchor" id="EffectDetailResponse"></div>
+
+### EffectDetailResponse
 
 Response for `GET /api/v1/effects/{id}`.
 
@@ -1776,7 +2020,9 @@ Response for `GET /api/v1/effects/{id}`.
 
 Used by [`GET /api/v1/effects/{id}`](@/api/rest.md#get_effect) response.
 
-### EffectInstallForm {#EffectInstallForm}
+<div class="schema-anchor" id="EffectInstallForm"></div>
+
+### EffectInstallForm
 
 The `multipart/form-data` field `POST /api/v1/effects/install` reads.
 
@@ -1789,13 +2035,17 @@ daemon reads the part directly rather than deserializing this type.
 
 Used by [`POST /api/v1/effects/install`](@/api/rest.md#install_effect) request.
 
-### EffectPresetOrigin {#EffectPresetOrigin}
+<div class="schema-anchor" id="EffectPresetOrigin"></div>
+
+### EffectPresetOrigin
 
 Origin of a preset in an effect's unified preset stack.
 
 One of `bundled`, `saved`.
 
-### EffectPresetSummary {#EffectPresetSummary}
+<div class="schema-anchor" id="EffectPresetSummary"></div>
+
+### EffectPresetSummary
 
 One bundled or saved preset projected through an effect-scoped API.
 
@@ -1810,7 +2060,9 @@ One bundled or saved preset projected through an effect-scoped API.
 | `origin` | [`EffectPresetOrigin`](@/api/rest-schemas.md#EffectPresetOrigin) | yes |
 | `tags` | array of string | no |
 
-### EffectPresetSummaryListResponse {#EffectPresetSummaryListResponse}
+<div class="schema-anchor" id="EffectPresetSummaryListResponse"></div>
+
+### EffectPresetSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -1826,7 +2078,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/effects/{id}/presets`](@/api/rest.md#list_effect_presets) response.
 
-### EffectSourceKind {#EffectSourceKind}
+<div class="schema-anchor" id="EffectSourceKind"></div>
+
+### EffectSourceKind
 
 Rendering implementation used by an effect.
 
@@ -1837,7 +2091,9 @@ One of `native`, `html`, `shader`.
 
 Used by [`GET /api/v1/effects`](@/api/rest.md#list_effects) parameter.
 
-### EffectSummary {#EffectSummary}
+<div class="schema-anchor" id="EffectSummary"></div>
+
+### EffectSummary
 
 One effect in the list response.
 
@@ -1864,7 +2120,9 @@ exactly the payload it saw before.
 | `tags` | array of string | yes |
 | `version` | string | yes |
 
-### EffectSummaryListResponse {#EffectSummaryListResponse}
+<div class="schema-anchor" id="EffectSummaryListResponse"></div>
+
+### EffectSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -1880,7 +2138,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/effects`](@/api/rest.md#list_effects) response.
 
-### InstalledEffectResponse {#InstalledEffectResponse}
+<div class="schema-anchor" id="InstalledEffectResponse"></div>
+
+### InstalledEffectResponse
 
 Response for `POST /api/v1/effects/install`.
 
@@ -1895,7 +2155,9 @@ Response for `POST /api/v1/effects/install`.
 
 Used by [`POST /api/v1/effects/install`](@/api/rest.md#install_effect) response.
 
-### RescanResponse {#RescanResponse}
+<div class="schema-anchor" id="RescanResponse"></div>
+
+### RescanResponse
 
 Response for `POST /api/v1/effects/rescan`.
 
@@ -1910,7 +2172,9 @@ all-zero response means the effect directories were already current.
 
 Used by [`POST /api/v1/effects/rescan`](@/api/rest.md#rescan_effects) response.
 
-### TransitionType {#TransitionType}
+<div class="schema-anchor" id="TransitionType"></div>
+
+### TransitionType
 
 The closed transition vocabulary (Spec 78 §2.3).
 
@@ -1923,9 +2187,11 @@ One of these variants, told apart by `type`:
 | --- | --- |
 | `"cut"` | none |
 
-## Canvas {#group-canvas}
+## Canvas
 
-### CanvasImageFormat {#CanvasImageFormat}
+<div class="schema-anchor" id="CanvasImageFormat"></div>
+
+### CanvasImageFormat
 
 Image encoding for a canvas capture.
 
@@ -1933,9 +2199,11 @@ One of `jpeg`, `png`.
 
 Used by [`GET /api/v1/canvas/frame`](@/api/rest.md#get_canvas_frame) parameter.
 
-## Assets {#group-assets}
+## Assets
 
-### AssetScanStatus {#AssetScanStatus}
+<div class="schema-anchor" id="AssetScanStatus"></div>
+
+### AssetScanStatus
 
 Metadata scan state for an asset record.
 
@@ -1949,7 +2217,9 @@ One of these variants:
 | `{ "failed": … }` | `failed`: object<br>`failed.reason`: string |
 | `"unscanned"` |  |
 
-### AssetUpdateRequest {#AssetUpdateRequest}
+<div class="schema-anchor" id="AssetUpdateRequest"></div>
+
+### AssetUpdateRequest
 
 Request body for `PUT /api/v1/assets/{id}`.
 
@@ -1962,7 +2232,9 @@ Omitted fields leave the stored metadata untouched.
 
 Used by [`PUT /api/v1/assets/{id}`](@/api/rest.md#update_asset) request.
 
-### AssetUploadForm {#AssetUploadForm}
+<div class="schema-anchor" id="AssetUploadForm"></div>
+
+### AssetUploadForm
 
 The `multipart/form-data` fields `POST /api/v1/assets` reads.
 
@@ -1981,7 +2253,9 @@ send the literal text.
 
 Used by [`POST /api/v1/assets`](@/api/rest.md#upload_asset) request.
 
-### AssetUploadResponse {#AssetUploadResponse}
+<div class="schema-anchor" id="AssetUploadResponse"></div>
+
+### AssetUploadResponse
 
 Response from `POST /api/v1/assets`.
 
@@ -1996,7 +2270,9 @@ Every field of [`MediaAssetRecord`](@/api/rest-schemas.md#MediaAssetRecord), plu
 
 Used by [`POST /api/v1/assets`](@/api/rest.md#upload_asset) response.
 
-### AssetWarning {#AssetWarning}
+<div class="schema-anchor" id="AssetWarning"></div>
+
+### AssetWarning
 
 Non-fatal policy warnings attached to an accepted asset.
 
@@ -2007,7 +2283,9 @@ One of these variants, told apart by `kind`:
 | `"per_asset_soft_cap_exceeded"` | `limit_bytes`: integer (int64) |
 | `"library_soft_cap_exceeded"` | `limit_bytes`: integer (int64) |
 
-### DeleteAssetResponse {#DeleteAssetResponse}
+<div class="schema-anchor" id="DeleteAssetResponse"></div>
+
+### DeleteAssetResponse
 
 Response from `DELETE /api/v1/assets/{id}`.
 
@@ -2017,7 +2295,9 @@ Response from `DELETE /api/v1/assets/{id}`.
 
 Used by [`DELETE /api/v1/assets/{id}`](@/api/rest.md#delete_asset) response.
 
-### MediaAssetRecord {#MediaAssetRecord}
+<div class="schema-anchor" id="MediaAssetRecord"></div>
+
+### MediaAssetRecord
 
 Persisted metadata for one user media asset.
 
@@ -2040,7 +2320,9 @@ Persisted metadata for one user media asset.
 
 Used by [`GET /api/v1/assets/{id}`](@/api/rest.md#get_asset) response, [`PUT /api/v1/assets/{id}`](@/api/rest.md#update_asset) response.
 
-### MediaAssetRecordListResponse {#MediaAssetRecordListResponse}
+<div class="schema-anchor" id="MediaAssetRecordListResponse"></div>
+
+### MediaAssetRecordListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -2056,13 +2338,17 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/assets`](@/api/rest.md#list_assets) response.
 
-## Media {#group-media}
+## Media
 
-### MediaAuthorizationAdapter {#MediaAuthorizationAdapter}
+<div class="schema-anchor" id="MediaAuthorizationAdapter"></div>
+
+### MediaAuthorizationAdapter
 
 One of `music`, `spotify`.
 
-### MediaAuthorizationRequest {#MediaAuthorizationRequest}
+<div class="schema-anchor" id="MediaAuthorizationRequest"></div>
+
+### MediaAuthorizationRequest
 
 Explicit media Automation authorization request.
 
@@ -2072,7 +2358,9 @@ Explicit media Automation authorization request.
 
 Used by [`POST /api/v1/media/authorize`](@/api/rest.md#authorize_media) request.
 
-### MediaAuthorizationResponse {#MediaAuthorizationResponse}
+<div class="schema-anchor" id="MediaAuthorizationResponse"></div>
+
+### MediaAuthorizationResponse
 
 Result of one explicit media Automation authorization request.
 
@@ -2083,9 +2371,11 @@ Result of one explicit media Automation authorization request.
 
 Used by [`POST /api/v1/media/authorize`](@/api/rest.md#authorize_media) response.
 
-## Displays and faces {#group-displays}
+## Displays and faces
 
-### CreateSimulatedDisplayRequest {#CreateSimulatedDisplayRequest}
+<div class="schema-anchor" id="CreateSimulatedDisplayRequest"></div>
+
+### CreateSimulatedDisplayRequest
 
 Request body for `POST /api/v1/simulators/displays`.
 
@@ -2099,7 +2389,9 @@ Request body for `POST /api/v1/simulators/displays`.
 
 Used by [`POST /api/v1/simulators/displays`](@/api/rest.md#create_simulated_display) request.
 
-### DeleteDisplayFaceResponse {#DeleteDisplayFaceResponse}
+<div class="schema-anchor" id="DeleteDisplayFaceResponse"></div>
+
+### DeleteDisplayFaceResponse
 
 Response from `DELETE /api/v1/displays/{id}/face`.
 
@@ -2112,7 +2404,9 @@ Response from `DELETE /api/v1/displays/{id}/face`.
 
 Used by [`DELETE /api/v1/displays/{id}/face`](@/api/rest.md#delete_display_face) response.
 
-### DeleteSimulatedDisplayResponse {#DeleteSimulatedDisplayResponse}
+<div class="schema-anchor" id="DeleteSimulatedDisplayResponse"></div>
+
+### DeleteSimulatedDisplayResponse
 
 Response from `DELETE /api/v1/simulators/displays/{id}`.
 
@@ -2123,13 +2417,17 @@ Response from `DELETE /api/v1/simulators/displays/{id}`.
 
 Used by [`DELETE /api/v1/simulators/displays/{id}`](@/api/rest.md#delete_simulated_display) response.
 
-### DisplayClass {#DisplayClass}
+<div class="schema-anchor" id="DisplayClass"></div>
+
+### DisplayClass
 
 Device family the display belongs to, for layout idiom selection.
 
 One of `pump_lcd`, `strip`, `panel`.
 
-### DisplayDescriptor {#DisplayDescriptor}
+<div class="schema-anchor" id="DisplayDescriptor"></div>
+
+### DisplayDescriptor
 
 Everything a face needs to know about the surface it renders on.
 
@@ -2145,7 +2443,9 @@ Everything a face needs to know about the surface it renders on.
 | `target_fps` | integer (int32) | yes |  |
 | `width` | integer (int32) | yes |  |
 
-### DisplayFaceResponse {#DisplayFaceResponse}
+<div class="schema-anchor" id="DisplayFaceResponse"></div>
+
+### DisplayFaceResponse
 
 Response from `GET /api/v1/displays/{id}/face` and every face mutation
 route.
@@ -2162,7 +2462,9 @@ route.
 
 Used by [`PUT /api/v1/displays/{id}/face`](@/api/rest.md#set_display_face) response, [`PATCH /api/v1/displays/{id}/face/composition`](@/api/rest.md#patch_display_face_composition) response, [`PATCH /api/v1/displays/{id}/face/controls`](@/api/rest.md#patch_display_face_controls) response.
 
-### DisplayFaceResponseOptional {#DisplayFaceResponseOptional}
+<div class="schema-anchor" id="DisplayFaceResponseOptional"></div>
+
+### DisplayFaceResponseOptional
 
 Either `null` or the value below.
 
@@ -2181,7 +2483,9 @@ route.
 
 Used by [`GET /api/v1/displays/{id}/face`](@/api/rest.md#get_display_face) response.
 
-### DisplayFaceScope {#DisplayFaceScope}
+<div class="schema-anchor" id="DisplayFaceScope"></div>
+
+### DisplayFaceScope
 
 Which assignment layer a face operation targets (spec 69 §3.6).
 
@@ -2193,13 +2497,17 @@ One of `default`, `scene`.
 
 Used by [`DELETE /api/v1/displays/{id}/face`](@/api/rest.md#delete_display_face) parameter.
 
-### DisplayPixelFormat {#DisplayPixelFormat}
+<div class="schema-anchor" id="DisplayPixelFormat"></div>
+
+### DisplayPixelFormat
 
 Pixel format the device transport expects.
 
 One of `rgb`, `yuv420`.
 
-### DisplayRect {#DisplayRect}
+<div class="schema-anchor" id="DisplayRect"></div>
+
+### DisplayRect
 
 Pixel rectangle within a display surface.
 
@@ -2210,13 +2518,17 @@ Pixel rectangle within a display surface.
 | `x` | integer (int32) | yes |
 | `y` | integer (int32) | yes |
 
-### DisplayShape {#DisplayShape}
+<div class="schema-anchor" id="DisplayShape"></div>
+
+### DisplayShape
 
 Broad shape classification a face adapts its layout to.
 
 One of `round`, `square`, `wide`, `tall`.
 
-### DisplaySummaryList {#DisplaySummaryList}
+<div class="schema-anchor" id="DisplaySummaryList"></div>
+
+### DisplaySummaryList
 
 An array of objects with these fields:
 
@@ -2234,7 +2546,9 @@ An array of objects with these fields:
 
 Used by [`GET /api/v1/displays`](@/api/rest.md#list_displays) response.
 
-### EffectMetadata {#EffectMetadata}
+<div class="schema-anchor" id="EffectMetadata"></div>
+
+### EffectMetadata
 
 Universal effect descriptor.
 
@@ -2259,7 +2573,9 @@ every effect regardless of rendering path.
 | `tags` | array of string | no | Discovery and taxonomy tags. Free-form, lowercase, hyphenated. |
 | `version` | string | no | Semantic version string (e.g. `"1.2.0"`). |
 
-### EffectSource {#EffectSource}
+<div class="schema-anchor" id="EffectSource"></div>
+
+### EffectSource
 
 Identifies the rendering path and source location for an effect.
 
@@ -2289,7 +2605,9 @@ One of these variants:
 | `shader` | object | yes | GPU compute or fragment shader in raw SPIR-V or WGSL. |
 | `shader.path` | string | yes | Path to the shader source file. |
 
-### SetDisplayFaceRequest {#SetDisplayFaceRequest}
+<div class="schema-anchor" id="SetDisplayFaceRequest"></div>
+
+### SetDisplayFaceRequest
 
 Request body for `PUT /api/v1/displays/{id}/face`.
 
@@ -2303,7 +2621,9 @@ Request body for `PUT /api/v1/displays/{id}/face`.
 
 Used by [`PUT /api/v1/displays/{id}/face`](@/api/rest.md#set_display_face) request.
 
-### SimulatedDisplay {#SimulatedDisplay}
+<div class="schema-anchor" id="SimulatedDisplay"></div>
+
+### SimulatedDisplay
 
 One simulated display as `/api/v1/simulators/displays` renders it.
 
@@ -2321,7 +2641,9 @@ in the family returns.
 
 Used by [`POST /api/v1/simulators/displays`](@/api/rest.md#create_simulated_display) response, [`GET /api/v1/simulators/displays/{id}`](@/api/rest.md#get_simulated_display) response, [`PATCH /api/v1/simulators/displays/{id}`](@/api/rest.md#patch_simulated_display) response.
 
-### SimulatedDisplayList {#SimulatedDisplayList}
+<div class="schema-anchor" id="SimulatedDisplayList"></div>
+
+### SimulatedDisplayList
 
 An array of objects with these fields:
 
@@ -2336,7 +2658,9 @@ An array of objects with these fields:
 
 Used by [`GET /api/v1/simulators/displays`](@/api/rest.md#list_simulated_displays) response.
 
-### UpdateDisplayFaceCompositionRequest {#UpdateDisplayFaceCompositionRequest}
+<div class="schema-anchor" id="UpdateDisplayFaceCompositionRequest"></div>
+
+### UpdateDisplayFaceCompositionRequest
 
 Request body for `PATCH /api/v1/displays/{id}/face/composition`.
 
@@ -2347,7 +2671,9 @@ Request body for `PATCH /api/v1/displays/{id}/face/composition`.
 
 Used by [`PATCH /api/v1/displays/{id}/face/composition`](@/api/rest.md#patch_display_face_composition) request.
 
-### UpdateSimulatedDisplayRequest {#UpdateSimulatedDisplayRequest}
+<div class="schema-anchor" id="UpdateSimulatedDisplayRequest"></div>
+
+### UpdateSimulatedDisplayRequest
 
 Request body for `PATCH /api/v1/simulators/displays/{id}`.
 
@@ -2363,9 +2689,11 @@ Omitted fields leave the simulated display untouched.
 
 Used by [`PATCH /api/v1/simulators/displays/{id}`](@/api/rest.md#patch_simulated_display) request.
 
-## Attachments {#group-attachments}
+## Attachments
 
-### ComponentCompatibility {#ComponentCompatibility}
+<div class="schema-anchor" id="ComponentCompatibility"></div>
+
+### ComponentCompatibility
 
 Controller/slot matcher for a reusable template.
 
@@ -2378,13 +2706,17 @@ entries at all, it is considered globally compatible.
 | `models` | array of string | no | Optional model identifiers, such as `prism_s`. |
 | `slots` | array of string | no | Optional slot identifiers, such as `gpu`. |
 
-### ComponentOrigin {#ComponentOrigin}
+<div class="schema-anchor" id="ComponentOrigin"></div>
+
+### ComponentOrigin
 
 Where an attachment template came from.
 
 One of `built_in`, `user`.
 
-### ComponentTemplate {#ComponentTemplate}
+<div class="schema-anchor" id="ComponentTemplate"></div>
+
+### ComponentTemplate
 
 Reusable attachment layout template.
 
@@ -2407,7 +2739,9 @@ Reusable attachment layout template.
 
 Used by [`POST /api/v1/attachments/templates`](@/api/rest.md#create_template) request.
 
-### TemplateDetail {#TemplateDetail}
+<div class="schema-anchor" id="TemplateDetail"></div>
+
+### TemplateDetail
 
 Response for `POST /api/v1/attachments/templates`, the created
 template.
@@ -2441,7 +2775,9 @@ summary shape.
 
 Used by [`POST /api/v1/attachments/templates`](@/api/rest.md#create_template) response.
 
-### TemplateSummary {#TemplateSummary}
+<div class="schema-anchor" id="TemplateSummary"></div>
+
+### TemplateSummary
 
 One template in the catalog listing.
 
@@ -2461,7 +2797,9 @@ templates whose topology is generated.
 | `tags` | array of string | no |
 | `vendor` | string | yes |
 
-### TemplateSummaryListResponse {#TemplateSummaryListResponse}
+<div class="schema-anchor" id="TemplateSummaryListResponse"></div>
+
+### TemplateSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -2477,9 +2815,11 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/attachments/templates`](@/api/rest.md#list_templates) response.
 
-## Output {#group-output}
+## Output
 
-### OutputPatchRequest {#OutputPatchRequest}
+<div class="schema-anchor" id="OutputPatchRequest"></div>
+
+### OutputPatchRequest
 
 `PATCH /api/v1/output` — partial: either or both fields.
 
@@ -2496,7 +2836,9 @@ Unknown fields are rejected.
 
 Used by [`PATCH /api/v1/output`](@/api/rest.md#patch_output) request.
 
-### OutputPowerMode {#OutputPowerMode}
+<div class="schema-anchor" id="OutputPowerMode"></div>
+
+### OutputPowerMode
 
 Global output power state, both requested and observed.
 
@@ -2506,7 +2848,9 @@ consequences are observable on the effect surface.
 
 One of `running`, `paused`.
 
-### OutputResource {#OutputResource}
+<div class="schema-anchor" id="OutputResource"></div>
+
+### OutputResource
 
 The one output resource — `GET /api/v1/output`.
 
@@ -2517,9 +2861,11 @@ The one output resource — `GET /api/v1/output`.
 
 Used by [`GET /api/v1/output`](@/api/rest.md#get_output) response, [`PATCH /api/v1/output`](@/api/rest.md#patch_output) response.
 
-## Scenes {#group-scenes}
+## Scenes
 
-### ActivateSceneRequest {#ActivateSceneRequest}
+<div class="schema-anchor" id="ActivateSceneRequest"></div>
+
+### ActivateSceneRequest
 
 Request for `POST /api/v1/scenes/{id}/activate`.
 
@@ -2529,7 +2875,9 @@ Request for `POST /api/v1/scenes/{id}/activate`.
 
 Used by [`POST /api/v1/scenes/{id}/activate`](@/api/rest.md#activate_scene) request.
 
-### ActivateSceneResponse {#ActivateSceneResponse}
+<div class="schema-anchor" id="ActivateSceneResponse"></div>
+
+### ActivateSceneResponse
 
 Response for `POST /api/v1/scenes/{id}/activate`.
 
@@ -2542,7 +2890,9 @@ Response for `POST /api/v1/scenes/{id}/activate`.
 
 Used by [`POST /api/v1/scenes/{id}/activate`](@/api/rest.md#activate_scene) response.
 
-### ActivatedSceneRef {#ActivatedSceneRef}
+<div class="schema-anchor" id="ActivatedSceneRef"></div>
+
+### ActivatedSceneRef
 
 The scene an activation resolved to, by id and name.
 
@@ -2551,7 +2901,9 @@ The scene an activation resolved to, by id and name.
 | `id` | string | yes |
 | `name` | string | yes |
 
-### AssignMembersRequest {#AssignMembersRequest}
+<div class="schema-anchor" id="AssignMembersRequest"></div>
+
+### AssignMembersRequest
 
 `POST /scene/zones/{zone}/members` — assign device segments.
 
@@ -2567,7 +2919,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/scene/zones/{zone}/members`](@/api/rest.md#assign_live_zone_members) request.
 
-### ClearSceneRequest {#ClearSceneRequest}
+<div class="schema-anchor" id="ClearSceneRequest"></div>
+
+### ClearSceneRequest
 
 `POST /scene/clear` — the "stop" gesture (Spec 78 §1.2).
 
@@ -2579,7 +2933,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/scene/clear`](@/api/rest.md#clear_scene) request.
 
-### CreateLayerRequest {#CreateLayerRequest}
+<div class="schema-anchor" id="CreateLayerRequest"></div>
+
+### CreateLayerRequest
 
 `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
@@ -2601,7 +2957,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/scene/zones/{zone}/layers`](@/api/rest.md#create_live_zone_layer) request.
 
-### CreateSceneRequest {#CreateSceneRequest}
+<div class="schema-anchor" id="CreateSceneRequest"></div>
+
+### CreateSceneRequest
 
 Request body for `POST /api/v1/scenes`.
 
@@ -2614,7 +2972,9 @@ Request body for `POST /api/v1/scenes`.
 
 Used by [`POST /api/v1/scenes`](@/api/rest.md#create_scene) request.
 
-### CreateZoneRequest {#CreateZoneRequest}
+<div class="schema-anchor" id="CreateZoneRequest"></div>
+
+### CreateZoneRequest
 
 `POST /scene/zones` — create a zone.
 
@@ -2628,7 +2988,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/scene/zones`](@/api/rest.md#create_live_zone) request.
 
-### DeleteSceneResponse {#DeleteSceneResponse}
+<div class="schema-anchor" id="DeleteSceneResponse"></div>
+
+### DeleteSceneResponse
 
 Response for `DELETE /api/v1/scenes/{id}`.
 
@@ -2642,7 +3004,9 @@ rather than the resolved id.
 
 Used by [`DELETE /api/v1/scenes/{id}`](@/api/rest.md#delete_scene) response.
 
-### EditMembersRequest {#EditMembersRequest}
+<div class="schema-anchor" id="EditMembersRequest"></div>
+
+### EditMembersRequest
 
 `POST /scene/members/edit`: one revision-fenced membership transaction.
 
@@ -2656,7 +3020,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/scene/members/edit`](@/api/rest.md#edit_live_scene_members) request.
 
-### EditMembersResponse {#EditMembersResponse}
+<div class="schema-anchor" id="EditMembersResponse"></div>
+
+### EditMembersResponse
 
 Committed scene and reversible, canonical membership changes.
 
@@ -2667,13 +3033,17 @@ Committed scene and reversible, canonical membership changes.
 
 Used by [`POST /api/v1/scene/members/edit`](@/api/rest.md#edit_live_scene_members) response.
 
-### LayoutId {#LayoutId}
+<div class="schema-anchor" id="LayoutId"></div>
+
+### LayoutId
 
 Spatial layout identifier — `"default"` or a user slug.
 
 Type: string.
 
-### MemberAssignmentTarget {#MemberAssignmentTarget}
+<div class="schema-anchor" id="MemberAssignmentTarget"></div>
+
+### MemberAssignmentTarget
 
 Device segments to assign using daemon-owned layout construction.
 
@@ -2686,7 +3056,9 @@ Device segments to assign using daemon-owned layout construction.
 
 Unknown fields are rejected.
 
-### MemberEdit {#MemberEdit}
+<div class="schema-anchor" id="MemberEdit"></div>
+
+### MemberEdit
 
 An atomic add, move, placement change, or removal of one output.
 
@@ -2701,7 +3073,9 @@ preserving fields absent from the scene document for later restoration.
 
 Unknown fields are rejected.
 
-### MemberPlacementHint {#MemberPlacementHint}
+<div class="schema-anchor" id="MemberPlacementHint"></div>
+
+### MemberPlacementHint
 
 Placement-only seed; device binding and topology remain daemon-owned.
 
@@ -2716,7 +3090,9 @@ Placement-only seed; device binding and topology remain daemon-owned.
 
 Unknown fields are rejected.
 
-### MemberState {#MemberState}
+<div class="schema-anchor" id="MemberState"></div>
+
+### MemberState
 
 One output's complete authored state for reversible membership edits.
 
@@ -2728,7 +3104,9 @@ One output's complete authored state for reversible membership edits.
 
 Unknown fields are rejected.
 
-### PatchZoneRequest {#PatchZoneRequest}
+<div class="schema-anchor" id="PatchZoneRequest"></div>
+
+### PatchZoneRequest
 
 `PATCH /scene/zones/{zone}` — name and structural fields.
 
@@ -2744,7 +3122,9 @@ Unknown fields are rejected.
 
 Used by [`PATCH /api/v1/scene/zones/{zone}`](@/api/rest.md#patch_live_zone) request.
 
-### ReorderLayersRequest {#ReorderLayersRequest}
+<div class="schema-anchor" id="ReorderLayersRequest"></div>
+
+### ReorderLayersRequest
 
 `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 
@@ -2759,7 +3139,9 @@ Unknown fields are rejected.
 
 Used by [`PATCH /api/v1/scene/zones/{zone}/layers/order`](@/api/rest.md#reorder_live_zone_layers) request.
 
-### ReplaceLayerRequest {#ReplaceLayerRequest}
+<div class="schema-anchor" id="ReplaceLayerRequest"></div>
+
+### ReplaceLayerRequest
 
 `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
@@ -2782,7 +3164,9 @@ Unknown fields are rejected.
 
 Used by [`PUT /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#replace_live_zone_layer) request.
 
-### ReplaceSceneLayerRequest {#ReplaceSceneLayerRequest}
+<div class="schema-anchor" id="ReplaceSceneLayerRequest"></div>
+
+### ReplaceSceneLayerRequest
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -2798,7 +3182,9 @@ Used by [`PUT /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#replace_
 
 Unknown fields are rejected.
 
-### ReplaceSceneRequest {#ReplaceSceneRequest}
+<div class="schema-anchor" id="ReplaceSceneRequest"></div>
+
+### ReplaceSceneRequest
 
 Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
 
@@ -2831,7 +3217,9 @@ Unknown fields are rejected.
 
 Used by [`PUT /api/v1/scenes/{id}`](@/api/rest.md#update_scene) request.
 
-### ReplaceZoneRequest {#ReplaceZoneRequest}
+<div class="schema-anchor" id="ReplaceZoneRequest"></div>
+
+### ReplaceZoneRequest
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -2849,7 +3237,9 @@ Used by [`PUT /api/v1/scenes/{id}`](@/api/rest.md#update_scene) request.
 
 Unknown fields are rejected.
 
-### SceneDocument {#SceneDocument}
+<div class="schema-anchor" id="SceneDocument"></div>
+
+### SceneDocument
 
 The `GET /scene` document: the full live tree.
 
@@ -2877,7 +3267,9 @@ there is no idle sentinel and no all-optional shape.
 
 Used by [`GET /api/v1/scene`](@/api/rest.md#get_live_scene) response, [`PATCH /api/v1/scene`](@/api/rest.md#patch_live_scene) response, [`POST /api/v1/scene/clear`](@/api/rest.md#clear_scene) response, [`POST /api/v1/scene/deactivate`](@/api/rest.md#deactivate_scene) response, [`DELETE /api/v1/scene/zones/{zone}`](@/api/rest.md#delete_live_zone) response, [`GET /api/v1/scenes/{id}`](@/api/rest.md#get_scene) response, [`PUT /api/v1/scenes/{id}`](@/api/rest.md#update_scene) response.
 
-### SceneLayerListResponse {#SceneLayerListResponse}
+<div class="schema-anchor" id="SceneLayerListResponse"></div>
+
+### SceneLayerListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -2893,7 +3285,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/scene/zones/{zone}/layers`](@/api/rest.md#list_live_zone_layers) response.
 
-### SceneLayoutActivationOutcome {#SceneLayoutActivationOutcome}
+<div class="schema-anchor" id="SceneLayoutActivationOutcome"></div>
+
+### SceneLayoutActivationOutcome
 
 Post-commit outcome for a scene's optional named layout.
 
@@ -2903,7 +3297,9 @@ Post-commit outcome for a scene's optional named layout.
 | `layout_id` | [`LayoutId`](@/api/rest-schemas.md#LayoutId) or null | no |
 | `message` | string or null | no |
 
-### ScenePatchRequest {#ScenePatchRequest}
+<div class="schema-anchor" id="ScenePatchRequest"></div>
+
+### ScenePatchRequest
 
 `PATCH /scene` — scene-level fields only (Spec 78 §1.2).
 
@@ -2916,7 +3312,9 @@ Unknown fields are rejected.
 
 Used by [`PATCH /api/v1/scene`](@/api/rest.md#patch_live_scene) request.
 
-### SceneSummary {#SceneSummary}
+<div class="schema-anchor" id="SceneSummary"></div>
+
+### SceneSummary
 
 One saved scene as listed by `GET /api/v1/scenes`.
 
@@ -2933,7 +3331,9 @@ One saved scene as listed by `GET /api/v1/scenes`.
 
 Used by [`POST /api/v1/scenes`](@/api/rest.md#create_scene) response, [`POST /api/v1/scenes/snapshot`](@/api/rest.md#snapshot_scene) response.
 
-### SceneSummaryListResponse {#SceneSummaryListResponse}
+<div class="schema-anchor" id="SceneSummaryListResponse"></div>
+
+### SceneSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -2949,7 +3349,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/scenes`](@/api/rest.md#list_scenes) response.
 
-### SnapshotSceneRequest {#SnapshotSceneRequest}
+<div class="schema-anchor" id="SnapshotSceneRequest"></div>
+
+### SnapshotSceneRequest
 
 Request body for `POST /api/v1/scenes/snapshot`.
 
@@ -2962,7 +3364,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/scenes/snapshot`](@/api/rest.md#snapshot_scene) request.
 
-### ZoneLayoutRequest {#ZoneLayoutRequest}
+<div class="schema-anchor" id="ZoneLayoutRequest"></div>
+
+### ZoneLayoutRequest
 
 `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
 in the same compact shape the zone resource reads back.
@@ -2975,9 +3379,11 @@ Unknown fields are rejected.
 
 Used by [`PUT /api/v1/scene/zones/{zone}/layout`](@/api/rest.md#put_live_zone_layout) request.
 
-## Layouts {#group-layouts}
+## Layouts
 
-### ApplyLayoutResponse {#ApplyLayoutResponse}
+<div class="schema-anchor" id="ApplyLayoutResponse"></div>
+
+### ApplyLayoutResponse
 
 Response from `POST /api/v1/layouts/{id}/apply`.
 
@@ -2989,7 +3395,9 @@ Response from `POST /api/v1/layouts/{id}/apply`.
 
 Used by [`POST /api/v1/layouts/{id}/apply`](@/api/rest.md#apply_layout) response.
 
-### CreateLayoutRequest {#CreateLayoutRequest}
+<div class="schema-anchor" id="CreateLayoutRequest"></div>
+
+### CreateLayoutRequest
 
 Request body for `POST /api/v1/layouts`.
 
@@ -3004,7 +3412,9 @@ configured render resolution (`daemon.canvas_width` and
 
 Used by [`POST /api/v1/layouts`](@/api/rest.md#create_layout) request.
 
-### DeleteLayoutResponse {#DeleteLayoutResponse}
+<div class="schema-anchor" id="DeleteLayoutResponse"></div>
+
+### DeleteLayoutResponse
 
 Response from `DELETE /api/v1/layouts/{id}`.
 
@@ -3016,7 +3426,9 @@ Response from `DELETE /api/v1/layouts/{id}`.
 
 Used by [`DELETE /api/v1/layouts/{id}`](@/api/rest.md#delete_layout) response.
 
-### LayoutSummary {#LayoutSummary}
+<div class="schema-anchor" id="LayoutSummary"></div>
+
+### LayoutSummary
 
 Summary row from `GET /api/v1/layouts`.
 
@@ -3029,7 +3441,9 @@ Summary row from `GET /api/v1/layouts`.
 
 Used by [`POST /api/v1/layouts`](@/api/rest.md#create_layout) response, [`PUT /api/v1/layouts/{id}`](@/api/rest.md#update_layout) response.
 
-### LayoutSummaryListResponse {#LayoutSummaryListResponse}
+<div class="schema-anchor" id="LayoutSummaryListResponse"></div>
+
+### LayoutSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -3045,7 +3459,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/layouts`](@/api/rest.md#list_layouts) response.
 
-### PreviewLayoutResponse {#PreviewLayoutResponse}
+<div class="schema-anchor" id="PreviewLayoutResponse"></div>
+
+### PreviewLayoutResponse
 
 Response from `PUT /api/v1/layouts/active/preview`.
 
@@ -3055,7 +3471,9 @@ Response from `PUT /api/v1/layouts/active/preview`.
 
 Used by [`PUT /api/v1/layouts/active/preview`](@/api/rest.md#preview_layout) response.
 
-### SpatialLayout {#SpatialLayout}
+<div class="schema-anchor" id="SpatialLayout"></div>
+
+### SpatialLayout
 
 Top-level spatial layout container.
 
@@ -3077,7 +3495,9 @@ positions of every connected device. All coordinates use normalized
 
 Used by [`GET /api/v1/layouts/active`](@/api/rest.md#get_active_layout) response, [`PUT /api/v1/layouts/active/preview`](@/api/rest.md#preview_layout) request, [`GET /api/v1/layouts/{id}`](@/api/rest.md#get_layout) response.
 
-### UpdateLayoutRequest {#UpdateLayoutRequest}
+<div class="schema-anchor" id="UpdateLayoutRequest"></div>
+
+### UpdateLayoutRequest
 
 Request body for `PUT /api/v1/layouts/{id}`.
 
@@ -3092,9 +3512,11 @@ list replaces the layout's outputs wholesale.
 
 Used by [`PUT /api/v1/layouts/{id}`](@/api/rest.md#update_layout) request.
 
-## Library {#group-library}
+## Library
 
-### ActivatePlaylistResponse {#ActivatePlaylistResponse}
+<div class="schema-anchor" id="ActivatePlaylistResponse"></div>
+
+### ActivatePlaylistResponse
 
 Response for `POST /api/v1/library/playlists/{id}/activate`.
 
@@ -3105,7 +3527,9 @@ Response for `POST /api/v1/library/playlists/{id}/activate`.
 
 Used by [`POST /api/v1/library/playlists/{id}/activate`](@/api/rest.md#activate_playlist) response.
 
-### ActivePlaylistResponse {#ActivePlaylistResponse}
+<div class="schema-anchor" id="ActivePlaylistResponse"></div>
+
+### ActivePlaylistResponse
 
 The playlist the daemon is currently cycling through.
 
@@ -3121,7 +3545,9 @@ began rather than when the playlist was saved.
 | `name` | string | yes |
 | `started_at_ms` | integer (int64) | yes |
 
-### ActivePlaylistStateResponse {#ActivePlaylistStateResponse}
+<div class="schema-anchor" id="ActivePlaylistStateResponse"></div>
+
+### ActivePlaylistStateResponse
 
 Response for `GET /api/v1/library/playlists/active`.
 
@@ -3135,7 +3561,9 @@ The route answers 404 when nothing is playing, so `state` is always
 
 Used by [`GET /api/v1/library/playlists/active`](@/api/rest.md#get_active_playlist) response.
 
-### AddFavoriteRequest {#AddFavoriteRequest}
+<div class="schema-anchor" id="AddFavoriteRequest"></div>
+
+### AddFavoriteRequest
 
 Request body for `POST /api/v1/library/favorites`.
 
@@ -3145,7 +3573,9 @@ Request body for `POST /api/v1/library/favorites`.
 
 Used by [`POST /api/v1/library/favorites`](@/api/rest.md#add_favorite) request.
 
-### AddFavoriteResponse {#AddFavoriteResponse}
+<div class="schema-anchor" id="AddFavoriteResponse"></div>
+
+### AddFavoriteResponse
 
 Response for `POST /api/v1/library/favorites`.
 
@@ -3159,7 +3589,9 @@ re-stamps `added_at_ms` rather than erroring.
 
 Used by [`POST /api/v1/library/favorites`](@/api/rest.md#add_favorite) response.
 
-### DeactivatePlaylistResponse {#DeactivatePlaylistResponse}
+<div class="schema-anchor" id="DeactivatePlaylistResponse"></div>
+
+### DeactivatePlaylistResponse
 
 Response for `POST /api/v1/library/playlists/deactivate`.
 
@@ -3170,7 +3602,9 @@ Response for `POST /api/v1/library/playlists/deactivate`.
 
 Used by [`POST /api/v1/library/playlists/deactivate`](@/api/rest.md#deactivate_playlist) response.
 
-### DeleteFavoriteResponse {#DeleteFavoriteResponse}
+<div class="schema-anchor" id="DeleteFavoriteResponse"></div>
+
+### DeleteFavoriteResponse
 
 Response for `DELETE /api/v1/library/favorites/{effect}`.
 
@@ -3181,7 +3615,9 @@ Response for `DELETE /api/v1/library/favorites/{effect}`.
 
 Used by [`DELETE /api/v1/library/favorites/{effect}`](@/api/rest.md#remove_favorite) response.
 
-### DeletePlaylistResponse {#DeletePlaylistResponse}
+<div class="schema-anchor" id="DeletePlaylistResponse"></div>
+
+### DeletePlaylistResponse
 
 Response for `DELETE /api/v1/library/playlists/{id}`.
 
@@ -3192,7 +3628,9 @@ Response for `DELETE /api/v1/library/playlists/{id}`.
 
 Used by [`DELETE /api/v1/library/playlists/{id}`](@/api/rest.md#delete_playlist) response.
 
-### DeletePresetResponse {#DeletePresetResponse}
+<div class="schema-anchor" id="DeletePresetResponse"></div>
+
+### DeletePresetResponse
 
 Response for `DELETE /api/v1/library/presets/{id}`.
 
@@ -3206,7 +3644,9 @@ when the caller addressed the preset by name.
 
 Used by [`DELETE /api/v1/library/presets/{id}`](@/api/rest.md#delete_preset) response.
 
-### EffectPlaylist {#EffectPlaylist}
+<div class="schema-anchor" id="EffectPlaylist"></div>
+
+### EffectPlaylist
 
 A user-defined effect sequence.
 
@@ -3222,7 +3662,9 @@ A user-defined effect sequence.
 
 Used by [`POST /api/v1/library/playlists`](@/api/rest.md#create_playlist) response, [`GET /api/v1/library/playlists/{id}`](@/api/rest.md#get_playlist) response, [`PUT /api/v1/library/playlists/{id}`](@/api/rest.md#update_playlist) response.
 
-### EffectPlaylistListResponse {#EffectPlaylistListResponse}
+<div class="schema-anchor" id="EffectPlaylistListResponse"></div>
+
+### EffectPlaylistListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -3238,7 +3680,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/library/playlists`](@/api/rest.md#list_playlists) response.
 
-### EffectPreset {#EffectPreset}
+<div class="schema-anchor" id="EffectPreset"></div>
+
+### EffectPreset
 
 A saved parameter snapshot for one effect.
 
@@ -3255,7 +3699,9 @@ A saved parameter snapshot for one effect.
 
 Used by [`POST /api/v1/library/presets`](@/api/rest.md#create_preset) response, [`GET /api/v1/library/presets/{id}`](@/api/rest.md#get_preset) response, [`PUT /api/v1/library/presets/{id}`](@/api/rest.md#update_preset) response.
 
-### EffectPresetListResponse {#EffectPresetListResponse}
+<div class="schema-anchor" id="EffectPresetListResponse"></div>
+
+### EffectPresetListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -3271,7 +3717,9 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/library/presets`](@/api/rest.md#list_presets) response.
 
-### FavoriteSummary {#FavoriteSummary}
+<div class="schema-anchor" id="FavoriteSummary"></div>
+
+### FavoriteSummary
 
 One favorited effect.
 
@@ -3284,7 +3732,9 @@ back to the id when the effect is no longer installed.
 | `effect_id` | string | yes |
 | `effect_name` | string | no |
 
-### FavoriteSummaryListResponse {#FavoriteSummaryListResponse}
+<div class="schema-anchor" id="FavoriteSummaryListResponse"></div>
+
+### FavoriteSummaryListResponse
 
 Canonical list payload: honest pagination or none at all.
 
@@ -3300,13 +3750,17 @@ exist. `page: Some` means the endpoint genuinely pages.
 
 Used by [`GET /api/v1/library/favorites`](@/api/rest.md#list_favorites) response.
 
-### PlaylistId {#PlaylistId}
+<div class="schema-anchor" id="PlaylistId"></div>
+
+### PlaylistId
 
 Opaque identifier for a playlist.
 
 Type: string (uuid).
 
-### PlaylistItem {#PlaylistItem}
+<div class="schema-anchor" id="PlaylistItem"></div>
+
+### PlaylistItem
 
 One item in a playlist sequence.
 
@@ -3317,13 +3771,17 @@ One item in a playlist sequence.
 | `target` | [`PlaylistItemTarget`](@/api/rest-schemas.md#PlaylistItemTarget) | yes |
 | `transition_ms` | integer (int64) or null | no |
 
-### PlaylistItemId {#PlaylistItemId}
+<div class="schema-anchor" id="PlaylistItemId"></div>
+
+### PlaylistItemId
 
 Opaque identifier for a playlist item.
 
 Type: string (uuid).
 
-### PlaylistItemRequest {#PlaylistItemRequest}
+<div class="schema-anchor" id="PlaylistItemRequest"></div>
+
+### PlaylistItemRequest
 
 One item in a saved playlist.
 
@@ -3333,7 +3791,9 @@ One item in a saved playlist.
 | `target` | [`PlaylistTargetRequest`](@/api/rest-schemas.md#PlaylistTargetRequest) | yes |
 | `transition_ms` | integer (int64) or null | no |
 
-### PlaylistItemTarget {#PlaylistItemTarget}
+<div class="schema-anchor" id="PlaylistItemTarget"></div>
+
+### PlaylistItemTarget
 
 Target entity for one playlist slot.
 
@@ -3344,7 +3804,9 @@ One of these variants, told apart by `type`:
 | `"effect"` | `effect_id`: [`EffectId`](@/api/rest-schemas.md#EffectId) | Run an effect directly. |
 | `"preset"` | `preset_id`: [`PresetId`](@/api/rest-schemas.md#PresetId) | Run a saved preset (effect + controls). |
 
-### PlaylistTargetRequest {#PlaylistTargetRequest}
+<div class="schema-anchor" id="PlaylistTargetRequest"></div>
+
+### PlaylistTargetRequest
 
 What one playlist item plays.
 
@@ -3355,7 +3817,9 @@ One of these variants, told apart by `type`:
 | `"effect"` | `effect`: string |
 | `"preset"` | `preset_id`: string |
 
-### SavePlaylistRequest {#SavePlaylistRequest}
+<div class="schema-anchor" id="SavePlaylistRequest"></div>
+
+### SavePlaylistRequest
 
 Request body for `POST /api/v1/library/playlists` and
 `PUT /api/v1/library/playlists/{id}`.
@@ -3369,7 +3833,9 @@ Request body for `POST /api/v1/library/playlists` and
 
 Used by [`POST /api/v1/library/playlists`](@/api/rest.md#create_playlist) request, [`PUT /api/v1/library/playlists/{id}`](@/api/rest.md#update_playlist) request.
 
-### SavePresetRequest {#SavePresetRequest}
+<div class="schema-anchor" id="SavePresetRequest"></div>
+
+### SavePresetRequest
 
 Request body for `POST /api/v1/library/presets` and
 `PUT /api/v1/library/presets/{id}`.
@@ -3384,9 +3850,11 @@ Request body for `POST /api/v1/library/presets` and
 
 Used by [`POST /api/v1/library/presets`](@/api/rest.md#create_preset) request, [`PUT /api/v1/library/presets/{id}`](@/api/rest.md#update_preset) request.
 
-## Capture and input {#group-capture}
+## Capture and input
 
-### CaptureAuthorizationResponse {#CaptureAuthorizationResponse}
+<div class="schema-anchor" id="CaptureAuthorizationResponse"></div>
+
+### CaptureAuthorizationResponse
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3395,7 +3863,9 @@ Used by [`POST /api/v1/library/presets`](@/api/rest.md#create_preset) request, [
 
 Used by [`POST /api/v1/capture/authorize`](@/api/rest.md#authorize_screen_recording) response, [`POST /api/v1/input/authorize`](@/api/rest.md#authorize_input_monitoring) response.
 
-### CaptureMonitorList {#CaptureMonitorList}
+<div class="schema-anchor" id="CaptureMonitorList"></div>
+
+### CaptureMonitorList
 
 An array of objects with these fields:
 
@@ -3411,7 +3881,9 @@ An array of objects with these fields:
 
 Used by [`GET /api/v1/capture/monitors`](@/api/rest.md#list_capture_monitors) response.
 
-### CapturePickerResponse {#CapturePickerResponse}
+<div class="schema-anchor" id="CapturePickerResponse"></div>
+
+### CapturePickerResponse
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3420,13 +3892,17 @@ Used by [`GET /api/v1/capture/monitors`](@/api/rest.md#list_capture_monitors) re
 
 Used by [`PUT /api/v1/capture/source`](@/api/rest.md#set_capture_source) response.
 
-### ProtectedSourceGrantOwner {#ProtectedSourceGrantOwner}
+<div class="schema-anchor" id="ProtectedSourceGrantOwner"></div>
+
+### ProtectedSourceGrantOwner
 
 One of `app_sidecar`, `app`, `launchd_service`, `homebrew_service`, `broker`, `standalone`, `platform_backend`.
 
-## Configuration {#group-config}
+## Configuration
 
-### ApplyPolicy {#ApplyPolicy}
+<div class="schema-anchor" id="ApplyPolicy"></div>
+
+### ApplyPolicy
 
 How a change to a key takes effect.
 
@@ -3440,7 +3916,9 @@ One of these variants, told apart by `kind`:
 | `"restart"` | none | Frozen at startup; takes effect at the next daemon start. |
 | `"inert"` | none | Parsed and persisted, but nothing in the daemon reads it today. |
 
-### ConfigDocument {#ConfigDocument}
+<div class="schema-anchor" id="ConfigDocument"></div>
+
+### ConfigDocument
 
 Effective daemon config returned by `GET /api/v1/config`.
 
@@ -3452,7 +3930,9 @@ Type: map of any.
 
 Used by [`GET /api/v1/config`](@/api/rest.md#show_config) response.
 
-### ConfigKeyResponse {#ConfigKeyResponse}
+<div class="schema-anchor" id="ConfigKeyResponse"></div>
+
+### ConfigKeyResponse
 
 Response from `GET /api/v1/config/keys/{key}`.
 
@@ -3463,7 +3943,9 @@ Response from `GET /api/v1/config/keys/{key}`.
 
 Used by [`GET /api/v1/config/keys/{key}`](@/api/rest.md#get_config_key) response.
 
-### ConfigKeySchemaEntryList {#ConfigKeySchemaEntryList}
+<div class="schema-anchor" id="ConfigKeySchemaEntryList"></div>
+
+### ConfigKeySchemaEntryList
 
 An array of objects with these fields:
 
@@ -3477,7 +3959,9 @@ An array of objects with these fields:
 
 Used by [`GET /api/v1/config/schema`](@/api/rest.md#get_config_schema) response.
 
-### ConfigMutationResponse {#ConfigMutationResponse}
+<div class="schema-anchor" id="ConfigMutationResponse"></div>
+
+### ConfigMutationResponse
 
 Outcome of a config write, key reset, or whole-config reset.
 
@@ -3494,13 +3978,17 @@ Outcome of a config write, key reset, or whole-config reset.
 
 Used by [`PUT /api/v1/config/keys/{key}`](@/api/rest.md#put_config_key) response, [`PATCH /api/v1/config/keys/{key}`](@/api/rest.md#patch_config_key) response, [`DELETE /api/v1/config/keys/{key}`](@/api/rest.md#delete_config_key) response, [`POST /api/v1/config/reset`](@/api/rest.md#reset_config) response.
 
-### LiveSection {#LiveSection}
+<div class="schema-anchor" id="LiveSection"></div>
+
+### LiveSection
 
 The daemon subsystem a live-applied key re-configures.
 
 One of `audio`, `capture`, `input`, `render`.
 
-### Protection {#Protection}
+<div class="schema-anchor" id="Protection"></div>
+
+### Protection
 
 Which writes to a row need a protected-control credential.
 
@@ -3510,22 +3998,28 @@ already-consented stream does not.
 
 One of `open`, `section_root`, `tree`.
 
-### Redaction {#Redaction}
+<div class="schema-anchor" id="Redaction"></div>
+
+### Redaction
 
 How a key's value renders on read surfaces (config GET, schema,
 events).
 
 One of `plain`, `secret`.
 
-### Value {#Value}
+<div class="schema-anchor" id="Value"></div>
+
+### Value
 
 Any JSON value.
 
 Used by [`PUT /api/v1/config/keys/{key}`](@/api/rest.md#put_config_key) request, [`PATCH /api/v1/config/keys/{key}`](@/api/rest.md#patch_config_key) request.
 
-## Backups {#group-backups}
+## Backups
 
-### BackupApplyRequest {#BackupApplyRequest}
+<div class="schema-anchor" id="BackupApplyRequest"></div>
+
+### BackupApplyRequest
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3535,7 +4029,9 @@ Unknown fields are rejected.
 
 Used by [`POST /api/v1/backups/apply`](@/api/rest.md#apply_backup) request.
 
-### BackupApplyResponse {#BackupApplyResponse}
+<div class="schema-anchor" id="BackupApplyResponse"></div>
+
+### BackupApplyResponse
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3545,7 +4041,9 @@ Used by [`POST /api/v1/backups/apply`](@/api/rest.md#apply_backup) request.
 
 Used by [`POST /api/v1/backups/apply`](@/api/rest.md#apply_backup) response.
 
-### BackupPreview {#BackupPreview}
+<div class="schema-anchor" id="BackupPreview"></div>
+
+### BackupPreview
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3562,7 +4060,9 @@ Used by [`POST /api/v1/backups/apply`](@/api/rest.md#apply_backup) response.
 
 Used by [`POST /api/v1/backups/import`](@/api/rest.md#preview_backup) response.
 
-### MissingSetupResources {#MissingSetupResources}
+<div class="schema-anchor" id="MissingSetupResources"></div>
+
+### MissingSetupResources
 
 Referenced content that must be installed or imported on this computer.
 
@@ -3572,9 +4072,11 @@ Referenced content that must be installed or imported on this computer.
 | `media` | array of [`AssetId`](@/api/rest-schemas.md#AssetId) | no |
 | `presets` | array of [`PresetId`](@/api/rest-schemas.md#PresetId) | no |
 
-## Diagnostics {#group-diagnostics}
+## Diagnostics
 
-### DiagnoseCheck {#DiagnoseCheck}
+<div class="schema-anchor" id="DiagnoseCheck"></div>
+
+### DiagnoseCheck
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3583,7 +4085,9 @@ Referenced content that must be installed or imported on this computer.
 | `name` | string | yes |
 | `status` | string | yes |
 
-### DiagnoseDeviceOutputItem {#DiagnoseDeviceOutputItem}
+<div class="schema-anchor" id="DiagnoseDeviceOutputItem"></div>
+
+### DiagnoseDeviceOutputItem
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3626,7 +4130,9 @@ Referenced content that must be installed or imported on this computer.
 | `uses_frame_sink` | boolean | yes |  |
 | `worker_finished` | boolean | yes |  |
 
-### DiagnoseDeviceOutputSnapshot {#DiagnoseDeviceOutputSnapshot}
+<div class="schema-anchor" id="DiagnoseDeviceOutputSnapshot"></div>
+
+### DiagnoseDeviceOutputSnapshot
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3638,7 +4144,9 @@ Referenced content that must be installed or imported on this computer.
 | `usb_queues` | integer | yes |
 | `worker_finished_queues` | integer | yes |
 
-### DiagnoseDisplayOutputSnapshot {#DiagnoseDisplayOutputSnapshot}
+<div class="schema-anchor" id="DiagnoseDisplayOutputSnapshot"></div>
+
+### DiagnoseDisplayOutputSnapshot
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3658,7 +4166,9 @@ Referenced content that must be installed or imported on this computer.
 | `write_failures_total` | integer (int64) | yes |
 | `write_successes_total` | integer (int64) | yes |
 
-### DiagnoseLatestFrameSnapshot {#DiagnoseLatestFrameSnapshot}
+<div class="schema-anchor" id="DiagnoseLatestFrameSnapshot"></div>
+
+### DiagnoseLatestFrameSnapshot
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3699,7 +4209,9 @@ Referenced content that must be installed or imported on this computer.
 | `total_us` | integer (int32) | yes |  |
 | `zone_composition_skips` | integer (int32) | no | Scene zones whose layers matched their held frame, so they skipped composing this frame. Absent from older daemons. |
 
-### DiagnoseRenderSnapshot {#DiagnoseRenderSnapshot}
+<div class="schema-anchor" id="DiagnoseRenderSnapshot"></div>
+
+### DiagnoseRenderSnapshot
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3708,7 +4220,9 @@ Referenced content that must be installed or imported on this computer.
 | `recent_window` | [`DiagnoseRenderWindowSnapshot`](@/api/rest-schemas.md#DiagnoseRenderWindowSnapshot) | yes |  |
 | `supervision` | [`RenderSupervisionStatus`](@/api/rest-schemas.md#RenderSupervisionStatus) | no | Supervised render thread health, restart counts, and the last failure. Absent from older daemons. |
 
-### DiagnoseRenderWindowSnapshot {#DiagnoseRenderWindowSnapshot}
+<div class="schema-anchor" id="DiagnoseRenderWindowSnapshot"></div>
+
+### DiagnoseRenderWindowSnapshot
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3729,7 +4243,9 @@ Referenced content that must be installed or imported on this computer.
 | `push_avg_ms` | number (double) | yes |
 | `push_p95_ms` | number (double) | yes |
 
-### DiagnoseRequest {#DiagnoseRequest}
+<div class="schema-anchor" id="DiagnoseRequest"></div>
+
+### DiagnoseRequest
 
 Optional body for `POST /api/v1/diagnose`.
 
@@ -3743,7 +4259,9 @@ environment section to the report.
 
 Used by [`POST /api/v1/diagnose`](@/api/rest.md#run_diagnostics) request.
 
-### DiagnoseResponse {#DiagnoseResponse}
+<div class="schema-anchor" id="DiagnoseResponse"></div>
+
+### DiagnoseResponse
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3753,7 +4271,9 @@ Used by [`POST /api/v1/diagnose`](@/api/rest.md#run_diagnostics) request.
 
 Used by [`POST /api/v1/diagnose`](@/api/rest.md#run_diagnostics) response.
 
-### DiagnoseSnapshot {#DiagnoseSnapshot}
+<div class="schema-anchor" id="DiagnoseSnapshot"></div>
+
+### DiagnoseSnapshot
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3764,7 +4284,9 @@ Used by [`POST /api/v1/diagnose`](@/api/rest.md#run_diagnostics) response.
 | `render` | [`DiagnoseRenderSnapshot`](@/api/rest-schemas.md#DiagnoseRenderSnapshot) | yes |
 | `usb` | [`DiagnoseUsbActorSnapshot`](@/api/rest-schemas.md#DiagnoseUsbActorSnapshot) | yes |
 
-### DiagnoseSummary {#DiagnoseSummary}
+<div class="schema-anchor" id="DiagnoseSummary"></div>
+
+### DiagnoseSummary
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3772,7 +4294,9 @@ Used by [`POST /api/v1/diagnose`](@/api/rest.md#run_diagnostics) response.
 | `passed` | integer | yes |
 | `warnings` | integer | yes |
 
-### DiagnoseUsbActorSnapshot {#DiagnoseUsbActorSnapshot}
+<div class="schema-anchor" id="DiagnoseUsbActorSnapshot"></div>
+
+### DiagnoseUsbActorSnapshot
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3782,21 +4306,27 @@ Used by [`POST /api/v1/diagnose`](@/api/rest.md#run_diagnostics) response.
 | `display_led_priority_wait_max_ms` | number (double) | yes |
 | `display_led_priority_wait_total_ms` | number (double) | yes |
 
-## Shared {#group-shared}
+## Shared
 
-### AssetId {#AssetId}
+<div class="schema-anchor" id="AssetId"></div>
+
+### AssetId
 
 Opaque identifier for a user media asset.
 
 Type: string (uuid).
 
-### AudioBand {#AudioBand}
+<div class="schema-anchor" id="AudioBand"></div>
+
+### AudioBand
 
 Coarse audio features exposed to layer bindings.
 
 One of `bass`, `mid`, `treble`, `rms`, `peak`, `beat_pulse`, `onset_pulse`.
 
-### BindingMap {#BindingMap}
+<div class="schema-anchor" id="BindingMap"></div>
+
+### BindingMap
 
 Linear mapping from source values into target parameter values.
 
@@ -3808,7 +4338,9 @@ Linear mapping from source values into target parameter values.
 | `target_max` | number (float) | yes |
 | `target_min` | number (float) | yes |
 
-### BindingSource {#BindingSource}
+<div class="schema-anchor" id="BindingSource"></div>
+
+### BindingSource
 
 Runtime source that drives a layer binding.
 
@@ -3821,13 +4353,17 @@ One of these variants, told apart by `kind`:
 | `"time"` | `rate_hz`: number (float)<br>`wave`: [`TimeWave`](@/api/rest-schemas.md#TimeWave) |
 | `"constant"` | `value`: number (float) |
 
-### BlendMode {#BlendMode}
+<div class="schema-anchor" id="BlendMode"></div>
+
+### BlendMode
 
 Blend mode used by authored layers and display faces.
 
 One of `replace`, `alpha`, `add`, `screen`, `multiply`, `overlay`, `soft_light`, `color_dodge`, `difference`, `tint`, `luma_reveal`.
 
-### ComponentCanvasSize {#ComponentCanvasSize}
+<div class="schema-anchor" id="ComponentCanvasSize"></div>
+
+### ComponentCanvasSize
 
 Default visual footprint for placing an attachment in the layout editor.
 
@@ -3836,7 +4372,9 @@ Default visual footprint for placing an attachment in the layout editor.
 | `height` | number (float) | yes | Height as a normalized fraction of the canvas. |
 | `width` | number (float) | yes | Width as a normalized fraction of the canvas. |
 
-### ComponentCategory {#ComponentCategory}
+<div class="schema-anchor" id="ComponentCategory"></div>
+
+### ComponentCategory
 
 Template category used for filtering and UI grouping.
 
@@ -3856,7 +4394,9 @@ One of these variants:
 | `"Bulb"` |  | Single-point bulb or indicator. |
 | `{ "Other": … }` | `Other`: string | Anything that does not fit a standard preset family. |
 
-### ControlBinding {#ControlBinding}
+<div class="schema-anchor" id="ControlBinding"></div>
+
+### ControlBinding
 
 Live mapping from a system sensor reading into a control value.
 
@@ -3870,7 +4410,9 @@ Live mapping from a system sensor reading into a control value.
 | `target_max` | number (float) | yes | Upper bound of the mapped control range. |
 | `target_min` | number (float) | yes | Lower bound of the mapped control range. |
 
-### ControlDefinition {#ControlDefinition}
+<div class="schema-anchor" id="ControlDefinition"></div>
+
+### ControlDefinition
 
 A single user-facing parameter declared by an effect.
 
@@ -3895,7 +4437,9 @@ remain in that state without repeated control-plane injection.
 | `step` | number (float) or null | no | Step increment for numeric controls. `None` means continuous. |
 | `tooltip` | string or null | no | Help text shown on hover/focus. |
 
-### ControlKind {#ControlKind}
+<div class="schema-anchor" id="ControlKind"></div>
+
+### ControlKind
 
 Semantic control kind declared by an effect source.
 
@@ -3917,7 +4461,9 @@ One of these variants:
 | `"rect"` |  | Normalized rectangular viewport value. |
 | `{ "other": … }` | `other`: string | Unknown/unmapped kind from source metadata. |
 
-### ControlType {#ControlType}
+<div class="schema-anchor" id="ControlType"></div>
+
+### ControlType
 
 Widget kind for a user-facing effect control.
 
@@ -3925,7 +4471,9 @@ Each variant maps to a specific UI component in the control panel.
 
 One of `slider`, `toggle`, `color_picker`, `gradient_editor`, `dropdown`, `text_input`, `asset`, `rect`.
 
-### ControlValue {#ControlValue}
+<div class="schema-anchor" id="ControlValue"></div>
+
+### ControlValue
 
 One of these variants, told apart by `kind`:
 
@@ -3951,19 +4499,25 @@ One of these variants, told apart by `kind`:
 | `"map"` | `value`: map of [`ControlValue`](@/api/rest-schemas.md#ControlValue) |
 | `"unknown"` | none |
 
-### Corner {#Corner}
+<div class="schema-anchor" id="Corner"></div>
+
+### Corner
 
 Corner for matrix start position.
 
 One of `top_left`, `top_right`, `bottom_left`, `bottom_right`.
 
-### CoverageActive {#CoverageActive}
+<div class="schema-anchor" id="CoverageActive"></div>
+
+### CoverageActive
 
 Which stack currently owns the hardware in one coverage row.
 
 One of `native`, `bridge`, `none`, `conflict`.
 
-### CoverageBridgeDevice {#CoverageBridgeDevice}
+<div class="schema-anchor" id="CoverageBridgeDevice"></div>
+
+### CoverageBridgeDevice
 
 The bridge side of a coverage row.
 
@@ -3974,7 +4528,9 @@ The bridge side of a coverage row.
 | `output_enabled` | boolean | yes |  |
 | `state` | string | yes | Lifecycle state name in lowercase. |
 
-### CoverageIdentity {#CoverageIdentity}
+<div class="schema-anchor" id="CoverageIdentity"></div>
+
+### CoverageIdentity
 
 The physical-device identity a coverage row was joined on.
 
@@ -3984,13 +4540,17 @@ The physical-device identity a coverage row was joined on.
 | `label` | string | yes | Best available human label for the hardware. |
 | `value` | string | yes | The normalized key value. |
 
-### CoverageIdentityKind {#CoverageIdentityKind}
+<div class="schema-anchor" id="CoverageIdentityKind"></div>
+
+### CoverageIdentityKind
 
 Which key joined the sources of one coverage row.
 
 One of `serial`, `smbus`, `usb_path`, `device`.
 
-### CoverageNativeDevice {#CoverageNativeDevice}
+<div class="schema-anchor" id="CoverageNativeDevice"></div>
+
+### CoverageNativeDevice
 
 The native side of a coverage row.
 
@@ -4000,13 +4560,17 @@ The native side of a coverage row.
 | `driver_id` | string | yes |  |
 | `state` | string | yes | Lifecycle state name in lowercase (`connected`, `known`, ...). |
 
-### DeviceClassHint {#DeviceClassHint}
+<div class="schema-anchor" id="DeviceClassHint"></div>
+
+### DeviceClassHint
 
 Presentation hint for devices owned by a driver module.
 
 One of `keyboard`, `mouse`, `hub`, `controller`, `light`, `display`, `audio`, `other`.
 
-### DeviceCoverageRow {#DeviceCoverageRow}
+<div class="schema-anchor" id="DeviceCoverageRow"></div>
+
+### DeviceCoverageRow
 
 One physical device across the native registry, bridge routes, and the
 unclaimed inventory.
@@ -4019,7 +4583,9 @@ unclaimed inventory.
 | `native` | [`CoverageNativeDevice`](@/api/rest-schemas.md#CoverageNativeDevice) or null | no |  |
 | `unclaimed` | boolean | yes | Whether the unclaimed USB inventory also lists this hardware. |
 
-### DeviceId {#DeviceId}
+<div class="schema-anchor" id="DeviceId"></div>
+
+### DeviceId
 
 Opaque, globally unique device identifier.
 
@@ -4028,7 +4594,9 @@ database keys, map keys, and log correlation IDs.
 
 Type: string (uuid).
 
-### DisplayRotation {#DisplayRotation}
+<div class="schema-anchor" id="DisplayRotation"></div>
+
+### DisplayRotation
 
 Quarter turns applied to everything drawn on a display. A mounting
 fact about the panel, stored with the device's user settings so it
@@ -4036,7 +4604,9 @@ holds across scenes, faces, and media layers alike.
 
 One of `deg0`, `deg90`, `deg180`, `deg270`.
 
-### DriverConfigEntry {#DriverConfigEntry}
+<div class="schema-anchor" id="DriverConfigEntry"></div>
+
+### DriverConfigEntry
 
 Host-owned wrapper around one driver's settings.
 
@@ -4046,7 +4616,9 @@ Host-owned wrapper around one driver's settings.
 
 Other keys may hold any JSON value.
 
-### DriverPresentation {#DriverPresentation}
+<div class="schema-anchor" id="DriverPresentation"></div>
+
+### DriverPresentation
 
 API and UI presentation metadata for a driver module.
 
@@ -4059,7 +4631,9 @@ API and UI presentation metadata for a driver module.
 | `secondary_rgb` | array of integer (int32) or null | no | Secondary RGB accent color. |
 | `short_label` | string or null | no | Compact label for dense UI surfaces. |
 
-### DriverTransportKind {#DriverTransportKind}
+<div class="schema-anchor" id="DriverTransportKind"></div>
+
+### DriverTransportKind
 
 API-facing transport category for a driver module.
 
@@ -4076,7 +4650,9 @@ One of these variants:
 | `"bridge"` |  | Out-of-process bridge transport. |
 | `{ "custom": … }` | `custom`: string | Driver-defined transport category. |
 
-### EdgeBehavior {#EdgeBehavior}
+<div class="schema-anchor" id="EdgeBehavior"></div>
+
+### EdgeBehavior
 
 Edge behavior for out-of-bounds LED positions.
 
@@ -4095,7 +4671,9 @@ One of these variants:
 
 **`"mirror"`**: Mirror coordinates at canvas edges for symmetric reflections.
 
-### EffectCategory {#EffectCategory}
+<div class="schema-anchor" id="EffectCategory"></div>
+
+### EffectCategory
 
 Primary classification categories for the effect taxonomy.
 
@@ -4106,7 +4684,9 @@ One of `ambient`, `audio`, `generative`, `particle`, `scenic`, `interactive`, `f
 
 Used by [`GET /api/v1/effects`](@/api/rest.md#list_effects) parameter.
 
-### EffectId {#EffectId}
+<div class="schema-anchor" id="EffectId"></div>
+
+### EffectId
 
 Opaque stable identifier for an effect, wrapping a UUID.
 
@@ -4116,13 +4696,17 @@ must not infer UUID version or creation time from this type.
 
 Type: string (uuid).
 
-### FitMode {#FitMode}
+<div class="schema-anchor" id="FitMode"></div>
+
+### FitMode
 
 How a cropped viewport maps into a destination canvas.
 
 One of `contain`, `cover`, `stretch`, `tile`, `mirror`.
 
-### GpuErrorStatus {#GpuErrorStatus}
+<div class="schema-anchor" id="GpuErrorStatus"></div>
+
+### GpuErrorStatus
 
 Uncaptured wgpu errors and device losses since the daemon started.
 
@@ -4134,7 +4718,9 @@ Uncaptured wgpu errors and device losses since the daemon started.
 | `out_of_memory_errors` | integer (int64) | yes |  |
 | `validation_errors` | integer (int64) | yes |  |
 
-### GradientStop {#GradientStop}
+<div class="schema-anchor" id="GradientStop"></div>
+
+### GradientStop
 
 A single stop in a color gradient.
 
@@ -4146,7 +4732,9 @@ Color is stored as linear RGBA (`[f32; 4]`).
 | `color` | array of number (float) | yes | Linear RGBA color at this stop. |
 | `position` | number (float) | yes | Position along the gradient axis, `0.0` = start, `1.0` = end. At least 0, at most 1. |
 
-### InputSourceIssueStatus {#InputSourceIssueStatus}
+<div class="schema-anchor" id="InputSourceIssueStatus"></div>
+
+### InputSourceIssueStatus
 
 Structured source issue safe for operational status surfaces.
 
@@ -4157,7 +4745,9 @@ Structured source issue safe for operational status surfaces.
 | `remediation` | string or null | no |
 | `retryable` | boolean | yes |
 
-### InputSourceStatus {#InputSourceStatus}
+<div class="schema-anchor" id="InputSourceStatus"></div>
+
+### InputSourceStatus
 
 Lock-free lifecycle and freshness status for one input source.
 
@@ -4185,7 +4775,9 @@ Lock-free lifecycle and freshness status for one input source.
 | `source_id` | string | yes |
 | `state` | string | yes |
 
-### InputStatus {#InputStatus}
+<div class="schema-anchor" id="InputStatus"></div>
+
+### InputStatus
 
 Host keyboard/mouse capture health, for consent and remediation UX.
 
@@ -4211,7 +4803,9 @@ a per-node one.
 | `source_graph_generation` | integer (int64) | yes |
 | `sources` | array of [`InputSourceStatus`](@/api/rest-schemas.md#InputSourceStatus) | yes |
 
-### LayerAdjust {#LayerAdjust}
+<div class="schema-anchor" id="LayerAdjust"></div>
+
+### LayerAdjust
 
 Per-layer color adjustment settings.
 
@@ -4224,7 +4818,9 @@ Per-layer color adjustment settings.
 | `tint` | array of number (float) | yes |
 | `tint_strength` | number (float) | yes |
 
-### LayerBinding {#LayerBinding}
+<div class="schema-anchor" id="LayerBinding"></div>
+
+### LayerBinding
 
 Live mapping from runtime data to a scalar layer parameter.
 
@@ -4234,13 +4830,17 @@ Live mapping from runtime data to a scalar layer parameter.
 | `source` | [`BindingSource`](@/api/rest-schemas.md#BindingSource) | yes |
 | `target` | [`LayerParameter`](@/api/rest-schemas.md#LayerParameter) | yes |
 
-### LayerParameter {#LayerParameter}
+<div class="schema-anchor" id="LayerParameter"></div>
+
+### LayerParameter
 
 Bindable scalar layer parameters.
 
 One of `opacity`, `brightness`, `saturation`, `hue_shift`, `tint_strength`, `contrast`, `scale_x`, `scale_y`, `rotation`, `playback_speed`.
 
-### LayerSource {#LayerSource}
+<div class="schema-anchor" id="LayerSource"></div>
+
+### LayerSource
 
 Source that feeds one authored layer.
 
@@ -4282,7 +4882,9 @@ One of these variants, told apart by `type`:
 | --- | --- | --- |
 | `rgba` | array of number (float) | yes |
 
-### LayerTransform {#LayerTransform}
+<div class="schema-anchor" id="LayerTransform"></div>
+
+### LayerTransform
 
 Geometric placement for a layer source.
 
@@ -4293,7 +4895,9 @@ Geometric placement for a layer source.
 | `rotation` | number (float) | yes |
 | `scale` | array of number (float) | yes |
 
-### LedTopology {#LedTopology}
+<div class="schema-anchor" id="LedTopology"></div>
+
+### LedTopology
 
 LED arrangement within a zone's bounding rectangle.
 
@@ -4352,7 +4956,9 @@ One of these variants, told apart by `type`:
 | --- | --- | --- | --- |
 | `positions` | array of [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes | Directly-stored LED positions. |
 
-### LinearRgba {#LinearRgba}
+<div class="schema-anchor" id="LinearRgba"></div>
+
+### LinearRgba
 
 Linear-light RGBA color with straight alpha, `0.0..=1.0` per channel.
 
@@ -4367,13 +4973,17 @@ Oklab results) and clamp on conversion back to bytes.
 | `g` | number (float) | yes | Green channel (linear light). |
 | `r` | number (float) | yes | Red channel (linear light). |
 
-### LoopMode {#LoopMode}
+<div class="schema-anchor" id="LoopMode"></div>
+
+### LoopMode
 
 End-of-stream policy for media playback.
 
 One of `none`, `loop`, `ping_pong`.
 
-### MediaPlayback {#MediaPlayback}
+<div class="schema-anchor" id="MediaPlayback"></div>
+
+### MediaPlayback
 
 Media playback settings for media-backed layers.
 
@@ -4384,7 +4994,9 @@ Media playback settings for media-backed layers.
 | `speed` | number (float) | no |
 | `start_offset_secs` | number (float) | no |
 
-### MemberPlacement {#MemberPlacement}
+<div class="schema-anchor" id="MemberPlacement"></div>
+
+### MemberPlacement
 
 One member's spatial placement inside its zone's layout.
 
@@ -4403,7 +5015,9 @@ strict envelope around it still rejects unknown top-level fields.
 | `size` | [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes | Dimensions, normalized relative to canvas size. |
 | `topology` | [`LedTopology`](@/api/rest-schemas.md#LedTopology) | yes |  |
 
-### NormalizedPosition {#NormalizedPosition}
+<div class="schema-anchor" id="NormalizedPosition"></div>
+
+### NormalizedPosition
 
 A position in normalized `[0.0, 1.0]` canvas space.
 
@@ -4422,7 +5036,9 @@ a zone's bounding box, and space regions in multi-room layouts.
 | `x` | number (float) | yes | Horizontal position. 0.0 = left edge, 1.0 = right edge. |
 | `y` | number (float) | yes | Vertical position. 0.0 = top edge, 1.0 = bottom edge. |
 
-### NormalizedRect {#NormalizedRect}
+<div class="schema-anchor" id="NormalizedRect"></div>
+
+### NormalizedRect
 
 Normalized rectangle in `[0.0, 1.0]` canvas space.
 
@@ -4435,13 +5051,17 @@ Used for space regions in multi-room layouts.
 | `x` | number (float) | yes | Left edge x-coordinate. |
 | `y` | number (float) | yes | Top edge y-coordinate. |
 
-### Orientation {#Orientation}
+<div class="schema-anchor" id="Orientation"></div>
+
+### Orientation
 
 Orientation hint for the editor.
 
 One of `horizontal`, `vertical`, `diagonal`, `radial`.
 
-### Output {#Output}
+<div class="schema-anchor" id="Output"></div>
+
+### Output
 
 A device output: the spatial binding between a physical device and a
 region of the effect canvas.
@@ -4472,7 +5092,9 @@ in `led_positions` as output-local normalized coordinates.
 | `topology` | [`LedTopology`](@/api/rest-schemas.md#LedTopology) | yes | LED arrangement within the zone's bounding rectangle. |
 | `zone_name` | string or null | no | Sub-device channel or segment name (e.g., `"ch1"`, `"atx"`, `"segment-0"`). `None` for single-zone devices. |
 
-### OutputComponent {#OutputComponent}
+<div class="schema-anchor" id="OutputComponent"></div>
+
+### OutputComponent
 
 Attachment metadata carried by imported layout outputs.
 
@@ -4485,7 +5107,9 @@ Attachment metadata carried by imported layout outputs.
 | `slot_id` | string | yes | Source slot ID on the physical controller. |
 | `template_id` | string | yes | Bound attachment template identifier. |
 
-### PageInfo {#PageInfo}
+<div class="schema-anchor" id="PageInfo"></div>
+
+### PageInfo
 
 Paging state for endpoints that genuinely page.
 
@@ -4495,7 +5119,9 @@ Paging state for endpoints that genuinely page.
 | `limit` | integer (int64) | yes | Requested page size. |
 | `offset` | integer (int64) | yes | Offset of the first item in this page. |
 
-### PatchControlsRequest {#PatchControlsRequest}
+<div class="schema-anchor" id="PatchControlsRequest"></div>
+
+### PatchControlsRequest
 
 The one control-patch shape, used verbatim at every scope: layer
 controls, display face controls, control-surface values
@@ -4517,13 +5143,17 @@ Unknown fields are rejected.
 
 Used by [`PATCH /api/v1/control-surfaces/{id}/values`](@/api/rest.md#apply_control_surface_values) request, [`PATCH /api/v1/displays/{id}/face/controls`](@/api/rest.md#patch_display_face_controls) request, [`PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`](@/api/rest.md#patch_live_layer_controls) request.
 
-### PresetId {#PresetId}
+<div class="schema-anchor" id="PresetId"></div>
+
+### PresetId
 
 Opaque identifier for an effect preset.
 
 Type: string (uuid).
 
-### PresetTemplate {#PresetTemplate}
+<div class="schema-anchor" id="PresetTemplate"></div>
+
+### PresetTemplate
 
 An effect-defined preset — a named snapshot of control values bundled
 with the effect itself. Unlike user-created [`EffectPreset`](@/api/rest-schemas.md#EffectPreset)s,
@@ -4536,13 +5166,17 @@ these are authored by the effect developer and are read-only at runtime.
 | `id` | string | yes | Stable identifier authored by the effect or derived from its name. |
 | `name` | string | yes | Human-readable preset name (e.g. "Sunset Glow", "Deep Ocean"). |
 
-### PreviewSource {#PreviewSource}
+<div class="schema-anchor" id="PreviewSource"></div>
+
+### PreviewSource
 
 Live preview stream a control should bind to in the UI.
 
 One of `screen_capture`, `web_viewport`, `effect_canvas`.
 
-### RenderFailureStatus {#RenderFailureStatus}
+<div class="schema-anchor" id="RenderFailureStatus"></div>
+
+### RenderFailureStatus
 
 One render failure, as the supervisor recorded it.
 
@@ -4557,7 +5191,9 @@ One render failure, as the supervisor recorded it.
 | `restart_attempt` | integer (int32) | yes | Restarts counted in the budget window by this failure. |
 | `thread` | string or null | no |  |
 
-### RenderOutputDemandStatus {#RenderOutputDemandStatus}
+<div class="schema-anchor" id="RenderOutputDemandStatus"></div>
+
+### RenderOutputDemandStatus
 
 Output demand: what consumes the render loop's frames.
 
@@ -4578,7 +5214,9 @@ and resumes at its current tier the moment a consumer appears.
 | `parks_total` | integer (int64) | yes | How many times the loop has parked since the daemon started. |
 | `stream_receivers` | integer (int32) | yes | Live receivers on the frame, canvas, preview, spectrum, and per-zone canvas streams, including in-flight canvas captures. |
 
-### RenderSupervisionStatus {#RenderSupervisionStatus}
+<div class="schema-anchor" id="RenderSupervisionStatus"></div>
+
+### RenderSupervisionStatus
 
 Health and recovery state of the supervised render thread.
 
@@ -4597,7 +5235,9 @@ GPU device is lost.
 | `phase` | string | yes | `not_started`, `starting`, `running`, `restarting`, `terminating`, or `stopped`. |
 | `restarts_total` | integer (int64) | yes | In-process pipeline restarts since the daemon started. |
 
-### Rgb {#Rgb}
+<div class="schema-anchor" id="Rgb"></div>
+
+### Rgb
 
 Encoded sRGB color, no alpha. This is what device backends receive.
 
@@ -4607,7 +5247,9 @@ Encoded sRGB color, no alpha. This is what device backends receive.
 | `g` | integer (int32) | yes | Green channel (0–255, sRGB encoded). |
 | `r` | integer (int32) | yes | Red channel (0–255, sRGB encoded). |
 
-### Rgba {#Rgba}
+<div class="schema-anchor" id="Rgba"></div>
+
+### Rgba
 
 Encoded sRGB color with straight (non-premultiplied) alpha.
 
@@ -4618,7 +5260,9 @@ Encoded sRGB color with straight (non-premultiplied) alpha.
 | `g` | integer (int32) | yes | Green channel (0–255, sRGB encoded). |
 | `r` | integer (int32) | yes | Red channel (0–255, sRGB encoded). |
 
-### RingDef {#RingDef}
+<div class="schema-anchor" id="RingDef"></div>
+
+### RingDef
 
 Definition for a single ring within `LedTopology::ConcentricRings`.
 
@@ -4629,7 +5273,9 @@ Definition for a single ring within `LedTopology::ConcentricRings`.
 | `radius` | number (float) | yes | Radius as a fraction of the zone's half-size. 0.0 = center, 1.0 = zone edge. |
 | `start_angle` | number (float) | yes | Angle of LED 0 in radians. |
 
-### SamplingMode {#SamplingMode}
+<div class="schema-anchor" id="SamplingMode"></div>
+
+### SamplingMode
 
 Sampling algorithm for canvas-to-LED color extraction.
 
@@ -4653,7 +5299,9 @@ One of these variants, told apart by `type`:
 | `radius` | integer (int32) | yes | Kernel half-size in pixels (full kernel = `(2*radius+1)^2`). |
 | `sigma` | number (float) | yes | Standard deviation of the Gaussian kernel. |
 
-### SceneLayer {#SceneLayer}
+<div class="schema-anchor" id="SceneLayer"></div>
+
+### SceneLayer
 
 Authored layer inside a zone's bottom-to-top stack.
 
@@ -4669,13 +5317,17 @@ Authored layer inside a zone's bottom-to-top stack.
 | `source` | [`LayerSource`](@/api/rest-schemas.md#LayerSource) | yes | Content source that feeds this layer. |
 | `transform` | [`LayerTransform`](@/api/rest-schemas.md#LayerTransform) | no | Geometric placement of the source within the zone's canvas. |
 
-### SceneLayerId {#SceneLayerId}
+<div class="schema-anchor" id="SceneLayerId"></div>
+
+### SceneLayerId
 
 Stable identifier for a layer within a zone.
 
 Type: string (uuid).
 
-### SideEffectOutcome {#SideEffectOutcome}
+<div class="schema-anchor" id="SideEffectOutcome"></div>
+
+### SideEffectOutcome
 
 One post-commit side-effect outcome (Spec 78 §2.3, §3.2): the
 commit stands, the outcome says whether the side effect landed,
@@ -4686,7 +5338,9 @@ and a failure carries its reason.
 | `applied` | boolean | yes |
 | `message` | string or null | no |
 
-### SourceDiagnosticsDisplayField {#SourceDiagnosticsDisplayField}
+<div class="schema-anchor" id="SourceDiagnosticsDisplayField"></div>
+
+### SourceDiagnosticsDisplayField
 
 One platform-authored, presentation-safe diagnostic value.
 
@@ -4696,7 +5350,9 @@ One platform-authored, presentation-safe diagnostic value.
 | `label` | string | yes | At least 1 characters, at most 64 characters. |
 | `value` | string | yes | At most 256 characters. |
 
-### SourceDiagnosticsEnvelope {#SourceDiagnosticsEnvelope}
+<div class="schema-anchor" id="SourceDiagnosticsEnvelope"></div>
+
+### SourceDiagnosticsEnvelope
 
 A versioned payload whose semantics remain owned by its platform crate.
 
@@ -4707,19 +5363,25 @@ A versioned payload whose semantics remain owned by its platform crate.
 | `schema` | string | yes | At least 1 characters, at most 64 characters. |
 | `version` | integer (int32) | yes | At least 1, at most 255. |
 
-### StripDirection {#StripDirection}
+<div class="schema-anchor" id="StripDirection"></div>
+
+### StripDirection
 
 Direction for strip LED indexing.
 
 One of `left_to_right`, `right_to_left`, `top_to_bottom`, `bottom_to_top`.
 
-### TimeWave {#TimeWave}
+<div class="schema-anchor" id="TimeWave"></div>
+
+### TimeWave
 
 Time-domain waveform for layer bindings.
 
 One of `sine`, `triangle`, `saw`, `square`.
 
-### ViewportRect {#ViewportRect}
+<div class="schema-anchor" id="ViewportRect"></div>
+
+### ViewportRect
 
 Normalized viewport rectangle in `[0.0, 1.0]` source space.
 
@@ -4730,19 +5392,25 @@ Normalized viewport rectangle in `[0.0, 1.0]` source space.
 | `x` | number (float) | yes |
 | `y` | number (float) | yes |
 
-### WebViewportRender {#WebViewportRender}
+<div class="schema-anchor" id="WebViewportRender"></div>
+
+### WebViewportRender
 
 Web viewport render policy.
 
 One of `live`, `snapshot`.
 
-### Winding {#Winding}
+<div class="schema-anchor" id="Winding"></div>
+
+### Winding
 
 Winding direction for circular topologies.
 
 One of `clockwise`, `counter_clockwise`.
 
-### ZoneLayoutResource {#ZoneLayoutResource}
+<div class="schema-anchor" id="ZoneLayoutResource"></div>
+
+### ZoneLayoutResource
 
 The zone-scoped layout on the wire — the same shape written by
 `PUT .../layout` and read back on the zone resource. Compact by
@@ -4753,7 +5421,9 @@ device-internal vocabulary (Spec 78 §5.1). Vec order is z-order.
 | --- | --- | --- |
 | `placements` | array of [`MemberPlacement`](@/api/rest-schemas.md#MemberPlacement) | yes |
 
-### ZoneMember {#ZoneMember}
+<div class="schema-anchor" id="ZoneMember"></div>
+
+### ZoneMember
 
 One zone membership: a device segment's assignment, with its own
 identity (Spec 78 §1.2).
@@ -4765,14 +5435,18 @@ identity (Spec 78 §1.2).
 | `name` | string | yes | Human-readable name carried from the layout output. |
 | `segment` | string or null | no | The device segment this membership assigns. `None` for single-segment devices. |
 
-### ZoneMemberId {#ZoneMemberId}
+<div class="schema-anchor" id="ZoneMemberId"></div>
+
+### ZoneMemberId
 
 A zone membership's identity — wire-transparent, unique within its
 zone, which is all its zone-scoped route needs.
 
 Type: string.
 
-### ZoneResource {#ZoneResource}
+<div class="schema-anchor" id="ZoneResource"></div>
+
+### ZoneResource
 
 One authored zone inside the live document (Spec 78 §1.3).
 
@@ -4792,7 +5466,9 @@ One authored zone inside the live document (Spec 78 §1.3).
 
 Used by [`POST /api/v1/scene/zones`](@/api/rest.md#create_live_zone) response, [`GET /api/v1/scene/zones/{zone}`](@/api/rest.md#get_live_zone) response, [`PATCH /api/v1/scene/zones/{zone}`](@/api/rest.md#patch_live_zone) response, [`POST /api/v1/scene/zones/{zone}/layers`](@/api/rest.md#create_live_zone_layer) response, [`PATCH /api/v1/scene/zones/{zone}/layers/order`](@/api/rest.md#reorder_live_zone_layers) response, [`PUT /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#replace_live_zone_layer) response, [`DELETE /api/v1/scene/zones/{zone}/layers/{layer}`](@/api/rest.md#delete_live_zone_layer) response, [`PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`](@/api/rest.md#patch_live_layer_controls) response, [`PUT /api/v1/scene/zones/{zone}/layout`](@/api/rest.md#put_live_zone_layout) response, [`POST /api/v1/scene/zones/{zone}/members`](@/api/rest.md#assign_live_zone_members) response, [`DELETE /api/v1/scene/zones/{zone}/members/{member}`](@/api/rest.md#unassign_live_zone_member) response.
 
-### ZoneShape {#ZoneShape}
+<div class="schema-anchor" id="ZoneShape"></div>
+
+### ZoneShape
 
 Visual shape of the zone in the editor.
 
@@ -4815,9 +5491,11 @@ One of these variants, told apart by `shape_type`:
 | --- | --- | --- | --- |
 | `vertices` | array of [`NormalizedPosition`](@/api/rest-schemas.md#NormalizedPosition) | yes | Polygon vertices in normalized coordinates. |
 
-## Envelope {#group-envelope}
+## Envelope
 
-### ApiErrorBody {#ApiErrorBody}
+<div class="schema-anchor" id="ApiErrorBody"></div>
+
+### ApiErrorBody
 
 Standard error envelope: `{ error: { code, message, details }, meta }`.
 
@@ -4828,7 +5506,9 @@ Standard error envelope: `{ error: { code, message, details }, meta }`.
 
 Unknown fields are rejected.
 
-### ApiErrorDetail {#ApiErrorDetail}
+<div class="schema-anchor" id="ApiErrorDetail"></div>
+
+### ApiErrorDetail
 
 The error payload inside [`ApiErrorBody`](@/api/rest-schemas.md#ApiErrorBody).
 
@@ -4840,7 +5520,9 @@ The error payload inside [`ApiErrorBody`](@/api/rest-schemas.md#ApiErrorBody).
 
 Unknown fields are rejected.
 
-### ResponseMeta {#ResponseMeta}
+<div class="schema-anchor" id="ResponseMeta"></div>
+
+### ResponseMeta
 
 Response metadata included in every envelope.
 
@@ -4852,11 +5534,13 @@ Response metadata included in every envelope.
 
 Unknown fields are rejected.
 
-## Unreferenced {#group-unreferenced}
+## Unreferenced
 
 The document declares these types, but no operation references them.
 
-### CaptureMonitor {#CaptureMonitor}
+<div class="schema-anchor" id="CaptureMonitor"></div>
+
+### CaptureMonitor
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -4868,7 +5552,9 @@ The document declares these types, but no operation references them.
 | `value` | string | yes |
 | `width` | integer (int32) | yes |
 
-### ConfigKeySchemaEntry {#ConfigKeySchemaEntry}
+<div class="schema-anchor" id="ConfigKeySchemaEntry"></div>
+
+### ConfigKeySchemaEntry
 
 One schema row as served to clients (`GET /config/schema`,
 wave 4.3) — the wire projection of a descriptor.
@@ -4881,13 +5567,17 @@ wave 4.3) — the wire projection of a descriptor.
 | `protection` | [`Protection`](@/api/rest-schemas.md#Protection) | no | Which writes need a protected-control credential. |
 | `redaction` | [`Redaction`](@/api/rest-schemas.md#Redaction) | yes | Read-surface rendering. |
 
-### ControlAvailabilityState {#ControlAvailabilityState}
+<div class="schema-anchor" id="ControlAvailabilityState"></div>
+
+### ControlAvailabilityState
 
 Resolved availability state.
 
 One of `available`, `disabled`, `read_only`, `unsupported`, `hidden`.
 
-### DisplaySummary {#DisplaySummary}
+<div class="schema-anchor" id="DisplaySummary"></div>
+
+### DisplaySummary
 
 Summary row from `GET /api/v1/displays`.
 

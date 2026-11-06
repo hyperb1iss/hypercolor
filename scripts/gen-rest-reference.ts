@@ -130,7 +130,6 @@ interface Tag {
 interface Section {
     tag: string
     title: string
-    id: string
     prefixes: string[]
     prose: string
 }
@@ -288,7 +287,7 @@ function storeNote(notes: Notes, key: string, prose: string) {
         if (!tag || !title || prefixes.length === 0) {
             fail(`rest.notes.md: \`${key}\` must read \`@section <tag> <Title> </path/prefix>...\``)
         }
-        notes.sections.push({ tag, title, id: `${tag}-${slugify(title)}`, prefixes, prose })
+        notes.sections.push({ tag, title, prefixes, prose })
         return
     }
     if (OPERATION_KEY.test(key)) {
@@ -299,13 +298,6 @@ function storeNote(notes: Notes, key: string, prose: string) {
 }
 
 // ─── Text helpers ───────────────────────────────────────────────────────
-
-function slugify(text: string): string {
-    return text
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '')
-}
 
 /**
  * Order strings by UTF-16 code unit. `localeCompare` follows the runtime's
@@ -433,7 +425,7 @@ export class Reference {
     /** Rustdoc-flavored description text, made safe for Zola markdown. */
     prose(text: string | undefined): string {
         if (!text) return ''
-        if (/\{[{%]/.test(text)) fail(`description contains Zola template syntax: ${text.slice(0, 80)}`)
+        if (/\{[{%#]/.test(text)) fail(`description contains Zola template syntax: ${text.slice(0, 80)}`)
         // Rustdoc intra-doc links (`[`Type`]`) have no target in markdown.
         // Link the ones that name a schema; keep the rest as plain code.
         const linked = text.replace(/\[(`[^`\]]+`)\](?!\()/g, (_match, span: string) => {
@@ -931,7 +923,7 @@ function collectOperations(document: Document): Operation[] {
             if (!raw.summary) fail(`${key} has no summary`)
             // The summary becomes a component argument, where Zola would read
             // template syntax as markup.
-            if (/\{[{%]/.test(raw.summary)) fail(`${key} summary contains Zola template syntax`)
+            if (/\{[{%#]/.test(raw.summary)) fail(`${key} summary contains Zola template syntax`)
             operations.push({
                 method: method.toUpperCase(),
                 path,
@@ -1032,6 +1024,21 @@ function componentArg(name: string, value: string): string {
     fail(`cannot quote component argument ${name}: ${value}`)
 }
 
+// ─── Page assembly ──────────────────────────────────────────────────────
+
+/**
+ * Join a page's blocks, collapsing runs of blank lines. Zola 0.23.3 (the
+ * version CI pins) runs page content through Tera, which reads `{#` as the
+ * start of a comment, so a page carrying one fails to build there even when
+ * a newer local Zola renders it.
+ */
+function finishPage(lines: string[], page: string): string {
+    const contents = `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
+    const line = contents.split('\n').findIndex((text) => text.includes('{#'))
+    if (line !== -1) fail(`${page} line ${line + 1} contains \`{#\`, which Zola 0.23.3 reads as a Tera comment`)
+    return contents
+}
+
 // ─── rest.md ────────────────────────────────────────────────────────────
 
 const GENERATED_BANNER = `<!--
@@ -1062,7 +1069,7 @@ export function renderRest(ref: Reference): string {
     )
 
     if (ref.commonErrors.length) {
-        out.push('## Shared error responses {#shared-errors}', '')
+        out.push('## Shared error responses', '')
         out.push(
             `The document declares these statuses on every operation, each answering with the [error envelope](${ENVELOPE_PAGE}) (${ref.schemaLink('ApiErrorBody')}). The cards below list only the statuses an operation adds.`,
             '',
@@ -1090,7 +1097,7 @@ export function renderRest(ref: Reference): string {
             return best
         }
 
-        out.push(`## ${tag.title} {#${tag.name}}`, '')
+        out.push(`## ${tag.title}`, '')
         if (tag.description) out.push(`${ref.prose(tag.description)}.`.replace(/\.\.$/, '.'), '')
         const tagProse = ref.notes.tagProse.get(tag.name)
         if (tagProse) out.push(tagProse, '')
@@ -1102,14 +1109,14 @@ export function renderRest(ref: Reference): string {
             if (members.length === 0) {
                 fail(`rest.notes.md: section "${section.title}" holds no operation; a longer prefix claims them all`)
             }
-            out.push(`### ${section.title} {#${section.id}}`, '')
+            out.push(`### ${section.title}`, '')
             if (section.prose) out.push(section.prose, '')
             for (const operation of members) out.push(renderCard(ref, operation), '')
         }
     }
 
     if (ref.notes.outro) out.push('---', '', ref.notes.outro, '')
-    return `${out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
+    return finishPage(out, 'rest.md')
 }
 
 function renderCard(ref: Reference, operation: Operation): string {
@@ -1290,18 +1297,22 @@ export function renderSchemas(ref: Reference): string {
             .filter((name) => ref.schemaGroups.get(name) === group.id)
             .sort(compareCodeUnits)
         if (names.length === 0) continue
-        out.push(`## ${group.title} {#group-${group.id}}`, '')
+        out.push(`## ${group.title}`, '')
         if (group.id === UNREFERENCED_GROUP) {
             out.push('The document declares these types, but no operation references them.', '')
         }
         for (const name of names) out.push(renderSchema(ref, name), '')
     }
-    return `${out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
+    return finishPage(out, 'rest-schemas.md')
 }
 
 function renderSchema(ref: Reference, name: string): string {
     const schema = ref.schema(name)
-    const blocks = [`### ${name} {#${name}}`]
+    // An explicit anchor, not a `{#Name}` heading attribute: Zola 0.23.3
+    // (the version CI pins) reads `{#` in page content as the start of a Tera
+    // comment. The id is the exact schema name, so it never collides with a
+    // heading's lowercase slug.
+    const blocks = [`<div class="schema-anchor" id="${name}"></div>\n\n### ${name}`]
     const description = ref.prose(schema.description)
     if (description) blocks.push(description)
     blocks.push(ref.schemaBody(schema))

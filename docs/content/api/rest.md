@@ -17,7 +17,7 @@ default. The same daemon also speaks [WebSocket](@/api/websocket.md), the
 [CLI](@/api/cli.md), and an [MCP server](@/agents/_index.md); this page
 covers HTTP only.
 
-## Base URL and surfaces 🎯 {#base-url}
+## Base URL and surfaces 🎯
 
 ```
 http://localhost:9420
@@ -33,7 +33,7 @@ Two paths sit outside the `/api/v1` tree:
 Everything else lives under `/api/v1`. Path parameters use brace syntax, so a
 device route is `/api/v1/devices/{id}`, not `:id`.
 
-## Conventions {#conventions}
+## Conventions
 
 - **Envelope.** A JSON success wraps its payload as `{ data, meta }` and an
   error as `{ error, meta }`. [Envelope & errors](@/api/rest-envelope-and-errors.md)
@@ -53,7 +53,7 @@ device route is `/api/v1/devices/{id}`, not `:id`.
 
 This reference covers 132 operations on 96 paths. It is generated from the daemon's [OpenAPI document](@/api/openapi.md), so it lists exactly what the router serves. Request and response types link to their definitions in [REST schemas](@/api/rest-schemas.md).
 
-## Shared error responses {#shared-errors}
+## Shared error responses
 
 The document declares these statuses on every operation, each answering with the [error envelope](@/api/rest-envelope-and-errors.md) ([`ApiErrorBody`](@/api/rest-schemas.md#ApiErrorBody)). The cards below list only the statuses an operation adds.
 
@@ -69,7 +69,7 @@ The document declares these statuses on every operation, each answering with the
 | `429` | Request rate exceeded |
 | `500` | Internal daemon error |
 
-## System {#system}
+## System
 
 Daemon identity, health, and status.
 
@@ -417,7 +417,7 @@ sensor-bound effect controls.
 </details>
 {% </api_endpoint> %}
 
-## Drivers {#drivers}
+## Drivers
 
 Driver module inventory and capabilities.
 
@@ -470,7 +470,7 @@ masks every `drivers` entry.
 </details>
 {% </api_endpoint> %}
 
-## Devices {#devices}
+## Devices
 
 Tracked device inventory.
 
@@ -987,7 +987,7 @@ Forgets the device's stored pairing credentials.
 </details>
 {% </api_endpoint> %}
 
-## Control surfaces {#controls}
+## Control surfaces
 
 Generic control surfaces and typed value mutation.
 
@@ -1182,7 +1182,7 @@ Unknown fields are rejected.
 </details>
 {% </api_endpoint> %}
 
-## Effects {#effects}
+## Effects
 
 Effect catalog and runtime control.
 
@@ -1567,7 +1567,7 @@ Unknown fields are rejected.
 </details>
 {% </api_endpoint> %}
 
-## Canvas {#canvas}
+## Canvas
 
 Stills of the composed effect canvas.
 
@@ -1606,7 +1606,7 @@ curl -s 'http://127.0.0.1:9420/api/v1/canvas/frame?format=png&width=320' -o canv
 | `200` | `image/jpeg` or `image/png` bytes | Success |
 {% </api_endpoint> %}
 
-## Assets {#assets}
+## Assets
 
 Uploaded media assets.
 
@@ -1786,7 +1786,7 @@ Every field of [`MediaAssetRecord`](@/api/rest-schemas.md#MediaAssetRecord), plu
 | `200` | `image/webp` bytes | Success |
 {% </api_endpoint> %}
 
-## Media {#media}
+## Media
 
 Now-playing media application access.
 
@@ -1828,7 +1828,7 @@ Automation access is unavailable or denied.
 </details>
 {% </api_endpoint> %}
 
-## Displays and faces {#displays}
+## Displays and faces
 
 Display devices, faces, and simulators.
 
@@ -2017,7 +2017,7 @@ A JPEG preview frame from the display. Live frame streaming runs over the
 | `200` | `image/jpeg` bytes | Success |
 {% </api_endpoint> %}
 
-### Simulators {#displays-simulators}
+### Simulators
 
 Virtual display simulators let you build and test face effects with no physical
 display attached.
@@ -2166,7 +2166,7 @@ The latest composited frame from the simulated display.
 | `200` | `image/jpeg` bytes | Success |
 {% </api_endpoint> %}
 
-## Attachments {#attachments}
+## Attachments
 
 Physical attachment templates and bindings.
 
@@ -2268,7 +2268,7 @@ to 50 and anything above 200 is rejected with `validation_error`.
 </details>
 {% </api_endpoint> %}
 
-## Output {#output}
+## Output
 
 Global output power and brightness.
 
@@ -2345,7 +2345,7 @@ Unknown fields are rejected.
 </details>
 {% </api_endpoint> %}
 
-## Scenes {#scenes}
+## Scenes
 
 Scene CRUD and activation.
 
@@ -2354,7 +2354,7 @@ define how your entire setup lights up. Switching scenes swaps the whole rig.
 
 {{< img path="img/ui/ui-scenes.webp" alt="The scenes panel in the web UI" />}}
 
-### Stored scenes {#scenes-stored-scenes}
+### Stored scenes
 
 Stored scenes are edited as whole documents with `PUT /scenes/{id}`; the
 fine-grained editing routes below address the live scene only.
@@ -2641,7 +2641,7 @@ to override its duration for this activation.
 </details>
 {% </api_endpoint> %}
 
-### Live scene {#scenes-live-scene}
+### Live scene
 
 {% <api_endpoint method="GET" path="/api/v1/scene" id="get_live_scene" summary="Get the live scene"> %}
 The response always exists and embeds every authored zone, each zone's member
@@ -2825,7 +2825,7 @@ Returns to the default scene and answers with the new live scene document.
 </details>
 {% </api_endpoint> %}
 
-### Scene zones {#scenes-scene-zones}
+### Scene zones
 
 Zones are flexible partitions of the live scene's canvas. Each zone owns member
 device segments and a layer stack. Fine-grained editing is live-tree-only under
@@ -3241,7 +3241,7 @@ Removes one membership by the member id returned in the live zone document.
 </details>
 {% </api_endpoint> %}
 
-### Scene layers {#scenes-scene-layers}
+### Scene layers
 
 Each zone stacks layers bottom to top. Clients use the layer ids returned by
 `GET /scene`; they never derive an id from the zone.
@@ -3521,7 +3521,7 @@ Unknown fields are rejected.
 </details>
 {% </api_endpoint> %}
 
-## Layouts {#layouts}
+## Layouts
 
 Spatial layout CRUD and preview.
 
@@ -3750,11 +3750,11 @@ Makes the layout the active spatial mapping.
 </details>
 {% </api_endpoint> %}
 
-## Library {#library}
+## Library
 
 Favorites, presets, and playlists.
 
-### Favorites {#library-favorites}
+### Favorites
 
 A fresh install starts with a few curated favorites, which the daemon seeds
 once on its very first run. An existing install never gets them, even one whose
@@ -3831,7 +3831,7 @@ The path key is the effect ID, not a favorite ID.
 </details>
 {% </api_endpoint> %}
 
-### Presets {#library-presets}
+### Presets
 
 A preset is an effect plus a set of control values. Apply one through
 `POST /api/v1/effects/{effect}/presets/{preset}/apply`: the effect-scoped route
@@ -3979,7 +3979,7 @@ Saves the current effect and controls as a named preset.
 </details>
 {% </api_endpoint> %}
 
-### Playlists {#library-playlists}
+### Playlists
 
 {% <api_endpoint method="GET" path="/api/v1/library/playlists" id="list_playlists" summary="List playlists"> %}
 **Responses**
@@ -4177,7 +4177,7 @@ Effects cycle on the playlist's timing.
 </details>
 {% </api_endpoint> %}
 
-## Capture and input {#capture}
+## Capture and input
 
 Protected host input and screen-capture actions.
 
@@ -4304,7 +4304,7 @@ the process topology that owns the grant.
 </details>
 {% </api_endpoint> %}
 
-## Configuration {#config}
+## Configuration
 
 Daemon configuration inspection and mutation.
 
@@ -4533,7 +4533,7 @@ from this table.
 </details>
 {% </api_endpoint> %}
 
-## Backups {#backups}
+## Backups
 
 Portable lighting configuration backups and restores.
 
@@ -4631,7 +4631,7 @@ destination revision and relevant preferences for the subsequent apply.
 </details>
 {% </api_endpoint> %}
 
-## Diagnostics {#diagnostics}
+## Diagnostics
 
 Daemon diagnostics.
 
@@ -4669,7 +4669,7 @@ command and MCP tool use this exact check vocabulary.
 </details>
 {% </api_endpoint> %}
 
-## WebSocket {#websocket}
+## WebSocket
 
 Realtime WebSocket endpoint.
 
