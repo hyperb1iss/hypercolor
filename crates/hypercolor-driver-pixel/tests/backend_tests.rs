@@ -66,7 +66,7 @@ fn config_for(device: serde_json::Value) -> PixelConfig {
 
 /// Discover, adopt, and connect the single device in `config`.
 async fn connect(config: &PixelConfig) -> (PixelBackend, DeviceId) {
-    let discovered = configured_devices(config).expect("config should resolve");
+    let discovered = configured_devices(config, None).expect("config should resolve");
     let device = discovered.into_iter().next().expect("one device");
     let backend = PixelBackend::new();
     backend.adopt_device(&device).expect("adopt");
@@ -109,7 +109,7 @@ async fn e131_frames_split_into_universes_with_per_universe_sequences() {
         for (index, packet) in packets.iter().enumerate() {
             let universe = 5 + u16::try_from(index).expect("fits");
             assert_eq!(&packet[4..16], b"ASC-E1.17\0\0\0");
-            assert_eq!(&packet[22..38], derived_cid("falcon").as_bytes());
+            assert_eq!(&packet[22..38], derived_cid(None, "falcon").as_bytes());
             assert_eq!(&packet[44..54], b"Hypercolor");
             assert_eq!(packet[108], 100, "standard default priority");
             assert_eq!(u16_be(packet, 109), 0, "no sync address");
@@ -424,7 +424,7 @@ async fn adopt_rejects_devices_without_pixel_metadata() {
     let config = config_for(json!({
         "id": "meta", "host": "127.0.0.1", "protocol": "ddp", "pixel_count": 1
     }));
-    let mut device: DiscoveredDevice = configured_devices(&config)
+    let mut device: DiscoveredDevice = configured_devices(&config, None)
         .expect("resolve")
         .into_iter()
         .next()

@@ -65,7 +65,11 @@ fn default_config_is_empty_and_valid() {
         .expect("default config should validate");
     let config = parse_validated_config(&entry).expect("default parses");
     assert!(config.devices.is_empty());
-    assert!(configured_devices(&config).expect("no devices").is_empty());
+    assert!(
+        configured_devices(&config, None)
+            .expect("no devices")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -89,7 +93,7 @@ fn validate_config_reports_device_errors() {
 
 #[test]
 fn configured_devices_carry_identity_topology_and_metadata() {
-    let devices = configured_devices(&sample_config()).expect("resolve");
+    let devices = configured_devices(&sample_config(), None).expect("resolve");
     assert_eq!(devices.len(), 3);
 
     let roofline = &devices[0];
@@ -135,10 +139,14 @@ fn configured_devices_carry_identity_topology_and_metadata() {
 #[test]
 fn device_ids_stay_stable_when_hosts_move() {
     let mut config = sample_config();
-    let before = configured_devices(&config).expect("resolve")[2].info.id;
+    let before = configured_devices(&config, None).expect("resolve")[2]
+        .info
+        .id;
     config.devices[2].host = "10.0.0.99".parse().expect("valid IP");
     config.devices[2].name = Some("Renamed".to_owned());
-    let after = configured_devices(&config).expect("resolve")[2].info.id;
+    let after = configured_devices(&config, None).expect("resolve")[2]
+        .info
+        .id;
     assert_eq!(before, after);
 }
 
@@ -233,7 +241,7 @@ fn control_changes_are_validated_against_the_whole_config() {
 
 #[test]
 fn device_surface_is_read_only_diagnostics() {
-    let devices = configured_devices(&sample_config()).expect("resolve");
+    let devices = configured_devices(&sample_config(), None).expect("resolve");
     let roofline = &devices[0];
     let metadata: HashMap<String, String> = roofline.metadata.clone();
     let ctx = TrackedDeviceCtx {
@@ -263,4 +271,148 @@ fn device_surface_is_read_only_diagnostics() {
     )
     .expect_err("device fields are read-only");
     assert!(error.to_string().contains("read-only"));
+}
+
+// ── Installation-scoped CIDs ────────────────────────────────────────────
+
+struct InstallationHost(Option<&'static str>);
+
+#[async_trait::async_trait]
+impl hypercolor_driver_api::DriverCredentialStore for InstallationHost {
+    async fn get_json(
+        &self,
+        _driver_id: &str,
+        _key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+
+    async fn set_json(
+        &self,
+        _driver_id: &str,
+        _key: &str,
+        _value: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn remove(&self, _driver_id: &str, _key: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl hypercolor_driver_api::DriverRuntimeActions for InstallationHost {
+    async fn activate_device(
+        &self,
+        _device_id: hypercolor_types::device::DeviceId,
+        _backend_id: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn disconnect_device(
+        &self,
+        _device_id: hypercolor_types::device::DeviceId,
+        _backend_id: &str,
+        _will_retry: bool,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+}
+
+#[async_trait::async_trait]
+impl hypercolor_driver_api::DriverDiscoveryState for InstallationHost {
+    async fn tracked_devices(
+        &self,
+        _driver_id: &str,
+    ) -> Vec<hypercolor_driver_api::DriverTrackedDevice> {
+        Vec::new()
+    }
+
+    fn load_cached_json(
+        &self,
+        _driver_id: &str,
+        _key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+}
+
+impl hypercolor_driver_api::DriverHost for InstallationHost {
+    fn credentials(&self) -> &dyn hypercolor_driver_api::DriverCredentialStore {
+        self
+    }
+
+    fn runtime(&self) -> &dyn hypercolor_driver_api::DriverRuntimeActions {
+        self
+    }
+
+    fn discovery_state(&self) -> &dyn hypercolor_driver_api::DriverDiscoveryState {
+        self
+    }
+
+    fn installation_id(&self) -> Option<&str> {
+        self.0
+    }
+}
+
+async fn discovered_cid(host: &InstallationHost, config: &PixelConfig) -> String {
+    let entry = values_entry(&pixel_config_values(config)).expect("entry");
+    let devices = PixelDriverModule::new()
+        .discovery()
+        .expect("discovery capability")
+        .discover(
+            host,
+            &hypercolor_driver_api::DiscoveryRequest {
+                timeout: std::time::Duration::from_millis(10),
+                mdns_enabled: false,
+            },
+            DriverConfigView {
+                driver_id: DESCRIPTOR.id,
+                entry: &entry,
+            },
+        )
+        .await
+        .expect("discovery reads config only");
+    let effective: serde_json::Value =
+        serde_json::from_str(&devices[0].metadata[METADATA_DEVICE_CONFIG]).expect("JSON");
+    effective["cid"]
+        .as_str()
+        .expect("E1.31 devices carry a CID")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn discovery_scopes_derived_cids_to_the_installation() {
+    let config = sample_config();
+    let first = discovered_cid(&InstallationHost(Some("install-a")), &config).await;
+    let again = discovered_cid(&InstallationHost(Some("install-a")), &config).await;
+    let other = discovered_cid(&InstallationHost(Some("install-b")), &config).await;
+    let anonymous = discovered_cid(&InstallationHost(None), &config).await;
+
+    assert_eq!(first, again, "stable across rediscovery and restarts");
+    assert_ne!(
+        first, other,
+        "another installation with the same id differs"
+    );
+    assert_eq!(
+        first,
+        hypercolor_driver_pixel::derived_cid(Some("install-a"), "roofline").to_string()
+    );
+    assert_eq!(
+        anonymous,
+        hypercolor_driver_pixel::derived_cid(None, "roofline").to_string()
+    );
+}
+
+#[tokio::test]
+async fn explicit_cid_survives_installation_scoping() {
+    let mut config = sample_config();
+    let pinned = "6f1c7a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b";
+    config.devices[0].cid = Some(pinned.parse().expect("valid UUID"));
+    assert_eq!(
+        discovered_cid(&InstallationHost(Some("install-a")), &config).await,
+        pinned
+    );
 }
