@@ -169,6 +169,25 @@ pub(in crate::effect::servo) fn shutdown_shared_servo_worker() -> Result<()> {
     retire_shared_servo_worker(SharedServoWorkerState::Vacant)
 }
 
+/// Why the shared Servo runtime is unusable, or `None` while it is running
+/// or has not started yet.
+///
+/// A fatal worker failure poisons the runtime, and so does
+/// [`shutdown_servo_runtime`]. Either way HTML effects stay offline until
+/// the process restarts.
+#[must_use]
+pub fn servo_runtime_poison_reason() -> Option<String> {
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
+    let guard = match slot.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match &*guard {
+        SharedServoWorkerState::Poisoned { reason } => Some(reason.clone()),
+        SharedServoWorkerState::Vacant | SharedServoWorkerState::Running(_) => None,
+    }
+}
+
 pub fn shutdown_servo_runtime() -> Result<()> {
     retire_shared_servo_worker(SharedServoWorkerState::Poisoned {
         reason: "Servo runtime was shut down for process exit".to_owned(),

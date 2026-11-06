@@ -85,6 +85,9 @@ pub struct ServoRenderer {
     /// frame. A reload keeps the previous page's canvas on screen, so the
     /// canvas alone cannot tell whether the current page has rendered.
     awaiting_first_frame: bool,
+    /// Frames the worker completed for the current page. Placeholders and
+    /// a previous page's retained canvas never count.
+    presented_frames: u64,
     producer_role: ServoProducerRole,
     display_descriptor: Option<DisplayDescriptor>,
 }
@@ -100,6 +103,17 @@ impl ServoRenderer {
     #[must_use]
     pub fn new_display_face() -> Self {
         Self::new_with_producer_role(ServoProducerRole::DisplayFaceHtml)
+    }
+
+    /// Frames the Servo worker has completed for the current page since it
+    /// started loading.
+    ///
+    /// Zero means every frame this renderer returned so far was a
+    /// placeholder or the previous page's retained canvas, including after
+    /// a load failure or a lost session ends warming without a frame.
+    #[must_use]
+    pub const fn presented_frames(&self) -> u64 {
+        self.presented_frames
     }
 
     fn new_with_producer_role(producer_role: ServoProducerRole) -> Self {
@@ -139,6 +153,7 @@ impl ServoRenderer {
             host_driven_animation: false,
             last_submit_time_secs: None,
             awaiting_first_frame: false,
+            presented_frames: 0,
             producer_role,
             display_descriptor: None,
         }
@@ -329,6 +344,7 @@ impl EffectRenderer for ServoRenderer {
         self.host_driven_animation = false;
         self.last_submit_time_secs = None;
         self.awaiting_first_frame = false;
+        self.presented_frames = 0;
     }
 }
 
