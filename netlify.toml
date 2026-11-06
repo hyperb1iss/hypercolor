@@ -7,7 +7,7 @@
   command = "zola build"
 
 [build.environment]
-  ZOLA_VERSION = "0.22.1"
+  ZOLA_VERSION = "0.23.3"
 
 # Per-context base URLs so internal links + canonical resolve correctly:
 # production uses the canonical domain, previews/branches use their own URL.
