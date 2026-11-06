@@ -92,6 +92,48 @@ fn name() -> UpdatePipeName {
 }
 
 #[test]
+fn random_bits_make_a_name_the_client_accepts() {
+    let name = UpdatePipeName::from_random([0xA5; 16]);
+
+    assert_eq!(
+        name.as_str(),
+        format!(r"\\.\pipe\hypercolor-update-{}", "a5".repeat(16))
+    );
+    UpdatePipeName::parse(name.as_str()).expect("the client accepts it");
+}
+
+#[test]
+fn a_published_record_round_trips_its_name() {
+    let name = name();
+
+    let record = name.encode_record().expect("record");
+
+    assert_eq!(UpdatePipeName::decode_record(&record).expect("name"), name);
+}
+
+#[test]
+fn a_record_cannot_steer_the_client_at_another_pipe() {
+    let foreign = serde_json::json!({
+        "schema_version": 1,
+        "name": r"\\server\pipe\hypercolor-update-0123456789abcdef0123456789abcdef",
+    });
+    assert!(matches!(
+        UpdatePipeName::decode_record(foreign.to_string().as_bytes()),
+        Err(UpdatePipeError::InvalidName(_))
+    ));
+
+    let other_schema = serde_json::json!({ "schema_version": 2, "name": NAME });
+    assert!(matches!(
+        UpdatePipeName::decode_record(other_schema.to_string().as_bytes()),
+        Err(UpdatePipeError::InvalidRecord(_))
+    ));
+    assert!(matches!(
+        UpdatePipeName::decode_record(b"{"),
+        Err(UpdatePipeError::InvalidRecord(_))
+    ));
+}
+
+#[test]
 fn only_published_update_pipe_names_are_accepted() {
     assert_eq!(name().as_str(), NAME);
     for text in [

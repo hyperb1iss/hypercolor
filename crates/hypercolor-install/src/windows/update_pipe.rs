@@ -15,6 +15,8 @@
 
 use std::io::{self, Read, Write};
 
+use serde::{Deserialize, Serialize};
+
 #[cfg(windows)]
 mod native;
 
@@ -23,6 +25,9 @@ pub use native::WindowsUpdatePipeHost;
 
 /// The service whose own process must serve the pipe.
 pub const UPDATE_SERVICE_NAME: &str = "HypercolorUpdate";
+/// The record the service publishes the name in, under `activator\`.
+pub const UPDATE_PIPE_RECORD: &str = "pipe.json";
+const UPDATE_PIPE_RECORD_SCHEMA_VERSION: u32 = 1;
 /// Every update pipe name is this prefix and 32 lowercase hex digits.
 const PIPE_NAME_PREFIX: &str = r"\\.\pipe\hypercolor-update-";
 const PIPE_NAME_RANDOM_DIGITS: usize = 32;
@@ -31,7 +36,22 @@ const PIPE_NAME_RANDOM_DIGITS: usize = 32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdatePipeName(String);
 
+/// `pipe.json`: where the pipe of the running service is.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdatePipeRecord {
+    schema_version: u32,
+    name: String,
+}
+
 impl UpdatePipeName {
+    /// The name that carries these 128 random bits.
+    #[must_use]
+    pub fn from_random(random: [u8; 16]) -> Self {
+        let digits = hex::encode(random);
+        Self(format!("{PIPE_NAME_PREFIX}{digits}"))
+    }
+
     /// Accept exactly `\\.\pipe\hypercolor-update-` followed by 128 random
     /// bits as 32 lowercase hex digits, which keeps a published name from
     /// reaching any other pipe, a remote one or a file.
@@ -57,6 +77,37 @@ impl UpdatePipeName {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The record that publishes this name.
+    ///
+    /// # Errors
+    ///
+    /// Returns the encoder's error.
+    pub fn encode_record(&self) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(&UpdatePipeRecord {
+            schema_version: UPDATE_PIPE_RECORD_SCHEMA_VERSION,
+            name: self.0.clone(),
+        })
+    }
+
+    /// The name a published record holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UpdatePipeError::InvalidRecord`] for a record of another
+    /// shape or schema, and [`UpdatePipeError::InvalidName`] for one whose
+    /// name reaches anything but an update pipe.
+    pub fn decode_record(bytes: &[u8]) -> Result<Self, UpdatePipeError> {
+        let record: UpdatePipeRecord = serde_json::from_slice(bytes)
+            .map_err(|error| UpdatePipeError::InvalidRecord(error.to_string()))?;
+        if record.schema_version != UPDATE_PIPE_RECORD_SCHEMA_VERSION {
+            return Err(UpdatePipeError::InvalidRecord(format!(
+                "unsupported schema {}",
+                record.schema_version
+            )));
+        }
+        Self::parse(&record.name)
     }
 }
 
@@ -133,6 +184,9 @@ pub enum UpdatePipeError {
     /// The published name is not an update pipe name.
     #[error("{0:?} is not an update pipe name")]
     InvalidName(String),
+    /// The published record cannot be read.
+    #[error("the update pipe record is invalid: {0}")]
+    InvalidRecord(String),
     /// Nothing could be reached at the name.
     #[error("could not connect to the update pipe: {0}")]
     Connect(#[source] io::Error),
