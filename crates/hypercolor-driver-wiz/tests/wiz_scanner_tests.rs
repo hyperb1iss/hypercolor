@@ -36,8 +36,9 @@ async fn registration_finds_the_device_and_probes_it() -> TestResult {
     // A loopback "broadcast" target exercises the discovery path without
     // putting anything on the LAN.
     let profiles = WizScanner::new(options(Vec::new(), vec![fake.addr()]))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     assert_eq!(profiles.len(), 1);
     let profile = &profiles[0];
     assert_eq!(profile.addr, fake.addr());
@@ -55,7 +56,9 @@ async fn registration_finds_the_device_and_probes_it() -> TestResult {
 #[tokio::test]
 async fn registration_replies_report_the_device_port() -> TestResult {
     let fake = FakeWiz::spawn(FakeSpec::color_bulb()).await?;
-    let found = collect_registrations(&[fake.addr()], Duration::from_millis(300), 8).await?;
+    let found = collect_registrations(&[fake.addr()], Duration::from_millis(300), 8)
+        .await?
+        .found;
     assert_eq!(found, [fake.addr()]);
     Ok(())
 }
@@ -69,8 +72,9 @@ async fn older_firmware_without_model_config_uses_the_default_floor() -> TestRes
     })
     .await?;
     let profiles = WizScanner::new(options(vec![fake.addr()], Vec::new()))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     assert_eq!(profiles[0].class, ModuleClass::TunableWhite);
     assert_eq!(profiles[0].min_dimming, 10);
     Ok(())
@@ -84,8 +88,9 @@ async fn smart_plugs_are_skipped() -> TestResult {
     })
     .await?;
     let profiles = WizScanner::new(options(vec![fake.addr()], Vec::new()))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     assert!(profiles.is_empty());
     Ok(())
 }
@@ -93,10 +98,15 @@ async fn smart_plugs_are_skipped() -> TestResult {
 #[tokio::test]
 async fn silent_addresses_are_skipped() -> TestResult {
     let silent = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
-    let profiles = WizScanner::new(options(vec![silent.local_addr()?], Vec::new()))
-        .scan_profiles()
+    let outcome = WizScanner::new(options(vec![silent.local_addr()?], Vec::new()))
+        .scan()
         .await?;
-    assert!(profiles.is_empty());
+    assert!(outcome.profiles.is_empty());
+    assert!(
+        outcome.gaps.is_empty(),
+        "a remembered address that never answers is gone: {:?}",
+        outcome.gaps
+    );
     Ok(())
 }
 
@@ -108,8 +118,9 @@ async fn discovered_device_is_one_point_light() -> TestResult {
     })
     .await?;
     let profiles = WizScanner::new(options(vec![fake.addr(), fake.addr()], Vec::new()))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     assert_eq!(profiles.len(), 1);
     let discovered = discovered_device(&profiles[0], 20);
     assert_eq!(

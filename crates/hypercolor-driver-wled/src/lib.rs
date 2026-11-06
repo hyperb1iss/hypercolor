@@ -19,7 +19,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
     DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
     DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
     DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
@@ -231,7 +231,7 @@ impl DiscoveryCapability for WledDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let cached_probe_ips = load_cached_probe_ips(host).map_err(DriverError::discovery)?;

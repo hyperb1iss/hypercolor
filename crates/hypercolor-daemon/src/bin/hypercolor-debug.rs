@@ -9,8 +9,8 @@ use hypercolor_core::device::{
     UnclaimedDeviceStore, UsbHotplugEvent, UsbHotplugMonitor, UsbProtocolConfigStore,
 };
 use hypercolor_driver_api::{
-    DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost,
-    DriverRuntimeActions, DriverTrackedDevice,
+    DiscoveryBatch, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
+    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -357,12 +357,23 @@ fn print_scanner_report(report: &ScannerScanReport) {
             report.duration.as_millis(),
             error
         ),
-        None => println!(
+        None if report.gaps.is_empty() => println!(
             "  scanner={} status=ok discovered={} duration_ms={}",
             report.scanner,
             report.discovered,
             report.duration.as_millis(),
         ),
+        None => {
+            println!(
+                "  scanner={} status=partial discovered={} duration_ms={}",
+                report.scanner,
+                report.discovered,
+                report.duration.as_millis(),
+            );
+            for gap in &report.gaps {
+                println!("    gap: {gap}");
+            }
+        }
     }
 }
 
@@ -416,7 +427,7 @@ fn add_driver_source(
     };
     orchestrator.add_source(display_name, async move {
         let Some(capability) = driver.discovery() else {
-            return Ok(Vec::new());
+            return Ok(DiscoveryBatch::complete([]));
         };
         capability
             .discover(

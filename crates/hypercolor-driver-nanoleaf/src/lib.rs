@@ -26,7 +26,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
     DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
     DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
@@ -34,7 +34,8 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_support::http::{BoundedHttpClient, ReadBudget, StatusCode};
 use hypercolor_driver_support::network::{
-    metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
+    metadata_value, network_port_from_metadata, push_lookup_key, tracked_fingerprints_by_ip,
+    validate_ip,
 };
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
@@ -58,7 +59,7 @@ use self::api::AuthenticatedApi;
 use self::types::NanoleafPanelLayoutResponse;
 
 pub use backend::{NanoleafBackend, NanoleafConfig};
-pub use scanner::{NanoleafKnownDevice, NanoleafScanner};
+pub use scanner::{NanoleafKnownDevice, NanoleafScanOutcome, NanoleafScanner};
 pub use streaming::{
     DEFAULT_NANOLEAF_API_PORT, DEFAULT_NANOLEAF_STREAM_PORT, NanoleafStreamSession,
     encode_frame_into,
@@ -302,7 +303,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<NanoleafConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_devices = resolve_nanoleaf_probe_devices_from_sources(&config, &tracked_devices);
@@ -311,7 +312,8 @@ impl DiscoveryCapability for NanoleafDriverModule {
             Arc::clone(&self.credential_store),
             request.timeout,
             request.mdns_enabled,
-        );
+        )
+        .with_tracked(tracked_fingerprints_by_ip(&tracked_devices));
         scanner.scan().await.map_err(DriverError::discovery)
     }
 }

@@ -16,7 +16,8 @@ use hypercolor_core::device::{
     FlapEscalation, RECONNECT_STABLE_AFTER, ReconnectPolicy,
 };
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
+    BackendInfo, CoverageGap, DeviceBackend, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryConnectBehavior, DiscoveryObservation,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
@@ -252,12 +253,17 @@ impl DelayedScanner {
 
 fn add_mock_source(orchestrator: &mut DiscoveryOrchestrator, source: MockScanner) {
     let name = source.name().to_owned();
-    orchestrator.add_source(name, async move { source.scan() });
+    orchestrator.add_source(
+        name,
+        async move { source.scan().map(DiscoveryBatch::complete) },
+    );
 }
 
 fn add_delayed_source(orchestrator: &mut DiscoveryOrchestrator, source: DelayedScanner) {
     let name = source.name().to_owned();
-    orchestrator.add_source(name, async move { source.scan().await });
+    orchestrator.add_source(name, async move {
+        source.scan().await.map(DiscoveryBatch::complete)
+    });
 }
 
 /// Build a [`DiscoveredDevice`] for scanner tests.
@@ -2068,13 +2074,13 @@ async fn orchestrator_cancellation_drains_a_scanner_that_is_mid_work() {
             std::thread::yield_now();
         }
         scanner_finished.store(true, Ordering::Release);
-        Ok::<_, anyhow::Error>(vec![DiscoveredDevice {
+        Ok::<_, anyhow::Error>(DiscoveryBatch::complete([DiscoveredDevice {
             fingerprint: DeviceFingerprint::from_persisted("test:busy".to_owned()),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: mock_device_info("Busy"),
             metadata: HashMap::new(),
             claim: None,
-        }])
+        }]))
     });
 
     let cancel = Arc::new(tokio::sync::Notify::new());
@@ -2133,13 +2139,13 @@ async fn orchestrator_cancellation_interrupts_progress_waiting_on_registry() {
     let registry = DeviceRegistry::new();
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
     orchestrator.add_source("one", async {
-        Ok::<_, anyhow::Error>(vec![DiscoveredDevice {
+        Ok::<_, anyhow::Error>(DiscoveryBatch::complete([DiscoveredDevice {
             fingerprint: DeviceFingerprint::from_persisted("test:progress"),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: mock_device_info("Progress"),
             metadata: HashMap::new(),
             claim: None,
-        }])
+        }]))
     });
     let entered = Arc::new(tokio::sync::Notify::new());
     let progress_entered = Arc::clone(&entered);
@@ -2249,6 +2255,137 @@ async fn orchestrator_handles_scanner_failure_gracefully() {
             .iter()
             .any(|r| r.error.is_some() && r.scanner == "Broken Scanner")
     );
+}
+
+fn add_batch(orchestrator: &mut DiscoveryOrchestrator, batch: DiscoveryBatch) {
+    orchestrator.add_source("batch", async move { Ok::<_, anyhow::Error>(batch) });
+}
+
+fn lost_packets() -> Vec<CoverageGap> {
+    vec![CoverageGap::ReceiveFailed {
+        reason: "socket failed".to_owned(),
+    }]
+}
+
+async fn tracked_device(registry: &DeviceRegistry, name: &str) -> (DeviceId, DeviceFingerprint) {
+    let fingerprint = DeviceFingerprint::from_persisted(format!("net:coverage:{name}"));
+    let id = registry
+        .add_with_fingerprint(mock_device_info(name), fingerprint.clone())
+        .await;
+    (id, fingerprint)
+}
+
+#[tokio::test]
+async fn a_complete_empty_batch_reports_tracked_devices_vanished() {
+    let registry = DeviceRegistry::new();
+    let (tracked, _) = tracked_device(&registry, "gone").await;
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_batch(&mut orchestrator, DiscoveryBatch::complete([]));
+
+    let report = orchestrator.full_scan().await;
+
+    assert_eq!(report.vanished_devices, vec![tracked]);
+    assert!(report.scanner_reports[0].is_complete());
+}
+
+#[tokio::test]
+async fn a_partial_empty_batch_infers_nothing_from_absence() {
+    let registry = DeviceRegistry::new();
+    tracked_device(&registry, "unverified").await;
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_batch(
+        &mut orchestrator,
+        DiscoveryBatch::new(Vec::new(), lost_packets()),
+    );
+
+    let report = orchestrator.full_scan().await;
+
+    assert!(report.vanished_devices.is_empty());
+    assert!(!report.scanner_reports[0].is_complete());
+    assert_eq!(report.scanner_reports[0].gaps, lost_packets());
+    assert_eq!(report.scanner_reports[0].error, None);
+}
+
+#[tokio::test]
+async fn a_partial_batch_still_applies_its_positive_observations() {
+    let registry = DeviceRegistry::new();
+    tracked_device(&registry, "unverified").await;
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
+    add_batch(
+        &mut orchestrator,
+        DiscoveryBatch::new(
+            vec![DiscoveryObservation::Device(mock_discovered(
+                "Fresh",
+                "net:coverage:fresh",
+            ))],
+            lost_packets(),
+        ),
+    );
+
+    let report = orchestrator.full_scan().await;
+
+    assert_eq!(report.new_devices.len(), 1);
+    assert_eq!(report.total_known, 2);
+    assert!(report.vanished_devices.is_empty());
+    assert_eq!(report.scanner_reports[0].discovered, 1);
+}
+
+#[tokio::test]
+async fn one_partial_source_keeps_a_whole_batch_from_inferring_absence() {
+    let registry = DeviceRegistry::new();
+    tracked_device(&registry, "unverified").await;
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_batch(&mut orchestrator, DiscoveryBatch::complete([]));
+    add_batch(
+        &mut orchestrator,
+        DiscoveryBatch::new(Vec::new(), lost_packets()),
+    );
+
+    let report = orchestrator.full_scan().await;
+
+    assert!(report.vanished_devices.is_empty());
+}
+
+#[tokio::test]
+async fn presence_renews_a_device_without_rewriting_it() {
+    let registry = DeviceRegistry::new();
+    let (renewed, fingerprint) = tracked_device(&registry, "renewed").await;
+    let before = registry.get(&renewed).await.expect("tracked device");
+    let generation = registry.generation();
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
+    add_batch(
+        &mut orchestrator,
+        DiscoveryBatch::new(vec![DiscoveryObservation::Present(fingerprint)], Vec::new()),
+    );
+
+    let report = orchestrator.full_scan().await;
+
+    assert_eq!(report.reappeared_devices, vec![renewed]);
+    assert!(report.vanished_devices.is_empty());
+    let after = registry.get(&renewed).await.expect("tracked device");
+    assert_eq!(after.info, before.info);
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(registry.generation(), generation);
+}
+
+#[tokio::test]
+async fn presence_of_an_untracked_fingerprint_is_ignored() {
+    let registry = DeviceRegistry::new();
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
+    add_batch(
+        &mut orchestrator,
+        DiscoveryBatch::new(
+            vec![DiscoveryObservation::Present(
+                DeviceFingerprint::from_persisted("net:coverage:unknown".to_owned()),
+            )],
+            Vec::new(),
+        ),
+    );
+
+    let report = orchestrator.full_scan().await;
+
+    assert!(report.new_devices.is_empty());
+    assert_eq!(report.total_known, 0);
 }
 
 #[tokio::test]

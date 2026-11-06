@@ -10,7 +10,7 @@ use hypercolor_core::device::{
     UsbScanner,
 };
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
+    DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability, DiscoveryRequest,
     DriverConfigView, DriverDescriptor, DriverError, DriverHost, DriverModule, OutputBinding,
 };
 #[cfg(unix)]
@@ -106,11 +106,12 @@ impl DiscoveryCapability for UsbTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         UsbScanner::new()
             .with_unclaimed_store(self.unclaimed_devices.clone())
             .scan()
             .await
+            .map(DiscoveryBatch::complete)
             .map_err(DriverError::discovery)
     }
 }
@@ -157,10 +158,11 @@ impl DiscoveryCapability for SmBusTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         SmBusScanner::new()
             .scan()
             .await
+            .map(DiscoveryBatch::complete)
             .map_err(DriverError::discovery)
     }
 }
@@ -231,10 +233,11 @@ impl DiscoveryCapability for BlocksTransportDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         BlocksScanner::new(self.socket_path.clone())
             .scan()
             .await
+            .map(DiscoveryBatch::complete)
             .map_err(DriverError::discovery)
     }
 }

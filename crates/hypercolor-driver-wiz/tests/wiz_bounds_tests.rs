@@ -5,6 +5,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use hypercolor_driver_api::CoverageGap;
 use hypercolor_driver_wiz::config::WizConfig;
 use hypercolor_driver_wiz::scanner::{
     MAX_CONCURRENT_PROBES, collect_registrations, registration_mac,
@@ -62,7 +63,9 @@ async fn invented_macs_from_many_ports_admit_nothing() -> TestResult {
         targets.push(addr);
         tasks.push(task);
     }
-    let found = collect_registrations(&targets, Duration::from_millis(300), 64).await?;
+    let found = collect_registrations(&targets, Duration::from_millis(300), 64)
+        .await?
+        .found;
     tasks.iter().for_each(JoinHandle::abort);
     assert!(
         found.is_empty(),
@@ -84,7 +87,9 @@ async fn one_source_address_is_admitted_once() -> TestResult {
         targets.push(addr);
         tasks.push(task);
     }
-    let found = collect_registrations(&targets, Duration::from_millis(300), 64).await?;
+    let found = collect_registrations(&targets, Duration::from_millis(300), 64)
+        .await?
+        .found;
     tasks.iter().for_each(JoinHandle::abort);
     assert_eq!(
         found.len(),
@@ -110,9 +115,18 @@ async fn admission_stops_at_its_limit() -> TestResult {
         targets.push(addr);
         tasks.push(task);
     }
-    let found = collect_registrations(&targets, Duration::from_millis(400), 2).await?;
+    let registrations = collect_registrations(&targets, Duration::from_millis(400), 2).await?;
     tasks.iter().for_each(JoinHandle::abort);
-    assert_eq!(found.len(), 2, "admission stops at the limit: {found:?}");
+    assert_eq!(
+        registrations.found.len(),
+        2,
+        "admission stops at the limit: {registrations:?}"
+    );
+    assert_eq!(
+        registrations.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 2 }],
+        "the devices it refused keep the scan partial"
+    );
     Ok(())
 }
 
@@ -143,8 +157,9 @@ async fn probes_run_with_bounded_concurrency() -> TestResult {
             attempts: 1,
         },
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     tasks.iter().for_each(JoinHandle::abort);
     assert!(profiles.is_empty());
     let early = first_seen
@@ -158,6 +173,30 @@ async fn probes_run_with_bounded_concurrency() -> TestResult {
         "at most {MAX_CONCURRENT_PROBES} probes start at once, saw {early}"
     );
     assert!(started.elapsed() < Duration::from_secs(4));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_bulb_that_registers_and_then_goes_quiet_leaves_a_gap() -> TestResult {
+    let (bulb, task) = responder(Ipv4Addr::LOCALHOST, registration("a8bb50000001", true)).await?;
+    let outcome = WizScanner::new(WizScanOptions {
+        unicast_targets: Vec::new(),
+        broadcast_targets: vec![bulb],
+        timeout: Duration::from_millis(600),
+        request_policy: RequestPolicy {
+            reply_timeout: Duration::from_millis(100),
+            attempts: 1,
+        },
+    })
+    .scan()
+    .await?;
+    task.abort();
+    assert!(outcome.profiles.is_empty());
+    assert!(
+        matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
+        "a device that answered is alive, so absence proves nothing: {:?}",
+        outcome.gaps
+    );
     Ok(())
 }
 
@@ -187,8 +226,9 @@ async fn extreme_retry_policies_do_not_overflow() -> TestResult {
             attempts: u32::MAX,
         },
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     assert!(profiles.is_empty());
     Ok(())
 }

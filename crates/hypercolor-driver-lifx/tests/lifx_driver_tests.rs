@@ -10,12 +10,10 @@ use hypercolor_driver_api::{
 use hypercolor_driver_lifx::config::LifxConfig;
 use hypercolor_driver_lifx::products::lookup_product;
 use hypercolor_driver_lifx::protocol::{FirmwareVersion, Serial};
-use hypercolor_driver_lifx::scanner::remembered_device;
-use hypercolor_driver_lifx::topology::{LifxDeviceProfile, LifxTopology};
-use hypercolor_driver_lifx::transport::ServiceReply;
+use hypercolor_driver_lifx::topology::{LifxDeviceProfile, LifxTopology, fingerprint_for_serial};
 use hypercolor_driver_lifx::{
-    DESCRIPTOR, LifxDriverModule, lifx_device_control_surface, lifx_driver_control_surface,
-    resolve_lifx_probe_targets,
+    DESCRIPTOR, LifxDriverModule, TrackedRoute, lifx_device_control_surface,
+    lifx_driver_control_surface, resolve_lifx_probe_targets, tracked_routes,
 };
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::control::ControlValue;
@@ -235,46 +233,27 @@ fn device_surface_shows_diagnostics_and_the_refresh_action() {
 }
 
 #[test]
-fn a_failed_probe_counts_as_presence_only_at_the_verified_route() {
-    let tracked = tracked("192.168.1.40", "56700");
-    let mut metadata = tracked.metadata.clone();
-    metadata.insert("serial".to_owned(), "d073d5010203".to_owned());
-    let serial = Serial([0xd0, 0x73, 0xd5, 1, 2, 3]);
-    let verified = SocketAddr::from((Ipv4Addr::new(192, 168, 1, 40), 56_700));
-
-    let same = ServiceReply {
-        serial,
-        addr: verified,
+fn tracked_routes_come_from_the_metadata_a_probe_verified() {
+    let mut located = tracked("192.168.1.40", "56700");
+    located
+        .metadata
+        .insert("serial".to_owned(), "d073d5010203".to_owned());
+    let fingerprint = fingerprint_for_serial(Serial([0xd0, 0x73, 0xd5, 1, 2, 3]));
+    located.fingerprint = Some(fingerprint.clone());
+    let unregistered = DriverTrackedDevice {
+        fingerprint: None,
+        ..located.clone()
     };
-    let discovered =
-        remembered_device(&same, &tracked.info, &metadata).expect("present at its verified route");
-    assert_eq!(discovered.info.id, tracked.info.id);
-    assert_eq!(
-        discovered.metadata, metadata,
-        "the verified route is kept as it was"
-    );
-    assert_eq!(
-        discovered.fingerprint,
-        hypercolor_driver_lifx::topology::fingerprint_for_serial(serial)
-    );
+    let unverified = tracked("192.168.1.41", "56700");
 
-    for unverified in [
-        SocketAddr::from((Ipv4Addr::new(192, 168, 1, 77), 56_700)),
-        SocketAddr::from((Ipv4Addr::new(192, 168, 1, 40), 56_701)),
-    ] {
-        let echo = ServiceReply {
-            serial,
-            addr: unverified,
-        };
-        assert!(
-            remembered_device(&echo, &tracked.info, &metadata).is_none(),
-            "an unverified endpoint {unverified} neither keeps the light present nor moves it"
-        );
-    }
+    let routes = tracked_routes(&[located, unregistered, unverified]);
 
-    let other = ServiceReply {
-        serial: Serial([0xd0, 0x73, 0xd5, 9, 9, 9]),
-        addr: verified,
-    };
-    assert!(remembered_device(&other, &tracked.info, &metadata).is_none());
+    assert_eq!(routes.len(), 1, "a route needs a fingerprint and a serial");
+    assert_eq!(
+        routes[&Serial([0xd0, 0x73, 0xd5, 1, 2, 3])],
+        TrackedRoute {
+            addr: SocketAddr::from((Ipv4Addr::new(192, 168, 1, 40), 56_700)),
+            fingerprint,
+        }
+    );
 }

@@ -16,10 +16,10 @@ use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_driver_api::{
-    BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
-    DriverControlStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverRuntimeCacheProvider, ValidatedControlChanges,
+    BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView,
+    DriverControlProvider, DriverControlStore, DriverDescriptor, DriverError, DriverHost,
+    DriverModule, DriverRuntimeCacheProvider, ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -703,9 +703,9 @@ impl DiscoveryCapability for RescanTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 
@@ -818,13 +818,13 @@ impl DiscoveryCapability for BlockingReconnectTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
         let _permit = Arc::clone(&self.release)
             .acquire_owned()
             .await
             .expect("blocking reconnect semaphore should stay open");
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 

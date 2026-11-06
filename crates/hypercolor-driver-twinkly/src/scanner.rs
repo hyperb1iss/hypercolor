@@ -17,7 +17,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout_at};
 use tracing::{debug, warn};
 
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorSpace, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, FingerprintNamespace, SegmentInfo,
@@ -61,6 +61,24 @@ pub const MAX_DISCOVERY_CANDIDATES: usize = 128;
 /// requests on its own client; 16 at a time finishes a full candidate list
 /// in eight rounds.
 pub const MAX_CONCURRENT_PROBES: usize = 16;
+
+/// What a scan found.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TwinklyScanOutcome {
+    /// Devices that were probed.
+    pub profiles: Vec<TwinklyDeviceProfile>,
+    /// What the scan may have missed.
+    pub gaps: Vec<CoverageGap>,
+}
+
+/// Addresses that answered the discovery datagram.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiscoveryReplies {
+    /// Distinct addresses admitted, in arrival order.
+    pub found: Vec<IpAddr>,
+    /// What the collection may have missed.
+    pub gaps: Vec<CoverageGap>,
+}
 
 /// Where and how a scan looks for devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,15 +317,20 @@ impl TwinklyScanner {
 
     /// Discover and probe devices.
     ///
+    /// A configured or remembered endpoint that fails its probe is simply
+    /// gone. One that answered the discovery datagram is alive, so its
+    /// failed probe leaves a coverage gap.
+    ///
     /// # Errors
     ///
     /// Returns an error when the discovery socket cannot be bound.
-    pub async fn scan_profiles(&self) -> Result<Vec<TwinklyDeviceProfile>> {
+    pub async fn scan(&self) -> Result<TwinklyScanOutcome> {
         let started = Instant::now();
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
         let request_timeout =
             (self.options.timeout / 2).clamp(Duration::from_millis(250), DEFAULT_REQUEST_TIMEOUT);
-        let mut endpoints = self.options.endpoints.clone();
+        let mut outcome = TwinklyScanOutcome::default();
+        let mut answered = HashSet::new();
         if !self.options.broadcast_targets.is_empty() {
             let replies = collect_discovery_replies(
                 &self.options.broadcast_targets,
@@ -315,12 +338,15 @@ impl TwinklyScanner {
                 MAX_DISCOVERY_CANDIDATES,
             )
             .await?;
-            endpoints.extend(replies.into_iter().map(|ip| TwinklyEndpoint {
-                ip,
-                http_port: self.options.http_port,
-                rt_port: self.options.rt_port,
-            }));
+            answered.extend(replies.found);
+            outcome.gaps.extend(replies.gaps);
         }
+        let mut endpoints = self.options.endpoints.clone();
+        endpoints.extend(answered.iter().map(|ip| TwinklyEndpoint {
+            ip: *ip,
+            http_port: self.options.http_port,
+            rt_port: self.options.rt_port,
+        }));
         endpoints.sort_unstable();
         endpoints.dedup_by_key(|endpoint| endpoint.http_addr());
 
@@ -342,7 +368,6 @@ impl TwinklyScanner {
         }
 
         let mut seen = HashSet::new();
-        let mut profiles: Vec<TwinklyDeviceProfile> = Vec::new();
         loop {
             match timeout_at(deadline, tasks.join_next()).await {
                 Err(_) => {
@@ -351,6 +376,9 @@ impl TwinklyScanner {
                         unfinished,
                         "Twinkly scan budget ran out before every probe finished"
                     );
+                    outcome
+                        .gaps
+                        .push(CoverageGap::ProbesCancelled { unfinished });
                     tasks.abort_all();
                     break;
                 }
@@ -359,20 +387,31 @@ impl TwinklyScanner {
                     match joined {
                         Ok((_, Ok(profile))) => {
                             if seen.insert(profile.mac.clone()) {
-                                profiles.push(profile);
+                                outcome.profiles.push(profile);
                             }
                         }
                         Ok((endpoint, Err(error))) => {
                             warn!(%endpoint, error = %format!("{error:#}"), "Twinkly device probe failed");
+                            if answered.contains(&endpoint.ip) {
+                                outcome.gaps.push(CoverageGap::ProbeFailed {
+                                    candidate: endpoint.to_string(),
+                                    reason: format!("{error:#}"),
+                                });
+                            }
                         }
-                        Err(error) => warn!(error = %error, "Twinkly probe task failed"),
+                        Err(error) => outcome.gaps.push(CoverageGap::ProbeFailed {
+                            candidate: "Twinkly probe task".to_owned(),
+                            reason: error.to_string(),
+                        }),
                     }
                     spawn_next(&mut tasks, &mut pending);
                 }
             }
         }
-        profiles.sort_by(|left, right| left.mac.cmp(&right.mac));
-        Ok(profiles)
+        outcome
+            .profiles
+            .sort_by(|left, right| left.mac.cmp(&right.mac));
+        Ok(outcome)
     }
 }
 
@@ -387,49 +426,68 @@ pub async fn collect_discovery_replies(
     targets: &[SocketAddr],
     window: Duration,
     limit: usize,
-) -> Result<Vec<IpAddr>> {
+) -> Result<DiscoveryReplies> {
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .await
         .context("failed to bind the Twinkly discovery socket")?;
     socket
         .set_broadcast(true)
         .context("failed to enable broadcast on the Twinkly discovery socket")?;
-    for target in targets.iter().filter(|target| target.is_ipv4()) {
+    let mut replies = DiscoveryReplies::default();
+    let targets: Vec<&SocketAddr> = targets.iter().filter(|target| target.is_ipv4()).collect();
+    let mut failed_sends = Vec::new();
+    for target in &targets {
         if let Err(error) = socket.send_to(&DISCOVERY_REQUEST, target).await {
             debug!(%target, %error, "Twinkly discovery send failed");
+            failed_sends.push(CoverageGap::SendFailed {
+                target: target.to_string(),
+            });
         }
+    }
+    // One failed interface is tolerated: known devices are probed directly.
+    if failed_sends.len() == targets.len() {
+        replies.gaps.append(&mut failed_sends);
     }
 
     let deadline = Instant::now() + window;
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_LEN];
     let mut seen = HashSet::new();
-    let mut found = Vec::new();
-    while found.len() < limit {
+    let mut refused = 0;
+    loop {
         match timeout_at(deadline, socket.recv_from(&mut buffer)).await {
             Err(_) => break,
             Ok(Err(error)) => {
                 debug!(%error, "Twinkly discovery receive failed");
+                replies.gaps.extend(CoverageGap::from_receive_error(&error));
                 break;
             }
             Ok(Ok((len, source))) => match decode_discovery_reply(&buffer[..len]) {
                 Ok(reply) => {
                     let ip = source.ip();
-                    if seen.insert(ip) {
-                        debug!(%source, device_id = %reply.device_id, "Twinkly discovery reply");
-                        found.push(ip);
+                    if seen.contains(&ip) {
+                        continue;
                     }
+                    if seen.len() >= limit {
+                        refused += 1;
+                        continue;
+                    }
+                    seen.insert(ip);
+                    debug!(%source, device_id = %reply.device_id, "Twinkly discovery reply");
+                    replies.found.push(ip);
                 }
                 Err(error) => debug!(%source, %error, "ignoring non-Twinkly discovery reply"),
             },
         }
     }
-    if found.len() >= limit {
+    if refused > 0 {
         warn!(
             limit,
+            refused,
             "Twinkly discovery stopped admitting devices at its limit; add the rest to device_ips"
         );
+        replies.gaps.push(CoverageGap::AdmissionFull { refused });
     }
-    Ok(found)
+    Ok(replies)
 }
 
 /// Read one device's gestalt and firmware version.

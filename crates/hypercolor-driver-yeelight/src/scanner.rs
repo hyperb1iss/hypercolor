@@ -13,7 +13,7 @@ use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
 use tracing::{debug, warn};
 
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
@@ -49,6 +49,15 @@ const RECEIVE_BUFFER_LEN: usize = 2048;
 pub const MAX_SEARCH_REPLIES: usize = 256;
 /// Searches are UDP; repeat a few times inside the window.
 const SEARCH_ROUNDS: u32 = 3;
+
+/// What a scan or search found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct YeelightScanOutcome {
+    /// Lights that answered.
+    pub profiles: Vec<YeelightDeviceProfile>,
+    /// What the search may have missed.
+    pub gaps: Vec<CoverageGap>,
+}
 
 /// Where a scan sends the search.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +171,7 @@ impl YeelightScanner {
     /// # Errors
     ///
     /// Returns an error when the search socket cannot be bound.
-    pub async fn scan_profiles(&self) -> Result<Vec<YeelightDeviceProfile>> {
+    pub async fn scan(&self) -> Result<YeelightScanOutcome> {
         let mut targets: Vec<SocketAddr> = self
             .options
             .unicast_targets
@@ -174,12 +183,12 @@ impl YeelightScanner {
             targets.push(SEARCH_MULTICAST);
         }
         if targets.is_empty() {
-            return Ok(Vec::new());
+            return Ok(YeelightScanOutcome::default());
         }
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
         let replies = search(&targets, window).await?;
         let mut profiles: Vec<YeelightDeviceProfile> = Vec::new();
-        for profile in replies {
+        for profile in replies.profiles {
             if !profile.capabilities().drivable() {
                 debug!(id = %profile.reply.id, "skipping Yeelight device without a drivable light");
                 continue;
@@ -192,7 +201,10 @@ impl YeelightScanner {
             }
         }
         profiles.sort_by(|left, right| left.reply.id.cmp(&right.reply.id));
-        Ok(profiles)
+        Ok(YeelightScanOutcome {
+            profiles,
+            gaps: replies.gaps,
+        })
     }
 }
 
@@ -202,10 +214,7 @@ impl YeelightScanner {
 /// # Errors
 ///
 /// Returns an error when the socket cannot be bound.
-pub async fn search(
-    targets: &[SocketAddr],
-    window: Duration,
-) -> Result<Vec<YeelightDeviceProfile>> {
+pub async fn search(targets: &[SocketAddr], window: Duration) -> Result<YeelightScanOutcome> {
     search_until(targets, window, None).await
 }
 
@@ -218,10 +227,13 @@ pub async fn search_until(
     targets: &[SocketAddr],
     window: Duration,
     limit: Option<usize>,
-) -> Result<Vec<YeelightDeviceProfile>> {
+) -> Result<YeelightScanOutcome> {
     let limit = limit.unwrap_or(MAX_SEARCH_REPLIES).min(MAX_SEARCH_REPLIES);
     let mut admission = SearchAdmission::new(limit);
-    let mut warned_full = false;
+    let mut refused = 0;
+    let mut gaps = Vec::new();
+    // A target stays unreached until one round's send to it succeeds.
+    let mut unreached = targets.to_vec();
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .await
         .context("failed to bind the Yeelight search socket")?;
@@ -233,8 +245,9 @@ pub async fn search_until(
     loop {
         if rounds < SEARCH_ROUNDS && Instant::now() >= next_round {
             for target in targets {
-                if let Err(error) = socket.send_to(SEARCH_REQUEST.as_bytes(), target).await {
-                    debug!(%target, %error, "Yeelight search send failed");
+                match socket.send_to(SEARCH_REQUEST.as_bytes(), target).await {
+                    Ok(_) => unreached.retain(|other| other != target),
+                    Err(error) => debug!(%target, %error, "Yeelight search send failed"),
                 }
             }
             rounds += 1;
@@ -250,6 +263,7 @@ pub async fn search_until(
             Err(_) => {}
             Ok(Err(error)) => {
                 debug!(%error, "Yeelight search receive failed");
+                gaps.extend(CoverageGap::from_receive_error(&error));
                 break;
             }
             Ok(Ok((len, source))) => match decode_search_reply(&buffer[..len]) {
@@ -267,21 +281,27 @@ pub async fn search_until(
                     Offer::Duplicate => {
                         debug!(%source, "ignoring a Yeelight id another address reported");
                     }
-                    Offer::Full => {
-                        if limit == MAX_SEARCH_REPLIES && !warned_full {
-                            warned_full = true;
-                            warn!(
-                                limit,
-                                "Yeelight search stopped admitting lights at its limit; add the rest to device_ips"
-                            );
-                        }
-                    }
+                    Offer::Full => refused += 1,
                 },
                 Err(error) => debug!(%source, %error, "ignoring non-Yeelight search reply"),
             },
         }
     }
-    Ok(admission.into_profiles())
+    gaps.extend(unreached.iter().map(|target| CoverageGap::SendFailed {
+        target: target.to_string(),
+    }));
+    if refused > 0 {
+        warn!(
+            limit,
+            refused,
+            "Yeelight search stopped admitting lights at its limit; add the rest to device_ips"
+        );
+        gaps.push(CoverageGap::AdmissionFull { refused });
+    }
+    Ok(YeelightScanOutcome {
+        profiles: admission.into_profiles(),
+        gaps,
+    })
 }
 
 /// What [`SearchAdmission::offer`] did with a reply.

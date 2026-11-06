@@ -360,7 +360,11 @@ pub struct DiscoveryScannerResult {
     pub scanner: String,
     pub duration_ms: u64,
     pub discovered: usize,
+    /// `ok`, `partial` when the scan may have missed devices, or `error`.
     pub status: String,
+    /// What a `partial` scan may have missed. Its devices stay tracked.
+    #[serde(default)]
+    pub gaps: Vec<String>,
     pub error: Option<String>,
 }
 

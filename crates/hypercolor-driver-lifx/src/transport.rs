@@ -6,6 +6,7 @@ use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
+use hypercolor_driver_api::CoverageGap;
 use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
@@ -69,6 +70,8 @@ pub struct DiscoveryRound {
     pub failed_targets: Vec<SocketAddr>,
     /// Distinct serials ignored because the cap was reached.
     pub dropped: usize,
+    /// The receive failure that ended the round early, if one did.
+    pub receive_gap: Option<CoverageGap>,
 }
 
 /// One StateService reply collected during discovery.
@@ -208,6 +211,10 @@ impl LifxClient {
                 Ok(received) => received,
                 Err(error) => {
                     trace!(%error, "LIFX discovery receive failed");
+                    round.receive_gap = CoverageGap::from_receive_error(&error);
+                    if round.receive_gap.is_some() {
+                        break;
+                    }
                     continue;
                 }
             };

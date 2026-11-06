@@ -20,7 +20,7 @@ pub mod scanner;
 pub mod topology;
 pub mod transport;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -28,10 +28,11 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
+    DiscoveryObservation, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::{network_port_from_metadata, validate_ip};
 use hypercolor_driver_support::{control_apply, control_surface};
@@ -50,7 +51,9 @@ pub use backend::LifxBackend;
 pub use color::{Hsbk, HsbkEncoder};
 pub use config::LifxConfig;
 pub use protocol::{DEFAULT_PORT, Serial};
-pub use scanner::{LifxScanOptions, LifxScanner, broadcast_targets, discovered_device};
+pub use scanner::{
+    LifxScanOptions, LifxScanner, TrackedRoute, broadcast_targets, discovered_device,
+};
 pub use topology::{LifxDeviceProfile, LifxTopology};
 pub use transport::RequestPolicy;
 
@@ -146,7 +149,7 @@ impl DiscoveryCapability for LifxDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<LifxConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let scanner = LifxScanner::new(LifxScanOptions {
@@ -156,30 +159,28 @@ impl DiscoveryCapability for LifxDriverModule {
             } else {
                 Vec::new()
             },
+            tracked: tracked_routes(&tracked_devices),
             timeout: request.timeout,
             ..LifxScanOptions::default()
         });
         let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
-        let mut devices: Vec<DiscoveredDevice> = outcome
+        let observations = outcome
             .profiles
             .iter()
-            .map(|profile| discovered_device(profile, config.max_messages_per_second))
+            .map(|profile| {
+                DiscoveryObservation::Device(discovered_device(
+                    profile,
+                    config.max_messages_per_second,
+                ))
+            })
+            .chain(
+                outcome
+                    .present
+                    .into_iter()
+                    .map(DiscoveryObservation::Present),
+            )
             .collect();
-        for reply in &outcome.unprobed {
-            let serial = reply.serial.to_string();
-            let remembered = tracked_devices
-                .iter()
-                .filter(|tracked| {
-                    tracked.metadata.get(scanner::metadata_key::SERIAL) == Some(&serial)
-                })
-                .find_map(|tracked| {
-                    scanner::remembered_device(reply, &tracked.info, &tracked.metadata)
-                });
-            if let Some(device) = remembered {
-                devices.push(device);
-            }
-        }
-        Ok(devices)
+        Ok(DiscoveryBatch::new(observations, outcome.gaps))
     }
 }
 
@@ -230,6 +231,19 @@ fn lifx_config_settings(config: &LifxConfig) -> BTreeMap<String, serde_json::Val
             serde_json::json!(config.white_kelvin),
         ),
     ])
+}
+
+/// Verified routes of the tracked lights, by serial.
+#[must_use]
+pub fn tracked_routes(tracked_devices: &[DriverTrackedDevice]) -> HashMap<Serial, TrackedRoute> {
+    tracked_devices
+        .iter()
+        .filter_map(|tracked| {
+            let fingerprint = tracked.fingerprint.clone()?;
+            let (addr, serial) = scanner::route_from_metadata(&tracked.metadata).ok()?;
+            Some((serial, TrackedRoute { addr, fingerprint }))
+        })
+        .collect()
 }
 
 /// Unicast discovery targets from configured IPs and previously tracked

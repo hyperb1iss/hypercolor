@@ -13,7 +13,7 @@ use anyhow::{Context, Error, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceBackendFactory, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceFrameSink, DiscoveredDevice, DiscoveryCapability,
+    DeviceDeliveryObserver, DeviceFrameSink, DiscoveredDevice, DiscoveryBatch, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
     DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
     DriverRuntimeActions, OutputBinding,
@@ -338,7 +338,7 @@ impl DiscoveryCapability for OpenRgbDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<OpenRgbConfig>()?;
         validate_openrgb_config(&config).map_err(|error| DriverError::Configuration {
             message: error.to_string(),
@@ -346,7 +346,9 @@ impl DiscoveryCapability for OpenRgbDriverModule {
         let routes = discover_routes(&config)
             .await
             .map_err(|error| map_openrgb_driver_error(&error))?;
-        Ok(routes.into_iter().map(DiscoveredDevice::from).collect())
+        Ok(DiscoveryBatch::complete(
+            routes.into_iter().map(DiscoveredDevice::from),
+        ))
     }
 }
 

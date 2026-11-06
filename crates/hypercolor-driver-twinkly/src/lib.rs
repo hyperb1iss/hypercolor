@@ -22,10 +22,11 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
+    DiscoveryObservation, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::validate_ip;
 use hypercolor_driver_support::{control_apply, control_surface};
@@ -141,7 +142,7 @@ impl DiscoveryCapability for TwinklyDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<TwinklyConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let scanner = TwinklyScanner::new(TwinklyScanOptions::new(
@@ -153,14 +154,13 @@ impl DiscoveryCapability for TwinklyDriverModule {
             },
             request.timeout,
         ));
-        let profiles = scanner
-            .scan_profiles()
-            .await
-            .map_err(DriverError::discovery)?;
-        Ok(profiles
+        let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
+        let observations = outcome
+            .profiles
             .iter()
-            .map(|profile| discovered_device(profile, config.max_fps))
-            .collect())
+            .map(|profile| DiscoveryObservation::Device(discovered_device(profile, config.max_fps)))
+            .collect();
+        Ok(DiscoveryBatch::new(observations, outcome.gaps))
     }
 }
 

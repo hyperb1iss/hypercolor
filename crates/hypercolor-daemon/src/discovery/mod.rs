@@ -465,9 +465,9 @@ mod tests {
     };
     use crate::app_state::AppState;
     use hypercolor_driver_api::{
-        BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-        DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError, DriverHost,
-        DriverModule, OutputBinding,
+        BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
+        DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
+        DriverHost, DriverModule, OutputBinding,
     };
     use hypercolor_network::DriverModuleRegistry;
     use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -656,9 +656,9 @@ mod tests {
             host: &dyn hypercolor_driver_api::DriverHost,
             request: &DiscoveryRequest,
             config: DriverConfigView<'_>,
-        ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        ) -> Result<DiscoveryBatch, DriverError> {
             let _ = (host, request, config);
-            Ok(Vec::new())
+            Ok(DiscoveryBatch::complete([]))
         }
     }
 

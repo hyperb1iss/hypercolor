@@ -29,7 +29,10 @@ pub use controls::{
 };
 pub use descriptor::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor};
 pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
-pub use driver_discovery::{DiscoveryCapability, DiscoveryRequest};
+pub use driver_discovery::{
+    CoverageGap, DiscoveryBatch, DiscoveryCapability, DiscoveryCoverage, DiscoveryObservation,
+    DiscoveryRequest,
+};
 pub use error::{DriverError, ErrorRecoverability};
 pub use host::{
     DriverConfigSource, DriverCredentialStore, DriverDiscoveryState, DriverHost,

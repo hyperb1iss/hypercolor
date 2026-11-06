@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView, DriverModule, TrackedDeviceCtx};
+use hypercolor_driver_api::{
+    ControlApplyTarget, DiscoveryObservation, DriverConfigView, DriverModule, TrackedDeviceCtx,
+};
 use hypercolor_driver_pixel::controls::{
     FIELD_DEVICES, FIELD_PRIORITY, FIELD_SOURCE_NAME, parse_validated_config, pixel_config_values,
     validate_pixel_changes, values_entry,
@@ -359,7 +361,7 @@ impl hypercolor_driver_api::DriverHost for InstallationHost {
 
 async fn discovered_cid(host: &InstallationHost, config: &PixelConfig) -> String {
     let entry = values_entry(&pixel_config_values(config)).expect("entry");
-    let devices = PixelDriverModule::new()
+    let batch = PixelDriverModule::new()
         .discovery()
         .expect("discovery capability")
         .discover(
@@ -375,8 +377,11 @@ async fn discovered_cid(host: &InstallationHost, config: &PixelConfig) -> String
         )
         .await
         .expect("discovery reads config only");
+    let [DiscoveryObservation::Device(device), ..] = batch.observations.as_slice() else {
+        panic!("configured devices are always reported in full");
+    };
     let effective: serde_json::Value =
-        serde_json::from_str(&devices[0].metadata[METADATA_DEVICE_CONFIG]).expect("JSON");
+        serde_json::from_str(&device.metadata[METADATA_DEVICE_CONFIG]).expect("JSON");
     effective["cid"]
         .as_str()
         .expect("E1.31 devices carry a CID")

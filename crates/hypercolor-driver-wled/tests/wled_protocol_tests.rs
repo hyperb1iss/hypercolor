@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior,
+    DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryCoverage,
+    DiscoveryObservation,
 };
 use hypercolor_driver_support::MdnsScope;
 use hypercolor_driver_wled::{
@@ -1747,10 +1748,15 @@ async fn scanner_skips_stale_known_ip_without_enrichment() {
     let ip: IpAddr = "192.0.2.1".parse().expect("valid documentation IP");
     let mut scanner = WledScanner::with_known_ips(vec![ip], None, Duration::from_millis(50));
 
-    let discovered = scanner.scan().await.expect("scan should complete");
+    let batch = scanner.scan().await.expect("scan should complete");
     assert!(
-        discovered.is_empty(),
+        batch.observations.is_empty(),
         "known IPs that cannot be enriched should not surface as placeholder devices"
+    );
+    assert_eq!(
+        batch.coverage,
+        DiscoveryCoverage::Complete,
+        "a known address that does not answer is gone, not a gap"
     );
 }
 
@@ -1784,10 +1790,15 @@ async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
         Some(MdnsScope::Loopback),
         Duration::from_secs(2),
     );
-    let discovered = scanner.scan().await.expect("scan should complete");
+    let batch = scanner.scan().await.expect("scan should complete");
 
-    let placeholder = discovered
+    let placeholder = batch
+        .observations
         .iter()
+        .filter_map(|observation| match observation {
+            DiscoveryObservation::Device(device) => Some(device),
+            DiscoveryObservation::Present(_) => None,
+        })
         .find(|device| {
             device
                 .metadata

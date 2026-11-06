@@ -22,8 +22,9 @@ async fn discover(fake: &FakeYeelight, config: &YeelightConfig) -> TestResult<Di
         multicast: false,
         timeout: Duration::from_millis(1_000),
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     let profile = profiles.first().ok_or("fake device was not found")?;
     let max_fps = if config.music_mode && profile.capabilities().music {
         config.max_fps
@@ -93,8 +94,9 @@ async fn devices_without_a_drivable_light_are_skipped() -> TestResult {
         multicast: false,
         timeout: Duration::from_millis(1_000),
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     assert!(profiles.is_empty());
     Ok(())
 }
@@ -483,8 +485,9 @@ async fn replies_naming_another_address_are_ignored() -> TestResult {
         multicast: false,
         timeout: Duration::from_millis(1_000),
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     assert!(profiles.is_empty());
     Ok(())
 }
@@ -502,8 +505,9 @@ async fn one_address_yields_one_light_per_scan() -> TestResult {
         multicast: false,
         timeout: Duration::from_millis(1_000),
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     assert_eq!(profiles.len(), 1, "two ids from one host count once");
     Ok(())
 }
@@ -521,8 +525,9 @@ async fn invalid_ids_never_become_devices() -> TestResult {
         multicast: false,
         timeout: Duration::from_millis(1_000),
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     assert!(profiles.is_empty());
     Ok(())
 }

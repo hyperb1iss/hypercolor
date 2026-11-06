@@ -342,6 +342,10 @@ Temporary disconnection preserves saved content.
 
 Runs a discovery scan across every backend and returns the newly found devices.
 
+Each entry in `scanners` has a `status` of `ok`, `partial`, or `error`. A
+`partial` scanner may have missed devices and lists why in `gaps`: what it did
+see still applies, and nothing of its devices is reported vanished.
+
 # POST /api/v1/devices/{id}/pair
 
 Starts pairing for a device that requires authentication (Hue link button,

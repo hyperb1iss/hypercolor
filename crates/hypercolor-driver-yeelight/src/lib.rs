@@ -21,10 +21,11 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
+    DiscoveryObservation, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::{network_port_from_metadata, validate_ip};
 use hypercolor_driver_support::{control_apply, control_surface};
@@ -136,7 +137,7 @@ impl DiscoveryCapability for YeelightDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<YeelightConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let scanner = YeelightScanner::new(YeelightScanOptions {
@@ -144,11 +145,9 @@ impl DiscoveryCapability for YeelightDriverModule {
             multicast: config.multicast_discovery,
             timeout: request.timeout,
         });
-        let profiles = scanner
-            .scan_profiles()
-            .await
-            .map_err(DriverError::discovery)?;
-        Ok(profiles
+        let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
+        let observations = outcome
+            .profiles
             .iter()
             .map(|profile| {
                 let max_fps = if config.music_mode && profile.capabilities().music {
@@ -156,9 +155,10 @@ impl DiscoveryCapability for YeelightDriverModule {
                 } else {
                     1
                 };
-                discovered_device(profile, max_fps, config.music_mode)
+                DiscoveryObservation::Device(discovered_device(profile, max_fps, config.music_mode))
             })
-            .collect())
+            .collect();
+        Ok(DiscoveryBatch::new(observations, outcome.gaps))
     }
 }
 

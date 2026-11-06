@@ -40,8 +40,9 @@ async fn discover(fake: &FakeLifx, config: &LifxConfig) -> TestResult<Vec<Discov
         request_policy: policy(),
         ..LifxScanOptions::default()
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     Ok(profiles
         .iter()
         .map(|profile| discovered_device(profile, config.max_messages_per_second))

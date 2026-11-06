@@ -5,6 +5,7 @@ mod support;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use hypercolor_driver_api::CoverageGap;
 use hypercolor_driver_twinkly::scanner::{
     canonical_mac, collect_discovery_replies, discovered_device, endpoint_from_metadata,
     fingerprint_for_mac,
@@ -31,7 +32,7 @@ async fn discovery_datagram_finds_the_device_and_probes_it() -> TestResult {
     );
     options.http_port = fake.http_port();
     options.rt_port = fake.rt_port();
-    let profiles = TwinklyScanner::new(options).scan_profiles().await?;
+    let profiles = TwinklyScanner::new(options).scan().await?.profiles;
 
     assert_eq!(fake.discovery_requests(), [b"\x01discover".to_vec()]);
     assert_eq!(profiles.len(), 1);
@@ -58,8 +59,9 @@ async fn discovery_datagram_finds_the_device_and_probes_it() -> TestResult {
 #[tokio::test]
 async fn discovery_replies_report_the_sender() -> TestResult {
     let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(10)).await?;
-    let found =
-        collect_discovery_replies(&[fake.discovery_addr()], Duration::from_millis(300), 8).await?;
+    let found = collect_discovery_replies(&[fake.discovery_addr()], Duration::from_millis(300), 8)
+        .await?
+        .found;
     assert_eq!(found, [IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     Ok(())
 }
@@ -69,8 +71,9 @@ async fn unicast_endpoints_are_probed_and_deduplicated_by_mac() -> TestResult {
     let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(600)).await?;
     let endpoint = fake.endpoint();
     let profiles = TwinklyScanner::new(unicast(vec![endpoint, endpoint]))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     assert_eq!(profiles.len(), 1);
 
     let discovered = discovered_device(&profiles[0], 60);
@@ -105,14 +108,44 @@ async fn unreachable_endpoints_are_skipped() -> TestResult {
     let closed = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = closed.local_addr()?.port();
     drop(closed);
-    let profiles = TwinklyScanner::new(unicast(vec![TwinklyEndpoint {
+    let outcome = TwinklyScanner::new(unicast(vec![TwinklyEndpoint {
         ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
         http_port: port,
         rt_port: 7777,
     }]))
-    .scan_profiles()
+    .scan()
     .await?;
-    assert!(profiles.is_empty());
+    assert!(outcome.profiles.is_empty());
+    assert!(
+        outcome.gaps.is_empty(),
+        "a remembered endpoint that never answers is gone: {:?}",
+        outcome.gaps
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_device_that_answers_discovery_but_fails_its_probe_leaves_a_gap() -> TestResult {
+    let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(10)).await?;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = closed.local_addr()?.port();
+    drop(closed);
+    let outcome = TwinklyScanner::new(TwinklyScanOptions {
+        http_port: port,
+        ..TwinklyScanOptions::new(
+            Vec::new(),
+            vec![fake.discovery_addr()],
+            Duration::from_millis(600),
+        )
+    })
+    .scan()
+    .await?;
+    assert!(outcome.profiles.is_empty());
+    assert!(
+        matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
+        "a device that answered is alive, so absence proves nothing: {:?}",
+        outcome.gaps
+    );
     Ok(())
 }
 
@@ -126,8 +159,9 @@ async fn rgbw_generation_one_device_profiles_correctly() -> TestResult {
     };
     let fake = FakeTwinkly::spawn(spec).await?;
     let profiles = TwinklyScanner::new(unicast(vec![fake.endpoint()]))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     assert_eq!(profiles[0].led_profile, LedProfile::Rgbw);
     assert_eq!(profiles[0].rt_protocol(), RtProtocol::V1);
     Ok(())

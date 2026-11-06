@@ -18,8 +18,8 @@ use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
-    DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
-    schedule_discovery_scan,
+    DiscoveryRuntime, DiscoveryScanResult, DiscoveryTarget, execute_discovery_scan,
+    execute_discovery_scan_if_idle, schedule_discovery_scan,
 };
 use hypercolor_daemon::display_preferences::DisplayPreferencesStore;
 use hypercolor_daemon::domain::DeviceBindingMigrationContext;
@@ -31,7 +31,9 @@ use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::output_power::OutputPower;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveredDevice};
+use hypercolor_driver_api::{
+    BackendInfo, CoverageGap, DeviceBackend, DiscoveredDevice, DiscoveryBatch, DiscoveryObservation,
+};
 use hypercolor_driver_api::{
     DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView,
     DriverDescriptor, DriverError, DriverHost, DriverModule,
@@ -308,8 +310,8 @@ impl DiscoveryCapability for StaticAsusDiscoveryDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
-        Ok(vec![self.device.clone()])
+    ) -> Result<DiscoveryBatch, DriverError> {
+        Ok(DiscoveryBatch::complete([self.device.clone()]))
     }
 }
 
@@ -338,7 +340,7 @@ impl DiscoveryCapability for BlockingConfigDiscoveryDriver {
         _host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         let generation = config
             .entry
             .settings
@@ -367,7 +369,7 @@ impl DiscoveryCapability for BlockingConfigDiscoveryDriver {
                 .forget();
         }
 
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 
@@ -1364,8 +1366,8 @@ impl DiscoveryCapability for StaticUsbDiscoveryDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
-        Ok(vec![self.device.clone()])
+    ) -> Result<DiscoveryBatch, DriverError> {
+        Ok(DiscoveryBatch::complete([self.device.clone()]))
     }
 }
 
@@ -2286,6 +2288,8 @@ static LANE_FAILING_DRIVER: DriverDescriptor = DriverDescriptor::new(
 struct LaneDiscoveryDriver {
     descriptor: &'static DriverDescriptor,
     devices: Arc<StdMutex<Vec<DiscoveredDevice>>>,
+    present: Arc<StdMutex<Vec<DeviceFingerprint>>>,
+    gaps: Arc<StdMutex<Vec<CoverageGap>>>,
     calls: Arc<std::sync::atomic::AtomicUsize>,
     started: Arc<Semaphore>,
     release: Option<Arc<Semaphore>>,
@@ -2300,6 +2304,8 @@ impl LaneDiscoveryDriver {
         Self {
             descriptor,
             devices: Arc::default(),
+            present: Arc::default(),
+            gaps: Arc::default(),
             calls: Arc::default(),
             started: Arc::new(Semaphore::new(0)),
             release: None,
@@ -2335,6 +2341,20 @@ impl LaneDiscoveryDriver {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = devices;
     }
 
+    fn report_present(&self, fingerprints: Vec<DeviceFingerprint>) {
+        *self
+            .present
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fingerprints;
+    }
+
+    fn report_gaps(&self, gaps: Vec<CoverageGap>) {
+        *self
+            .gaps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = gaps;
+    }
+
     async fn wait_started(&self) {
         timeout(Duration::from_secs(2), self.started.acquire())
             .await
@@ -2361,7 +2381,7 @@ impl DiscoveryCapability for LaneDiscoveryDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         self.calls.fetch_add(1, Ordering::AcqRel);
         self.started.add_permits(1);
         if let Some(release) = &self.release {
@@ -2380,11 +2400,27 @@ impl DiscoveryCapability for LaneDiscoveryDriver {
         if self.fail {
             return Err(DriverError::discovery("scanner offline"));
         }
-        Ok(self
+        let devices = self
             .devices
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone())
+            .clone();
+        let present = self
+            .present
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let observations = devices
+            .into_iter()
+            .map(DiscoveryObservation::Device)
+            .chain(present.into_iter().map(DiscoveryObservation::Present))
+            .collect();
+        let gaps = self
+            .gaps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        Ok(DiscoveryBatch::new(observations, gaps))
     }
 }
 
@@ -2563,6 +2599,131 @@ async fn a_failing_scanner_does_not_keep_another_drivers_departure_connected() {
     assert_ne!(
         runtime.lifecycle_manager.lock().await.state(departed),
         Some(DeviceState::Connected)
+    );
+}
+
+async fn scan_lane_target(
+    runtime: &TestDiscoveryRuntime,
+    driver: &'static DriverDescriptor,
+) -> DiscoveryScanResult {
+    execute_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        vec![DiscoveryTarget::driver(driver.id)],
+        Duration::from_secs(2),
+    )
+    .await
+}
+
+fn dropped_send() -> CoverageGap {
+    CoverageGap::SendFailed {
+        target: "192.0.2.1:9".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn a_complete_empty_scan_retires_what_it_did_not_see() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&temp_dir, &[&driver]);
+    let departed = track_connected(&runtime, &lane_device(&LANE_QUICK_DRIVER, "departed")).await;
+
+    let result = scan_lane_target(&runtime, &LANE_QUICK_DRIVER).await;
+
+    assert_eq!(result.vanished_devices, vec![departed.to_string()]);
+    assert_eq!(result.scanners[0].status, "ok");
+    assert!(result.scanners[0].gaps.is_empty());
+}
+
+#[tokio::test]
+async fn a_partial_empty_scan_retires_nothing() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&temp_dir, &[&driver]);
+    let unverified =
+        track_connected(&runtime, &lane_device(&LANE_QUICK_DRIVER, "unverified")).await;
+    driver.report_gaps(vec![dropped_send()]);
+
+    let result = scan_lane_target(&runtime, &LANE_QUICK_DRIVER).await;
+
+    assert!(result.vanished_devices.is_empty());
+    assert_eq!(
+        runtime.lifecycle_manager.lock().await.state(unverified),
+        Some(DeviceState::Connected),
+        "a partial scan cannot prove its own devices left"
+    );
+    assert_eq!(result.scanners[0].status, "partial");
+    assert_eq!(
+        result.scanners[0].gaps,
+        vec![dropped_send().to_string()],
+        "the API says what the scan may have missed"
+    );
+    assert_eq!(result.scanners[0].error, None);
+}
+
+#[tokio::test]
+async fn a_partial_scan_still_applies_what_it_saw() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&temp_dir, &[&driver]);
+    let unverified =
+        track_connected(&runtime, &lane_device(&LANE_QUICK_DRIVER, "unverified")).await;
+    let fresh = lane_device(&LANE_QUICK_DRIVER, "fresh");
+    let fresh_id = fresh.info.id;
+    driver.report(vec![fresh]);
+    driver.report_gaps(vec![dropped_send()]);
+
+    let result = scan_lane_target(&runtime, &LANE_QUICK_DRIVER).await;
+
+    assert_eq!(result.new_devices.len(), 1);
+    assert!(result.vanished_devices.is_empty());
+    assert!(runtime.device_registry.get(&fresh_id).await.is_some());
+    assert_eq!(
+        runtime.lifecycle_manager.lock().await.state(unverified),
+        Some(DeviceState::Connected)
+    );
+}
+
+#[tokio::test]
+async fn presence_renews_a_device_without_touching_what_was_verified() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&temp_dir, &[&driver]);
+    let mut device = lane_device(&LANE_QUICK_DRIVER, "renewed");
+    device
+        .metadata
+        .insert("ip".to_owned(), "192.0.2.40".to_owned());
+    let fingerprint = device.fingerprint.clone();
+    let renewed = track_connected(&runtime, &device).await;
+    let before = runtime
+        .device_registry
+        .get(&renewed)
+        .await
+        .expect("tracked device");
+    driver.report_present(vec![
+        fingerprint,
+        DeviceFingerprint::from_persisted("bridge:lane_quick:untracked".to_owned()),
+    ]);
+
+    let result = scan_lane_target(&runtime, &LANE_QUICK_DRIVER).await;
+
+    assert!(
+        result.vanished_devices.is_empty(),
+        "a complete scan that renewed the device must not retire it"
+    );
+    assert_eq!(result.new_devices.len(), 0, "unknown presence adds nothing");
+    let after = runtime
+        .device_registry
+        .get(&renewed)
+        .await
+        .expect("tracked device");
+    assert_eq!(after.info, before.info);
+    assert_eq!(after.connect_behavior, before.connect_behavior);
+    assert_eq!(
+        runtime.device_registry.metadata_for_id(&renewed).await,
+        Some(device.metadata)
     );
 }
 

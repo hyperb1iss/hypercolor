@@ -100,7 +100,8 @@ ST: wifi_bulb\r\n
 The driver sends three rounds spread over the listen window (half the scan
 budget, 500 ms to 3 s), to the multicast group when multicast discovery is
 on and to every configured address and previously tracked device on port
-1982.
+1982. A target no round reached, a receive failure, or a reply refused by
+admission leaves a coverage gap, and the host retires nothing that scan.
 
 ### 3.2 Reply
 

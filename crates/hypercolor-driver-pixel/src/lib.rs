@@ -21,10 +21,11 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider,
+    DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
+    DriverModule, DriverPresentationProvider, OutputBinding, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_support::control_apply;
 use hypercolor_types::config::DriverConfigEntry;
@@ -136,13 +137,13 @@ impl DiscoveryCapability for PixelDriverModule {
         host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<PixelConfig>()?;
-        configured_devices(&config, host.installation_id()).map_err(|error| {
-            DriverError::Configuration {
+        configured_devices(&config, host.installation_id())
+            .map(DiscoveryBatch::complete)
+            .map_err(|error| DriverError::Configuration {
                 message: error.to_string(),
-            }
-        })
+            })
     }
 }
 

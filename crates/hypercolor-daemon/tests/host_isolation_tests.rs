@@ -18,7 +18,7 @@ use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::network;
 use hypercolor_daemon::startup::{DaemonState, HostPorts, default_config};
 use hypercolor_driver_api::{
-    DiscoveredDevice, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
+    DiscoveryBatch, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
     DriverError, DriverHost, DriverModule,
 };
 use hypercolor_network::DriverModuleRegistry;
@@ -56,9 +56,9 @@ impl DiscoveryCapability for CountingDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         self.scans.fetch_add(1, Ordering::Relaxed);
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete(Vec::new()))
     }
 }
 

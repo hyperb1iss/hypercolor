@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use hypercolor_driver_api::CoverageGap;
 use hypercolor_driver_lifx::protocol::Serial;
 use hypercolor_driver_lifx::scanner::{
-    LifxScanOptions, LifxScanner, MAX_CONCURRENT_PROBES, MAX_DISCOVERY_CANDIDATES,
-    discovered_device, ensure_round_covered_its_targets, metadata_key, probe_at,
-    route_from_metadata,
+    LifxScanOptions, LifxScanner, MAX_CONCURRENT_PROBES, MAX_DISCOVERY_CANDIDATES, TrackedRoute,
+    discovered_device, metadata_key, probe_at, round_gaps, route_from_metadata,
 };
-use hypercolor_driver_lifx::topology::{LifxTopology, Orientation};
+use hypercolor_driver_lifx::topology::{LifxTopology, Orientation, fingerprint_for_serial};
 use hypercolor_driver_lifx::transport::{DiscoveryRound, LifxClient, RequestPolicy};
 use hypercolor_types::portable::PortableIdentityClaim;
 use support::{FakeDevice, FakeKind, FakeLifx, FakeTile, TestResult};
@@ -67,8 +67,9 @@ fn fleet() -> Vec<FakeDevice> {
 async fn scan_finds_every_light_behind_one_port() -> TestResult {
     let fake = FakeLifx::spawn(fleet()).await?;
     let profiles = LifxScanner::new(options(vec![fake.addr()]))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
 
     let serials: Vec<Serial> = profiles.iter().map(|profile| profile.serial).collect();
     assert_eq!(
@@ -151,8 +152,9 @@ async fn scan_merges_several_targets() -> TestResult {
     )])
     .await?;
     let profiles = LifxScanner::new(options(vec![first.addr(), second.addr(), first.addr()]))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     assert_eq!(profiles.len(), 2);
     assert_eq!(profiles[0].addr, first.addr());
     assert_eq!(profiles[1].addr, second.addr());
@@ -163,8 +165,9 @@ async fn scan_merges_several_targets() -> TestResult {
 async fn discovered_devices_carry_routing_metadata() -> TestResult {
     let fake = FakeLifx::spawn(fleet()).await?;
     let profiles = LifxScanner::new(options(vec![fake.addr()]))
-        .scan_profiles()
-        .await?;
+        .scan()
+        .await?
+        .profiles;
     let chain = profiles
         .iter()
         .find(|profile| profile.serial == serial(5))
@@ -240,38 +243,48 @@ fn addr(last: u8) -> SocketAddr {
 }
 
 #[test]
-fn rounds_fail_when_any_light_could_not_be_asked() {
-    let round = |failed: Vec<SocketAddr>, dropped| DiscoveryRound {
+fn rounds_report_a_gap_when_any_light_could_not_be_asked() {
+    let round = |failed: Vec<SocketAddr>| DiscoveryRound {
         sends_attempted: 4,
         sends_failed: failed.len(),
         failed_targets: failed,
-        dropped,
         ..DiscoveryRound::default()
     };
     let broadcast = [addr(255), addr(254)];
 
-    assert!(ensure_round_covered_its_targets("IPv4", &round(Vec::new(), 0), &broadcast).is_ok());
-    assert!(
-        ensure_round_covered_its_targets("IPv4", &round(vec![addr(10)], 0), &broadcast).is_err(),
+    assert!(round_gaps(&round(Vec::new()), &broadcast).is_empty());
+    assert_eq!(
+        round_gaps(&round(vec![addr(10)]), &broadcast),
+        vec![CoverageGap::SendFailed {
+            target: addr(10).to_string(),
+        }],
         "a tracked light that was never asked must not be retired"
     );
     assert!(
-        ensure_round_covered_its_targets("IPv4", &round(vec![addr(255)], 0), &broadcast).is_ok(),
+        round_gaps(&round(vec![addr(255)]), &broadcast).is_empty(),
         "one failed broadcast interface is covered by unicast probes"
     );
-    assert!(
-        ensure_round_covered_its_targets("IPv4", &round(vec![addr(255), addr(254)], 0), &broadcast)
-            .is_err(),
+    assert_eq!(
+        round_gaps(&round(vec![addr(255), addr(254)]), &broadcast).len(),
+        2,
         "no local network was asked"
     );
     assert!(
-        ensure_round_covered_its_targets("IPv4", &round(Vec::new(), 3), &broadcast).is_err(),
-        "lights past the candidate limit were never probed"
-    );
-    assert!(
-        ensure_round_covered_its_targets("IPv6", &DiscoveryRound::default(), &[]).is_ok(),
+        round_gaps(&DiscoveryRound::default(), &[]).is_empty(),
         "an unused family is not a failure"
     );
+}
+
+#[test]
+fn a_round_that_lost_its_socket_reports_the_receive_failure() {
+    let gap = CoverageGap::ReceiveFailed {
+        reason: "socket failed".to_owned(),
+    };
+    let round = DiscoveryRound {
+        receive_gap: Some(gap.clone()),
+        ..DiscoveryRound::default()
+    };
+    assert_eq!(round_gaps(&round, &[]), vec![gap]);
 }
 
 #[tokio::test]
@@ -279,15 +292,21 @@ fn rounds_fail_when_any_light_could_not_be_asked() {
     windows,
     ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
 )]
-async fn one_failed_unicast_send_fails_the_scan_even_when_others_succeed() -> TestResult {
+async fn one_failed_unicast_send_leaves_the_scan_partial_and_keeps_its_finds() -> TestResult {
     let fake = FakeLifx::spawn(vec![FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb)]).await?;
     // Port 0 is rejected locally, so this send never leaves the host.
     let rejected = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let error = LifxScanner::new(options(vec![fake.addr(), rejected]))
+    let outcome = LifxScanner::new(options(vec![fake.addr(), rejected]))
         .scan()
-        .await
-        .expect_err("a scan that skipped a tracked light must not look complete");
-    assert!(error.to_string().contains("scan is incomplete"), "{error}");
+        .await?;
+    assert_eq!(outcome.profiles.len(), 1, "the light that answered applies");
+    assert_eq!(
+        outcome.gaps,
+        vec![CoverageGap::SendFailed {
+            target: rejected.to_string(),
+        }],
+        "a scan that skipped a tracked light must not look complete"
+    );
     Ok(())
 }
 
@@ -296,14 +315,15 @@ async fn one_failed_unicast_send_fails_the_scan_even_when_others_succeed() -> Te
     windows,
     ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
 )]
-async fn a_scan_that_cannot_reach_the_network_fails_instead_of_finding_nothing() -> TestResult {
+async fn a_scan_that_cannot_reach_the_network_is_partial_not_empty() -> TestResult {
     // Sending to port 0 is rejected locally, so this never leaves the host.
     let unreachable = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let error = LifxScanner::new(options(vec![unreachable]))
-        .scan()
-        .await
-        .expect_err("a scan whose only send failed must not look empty");
-    assert!(error.to_string().contains("scan is incomplete"), "{error}");
+    let outcome = LifxScanner::new(options(vec![unreachable])).scan().await?;
+    assert!(outcome.profiles.is_empty());
+    assert!(
+        !outcome.gaps.is_empty(),
+        "a scan whose only send failed must not look complete"
+    );
     Ok(())
 }
 
@@ -311,25 +331,85 @@ async fn a_scan_that_cannot_reach_the_network_fails_instead_of_finding_nothing()
 async fn unused_address_families_still_scan_successfully() -> TestResult {
     let outcome = LifxScanner::new(options(Vec::new())).scan().await?;
     assert!(outcome.profiles.is_empty());
-    assert!(outcome.unprobed.is_empty());
+    assert!(outcome.present.is_empty());
+    assert!(outcome.gaps.is_empty());
+    Ok(())
+}
+
+/// A healthy light beside one that answers discovery and then goes quiet.
+async fn half_silent_fleet() -> TestResult<FakeLifx> {
+    let mut silent = FakeDevice::new(2, 27, (3, 70), FakeKind::Bulb);
+    silent.silent_after_discovery = true;
+    FakeLifx::spawn(vec![
+        FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb),
+        silent,
+    ])
+    .await
+}
+
+#[tokio::test]
+async fn a_tracked_light_failing_its_probe_at_its_verified_route_stays_present() -> TestResult {
+    let fake = half_silent_fleet().await?;
+    let fingerprint = fingerprint_for_serial(serial(2));
+    let outcome = LifxScanner::new(LifxScanOptions {
+        tracked: HashMap::from([(
+            serial(2),
+            TrackedRoute {
+                addr: fake.addr(),
+                fingerprint: fingerprint.clone(),
+            },
+        )]),
+        ..options(vec![fake.addr()])
+    })
+    .scan()
+    .await?;
+    assert_eq!(outcome.profiles.len(), 1);
+    assert_eq!(outcome.profiles[0].serial, serial(1));
+    assert_eq!(outcome.present, vec![fingerprint]);
+    assert!(outcome.gaps.is_empty(), "{:?}", outcome.gaps);
     Ok(())
 }
 
 #[tokio::test]
-async fn lights_that_answer_but_fail_their_probe_are_reported_as_unprobed() -> TestResult {
-    let mut silent = FakeDevice::new(2, 27, (3, 70), FakeKind::Bulb);
-    silent.silent_after_discovery = true;
-    let fake = FakeLifx::spawn(vec![
-        FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb),
-        silent,
-    ])
+async fn a_failed_probe_anywhere_else_is_a_gap_and_proves_nothing() -> TestResult {
+    let fake = half_silent_fleet().await?;
+    let moved = SocketAddr::new(fake.addr().ip(), fake.addr().port().wrapping_add(1));
+    let outcome = LifxScanner::new(LifxScanOptions {
+        tracked: HashMap::from([(
+            serial(2),
+            TrackedRoute {
+                addr: moved,
+                fingerprint: fingerprint_for_serial(serial(2)),
+            },
+        )]),
+        ..options(vec![fake.addr()])
+    })
+    .scan()
     .await?;
+    assert_eq!(outcome.profiles.len(), 1);
+    assert!(
+        outcome.present.is_empty(),
+        "an unverified endpoint neither keeps the light present nor moves it"
+    );
+    assert!(
+        matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
+        "{:?}",
+        outcome.gaps
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unknown_light_failing_its_probe_is_a_gap() -> TestResult {
+    let fake = half_silent_fleet().await?;
     let outcome = LifxScanner::new(options(vec![fake.addr()])).scan().await?;
     assert_eq!(outcome.profiles.len(), 1);
-    assert_eq!(outcome.profiles[0].serial, serial(1));
-    assert_eq!(outcome.unprobed.len(), 1);
-    assert_eq!(outcome.unprobed[0].serial, serial(2));
-    assert_eq!(outcome.unprobed[0].addr, fake.addr());
+    assert!(outcome.present.is_empty());
+    assert!(
+        matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
+        "{:?}",
+        outcome.gaps
+    );
     Ok(())
 }
 
@@ -380,21 +460,19 @@ fn default_limits_leave_headroom_for_large_homes() {
 // depending on a loaded machine draining hundreds of replies in time.
 
 #[tokio::test]
-async fn a_reply_flood_past_the_cap_fails_the_scan_without_probing() -> TestResult {
+async fn a_reply_flood_past_the_cap_reports_partial_coverage() -> TestResult {
     let fake = FakeLifx::spawn(bulb_fleet(12)).await?;
-    let error = LifxScanner::new(LifxScanOptions {
+    let outcome = LifxScanner::new(LifxScanOptions {
         max_candidates: 8,
         ..options(vec![fake.addr()])
     })
     .scan()
-    .await
-    .expect_err("a truncated scan must not look complete");
-    assert!(error.to_string().contains("scan is incomplete"), "{error}");
-    assert!(
-        fake.received()
-            .iter()
-            .all(|message| message.message_type == 2),
-        "nothing past discovery ran"
+    .await?;
+    assert_eq!(outcome.profiles.len(), 8, "admitted lights still apply");
+    assert_eq!(
+        outcome.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 4 }],
+        "a truncated scan must not look complete"
     );
     Ok(())
 }
@@ -409,7 +487,7 @@ async fn probes_never_exceed_the_concurrency_limit() -> TestResult {
     })
     .scan()
     .await?;
-    assert_eq!(outcome.profiles.len() + outcome.unprobed.len(), 24);
+    assert_eq!(outcome.profiles.len() + outcome.gaps.len(), 24);
 
     // Each probe owns one socket and one serial from its first request to
     // its last, so overlapping probe lifetimes measure the concurrency. The

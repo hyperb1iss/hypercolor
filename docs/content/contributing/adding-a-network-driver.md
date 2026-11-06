@@ -48,7 +48,7 @@ and reusable driver policy never leak into the stable trait boundary.
 | `DriverDescriptor` | `driver_api::descriptor` | Static ID, display name, transport kind, schema version |
 | `DeviceBackendFactory` | `driver_api::module` | Constructs one finalized output backend |
 | `DeviceBackend` | `driver_api::backend` | Adopts discoveries and owns connected-device output |
-| `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning `Vec<DiscoveredDevice>` |
+| `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning a `DiscoveryBatch` of observations plus coverage |
 | `PairingCapability` | `driver_api::pairing` | `auth_summary`, `pair`, `clear_credentials` |
 | `DriverControlProvider` | `driver_api::controls` | Driver-level and device-level control surfaces |
 | `DriverRuntimeCacheProvider` | `driver_api::module` | Persist discovery hints across daemon restarts |
@@ -216,7 +216,7 @@ impl DiscoveryCapability for WledDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
         let tracked = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_targets = resolve_wled_probe_targets_from_sources(
@@ -232,6 +232,23 @@ impl DiscoveryCapability for WledDriverModule {
 
 Device fingerprints use `DeviceFingerprint::mint(FingerprintNamespace::Net, "wled", mac)`
 rather than the IP address, so a DHCP reassignment keeps the same `DeviceId`.
+
+### Reporting what a scan covered
+
+A scan returns observations plus coverage, and the host treats them differently:
+
+- **Observations always apply.** `DiscoveryObservation::Device` carries a verified description.
+  `DiscoveryObservation::Present` carries the fingerprint of a device the host already tracks
+  (take it from `DriverTrackedDevice`) that answered but could not be described. It renews the
+  device without touching its routes, capabilities, or metadata, so never rebuild a record from
+  tracked or cached fields to keep a device alive.
+- **Coverage decides retirement.** The host infers that a tracked device left only from
+  `DiscoveryCoverage::Complete`. Report a `CoverageGap` for anything that could hide a device:
+  a failed send, a receive failure, a cancelled probe, a truncated admission, or a discovery
+  source that could not run. An intended collection window ending is complete, and so is a
+  known target that never answered.
+- **Errors mean nothing ran.** Return `Err` only when discovery could not start at all. One
+  failed source must not throw away what the others found.
 
 ### Govee: UDP multicast + optional cloud fallback
 

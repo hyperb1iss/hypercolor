@@ -137,11 +137,18 @@ make it do:
 | Bound | Value | Why |
 |-------|-------|-----|
 | Reply validity | `method` is `registration`, `success` is not false, `result.mac` is 12 hexadecimal digits | Junk and invented replies are dropped |
-| Admission | each MAC once and each source IP once, at most 512 per scan | Replies from many ports or with many MACs cannot multiply probes; 512 matches the LIFX driver and covers the largest WiZ homes, and further replies are dropped with a warning that names `device_ips` |
+| Admission | each MAC once and each source IP once, at most 512 per scan | Replies from many ports or with many MACs cannot multiply probes; 512 matches the LIFX driver and covers the largest WiZ homes, and refused replies leave a coverage gap |
 | Probes in flight | 32 | Each probe is one socket and two short requests |
-| Probe phase | the host's scan budget (at least one round) | Unfinished probes are aborted with a warning |
+| Probe phase | the host's scan budget (at least one round) | Unfinished probes are cancelled and leave a coverage gap |
 
-Configured and tracked addresses are probed regardless of the admission cap.
+Configured and tracked addresses are probed first and never count against
+the admission cap.
+
+A configured or tracked address that fails its probe has left, so it does not
+affect coverage. A device that registered and then fails its probe is alive,
+so it leaves a coverage gap and the host retires nothing that scan. Rejecting
+every registration send leaves a gap too; one failed interface is tolerated,
+since known devices are probed directly.
 
 ---
 

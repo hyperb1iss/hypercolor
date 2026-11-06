@@ -29,6 +29,12 @@ rejected by the registry.
 - `DiscoveryCapability`, `PairingCapability`, `DriverControlProvider`,
   `DriverRuntimeCacheProvider`, `DriverProtocolCatalog`, `DriverPresentationProvider`
 
+**Discovery values**
+
+- `DiscoveryBatch`: what one scan learned: `DiscoveryObservation`s plus `DiscoveryCoverage`
+- `CoverageGap`: why a scan may have missed a device; the host retires a device only after a
+  scan with complete coverage
+
 The pairing value types (`DeviceAuthState`, `DeviceAuthSummary`, `PairingDescriptor`,
 `PairDeviceRequest`, `PairDeviceOutcome`, `ClearPairingOutcome`) live in
 `hypercolor_types::pairing`; this crate exports the `PairingCapability` trait that consumes

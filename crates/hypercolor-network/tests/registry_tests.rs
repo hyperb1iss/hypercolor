@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
-    ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceBackendFactory, DiscoveredDevice,
+    ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceBackendFactory, DiscoveryBatch,
     DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverError, DriverHost,
     DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions,
@@ -160,9 +160,9 @@ impl DiscoveryCapability for DiscoveryOnlyCapability {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let _ = (host, request, config);
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 

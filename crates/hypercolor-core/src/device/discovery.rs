@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use hypercolor_driver_api::DiscoveredDevice;
+use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryBatch, DiscoveryObservation};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
@@ -31,7 +31,9 @@ pub struct DiscoveryReport {
     /// Previously known devices that reappeared.
     pub reappeared_devices: Vec<DeviceId>,
 
-    /// Previously known devices missing from this scan.
+    /// Previously known devices missing from this scan. Empty unless every
+    /// scanner finished with complete coverage: a device absent from a
+    /// partial scan may simply not have been seen.
     pub vanished_devices: Vec<DeviceId>,
 
     /// Per-scanner timing and outcome diagnostics.
@@ -53,11 +55,22 @@ pub struct ScannerScanReport {
     /// Scan duration for this scanner.
     pub duration: Duration,
 
-    /// Number of devices returned by this scanner.
+    /// Number of devices observed by this scanner.
     pub discovered: usize,
+
+    /// What this scanner may have missed.
+    pub gaps: Vec<CoverageGap>,
 
     /// Error message if this scanner failed.
     pub error: Option<String>,
+}
+
+impl ScannerScanReport {
+    /// Whether this scanner saw everything it was meant to see.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.error.is_none() && self.gaps.is_empty()
+    }
 }
 
 /// Incremental discovery progress emitted as each scanner completes.
@@ -72,7 +85,7 @@ pub struct DiscoveryProgress {
 
 // ── DiscoveryOrchestrator ────────────────────────────────────────────────
 
-type DiscoveryFuture = Pin<Box<dyn Future<Output = Result<Vec<DiscoveredDevice>>> + Send>>;
+type DiscoveryFuture = Pin<Box<dyn Future<Output = Result<DiscoveryBatch>> + Send>>;
 
 struct DiscoverySource {
     name: String,
@@ -90,6 +103,11 @@ struct DiscoverySource {
 /// The same physical device may be reported by multiple scanners through
 /// different probe paths. The orchestrator deduplicates using
 /// [`DeviceFingerprint`], keeping the richest metadata.
+///
+/// # Absence
+///
+/// Every observation applies, whatever the scan's coverage says. A device is
+/// reported vanished only when every scanner finished with complete coverage.
 pub struct DiscoveryOrchestrator {
     sources: Vec<DiscoverySource>,
 
@@ -113,7 +131,7 @@ impl DiscoveryOrchestrator {
     /// Register one driver-owned discovery future.
     pub fn add_source<F, E>(&mut self, name: impl Into<String>, future: F)
     where
-        F: Future<Output = Result<Vec<DiscoveredDevice>, E>> + Send + 'static,
+        F: Future<Output = Result<DiscoveryBatch, E>> + Send + 'static,
         E: Into<anyhow::Error> + Send + 'static,
     {
         let name = name.into();
@@ -198,95 +216,82 @@ impl DiscoveryOrchestrator {
 
             while let Some(task) = scan_tasks.join_next().await {
                 match task {
-                    Ok((index, scanner_name, elapsed, result)) => {
-                        match result {
-                            Ok(devices) => {
-                                let discovered = devices.len();
-                                info!(scanner = %scanner_name, count = devices.len(), "Scan complete");
-                                scanner_reports.push((
-                                    index,
-                                    ScannerScanReport {
-                                        scanner: scanner_name,
-                                        duration: elapsed,
-                                        discovered,
-                                        error: None,
-                                    },
-                                ));
+                    Ok((index, scanner_name, elapsed, result)) => match result {
+                        Ok(batch) => {
+                            let DiscoveryBatch {
+                                observations,
+                                coverage,
+                            } = batch;
+                            let discovered = observations.len();
+                            let gaps = coverage.gaps().to_vec();
+                            info!(
+                                scanner = %scanner_name,
+                                count = discovered,
+                                gaps = gaps.len(),
+                                "Scan complete"
+                            );
+                            scanner_reports.push((
+                                index,
+                                ScannerScanReport {
+                                    scanner: scanner_name,
+                                    duration: elapsed,
+                                    discovered,
+                                    gaps,
+                                    error: None,
+                                },
+                            ));
 
-                                let mut progress = DiscoveryProgress::default();
-                                for device in devices {
-                                    let fingerprint = device.fingerprint.clone();
-
-                                    // Two units with a duplicated serial or MAC
-                                    // usually share a fingerprint, so this merge
-                                    // is the last place both observations exist.
-                                    // Capture the proof before dedup erases it.
-                                    let mut same_key_collision = None;
-                                    let merged =
-                                        if let Some(existing) = aggregated.get_mut(&fingerprint) {
-                                            if let (Some(held), Some(incoming)) =
-                                                (existing.claim.as_ref(), device.claim.as_ref())
-                                                && held.key() == incoming.key()
-                                                && held
-                                                    .evidence()
-                                                    .proves_distinct_from(&incoming.evidence())
-                                            {
-                                                same_key_collision =
-                                                    Some((held.clone(), incoming.clone()));
-                                            }
-                                            Self::merge_discovered(existing, &device);
-                                            existing.clone()
-                                        } else {
-                                            aggregated.insert(fingerprint.clone(), device);
-                                            aggregated
-                                                .get(&fingerprint)
-                                                .cloned()
-                                                .expect("inserted discovery entry should exist")
+                            let mut progress = DiscoveryProgress::default();
+                            for observation in observations {
+                                let id = match observation {
+                                    DiscoveryObservation::Device(device) => {
+                                        Self::apply_device(&self.registry, &mut aggregated, device)
+                                            .await
+                                    }
+                                    DiscoveryObservation::Present(fingerprint) => {
+                                        let known = self.registry.find_by_fingerprint(&fingerprint);
+                                        let Some(id) = known.await else {
+                                            debug!(
+                                                %fingerprint,
+                                                "ignoring presence of an untracked device"
+                                            );
+                                            continue;
                                         };
-
-                                    let id = self.registry.add_discovered(merged).await;
-                                    if let Some((held, incoming)) = same_key_collision {
-                                        self.registry
-                                            .report_portable_key_collision(
-                                                id,
-                                                fingerprint.clone(),
-                                                held,
-                                                incoming,
-                                            )
-                                            .await;
+                                        id
                                     }
+                                };
 
-                                    if seen_ids.insert(id) {
-                                        if known_ids_before.contains(&id) {
-                                            reappeared_devices.push(id);
-                                            progress.reappeared_devices.push(id);
-                                        } else {
-                                            new_devices.push(id);
-                                            progress.new_devices.push(id);
-                                        }
+                                if seen_ids.insert(id) {
+                                    if known_ids_before.contains(&id) {
+                                        reappeared_devices.push(id);
+                                        progress.reappeared_devices.push(id);
+                                    } else {
+                                        new_devices.push(id);
+                                        progress.new_devices.push(id);
                                     }
-                                }
-
-                                if !(progress.new_devices.is_empty()
-                                    && progress.reappeared_devices.is_empty())
-                                {
-                                    on_progress(progress).await;
                                 }
                             }
-                            Err(error) => {
-                                warn!(scanner = %scanner_name, error = %error, "Scan failed");
-                                scanner_reports.push((
-                                    index,
-                                    ScannerScanReport {
-                                        scanner: scanner_name,
-                                        duration: elapsed,
-                                        discovered: 0,
-                                        error: Some(error.to_string()),
-                                    },
-                                ));
+
+                            if !(progress.new_devices.is_empty()
+                                && progress.reappeared_devices.is_empty())
+                            {
+                                on_progress(progress).await;
                             }
                         }
-                    }
+                        Err(error) => {
+                            warn!(scanner = %scanner_name, error = %error, "Scan failed");
+                            scanner_reports.push((
+                                index,
+                                ScannerScanReport {
+                                    scanner: scanner_name,
+                                    duration: elapsed,
+                                    discovered: 0,
+                                    gaps: Vec::new(),
+                                    error: Some(error.to_string()),
+                                },
+                            ));
+                        }
+                    },
                     Err(join_error) => {
                         warn!(
                             error = %join_error,
@@ -298,6 +303,7 @@ impl DiscoveryOrchestrator {
                                 scanner: "unknown".to_owned(),
                                 duration: Duration::ZERO,
                                 discovered: 0,
+                                gaps: Vec::new(),
                                 error: Some(format!("scanner task join failed: {join_error}")),
                             },
                         ));
@@ -306,10 +312,17 @@ impl DiscoveryOrchestrator {
             }
             scanner_reports.sort_by_key(|(index, _)| *index);
 
-            let mut vanished_devices = known_ids_before
-                .into_iter()
-                .filter(|id| !seen_ids.contains(id))
-                .collect::<Vec<_>>();
+            let complete = scanner_reports
+                .iter()
+                .all(|(_, report)| report.is_complete());
+            let mut vanished_devices = if complete {
+                known_ids_before
+                    .into_iter()
+                    .filter(|id| !seen_ids.contains(id))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             vanished_devices.sort_by_key(DeviceId::as_uuid);
 
             let total_known = self.registry.len().await;
@@ -347,6 +360,41 @@ impl DiscoveryOrchestrator {
             debug!("discovery batch cancelled; scanners drained");
         }
         report
+    }
+
+    /// Merge one device into this batch's view and the registry.
+    async fn apply_device(
+        registry: &DeviceRegistry,
+        aggregated: &mut HashMap<DeviceFingerprint, DiscoveredDevice>,
+        device: DiscoveredDevice,
+    ) -> DeviceId {
+        let fingerprint = device.fingerprint.clone();
+
+        // Two units with a duplicated serial or MAC usually share a
+        // fingerprint, so this merge is the last place both observations
+        // exist. Capture the proof before dedup erases it.
+        let mut same_key_collision = None;
+        let merged = if let Some(existing) = aggregated.get_mut(&fingerprint) {
+            if let (Some(held), Some(incoming)) = (existing.claim.as_ref(), device.claim.as_ref())
+                && held.key() == incoming.key()
+                && held.evidence().proves_distinct_from(&incoming.evidence())
+            {
+                same_key_collision = Some((held.clone(), incoming.clone()));
+            }
+            Self::merge_discovered(existing, &device);
+            existing.clone()
+        } else {
+            aggregated.insert(fingerprint.clone(), device.clone());
+            device
+        };
+
+        let id = registry.add_discovered(merged).await;
+        if let Some((held, incoming)) = same_key_collision {
+            registry
+                .report_portable_key_collision(id, fingerprint, held, incoming)
+                .await;
+        }
+        id
     }
 
     fn merge_discovered(existing: &mut DiscoveredDevice, incoming: &DiscoveredDevice) {

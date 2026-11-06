@@ -25,10 +25,10 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigSource,
-    DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
-    DriverModule, DriverPresentationProvider, OutputBinding, TrackedDeviceCtx,
+    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider,
+    DriverConfigSource, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError,
+    DriverHost, DriverModule, DriverPresentationProvider, OutputBinding, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
 use hypercolor_driver_support::control_apply;
@@ -143,11 +143,13 @@ impl DiscoveryCapability for AdalightDriverModule {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<AdalightConfig>()?;
-        configured_devices(&config).map_err(|error| DriverError::Configuration {
-            message: error.to_string(),
-        })
+        configured_devices(&config)
+            .map(DiscoveryBatch::complete)
+            .map_err(|error| DriverError::Configuration {
+                message: error.to_string(),
+            })
     }
 }
 

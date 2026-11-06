@@ -167,8 +167,9 @@ async fn emulated_fleet_discovers_connects_and_renders() -> TestResult {
         request_policy: policy,
         ..LifxScanOptions::default()
     })
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
 
     let serials: Vec<Serial> = profiles.iter().map(|profile| profile.serial).collect();
     assert_eq!(

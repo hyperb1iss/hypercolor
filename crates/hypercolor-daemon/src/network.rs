@@ -10,10 +10,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hypercolor_core::device::{BackendManager, UnclaimedDeviceStore, UsbProtocolConfigStore};
 use hypercolor_driver_api::{
-    DiscoveredDevice, DiscoveryCapability, DiscoveryRequest, DriverConfigProvider,
-    DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
-    DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeCacheProvider,
-    OutputBinding, PairingCapability,
+    DiscoveryBatch, DiscoveryCapability, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeCacheProvider, OutputBinding,
+    PairingCapability,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -143,8 +143,8 @@ impl DiscoveryCapability for NoDiscovery {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
-        Ok(Vec::new())
+    ) -> Result<DiscoveryBatch, DriverError> {
+        Ok(DiscoveryBatch::complete(Vec::new()))
     }
 }
 

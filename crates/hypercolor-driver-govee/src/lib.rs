@@ -13,11 +13,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding,
-    PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, CoverageGap, DeviceBackend, DeviceBackendFactory, DiscoveredDevice,
+    DiscoveryBatch, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryObservation,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
+    TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::validate_ip;
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
@@ -50,7 +51,7 @@ pub mod lan;
 
 use backend::GoveeBackend;
 use cloud::{CloudClient, V1Device};
-use lan::discovery::{GoveeLanScanner, profile_led_count, topology_for_family};
+use lan::discovery::{GoveeLanScan, GoveeLanScanner, profile_led_count, topology_for_family};
 
 pub use capabilities::{
     GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_cloud_sku_count,
@@ -279,29 +280,48 @@ impl DiscoveryCapability for GoveeDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = self.resolved_config(config)?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let cached_devices = load_cached_probe_devices(host).map_err(DriverError::discovery)?;
         let known_devices =
             resolve_govee_probe_devices(&config, &tracked_devices, cached_devices.as_slice());
         let mut scanner = GoveeLanScanner::new(known_devices, request.timeout);
-        let mut devices = scanner.scan().await.map_err(DriverError::discovery)?;
+        let GoveeLanScan {
+            mut devices,
+            mut gaps,
+        } = scanner.scan().await.map_err(DriverError::discovery)?;
 
-        if let Some(api_key) = account_api_key(host)
-            .await
-            .map_err(DriverError::discovery)?
-        {
-            let client = self.cloud_client(api_key).map_err(DriverError::discovery)?;
-            match client.list_v1_devices().await {
-                Ok(cloud_devices) => merge_cloud_inventory(&mut devices, cloud_devices),
-                Err(error) => {
-                    warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
-                }
+        match self.cloud_inventory(host).await {
+            Ok(Some(cloud_devices)) => merge_cloud_inventory(&mut devices, cloud_devices),
+            Ok(None) => {}
+            Err(error) => {
+                warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
+                gaps.push(CoverageGap::SourceFailed {
+                    source_name: "Govee cloud inventory".to_owned(),
+                    reason: format!("{error:#}"),
+                });
             }
         }
 
-        Ok(devices)
+        let observations = devices
+            .into_iter()
+            .map(DiscoveryObservation::Device)
+            .collect();
+        Ok(DiscoveryBatch::new(observations, gaps))
+    }
+}
+
+impl GoveeDriverModule {
+    /// Devices the Govee cloud account lists, when an account is paired.
+    async fn cloud_inventory(&self, host: &dyn DriverHost) -> Result<Option<Vec<V1Device>>> {
+        let Some(api_key) = account_api_key(host).await? else {
+            return Ok(None);
+        };
+        self.cloud_client(api_key)?
+            .list_v1_devices()
+            .await
+            .map(Some)
     }
 }
 

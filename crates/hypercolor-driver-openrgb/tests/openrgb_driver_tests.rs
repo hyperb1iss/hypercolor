@@ -8,8 +8,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     DeviceBackend, DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveredDevice,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
-    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
+    DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation, DiscoveryRequest,
+    DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
+    DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -72,13 +73,24 @@ impl FixtureClock {
     }
 }
 
+fn reported_devices(batch: DiscoveryBatch) -> Vec<DiscoveredDevice> {
+    batch
+        .observations
+        .into_iter()
+        .filter_map(|observation| match observation {
+            DiscoveryObservation::Device(device) => Some(device),
+            DiscoveryObservation::Present(_) => None,
+        })
+        .collect()
+}
+
 async fn discover_and_adopt(
     module: &OpenRgbDriverModule,
     backend: &Arc<dyn DeviceBackend>,
     host: &dyn DriverHost,
     config: DriverConfigView<'_>,
 ) -> Vec<DiscoveredDevice> {
-    let devices = module
+    let batch = module
         .discovery()
         .expect("OpenRGB should expose discovery")
         .discover(
@@ -91,6 +103,7 @@ async fn discover_and_adopt(
         )
         .await
         .expect("driver discovery should read the fake OpenRGB server");
+    let devices = reported_devices(batch);
     for device in &devices {
         backend
             .adopt_device(device)
@@ -128,7 +141,7 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
 
-    let discovery = module
+    let batch = module
         .discovery()
         .expect("OpenRGB should expose discovery")
         .discover(
@@ -141,6 +154,7 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
         )
         .await
         .expect("discovery should read fake OpenRGB controller");
+    let discovery = reported_devices(batch);
 
     assert_eq!(discovery.len(), 1);
     let discovered = &discovery[0];

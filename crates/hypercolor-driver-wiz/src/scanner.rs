@@ -9,7 +9,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout_at};
 use tracing::{debug, warn};
 
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
@@ -48,6 +48,24 @@ pub const MAX_CONCURRENT_PROBES: usize = 32;
 /// Longest probe round the scan waits for, whatever retry policy a caller
 /// passes.
 const MAX_PROBE_ROUND: Duration = Duration::from_secs(10);
+
+/// What a scan found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WizScanOutcome {
+    /// Lights that were probed.
+    pub profiles: Vec<WizDeviceProfile>,
+    /// What the scan may have missed.
+    pub gaps: Vec<CoverageGap>,
+}
+
+/// Devices that answered the discovery registration.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Registrations {
+    /// Replying addresses admitted, in arrival order.
+    pub found: Vec<SocketAddr>,
+    /// What the collection may have missed.
+    pub gaps: Vec<CoverageGap>,
+}
 
 /// Where and how a scan looks for devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,23 +243,30 @@ impl WizScanner {
 
     /// Discover and probe lights. Smart plugs answer too and are skipped.
     ///
+    /// A configured or remembered address that fails its probe is simply
+    /// gone. One that answered the registration is alive, so its failed
+    /// probe leaves a coverage gap.
+    ///
     /// # Errors
     ///
     /// Returns an error when the discovery socket cannot be bound.
-    pub async fn scan_profiles(&self) -> Result<Vec<WizDeviceProfile>> {
+    pub async fn scan(&self) -> Result<WizScanOutcome> {
         let started = Instant::now();
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
-        let mut targets = self.options.unicast_targets.clone();
+        let mut outcome = WizScanOutcome::default();
+        let mut answered = HashSet::new();
         if !self.options.broadcast_targets.is_empty() {
-            targets.extend(
-                collect_registrations(
-                    &self.options.broadcast_targets,
-                    window,
-                    MAX_DISCOVERY_CANDIDATES,
-                )
-                .await?,
-            );
+            let registrations = collect_registrations(
+                &self.options.broadcast_targets,
+                window,
+                MAX_DISCOVERY_CANDIDATES,
+            )
+            .await?;
+            answered.extend(registrations.found);
+            outcome.gaps.extend(registrations.gaps);
         }
+        let mut targets = self.options.unicast_targets.clone();
+        targets.extend(answered.iter().copied());
         targets.sort_unstable();
         targets.dedup();
 
@@ -276,7 +301,6 @@ impl WizScanner {
         }
 
         let mut seen = HashSet::new();
-        let mut profiles: Vec<WizDeviceProfile> = Vec::new();
         loop {
             match timeout_at(deadline, tasks.join_next()).await {
                 Err(_) => {
@@ -285,6 +309,9 @@ impl WizScanner {
                         unfinished,
                         "WiZ scan budget ran out before every probe finished"
                     );
+                    outcome
+                        .gaps
+                        .push(CoverageGap::ProbesCancelled { unfinished });
                     tasks.abort_all();
                     break;
                 }
@@ -296,20 +323,31 @@ impl WizScanner {
                         }
                         Ok((_, Ok(profile))) => {
                             if seen.insert(profile.mac.clone()) {
-                                profiles.push(profile);
+                                outcome.profiles.push(profile);
                             }
                         }
                         Ok((addr, Err(error))) => {
                             warn!(%addr, error = %error, "WiZ device probe failed");
+                            if answered.contains(&addr) {
+                                outcome.gaps.push(CoverageGap::ProbeFailed {
+                                    candidate: addr.to_string(),
+                                    reason: format!("{error:#}"),
+                                });
+                            }
                         }
-                        Err(error) => warn!(error = %error, "WiZ probe task failed"),
+                        Err(error) => outcome.gaps.push(CoverageGap::ProbeFailed {
+                            candidate: "WiZ probe task".to_owned(),
+                            reason: error.to_string(),
+                        }),
                     }
                     spawn_next(&mut tasks, &mut pending);
                 }
             }
         }
-        profiles.sort_by(|left, right| left.mac.cmp(&right.mac));
-        Ok(profiles)
+        outcome
+            .profiles
+            .sort_by(|left, right| left.mac.cmp(&right.mac));
+        Ok(outcome)
     }
 }
 
@@ -327,52 +365,74 @@ pub async fn collect_registrations(
     targets: &[SocketAddr],
     window: Duration,
     limit: usize,
-) -> Result<Vec<SocketAddr>> {
+) -> Result<Registrations> {
     let socket = tokio::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .await
         .context("failed to bind the WiZ discovery socket")?;
     socket
         .set_broadcast(true)
         .context("failed to enable broadcast on the WiZ discovery socket")?;
-    for target in targets.iter().filter(|target| target.is_ipv4()) {
+    let mut registrations = Registrations::default();
+    let targets: Vec<&SocketAddr> = targets.iter().filter(|target| target.is_ipv4()).collect();
+    let mut failed_sends = Vec::new();
+    for target in &targets {
         if let Err(error) = socket.send_to(DISCOVERY_REQUEST.as_bytes(), target).await {
             debug!(%target, %error, "WiZ discovery send failed");
+            failed_sends.push(CoverageGap::SendFailed {
+                target: target.to_string(),
+            });
         }
+    }
+    // One failed interface is tolerated: known lights are probed directly.
+    if failed_sends.len() == targets.len() {
+        registrations.gaps.append(&mut failed_sends);
     }
 
     let deadline = Instant::now() + window;
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_LEN];
     let mut macs = HashSet::new();
     let mut sources = HashSet::new();
-    let mut found = Vec::new();
-    while found.len() < limit {
+    let mut refused = 0;
+    loop {
         match timeout_at(deadline, socket.recv_from(&mut buffer)).await {
             Err(_) => break,
             Ok(Err(error)) => {
                 debug!(%error, "WiZ discovery receive failed");
+                registrations
+                    .gaps
+                    .extend(CoverageGap::from_receive_error(&error));
                 break;
             }
             Ok(Ok((len, source))) => match registration_mac(&buffer[..len]) {
                 Ok(mac) => {
-                    if sources.contains(&source.ip()) || !macs.insert(mac.clone()) {
+                    if sources.contains(&source.ip()) || macs.contains(&mac) {
+                        continue;
+                    }
+                    if sources.len() >= limit {
+                        refused += 1;
                         continue;
                     }
                     sources.insert(source.ip());
                     debug!(%source, %mac, "WiZ discovery reply");
+                    macs.insert(mac);
                     // Replies come from the device's listening port.
-                    found.push(source);
+                    registrations.found.push(source);
                 }
                 Err(reason) => debug!(%source, %reason, "ignoring WiZ discovery reply"),
             },
         }
     }
-    if found.len() >= limit {
+    if refused > 0 {
         warn!(
             limit,
+            refused,
             "WiZ discovery stopped admitting devices at its limit; add the rest to device_ips"
         );
+        registrations
+            .gaps
+            .push(CoverageGap::AdmissionFull { refused });
     }
-    Ok(found)
+    Ok(registrations)
 }
 
 /// The canonical MAC of a successful registration reply.

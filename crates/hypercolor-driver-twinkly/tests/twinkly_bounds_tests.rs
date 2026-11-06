@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+use hypercolor_driver_api::CoverageGap;
 use hypercolor_driver_support::http::HttpError;
 use hypercolor_driver_twinkly::api::{
     ApiError, AuthToken, Gestalt, MAX_REPLY_BYTES, TwinklyClient, decode_layout_reply, decode_reply,
@@ -221,8 +223,9 @@ async fn scans_skip_devices_reporting_impossible_counts() -> TestResult {
         Vec::new(),
         Duration::from_millis(800),
     ))
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     assert!(profiles.is_empty());
     Ok(())
 }
@@ -236,7 +239,8 @@ async fn discovery_replies_from_one_address_are_admitted_once() -> TestResult {
         Duration::from_millis(300),
         8,
     )
-    .await?;
+    .await?
+    .found;
     assert_eq!(found, [IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     Ok(())
 }
@@ -260,11 +264,20 @@ async fn discovery_stops_admitting_at_its_limit() -> TestResult {
             }
         }));
     }
-    let found = collect_discovery_replies(&targets, Duration::from_millis(400), 2).await?;
+    let replies = collect_discovery_replies(&targets, Duration::from_millis(400), 2).await?;
     for responder in responders {
         responder.abort();
     }
-    assert_eq!(found.len(), 2, "admission stops at the limit: {found:?}");
+    assert_eq!(
+        replies.found.len(),
+        2,
+        "admission stops at the limit: {replies:?}"
+    );
+    assert_eq!(
+        replies.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 2 }],
+        "the devices it refused keep the scan partial"
+    );
     Ok(())
 }
 
@@ -298,8 +311,9 @@ async fn probes_run_with_bounded_concurrency_inside_the_scan_budget() -> TestRes
         Vec::new(),
         Duration::from_millis(600),
     ))
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     assert!(profiles.is_empty());
     assert!(
         peak.load(Ordering::SeqCst) <= MAX_CONCURRENT_PROBES,

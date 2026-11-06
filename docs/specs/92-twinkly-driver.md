@@ -157,12 +157,19 @@ a scan bounds what they can make it do:
 
 | Bound | Value | Why |
 |-------|-------|-----|
-| Addresses admitted from replies | 128 per scan, one per source IP | A large holiday display runs a few dozen controllers; further replies are dropped with a warning that names `device_ips` |
+| Addresses admitted from replies | 128 per scan, one per source IP | A large holiday display runs a few dozen controllers; refused replies leave a coverage gap |
 | Probes in flight | 16 | Each probe is two short HTTP requests on its own client; 128 candidates finish in eight rounds |
-| Probe phase | the host's scan budget (at least one full probe round) | Unfinished probes are aborted with a warning |
+| Probe phase | the host's scan budget (at least one full probe round) | Unfinished probes are cancelled and leave a coverage gap |
 | LED count | 1 to 4096, at most 255 on version 1, and a version 2 frame within one 65 507-byte datagram | Section 6.5; a device outside these is refused before it is published or anything is allocated |
 
-Configured and tracked addresses are probed regardless of the reply cap.
+Configured and tracked addresses are probed first and never count against
+the reply cap.
+
+A configured or tracked address that fails its probe has left, so it does not
+affect coverage. A device that answered the datagram and then fails its probe
+is alive, so it leaves a coverage gap and the host retires nothing that scan.
+Rejecting every datagram send leaves a gap too; one failed interface is
+tolerated, since known devices are probed directly.
 
 ---
 

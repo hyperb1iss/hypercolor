@@ -10,9 +10,9 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::network::{config_key_touches_drivers, reconcile_driver_output_backends};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
-    DriverHost, DriverModule, OutputBinding,
+    BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, OutputBinding,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -159,9 +159,9 @@ impl DiscoveryCapability for CountingDiscoveryDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+    ) -> Result<DiscoveryBatch, DriverError> {
         self.scans.fetch_add(1, Ordering::Relaxed);
-        Ok(Vec::new())
+        Ok(DiscoveryBatch::complete([]))
     }
 }
 

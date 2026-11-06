@@ -22,8 +22,9 @@ async fn discover(endpoint: TwinklyEndpoint) -> TestResult<DiscoveredDevice> {
         Vec::new(),
         Duration::from_millis(800),
     ))
-    .scan_profiles()
-    .await?;
+    .scan()
+    .await?
+    .profiles;
     let profile = profiles.first().ok_or("fake device was not discovered")?;
     Ok(discovered_device(profile, 60))
 }
