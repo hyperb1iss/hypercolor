@@ -64,7 +64,7 @@ The file uses vendor-wide rules for brands where new product IDs should work wit
 | Vendor | VID | Scope |
 |---|---|---|
 | Razer | `1532` | Vendor-wide |
-| Corsair | `1b1c` | Vendor-wide |
+| Corsair | `1b1c` | PID-scoped; keyboards, mice, and desk accessories get only their lighting-interface hidraw node |
 | ASUS Aura | `0b05` | Vendor-wide |
 | Lian Li | `0416`, `0cf2` | Vendor-wide |
 | Ableton | `2982` | Vendor-wide |
@@ -76,6 +76,13 @@ The file uses vendor-wide rules for brands where new product IDs should work wit
 | PrismRGB | `16d0` | Vendor-wide |
 | PrismRGB / Nollie / GCS | `16d1`, `16d2`, `16d3`, `16d5` | PID-scoped |
 | Nollie Gen 2 | `3061` | Vendor-wide |
+
+Corsair is scoped because its keyboards and mice expose their keystroke and
+pointer collections as hidraw nodes too. Each Corsair peripheral is tagged by
+product, and only the hidraw node on its lighting interface is granted; none
+gets access to its USB device node, which would be enough to detach the kernel
+input driver. Corsair fan, LCD, and Lighting Node controllers get per-product
+hidraw and USB device rules.
 
 The mixed PrismRGB / Nollie / GCS VID ranges are scoped where those vendors share
 IDs with unrelated hardware. PrismRGB `16d0`, Nollie Gen 2 `3061`, and Lian Li
