@@ -70,33 +70,31 @@ fn copy_log_files(stage_root: &Path) -> Result<()> {
     // supervisor::daemon_log_file) but is appended to across spawn cycles —
     // still in the same dir, no separate copy needed.
 
-    // PawnIO helper log (Phase 1.0 helper, when wired) lives in ProgramData.
     if cfg!(target_os = "windows")
         && let Ok(program_data) = std::env::var("PROGRAMDATA")
     {
-        let helper_log = PathBuf::from(program_data).join("hypercolor/helper.log");
+        let program_data = PathBuf::from(program_data);
+        // PawnIO helper log (Phase 1.0 helper, when wired) lives in ProgramData.
+        let helper_log = program_data.join("hypercolor/helper.log");
         if helper_log.is_file() {
             let _ = fs::copy(&helper_log, logs_dir.join("helper.log"));
         }
-    }
 
-    // The SMBus broker service and the hardware support setup log beside
-    // the broker, in tools\logs under the install directory.
-    if let Some(tool_logs) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(tool_logs_dir))
-        .filter(|dir| dir.is_dir())
-    {
-        copy_dir_recent(&tool_logs, &logs_dir, 10)?;
+        // The SMBus broker service and the hardware support setup log to
+        // the machine log directory, outside the installed release.
+        let machine_logs = machine_logs_dir(&program_data);
+        if machine_logs.is_dir() {
+            copy_dir_recent(&machine_logs, &logs_dir, 10)?;
+        }
     }
 
     Ok(())
 }
 
-/// Where the broker and the hardware support setup write their logs,
-/// relative to the directory holding the app executable.
-fn tool_logs_dir(app_dir: &Path) -> PathBuf {
-    app_dir.join("tools").join("logs")
+/// Where the broker and the hardware support setup write their logs:
+/// `%ProgramData%\Hypercolor\logs`.
+fn machine_logs_dir(program_data: &Path) -> PathBuf {
+    program_data.join("Hypercolor").join("logs")
 }
 
 /// Copy the N most-recently-modified files from `src` into `dst`.

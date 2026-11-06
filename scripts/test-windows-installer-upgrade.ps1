@@ -207,7 +207,7 @@ if (-not $broker -or $broker.Status -ne "Running") {
     $brokerState = if ($broker) { "$($broker.Status)" } else { "not registered" }
     Write-Host "::warning::the HypercolorSmBus broker is $brokerState after the upgrade ($Mode)"
     foreach ($log in @("hardware-support.log", "smbus-broker.log")) {
-        $logPath = Join-Path $installDir "tools\logs\$log"
+        $logPath = Join-Path $env:ProgramData "Hypercolor\logs\$log"
         if (Test-Path -LiteralPath $logPath) {
             Write-Host "--- $logPath"
             Get-Content -LiteralPath $logPath -Tail 40 | ForEach-Object { Write-Host $_ }

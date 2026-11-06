@@ -58,7 +58,7 @@ pub struct BrokerServiceStatus {
     /// The registered broker executable, when the configuration could be
     /// read.
     pub executable: Option<PathBuf>,
-    /// The broker's own log, beside the registered executable.
+    /// The broker's own log, in the machine log directory.
     pub log_path: Option<PathBuf>,
     /// Whether the broker answered on its pipe just now. `None` when it was
     /// not asked because the service is not running.
@@ -109,13 +109,13 @@ pub fn broker_service_status() -> PawnIoResult<BrokerServiceStatus> {
     let status = service
         .query_status()
         .map_err(|error| scm_error("query the HypercolorSmBus service", &error))?;
-    // The configuration only adds context (start type, log location), so a
+    // The configuration only adds context (start type, executable), so a
     // failure to read it leaves those fields empty instead of failing.
     let config = service.query_config().ok();
     let executable = config
         .as_ref()
         .map(|config| registered_executable(&config.executable_path.to_string_lossy()));
-    let log_path = executable.as_deref().and_then(broker_log_path);
+    let log_path = broker_log_path();
     let starts_at_boot = config
         .as_ref()
         .map(|config| config.start_type == ServiceStartType::AutoStart);
@@ -191,7 +191,6 @@ mod tests {
     use std::path::Path;
 
     use super::registered_executable;
-    use crate::broker_log_path;
 
     #[test]
     fn quoted_image_paths_name_the_executable_inside_the_quotes() {
@@ -202,12 +201,6 @@ mod tests {
         assert_eq!(
             executable,
             Path::new(r"C:\Program Files\Hypercolor\tools\hypercolor-smbus-service.exe")
-        );
-        assert_eq!(
-            broker_log_path(&executable).as_deref(),
-            Some(Path::new(
-                r"C:\Program Files\Hypercolor\tools\logs\smbus-broker.log"
-            ))
         );
     }
 

@@ -91,18 +91,22 @@ if ($broker) {
     # 2 runtime failed), 1067 a crash.
     Write-Check "State" ($broker.State -eq "Running") "$($broker.State), exit code $($broker.ExitCode), service-specific exit code $($broker.ServiceSpecificExitCode)"
 
-    $brokerDir = Split-Path -Parent $broker.PathName.Trim().Trim('"')
-    foreach ($log in @("smbus-broker.log", "hardware-support.log")) {
-        $logPath = Join-Path $brokerDir "logs\$log"
-        if (Test-Path -LiteralPath $logPath) {
-            Write-Check $log $true $logPath
-            Get-Content -LiteralPath $logPath -Tail 30 | ForEach-Object { Write-Host "       $_" }
-        } else {
-            Write-Check $log $false "not found at $logPath"
-        }
-    }
 } else {
     Write-Check "Registration" $false "HypercolorSmBus is not registered"
+}
+
+# The broker and the hardware support setup log to the machine log
+# directory, outside the installed release. The setup log is there even
+# when the broker never registered.
+$machineLogDir = Join-Path $env:ProgramData "Hypercolor\logs"
+foreach ($log in @("smbus-broker.log", "hardware-support.log")) {
+    $logPath = Join-Path $machineLogDir $log
+    if (Test-Path -LiteralPath $logPath) {
+        Write-Check $log $true $logPath
+        Get-Content -LiteralPath $logPath -Tail 30 | ForEach-Object { Write-Host "       $_" }
+    } else {
+        Write-Check $log $false "not found at $logPath"
+    }
 }
 
 try {

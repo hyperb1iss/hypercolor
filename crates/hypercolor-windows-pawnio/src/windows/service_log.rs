@@ -2,21 +2,22 @@
 //!
 //! A Windows service has no console, so tracing output written to stdout
 //! goes nowhere, and a broker that failed or stopped used to leave no
-//! trace at all. The service writes `logs\smbus-broker.log` beside its
-//! executable instead. The installer registers the broker from
-//! `Program Files`, and the install script refuses broker paths under a
-//! user profile, so the log directory inherits an administrator-owned ACL
-//! that users can read but not write: no unprivileged user can plant a
+//! trace at all. The service writes `smbus-broker.log` in the machine log
+//! directory, `%ProgramData%\Hypercolor\logs`, outside the release it runs
+//! from, which nothing may change once installed. The directory is opened
+//! through handles that refuse links and any component a standard user
+//! could change (see `log_directory`), so no unprivileged user can plant a
 //! link there for the LocalSystem service to write through. The
 //! diagnostics bundle, `diagnose-windows.ps1`, and `hypercolor diagnose`
 //! all read the log from that one place.
 
-use std::fs::{self, File, OpenOptions};
+use std::ffi::OsStr;
+use std::fs::File;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// Directory beside the broker executable that holds its logs.
-const LOG_DIR_NAME: &str = "logs";
+use super::log_directory::{machine_log_directory, open_machine_log_directory};
+
 /// The broker's own log file.
 const LOG_FILE_NAME: &str = "smbus-broker.log";
 /// The previous log, kept once the current one reaches [`ROTATE_AT_BYTES`].
@@ -26,44 +27,48 @@ const ROTATED_LOG_FILE_NAME: &str = "smbus-broker.log.1";
 /// request, so a megabyte holds many restarts of history.
 const ROTATE_AT_BYTES: u64 = 1024 * 1024;
 
-/// Path of the log the broker at `broker_executable` writes.
+/// Path of the log the broker writes. `None` when `ProgramData` is not set
+/// to an absolute path.
 #[must_use]
-pub fn broker_log_path(broker_executable: &Path) -> Option<PathBuf> {
-    broker_executable
-        .parent()
-        .map(|dir| dir.join(LOG_DIR_NAME).join(LOG_FILE_NAME))
+pub fn broker_log_path() -> Option<PathBuf> {
+    machine_log_directory().map(|directory| directory.join(LOG_FILE_NAME))
 }
 
 /// Open the broker log for appending, rotating it first when it has grown
-/// past [`ROTATE_AT_BYTES`].
-pub(super) fn open_broker_log(path: &Path) -> io::Result<File> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    if fs::metadata(path).is_ok_and(|metadata| metadata.len() > ROTATE_AT_BYTES) {
+/// past [`ROTATE_AT_BYTES`]. Returns the log's path with the file.
+pub(super) fn open_broker_log() -> io::Result<(PathBuf, File)> {
+    let directory = open_machine_log_directory()?;
+    let name = OsStr::new(LOG_FILE_NAME);
+    if directory
+        .entry_metadata(name)?
+        .is_some_and(|metadata| metadata.size() > ROTATE_AT_BYTES)
+    {
         // A failed rotation only means the log keeps growing past the cap
         // until the next start; it must never keep the broker from logging.
-        let _ = fs::rename(path, path.with_file_name(ROTATED_LOG_FILE_NAME));
+        let _ = directory.rename(name, OsStr::new(ROTATED_LOG_FILE_NAME), true);
     }
-    OpenOptions::new().create(true).append(true).open(path)
+    let file = directory.open_append_file(name)?;
+    Ok((directory.path().join(LOG_FILE_NAME), file))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::broker_log_path;
+    use crate::machine_log_directory;
 
     #[test]
-    fn broker_log_lives_in_logs_beside_the_executable() {
-        let path = broker_log_path(Path::new(
-            r"C:\Program Files\Hypercolor\tools\hypercolor-smbus-service.exe",
-        ))
-        .expect("an executable path has a parent directory");
-
+    fn broker_log_lives_in_the_machine_log_directory() {
+        let path = broker_log_path().expect("ProgramData is set on Windows");
         assert_eq!(
             path,
-            Path::new(r"C:\Program Files\Hypercolor\tools\logs\smbus-broker.log")
+            machine_log_directory()
+                .expect("machine log directory")
+                .join("smbus-broker.log")
+        );
+        assert!(
+            path.ends_with(r"Hypercolor\logs\smbus-broker.log"),
+            "{}",
+            path.display()
         );
     }
 }

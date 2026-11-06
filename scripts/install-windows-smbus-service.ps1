@@ -215,11 +215,10 @@ function Get-RegisteredBrokerPath {
 }
 
 function Get-BrokerLogPath {
-    param([string]$BrokerPath)
-
-    # The broker writes its own log beside its executable; see
+    # The broker writes its own log to the machine log directory, outside
+    # the installed release; see
     # crates/hypercolor-windows-pawnio/src/windows/service_log.rs.
-    Join-Path (Split-Path -Parent $BrokerPath) "logs\smbus-broker.log"
+    Join-Path $env:ProgramData "Hypercolor\logs\smbus-broker.log"
 }
 
 function Get-ServiceExitSummary {
@@ -264,7 +263,7 @@ function Start-SmbusBroker {
 
     Write-Host "Could not start ${Name}: $failure"
     Write-Host "  Service: $(Get-ServiceExitSummary $Name)"
-    $logPath = Get-BrokerLogPath $BrokerPath
+    $logPath = Get-BrokerLogPath
     if (Test-Path -LiteralPath $logPath) {
         Write-Host "  Last lines of ${logPath}:"
         Get-Content -LiteralPath $logPath -Tail 20 | ForEach-Object { Write-Host "    $_" }
@@ -361,7 +360,7 @@ if ($resolvedPawnIoHome) {
 if ($resolvedPawnIoModuleDir) {
     Write-Host "  Modules: $resolvedPawnIoModuleDir"
 }
-Write-Host "  Log:    $(Get-BrokerLogPath $brokerPath)"
+Write-Host "  Log:    $(Get-BrokerLogPath)"
 Write-Host "  Start:  Start-Service $ServiceName"
 
 if ($Start) {
