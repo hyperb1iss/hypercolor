@@ -530,7 +530,10 @@ jobs:
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-macos-owner \
-            --test coordinator_tests
+            --test coordinator_tests \
+            --test launchd_job_tests \
+            --test process_lifetime_tests \
+            --test app_control_tests
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-macos-session \

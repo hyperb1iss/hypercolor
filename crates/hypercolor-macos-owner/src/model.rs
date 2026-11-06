@@ -49,6 +49,18 @@ pub const MACOS_STANDALONE_HANDOVER_TIMEOUT: Duration = Duration::from_mins(1);
 pub(crate) const MACOS_SERVER_SESSION_ID_PREFIX: &str = "hc_session_";
 pub(crate) const MACOS_SERVER_SESSION_ID_BYTES: usize = 16;
 
+/// Why a desktop app that just started leaves every daemon alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosAppStartupHold {
+    /// An update transaction is open; recovery finishes it, and the app
+    /// carries on then.
+    UpdateInProgress,
+    /// macOS translocated this copy of the app, so anything it recorded
+    /// about itself would point at a path that vanishes when it exits.
+    MoveToApplications,
+}
+
 /// A daemon topology that can own protected macOS capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
