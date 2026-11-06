@@ -4854,6 +4854,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-driver-wiz"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "hypercolor-color",
+ "hypercolor-driver-api",
+ "hypercolor-driver-support",
+ "hypercolor-types",
+ "if-addrs",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hypercolor-driver-wled"
 version = "0.9.0"
 dependencies = [
