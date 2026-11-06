@@ -118,8 +118,11 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !addplugindir "${ADDITIONALPLUGINSPATH}"
 
 ; Uninstaller signing command
+; Hypercolor: compare the exit code. Upstream passes the bare command, and
+; makensis ignores a bare command's exit code, so a failed signature would
+; ship an unsigned uninstaller inside a signed installer.
 !if "${UNINSTALLERSIGNCOMMAND}" != ""
-  !uninstfinalize '${UNINSTALLERSIGNCOMMAND}'
+  !uninstfinalize '${UNINSTALLERSIGNCOMMAND}' = 0
 !endif
 
 ; Handle install mode, `perUser`, `perMachine` or `both`
