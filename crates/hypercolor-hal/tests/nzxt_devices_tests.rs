@@ -6,6 +6,7 @@ use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::nzxt::{
     N7_B650E_FAMILY_HEADERS, N7_Z390_HEADERS, N7_Z490_FAMILY_HEADERS, NZXT_VID, descriptors,
 };
+use hypercolor_hal::protocol::{Protocol, ResponseStatus};
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{DriverTransportKind, SegmentInfo};
 
@@ -222,4 +223,106 @@ fn descriptor_protocols_expose_their_static_zones() {
     assert_eq!(elite.total_leds(), 24);
     assert!(elite.init_sequence().is_empty());
     assert_eq!(elite.encode_frame(&[[0, 0, 0]; 24])[0].data.len(), 512);
+}
+
+/// Build a PID's registered protocol and hand it a topology reply with
+/// `slots` on every one of eight channels.
+fn resolve_with_every_channel(pid: u16, slots: &[u8]) -> Box<dyn Protocol> {
+    let descriptor = ProtocolDatabase::lookup(NZXT_VID, pid).expect("registered");
+    let protocol = (descriptor.protocol.build)();
+    let mut report = vec![0_u8; 64];
+    report[..2].copy_from_slice(&[0x21, 0x03]);
+    report[14] = 8;
+    for channel in 0..8 {
+        let start = 15 + channel * 6;
+        report[start..start + slots.len()].copy_from_slice(slots);
+    }
+    let response = protocol
+        .parse_response(&report)
+        .expect("topology reply parses");
+    assert_eq!(response.status, ResponseStatus::Ok);
+    protocol
+}
+
+/// Apply packets per frame, which is the number of streamed channels.
+fn streamed_channels(protocol: &dyn Protocol) -> usize {
+    let colors = vec![[0_u8; 3]; protocol.total_leds() as usize];
+    protocol
+        .encode_frame(&colors)
+        .iter()
+        .filter(|command| command.data[..2] == [0x22, 0xA0])
+        .count()
+}
+
+#[test]
+fn each_pid_resolves_its_own_profile() {
+    // (PID, streamed channels with a Hue 2 strip on all eight, 12V zones)
+    let cases: &[(u16, usize, usize)] = &[
+        (0x2001, 8, 0),
+        (0x2002, 8, 0),
+        (0x2006, 8, 0),
+        (0x2009, 8, 0),
+        (0x200D, 8, 0),
+        (0x200E, 8, 0),
+        (0x200F, 8, 0),
+        (0x2010, 8, 0),
+        (0x2011, 8, 0),
+        (0x2012, 8, 0),
+        (0x2019, 8, 0),
+        (0x201F, 8, 0),
+        (0x2020, 8, 0),
+        (0x2021, 8, 0),
+        (0x2022, 8, 0),
+        (0x2005, 3, 0),
+        (0x200A, 3, 1),
+        (0x200B, 3, 1),
+        (0x200C, 3, 1),
+        (0x2016, 3, 1),
+        (0x2017, 3, 1),
+        (0x201B, 6, 0),
+        (0x201D, 6, 0),
+    ];
+
+    for (pid, channels, analog) in cases {
+        let protocol = resolve_with_every_channel(*pid, &[0x04]);
+        assert_eq!(
+            streamed_channels(protocol.as_ref()),
+            *channels,
+            "0x{pid:04X}"
+        );
+        let fixed = protocol
+            .zones()
+            .iter()
+            .filter(|zone| zone.name == "12V RGB Header")
+            .count();
+        assert_eq!(fixed, *analog, "0x{pid:04X} 12V zones");
+        assert_eq!(
+            protocol.total_leds() as usize,
+            channels * 10 + analog,
+            "0x{pid:04X} LED total"
+        );
+    }
+}
+
+#[test]
+fn kraken_x3_pids_cap_external_channels_and_route_the_logo() {
+    // Three F120 RGB (54 LEDs) on every channel: the Kraken cap keeps two.
+    let x3 = resolve_with_every_channel(0x2007, &[0x13, 0x13, 0x13]);
+    assert_eq!(x3.total_leds(), 8 * 36);
+    assert!(x3.zones().iter().all(|zone| zone.name != "Logo"));
+
+    let x3_rgb = resolve_with_every_channel(0x2014, &[0x13, 0x13, 0x13]);
+    assert_eq!(x3_rgb.total_leds(), 8 * 36 + 1);
+    assert_eq!(
+        x3_rgb.zones().last().map(|zone| zone.name.as_str()),
+        Some("Logo")
+    );
+
+    // A logo accessory on every channel leaves nothing to stream.
+    let logo_only = resolve_with_every_channel(0x2007, &[0x11]);
+    assert_eq!(logo_only.total_leds(), 0);
+
+    // A plain controller streams the same reply uncapped.
+    let controller = resolve_with_every_channel(0x2009, &[0x13, 0x13, 0x13]);
+    assert_eq!(controller.total_leds(), 8 * 54);
 }

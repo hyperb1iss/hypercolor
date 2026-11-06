@@ -187,6 +187,14 @@ fn truncated_report_drops_channels_past_its_end() {
 }
 
 #[test]
+fn short_topology_reply_fails_init_instead_of_retrying() {
+    let protocol = controller();
+    let short = [0x21, 0x03, 0, 0, 0, 0, 0, 0, 0, 0];
+    assert!(protocol.parse_response(&short).is_err());
+    assert_eq!(protocol.total_leds(), 0);
+}
+
+#[test]
 fn report_without_a_channel_count_is_malformed() {
     let report = [0x21, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert!(parse_topology_response(&report).is_err());
@@ -424,7 +432,9 @@ fn motherboard_with_a_12v_header_exposes_it_before_topology() {
 
 #[test]
 fn motherboard_streams_only_its_digital_header_channels() {
-    // Two NZXT headers plus one ARGB header: channels 0..3 are digital.
+    // Two NZXT headers plus one ARGB header bound the channel index at 3.
+    // Channel 2 streams only because the reply names a known accessory on
+    // it; a generic ARGB strip reports none.
     let protocol = with_topology(
         NzxtGen2Protocol::new(
             "NZXT Test Board",
