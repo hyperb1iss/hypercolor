@@ -3,13 +3,13 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 33,
-    "devices": 447,
+    "devices": 457,
     "byStatus": {
       "supported": 227,
-      "in_progress": 22,
+      "in_progress": 35,
       "planned": 0,
       "researched": 65,
-      "known": 131,
+      "known": 128,
       "blocked": 2
     },
     "drivers": [
@@ -6896,46 +6896,124 @@
         "0x03EB",
         "0x31E3"
       ],
-      "notes": null,
+      "notes": "Per-key RGB built from Spec 90 and not yet run on Wooting hardware. Each 0x31E3 board also enumerates at base PID + 1 (DirectInput gamepad) and + 2 (no gamepad); all three are driven.",
       "devices": [
+        {
+          "pid": 4864,
+          "pidHex": "0x1300",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting 60HE",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "5 x 14 matrix on wire rows 1-5, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+        },
         {
           "pid": 4880,
           "pidHex": "0x1310",
           "vid": null,
           "vidHex": null,
-          "name": "Wooting 60 HE",
+          "name": "Wooting 60HE (ARM)",
           "type": "keyboard",
-          "status": "known",
-          "driver": null,
-          "transport": null,
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
           "leds": null,
-          "notes": "VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320"
+          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 4928,
+          "pidHex": "0x1340",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting 60HE v2",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 4896,
+          "pidHex": "0x1320",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting 60HE+",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
         },
         {
           "pid": 5120,
           "pidHex": "0x1400",
           "vid": null,
           "vidHex": null,
-          "name": "Wooting 80 HE",
+          "name": "Wooting 80HE",
           "type": "keyboard",
-          "status": "known",
-          "driver": null,
-          "transport": null,
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
           "leds": null,
-          "notes": "VID 0x31E3, PIDs 0x1400, 0x1402"
+          "notes": "6 x 17 matrix. The lightbar keeps its own animation and is not host-addressable. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
         },
         {
-          "pid": 65281,
-          "pidHex": "0xFF01",
+          "pid": 4352,
+          "pidHex": "0x1100",
           "vid": null,
           "vidHex": null,
           "name": "Wooting One",
           "type": "keyboard",
-          "status": "known",
-          "driver": null,
-          "transport": null,
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
           "leds": null,
-          "notes": "VID 0x03EB, original analog keyboard"
+          "notes": "6 x 17 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 65281,
+          "pidHex": "0xFF01",
+          "vid": 1003,
+          "vidHex": "0x03EB",
+          "name": "Wooting One (v1 firmware)",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Original analog keyboard on 2017-2019 firmware. Four CRC-protected PWM reports per frame. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 4608,
+          "pidHex": "0x1200",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting Two",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 65282,
+          "pidHex": "0xFF02",
+          "vid": 1003,
+          "vidHex": "0x03EB",
+          "name": "Wooting Two (v1 firmware)",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Five CRC-protected PWM reports per frame, the fifth for the numpad. Awaiting hardware confirmation."
         },
         {
           "pid": 4640,
@@ -6944,26 +7022,83 @@
           "vidHex": null,
           "name": "Wooting Two HE",
           "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 4656,
+          "pidHex": "0x1230",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting Two HE (ARM)",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "6 x 21 matrix. Needs firmware 2.12 or newer, which moved lighting to the multi-report collection. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 4624,
+          "pidHex": "0x1210",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting Two Lekker Edition",
+          "type": "keyboard",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 5392,
+          "pidHex": "0x1510",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting UwU RGB",
+          "type": "other",
+          "status": "in_progress",
+          "driver": "wooting",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Three-key analog keypad; lightbar, keys, and buttons share a 5 x 7 matrix. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 5376,
+          "pidHex": "0x1500",
+          "vid": null,
+          "vidHex": null,
+          "name": "Wooting UwU",
+          "type": "other",
           "status": "known",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232"
+          "notes": "Keypad without RGB; nothing to drive."
         }
       ],
       "counts": {
         "supported": 0,
-        "in_progress": 0,
+        "in_progress": 13,
         "planned": 0,
         "researched": 0,
-        "known": 4,
+        "known": 1,
         "blocked": 0
       },
-      "totalDevices": 4,
-      "drivers": [],
-      "transports": [],
+      "totalDevices": 14,
+      "drivers": [
+        "wooting"
+      ],
+      "transports": [
+        "usb_hid"
+      ],
       "deviceTypes": [
-        "keyboard"
+        "keyboard",
+        "other"
       ],
       "sourceFile": "data/drivers/vendors/wooting.toml"
     }
