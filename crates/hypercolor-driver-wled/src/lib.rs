@@ -6,8 +6,6 @@
 //! overrides the driver-level default.
 
 pub mod backend;
-mod ddp;
-mod e131;
 mod scanner;
 
 use std::collections::{BTreeMap, HashSet};
@@ -42,8 +40,8 @@ pub use backend::{
     WledBackend, WledColorFormat, WledDevice, WledDeviceInfo, WledLiveReceiverConfig, WledProtocol,
     WledSegmentInfo,
 };
-pub use ddp::{DdpPacket, DdpSequence, build_ddp_frame};
-pub use e131::{
+pub use hypercolor_pixel_protocols::ddp::{DdpPacket, DdpSequence, build_ddp_frame};
+pub use hypercolor_pixel_protocols::e131::{
     E131_PIXELS_PER_UNIVERSE_RGB, E131_PIXELS_PER_UNIVERSE_RGBW, E131Packet, E131SequenceTracker,
     universes_needed,
 };

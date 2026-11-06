@@ -17,16 +17,22 @@ use serde::Deserialize;
 use tokio::net::UdpSocket;
 
 use super::cache::WledDeviceInfo;
-use crate::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DdpSequence, build_ddp_frame};
-use crate::e131::{
-    E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131_PRIORITY, E131Packet, E131SequenceTracker,
-};
 use hypercolor_driver_api::{DeviceDeliveryId, DeviceDeliveryObserver, DeviceWriteOutcome};
+use hypercolor_pixel_protocols::ddp::{
+    DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DdpSequence, build_ddp_frame,
+};
+use hypercolor_pixel_protocols::e131::{
+    E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131Packet, E131SequenceTracker,
+};
 use hypercolor_types::device::DeviceId;
 
 /// Interval between mandatory keepalive frames. Frames closer together
 /// than this may be suppressed by [`WledDevice::send_frame`] dedup.
 pub(super) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Hypercolor's E1.31 priority toward WLED. Higher than the sACN default
+/// (100) so Hypercolor takes precedence over other default-priority sources.
+const E131_PRIORITY: u8 = 150;
 
 // ── Protocol Selection ──────────────────────────────────────────────────
 

@@ -39,8 +39,10 @@ use health::{
 };
 use protocol::{KEEPALIVE_INTERVAL, encode_colors};
 
-use super::ddp::{DDP_PORT, DdpSequence};
-use super::e131::{E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131SequenceTracker};
+use hypercolor_pixel_protocols::ddp::{DDP_PORT, DdpSequence};
+use hypercolor_pixel_protocols::e131::{
+    E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131SequenceTracker,
+};
 
 // ── Re-exports: preserve `backend::Foo` public paths ────────────────────
 
