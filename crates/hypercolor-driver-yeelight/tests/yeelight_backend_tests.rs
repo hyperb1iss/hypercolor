@@ -210,7 +210,7 @@ async fn normal_mode_paces_commands_inside_the_quota() -> TestResult {
 #[tokio::test]
 async fn quota_errors_pause_normal_mode_output() -> TestResult {
     let fake = FakeYeelight::spawn(FakeSpec {
-        quota: Some(0),
+        quota_rejections: usize::MAX,
         ..FakeSpec::color_bulb()
     })
     .await?;
@@ -286,6 +286,14 @@ async fn disconnect_stops_music_mode_and_closes_the_sink() -> TestResult {
     let sink = backend.frame_sink(&id).ok_or("frame sink")?;
     backend.disconnect(&id).await?;
     assert!(sink.is_closed());
+    // The retained sink does not keep the connections open.
+    for _ in 0..200 {
+        if fake.closed_connections() == (1, 1) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(fake.closed_connections(), (1, 1));
     assert!(matches!(
         sink.write_colors_shared(Arc::new(vec![[1, 2, 3]])).await,
         Err(DeviceError::Disconnected { .. })
@@ -326,4 +334,153 @@ fn multi_led_frames_average_to_one_color() {
         representative_color(&[[200, 0, 0], [0, 0, 100]]),
         [100, 0, 50]
     );
+}
+
+#[tokio::test]
+async fn a_quota_rejected_frame_is_resent_after_the_pause() -> TestResult {
+    let fake = FakeYeelight::spawn(FakeSpec {
+        quota_rejections: 1,
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let config = YeelightConfig {
+        music_mode: false,
+        ..YeelightConfig::default()
+    };
+    let discovered = discover(&fake, &config).await?;
+    let backend = YeelightBackend::new(config).with_quota_backoff(Duration::from_millis(200));
+    backend.adopt_device(&discovered)?;
+    backend.connect(&discovered.info.id).await?;
+    let id = discovered.info.id;
+
+    let green = Arc::new(vec![[0, 255, 0]]);
+    assert_eq!(
+        backend
+            .write_colors_shared_outcome(&id, Arc::clone(&green))
+            .await?,
+        DeviceWriteOutcome::Sent
+    );
+    // Past the one-second command interval and the 200 ms pause, the host's
+    // replay of the same static color must reach the light again.
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    assert_eq!(
+        backend
+            .write_colors_shared_outcome(&id, Arc::clone(&green))
+            .await?,
+        DeviceWriteOutcome::Sent
+    );
+    let control = fake.wait_for_control(2).await;
+    assert_eq!(control.len(), 2);
+    assert_eq!(control[0]["params"], control[1]["params"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_closed_control_connection_fails_the_next_write() -> TestResult {
+    let fake = FakeYeelight::spawn(FakeSpec {
+        close_after: Some(1),
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let config = YeelightConfig {
+        music_mode: false,
+        ..YeelightConfig::default()
+    };
+    let (backend, discovered) = connected(&fake, config).await?;
+    let id = discovered.info.id;
+    backend.write_colors(&id, &[[0, 255, 0]]).await?;
+    for _ in 0..200 {
+        if fake.closed_connections().0 == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The same color would be a duplicate; the dead connection must still
+    // surface so the host reconnects.
+    assert!(matches!(
+        backend.write_colors(&id, &[[0, 255, 0]]).await,
+        Err(DeviceError::WriteError { .. })
+    ));
+    Ok(())
+}
+
+/// Linux routes all of 127.0.0.0/8 to the loopback interface, so a rogue
+/// host with its own address can race the light there.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn music_mode_accepts_only_the_light_itself() -> TestResult {
+    let fake = FakeYeelight::spawn(FakeSpec {
+        rogue_from: Some(std::net::Ipv4Addr::new(127, 0, 0, 2)),
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let (backend, discovered) = connected(&fake, YeelightConfig::default()).await?;
+    let id = discovered.info.id;
+    let metadata = backend
+        .connected_device_metadata(&id)
+        .await?
+        .ok_or("metadata")?;
+    assert_eq!(metadata["stream_mode"], "music");
+    backend.write_colors(&id, &[[255, 0, 0]]).await?;
+    let music = fake.wait_for_music(1).await;
+    assert_eq!(music.len(), 1, "the frame reached the light");
+    assert_eq!(fake.rogue_lines(), 0, "nothing reached the rogue host");
+    Ok(())
+}
+
+#[tokio::test]
+async fn replies_naming_another_address_are_ignored() -> TestResult {
+    let fake = FakeYeelight::spawn(FakeSpec {
+        location_ip: Some(std::net::Ipv4Addr::new(192, 0, 2, 7)),
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let profiles = YeelightScanner::new(YeelightScanOptions {
+        unicast_targets: vec![fake.search_addr()],
+        multicast: false,
+        timeout: Duration::from_millis(1_000),
+    })
+    .scan_profiles()
+    .await?;
+    assert!(profiles.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_address_yields_one_light_per_scan() -> TestResult {
+    let first = FakeYeelight::spawn(FakeSpec::color_bulb()).await?;
+    let second = FakeYeelight::spawn(FakeSpec {
+        id: "0x00000000000000bb".to_owned(),
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let profiles = YeelightScanner::new(YeelightScanOptions {
+        unicast_targets: vec![first.search_addr(), second.search_addr()],
+        multicast: false,
+        timeout: Duration::from_millis(1_000),
+    })
+    .scan_profiles()
+    .await?;
+    assert_eq!(profiles.len(), 1, "two ids from one host count once");
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_ids_never_become_devices() -> TestResult {
+    let fake = FakeYeelight::spawn(FakeSpec {
+        id: "€abcd".to_owned(),
+        support: "set_bright".to_owned(),
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let profiles = YeelightScanner::new(YeelightScanOptions {
+        unicast_targets: vec![fake.search_addr()],
+        multicast: false,
+        timeout: Duration::from_millis(1_000),
+    })
+    .scan_profiles()
+    .await?;
+    assert!(profiles.is_empty());
+    Ok(())
 }

@@ -26,10 +26,19 @@ pub struct FakeSpec {
     pub model: String,
     pub support: String,
     pub name: String,
-    /// Answer `client quota exceeded` after this many commands.
-    pub quota: Option<usize>,
+    /// Answer `client quota exceeded` to this many commands after the
+    /// first `quota_after` succeed.
+    pub quota_rejections: usize,
+    pub quota_after: usize,
+    /// Close the control connection after serving this many commands.
+    pub close_after: Option<usize>,
     /// Answer `set_music` but never connect back.
     pub music_never_connects: bool,
+    /// Before connecting back for music mode, connect from this other
+    /// loopback address, as a rogue LAN host racing the light would.
+    pub rogue_from: Option<Ipv4Addr>,
+    /// Advertise this IP in `Location` instead of the fake's own.
+    pub location_ip: Option<Ipv4Addr>,
 }
 
 impl FakeSpec {
@@ -39,8 +48,12 @@ impl FakeSpec {
             model: "color".to_owned(),
             support: COLOR_SUPPORT.to_owned(),
             name: String::new(),
-            quota: None,
+            quota_rejections: 0,
+            quota_after: 0,
+            close_after: None,
             music_never_connects: false,
+            rogue_from: None,
+            location_ip: None,
         }
     }
 }
@@ -51,6 +64,9 @@ struct State {
     control_lines: Vec<serde_json::Value>,
     music_lines: Vec<serde_json::Value>,
     control_connections: usize,
+    closed_connections: usize,
+    music_closed: usize,
+    rogue_lines: usize,
 }
 
 /// A running fake device.
@@ -95,8 +111,11 @@ impl FakeYeelight {
                 {
                     continue;
                 }
+                let location = search_spec.location_ip.map_or(control_addr, |ip| {
+                    SocketAddr::from((ip, control_addr.port()))
+                });
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nDate:\r\nExt:\r\nLocation: yeelight://{control_addr}\r\nServer: POSIX UPnP/1.0 YGLC/1\r\nid: {}\r\nmodel: {}\r\nfw_ver: 18\r\nsupport: {}\r\npower: on\r\nbright: 100\r\ncolor_mode: 2\r\nct: 4000\r\nrgb: 16711680\r\nhue: 100\r\nsat: 35\r\nname: {}\r\n",
+                    "HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nDate:\r\nExt:\r\nLocation: yeelight://{location}\r\nServer: POSIX UPnP/1.0 YGLC/1\r\nid: {}\r\nmodel: {}\r\nfw_ver: 18\r\nsupport: {}\r\npower: on\r\nbright: 100\r\ncolor_mode: 2\r\nct: 4000\r\nrgb: 16711680\r\nhue: 100\r\nsat: 35\r\nname: {}\r\n",
                     search_spec.id, search_spec.model, search_spec.support, search_spec.name
                 );
                 let _ = search.send_to(reply.as_bytes(), source).await;
@@ -156,6 +175,17 @@ impl FakeYeelight {
         self.state.lock().expect("state lock").control_connections
     }
 
+    /// Lines that reached the rogue connection.
+    pub fn rogue_lines(&self) -> usize {
+        self.state.lock().expect("state lock").rogue_lines
+    }
+
+    /// Control and music connections the peer has seen close.
+    pub fn closed_connections(&self) -> (usize, usize) {
+        let state = self.state.lock().expect("state lock");
+        (state.closed_connections, state.music_closed)
+    }
+
     pub async fn wait_for_music(&self, count: usize) -> Vec<serde_json::Value> {
         for _ in 0..200 {
             let lines = self.music_lines();
@@ -185,6 +215,16 @@ async fn serve_control(
     state: &Arc<Mutex<State>>,
     tasks: &Mutex<Vec<JoinHandle<()>>>,
 ) {
+    serve_commands(stream, spec, state, tasks).await;
+    state.lock().expect("state lock").closed_connections += 1;
+}
+
+async fn serve_commands(
+    stream: TcpStream,
+    spec: &FakeSpec,
+    state: &Arc<Mutex<State>>,
+    tasks: &Mutex<Vec<JoinHandle<()>>>,
+) {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
     let mut served = 0_usize;
@@ -199,7 +239,9 @@ async fn serve_control(
             .push(command.clone());
         served += 1;
         let id = command["id"].clone();
-        let reply = if spec.quota.is_some_and(|quota| served > quota) {
+        let rejected =
+            served > spec.quota_after && served <= spec.quota_after + spec.quota_rejections;
+        let reply = if rejected {
             serde_json::json!({ "id": id, "error": { "code": -1, "message": "client quota exceeded" } })
         } else {
             serde_json::json!({ "id": id, "result": ["ok"] })
@@ -211,10 +253,29 @@ async fn serve_control(
         {
             return;
         }
+        if spec.close_after.is_some_and(|limit| served >= limit) {
+            return;
+        }
         let params = &command["params"];
         if command["method"] == "set_music" && params[0] == 1 && !spec.music_never_connects {
             let host = params[1].as_str().unwrap_or_default().to_owned();
             let port = params[2].as_u64().unwrap_or_default();
+            if let Some(rogue_ip) = spec.rogue_from
+                && let Ok(target) = format!("{host}:{port}").parse::<SocketAddr>()
+                && let Ok(socket) = tokio::net::TcpSocket::new_v4()
+                && socket.bind(SocketAddr::from((rogue_ip, 0))).is_ok()
+                && let Ok(rogue) = socket.connect(target).await
+            {
+                let rogue_state = Arc::clone(state);
+                let reader = tokio::spawn(async move {
+                    let mut rogue_lines = BufReader::new(rogue).lines();
+                    while let Ok(Some(_)) = rogue_lines.next_line().await {
+                        rogue_state.lock().expect("state lock").rogue_lines += 1;
+                    }
+                });
+                tasks.lock().expect("tasks lock").push(reader);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
             let Ok(music) = TcpStream::connect(format!("{host}:{port}")).await else {
                 continue;
             };
@@ -232,6 +293,7 @@ async fn serve_control(
                             .push(value);
                     }
                 }
+                music_state.lock().expect("state lock").music_closed += 1;
             });
             tasks.lock().expect("tasks lock").push(reader);
         }

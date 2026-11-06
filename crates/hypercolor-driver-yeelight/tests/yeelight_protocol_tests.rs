@@ -286,3 +286,66 @@ fn lights_without_scenes_power_on_then_set_what_changed() {
     );
     assert_eq!(worst_case_commands(mono), 2);
 }
+
+#[test]
+fn ids_must_be_the_specified_hex_identity() {
+    use hypercolor_driver_yeelight::protocol::canonical_id;
+    assert_eq!(
+        canonical_id("0x000000000015243F").as_deref(),
+        Ok("0x000000000015243f")
+    );
+    assert_eq!(canonical_id("0XABC").as_deref(), Ok("0xabc"));
+    for bad in [
+        "€abcd",
+        "0x",
+        "0x€",
+        "15243f",
+        "0x00000000000000001",
+        "0xzz",
+    ] {
+        assert!(canonical_id(bad).is_err(), "{bad} must be refused");
+    }
+    let datagram = "HTTP/1.1 200 OK\r\nLocation: yeelight://10.0.0.5:55443\r\nid: \u{20ac}abcd\r\nsupport: set_bright\r\n";
+    assert!(matches!(
+        decode_search_reply(datagram.as_bytes()),
+        Err(ProtocolError::InvalidId(_))
+    ));
+}
+
+#[test]
+fn display_names_never_slice_inside_a_character() {
+    use hypercolor_driver_yeelight::YeelightDeviceProfile;
+    let profile = |id: &str| YeelightDeviceProfile {
+        reply: SearchReply {
+            location: SocketAddr::from((Ipv4Addr::new(10, 0, 0, 5), 55443)),
+            id: id.to_owned(),
+            model: Some("mono".to_owned()),
+            fw_ver: None,
+            support: support("set_bright"),
+            power: None,
+            bright: None,
+            name: None,
+        },
+        search_port: 1982,
+    };
+    assert_eq!(
+        profile("0x000000000015243f").display_name(),
+        "Yeelight mono 15243F"
+    );
+    // Not reachable through the decoder, but must not panic either.
+    assert_eq!(
+        profile("\u{20ac}abcd").display_name(),
+        "Yeelight mono \u{20ac}ABCD"
+    );
+}
+
+#[test]
+fn long_names_and_models_are_truncated() {
+    let long = "n".repeat(500);
+    let datagram = format!(
+        "HTTP/1.1 200 OK\r\nLocation: yeelight://10.0.0.5:55443\r\nid: 0x1\r\nmodel: {long}\r\nname: {long}\r\n"
+    );
+    let reply = decode_search_reply(datagram.as_bytes()).expect("reply decodes");
+    assert_eq!(reply.name.map(|name| name.chars().count()), Some(64));
+    assert_eq!(reply.model.map(|model| model.chars().count()), Some(64));
+}

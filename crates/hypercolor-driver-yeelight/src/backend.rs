@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -24,6 +23,7 @@ use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::YEELIGHT_DRIVER_ID;
 use crate::config::YeelightConfig;
+use crate::framing::{LineReader, write_bounded};
 use crate::protocol::{
     Capabilities, Command, LightState, commands_for, decode_message, refresh_commands,
     worst_case_commands,
@@ -42,6 +42,10 @@ pub const NORMAL_MODE_COMMAND_INTERVAL: Duration = Duration::from_secs(1);
 pub const NORMAL_MODE_REPLAY: Duration = Duration::from_secs(3);
 /// Pause after the device reports its quota exhausted.
 pub const QUOTA_BACKOFF: Duration = Duration::from_secs(15);
+/// Longest a command write may take. A peer that stops reading would
+/// otherwise stall the frame path; a timed-out write leaves a partial JSON
+/// line, so the connection is dropped and the host reconnects.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Re-send the last state after this much silence in music mode, so a
 /// dropped music connection is noticed by the next write.
 pub const MUSIC_KEEPALIVE: Duration = Duration::from_secs(5);
@@ -106,9 +110,29 @@ impl Drop for SessionHandle {
 struct SessionShared {
     closed: AtomicBool,
     quota_blocked_until: StdMutex<Option<Instant>>,
+    /// The device rejected a command for quota; the state it would have
+    /// set is unknown, so the next frame is resent in full.
+    quota_rejected: AtomicBool,
+    /// Terminal transport failure: the next write reports it so the host
+    /// reconnects.
+    failure: StdMutex<Option<String>>,
 }
 
 impl SessionShared {
+    fn failure(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn mark_failed(&self, reason: String) {
+        let mut failure = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
+        if failure.is_none() {
+            *failure = Some(reason);
+        }
+    }
+
     fn quota_blocked(&self, now: Instant) -> bool {
         self.quota_blocked_until
             .lock()
@@ -118,7 +142,9 @@ impl SessionShared {
 }
 
 struct StreamState {
-    control: OwnedWriteHalf,
+    /// `None` once the connection was dropped after a failure or
+    /// disconnect.
+    control: Option<OwnedWriteHalf>,
     music: Option<OwnedWriteHalf>,
     next_id: u32,
     brightness: u8,
@@ -137,6 +163,7 @@ impl StreamState {
 /// Yeelight backend implementing [`DeviceBackend`].
 pub struct YeelightBackend {
     config: YeelightConfig,
+    quota_backoff: Duration,
     adopted: StdRwLock<HashMap<DeviceId, AdoptedRoute>>,
     sessions: StdRwLock<HashMap<DeviceId, Arc<SessionHandle>>>,
 }
@@ -146,9 +173,17 @@ impl YeelightBackend {
     pub fn new(config: YeelightConfig) -> Self {
         Self {
             config,
+            quota_backoff: QUOTA_BACKOFF,
             adopted: StdRwLock::new(HashMap::new()),
             sessions: StdRwLock::new(HashMap::new()),
         }
+    }
+
+    /// Override the pause after a quota error.
+    #[must_use]
+    pub const fn with_quota_backoff(mut self, backoff: Duration) -> Self {
+        self.quota_backoff = backoff;
+        self
     }
 
     fn session(&self, id: &DeviceId) -> Option<Arc<SessionHandle>> {
@@ -201,14 +236,18 @@ impl YeelightBackend {
             .local_addr()
             .context("Yeelight control connection has no local address")?
             .ip();
+        let device_ip = control
+            .peer_addr()
+            .context("Yeelight control connection has no peer address")?
+            .ip();
         let (read_half, mut write_half) = control.into_split();
-        let mut lines = BufReader::new(read_half).lines();
+        let mut lines = LineReader::new(read_half);
         let mut next_id = 0_u32;
 
         let mut music = None;
         if self.config.music_mode && capabilities.music {
             next_id += 1;
-            match start_music(&mut write_half, &mut lines, next_id, local_ip).await {
+            match start_music(&mut write_half, &mut lines, next_id, local_ip, device_ip).await {
                 Ok(stream) => music = Some(stream),
                 Err(error) => warn!(
                     device_id = %id,
@@ -235,7 +274,12 @@ impl YeelightBackend {
         let info = profile.device_info(cadence.target_fps());
 
         let shared = Arc::new(SessionShared::default());
-        let reader = tokio::spawn(read_control(*id, lines, Arc::clone(&shared)));
+        let reader = tokio::spawn(read_control(
+            *id,
+            lines,
+            Arc::clone(&shared),
+            self.quota_backoff,
+        ));
         Ok(SessionHandle {
             profile,
             info,
@@ -244,7 +288,7 @@ impl YeelightBackend {
             capabilities,
             music_enabled: self.config.music_mode,
             stream: Mutex::new(StreamState {
-                control: write_half,
+                control: Some(write_half),
                 music,
                 next_id,
                 brightness: u8::MAX,
@@ -268,8 +312,15 @@ impl YeelightBackend {
                 device: device_id.to_string(),
             });
         }
+        if let Some(reason) = handle.shared.failure() {
+            return Err(DeviceError::write(device_id, reason));
+        }
         let now = Instant::now();
         let mut stream = handle.stream.lock().await;
+        if handle.shared.quota_rejected.swap(false, Ordering::AcqRel) {
+            // The rejected command's state never landed; resend in full.
+            stream.last_state = None;
+        }
         if handle.mode == StreamMode::Normal {
             if handle.shared.quota_blocked(now) {
                 return Ok(DeviceWriteOutcome::SuppressedCadence);
@@ -310,13 +361,24 @@ impl YeelightBackend {
         if let Some((id, observer)) = delivery {
             observer.transport_started(id);
         }
-        let result = match stream.music.as_mut() {
-            Some(music) => music.write_all(payload.as_bytes()).await,
-            None => stream.control.write_all(payload.as_bytes()).await,
+        let writer = match handle.mode {
+            StreamMode::Music => stream.music.as_mut(),
+            StreamMode::Normal => stream.control.as_mut(),
         };
-        result.map_err(|error| {
-            DeviceError::write(device_id, format!("Yeelight command write failed: {error}"))
-        })?;
+        let Some(writer) = writer else {
+            return Err(DeviceError::Disconnected {
+                device: device_id.to_string(),
+            });
+        };
+        if let Err(error) = write_bounded(writer, payload.as_bytes(), WRITE_TIMEOUT).await {
+            // A partial line cannot be resumed: drop the connection and
+            // make every later write report the failure.
+            let reason = format!("Yeelight command write failed: {error}");
+            handle.shared.mark_failed(reason.clone());
+            stream.music = None;
+            stream.control = None;
+            return Err(DeviceError::write(device_id, reason));
+        }
         stream.last_state = Some(next);
         stream.last_sent_at = Some(now);
         if handle.mode == StreamMode::Normal {
@@ -358,12 +420,16 @@ async fn confirm_identity(route: &AdoptedRoute) -> Result<YeelightDeviceProfile>
     }
 }
 
-/// Ask the device to connect back for music mode and accept it.
+/// Ask the device to connect back for music mode and accept it. Only a
+/// connection from the device's own address is accepted, within the
+/// original deadline; anything else on the LAN that connects first is
+/// dropped.
 async fn start_music(
     control: &mut OwnedWriteHalf,
-    lines: &mut tokio::io::Lines<BufReader<OwnedReadHalf>>,
+    lines: &mut LineReader<OwnedReadHalf>,
     id: u32,
     local_ip: IpAddr,
+    device_ip: IpAddr,
 ) -> Result<OwnedWriteHalf> {
     if !local_ip.is_ipv4() {
         bail!("music mode needs an IPv4 path to the device");
@@ -375,15 +441,12 @@ async fn start_music(
         .local_addr()
         .context("music-mode listener has no address")?
         .port();
-    control
-        .write_all(
-            Command::MusicStart {
-                host: local_ip,
-                port,
-            }
-            .encode(id)
-            .as_bytes(),
-        )
+    let request = Command::MusicStart {
+        host: local_ip,
+        port,
+    }
+    .encode(id);
+    write_bounded(control, request.as_bytes(), WRITE_TIMEOUT)
         .await
         .context("failed to send set_music")?;
     let reply = tokio::time::timeout(REPLY_TIMEOUT, async {
@@ -404,24 +467,39 @@ async fn start_music(
     if let Some(error) = reply.error {
         bail!("the device refused set_music: {}", error.message);
     }
-    let (stream, peer) = tokio::time::timeout(MUSIC_ACCEPT_TIMEOUT, listener.accept())
-        .await
-        .map_err(|_| anyhow!("the device did not connect back for music mode"))?
-        .context("music-mode accept failed")?;
-    stream.set_nodelay(true).ok();
-    debug!(%peer, "Yeelight music connection accepted");
-    let (_, write_half) = stream.into_split();
-    Ok(write_half)
+    let deadline = tokio::time::Instant::now() + MUSIC_ACCEPT_TIMEOUT;
+    loop {
+        let (stream, peer) = tokio::time::timeout_at(deadline, listener.accept())
+            .await
+            .map_err(|_| anyhow!("the device did not connect back for music mode"))?
+            .context("music-mode accept failed")?;
+        if peer.ip() != device_ip {
+            warn!(%peer, %device_ip, "dropping a music-mode connection from another host");
+            continue;
+        }
+        stream.set_nodelay(true).ok();
+        debug!(%peer, "Yeelight music connection accepted");
+        let (_, write_half) = stream.into_split();
+        return Ok(write_half);
+    }
 }
 
-/// Read replies and `props` pushes on the control connection, and pause
-/// normal-mode output when the device reports its quota exhausted.
+/// Read replies and `props` pushes on the control connection. A quota
+/// error pauses normal-mode output and invalidates the light's known
+/// state; end of stream, a read error, or an oversized line marks the
+/// session failed so the next write reports it and the host reconnects.
 async fn read_control(
     device_id: DeviceId,
-    mut lines: tokio::io::Lines<BufReader<OwnedReadHalf>>,
+    mut lines: LineReader<OwnedReadHalf>,
     shared: Arc<SessionShared>,
+    quota_backoff: Duration,
 ) {
-    while let Ok(Some(line)) = lines.next_line().await {
+    let reason = loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break "the device closed the control connection".to_owned(),
+            Err(error) => break format!("the control connection failed: {error}"),
+        };
         let Ok(message) = decode_message(&line) else {
             continue;
         };
@@ -433,12 +511,16 @@ async fn read_control(
             *shared
                 .quota_blocked_until
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now() + QUOTA_BACKOFF);
+                .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now() + quota_backoff);
+            shared.quota_rejected.store(true, Ordering::Release);
         } else {
             debug!(%device_id, code = error.code, message = %error.message, "Yeelight command rejected");
         }
+    };
+    if !shared.closed.load(Ordering::Acquire) {
+        warn!(%device_id, %reason, "Yeelight control connection lost");
+        shared.mark_failed(format!("Yeelight {reason}"));
     }
-    debug!(%device_id, "Yeelight control connection closed");
 }
 
 /// One color for a single-zone light; a longer frame is averaged.
@@ -610,14 +692,29 @@ impl DeviceBackend for YeelightBackend {
             });
         };
         handle.shut_down();
-        if handle.mode == StreamMode::Music {
-            let mut stream = handle.stream.lock().await;
-            let stop = Command::MusicStop.encode(stream.next_id());
-            let sent =
-                tokio::time::timeout(REPLY_TIMEOUT, stream.control.write_all(stop.as_bytes()))
-                    .await;
-            if !matches!(sent, Ok(Ok(()))) {
-                debug!(device_id = %id, "Yeelight set_music stop was not delivered");
+        // A stalled writer holds the stream lock for at most WRITE_TIMEOUT;
+        // never wait longer than that plus the stop itself.
+        match tokio::time::timeout(WRITE_TIMEOUT, handle.stream.lock()).await {
+            Ok(mut stream) => {
+                if handle.mode == StreamMode::Music {
+                    let stop = Command::MusicStop.encode(stream.next_id());
+                    let sent = match stream.control.as_mut() {
+                        Some(control) => write_bounded(control, stop.as_bytes(), WRITE_TIMEOUT)
+                            .await
+                            .is_ok(),
+                        None => false,
+                    };
+                    if !sent {
+                        debug!(device_id = %id, "Yeelight set_music stop was not delivered");
+                    }
+                }
+                // Close both connections now, even if a frame sink is still
+                // held somewhere: the device allows only four.
+                stream.music = None;
+                stream.control = None;
+            }
+            Err(_) => {
+                debug!(device_id = %id, "Yeelight writer stalled; leaving its connection to time out");
             }
         }
         info!(device_id = %id, yeelight_id = %handle.profile.reply.id, "Disconnected from Yeelight device");
