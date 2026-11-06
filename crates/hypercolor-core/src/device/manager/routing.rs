@@ -341,8 +341,9 @@ impl BackendManager {
     /// Reuse the latest routed outputs for the active layout.
     ///
     /// This only nudges queues that need a retry after an asynchronous write
-    /// failure or a device decline; successfully queued or in-flight identical
-    /// payloads are left untouched.
+    /// failure or a device decline, or whose backend's cadence still owes an
+    /// identical copy of the latest payload; successfully queued or in-flight
+    /// identical payloads are otherwise left untouched.
     pub fn reuse_routed_frame_outputs(&mut self, layout: &SpatialLayout) -> FrameWriteStats {
         let plan = self.routing_plan(layout);
         let mut stats = FrameWriteStats::default();
@@ -355,7 +356,10 @@ impl BackendManager {
             let Some(queue) = self.output.queue_mut(key) else {
                 continue;
             };
-            if let Some(led_count) = queue.retry_latest_after_error() {
+            if let Some(led_count) = queue
+                .retry_latest_after_error()
+                .or_else(|| queue.repeat_latest_if_owed())
+            {
                 stats.devices_written = stats.devices_written.saturating_add(1);
                 stats.total_leds = stats.total_leds.saturating_add(led_count);
             }
