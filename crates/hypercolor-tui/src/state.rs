@@ -363,8 +363,8 @@ pub struct DeviceSummary {
     pub fps: Option<f32>,
 }
 
-/// Summary of a daemon-managed virtual display simulator.
-pub type SimulatedDisplaySummary = hypercolor_types::api::simulators::SimulatedDisplay;
+/// A daemon-managed virtual display simulator.
+pub use hypercolor_types::api::simulators::SimulatedDisplay;
 
 /// Selected source for the TUI preview surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

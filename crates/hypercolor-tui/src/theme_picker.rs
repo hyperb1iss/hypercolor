@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 use hypercolor_core::client_preferences::TuiPreferenceStore;
-pub use hypercolor_types::client_preferences::TuiPreferences as TuiConfig;
+use hypercolor_types::client_preferences::TuiPreferences;
 use opaline::Theme;
 use opaline::widgets::{ThemeSelector, ThemeSelectorAction, ThemeSelectorState};
 use ratatui::Frame;
@@ -34,14 +34,14 @@ pub fn config_path() -> PathBuf {
 }
 
 /// Load the TUI config from disk, returning defaults if missing.
-pub fn load_config() -> TuiConfig {
+pub fn load_config() -> TuiPreferences {
     TuiPreferenceStore::new(config_path())
         .load()
         .unwrap_or_default()
 }
 
 /// Save the full terminal preference document through the shared writer.
-pub fn save_config(config: &TuiConfig) -> Result<()> {
+pub fn save_config(config: &TuiPreferences) -> Result<()> {
     TuiPreferenceStore::new(config_path()).modify(|current| *current = config.clone())
 }
 

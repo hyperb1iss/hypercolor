@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use hypercolor_tui::action::Action;
 use hypercolor_tui::component::Component;
 use hypercolor_tui::state::{
-    ControlDefinition, ControlValue, EffectSummary, PreviewSource, SimulatedDisplaySummary,
+    ControlDefinition, ControlValue, EffectSummary, PreviewSource, SimulatedDisplay,
 };
 use hypercolor_tui::views::EffectBrowserView;
 use hypercolor_types::api::effects::EffectSourceKind;
@@ -65,7 +65,7 @@ fn preview_pane_cycles_between_canvas_and_simulator_sources() {
     view.update(&Action::EffectsUpdated(Arc::new(vec![sample_effect()])))
         .expect("effects should update");
     view.update(&Action::SimulatedDisplaysUpdated(Arc::new(vec![
-        SimulatedDisplaySummary {
+        SimulatedDisplay {
             id: "0198c5b6-5100-7000-8000-00000000a001"
                 .parse()
                 .expect("simulator id"),

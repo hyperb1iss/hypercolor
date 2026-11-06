@@ -26,8 +26,7 @@ use crate::scene_picker::{ScenePicker, ScenePickerAction};
 use crate::screen::ScreenId;
 use crate::state::{
     AppState, CanvasFrame, ConnectionStatus, ControlValue, Notification, NotificationLevel,
-    PreviewSource, PreviewTarget, SimulatedDisplaySummary, set_zone_effect_control,
-    zone_effect_layer,
+    PreviewSource, PreviewTarget, SimulatedDisplay, set_zone_effect_control, zone_effect_layer,
 };
 use crate::theme_picker::ThemePicker;
 use opaline::widgets::ThemeSelectorAction;
@@ -108,7 +107,7 @@ struct ViewState {
 #[derive(Debug, Clone, Default)]
 struct SimulatorPreviewState {
     source: PreviewSource,
-    simulators: Vec<SimulatedDisplaySummary>,
+    simulators: Vec<SimulatedDisplay>,
     latest_frame: Option<Arc<CanvasFrame>>,
     latest_frame_id: Option<String>,
     list_requested_at: Option<Instant>,

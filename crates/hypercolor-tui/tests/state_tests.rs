@@ -4,7 +4,7 @@ use bytes::Bytes;
 use hypercolor_tui::state::{
     CanvasFrame, CanvasPreviewState, ConnectionStatus, ControlDefinition, ControlValue,
     DaemonState, DeviceSummary, EffectSummary, Notification, NotificationLevel, PresetTemplate,
-    PreviewSource, SimulatedDisplaySummary, SpectrumSnapshot,
+    PreviewSource, SimulatedDisplay, SpectrumSnapshot,
 };
 
 // ── ControlValue conversion tests ────────────────────────────────
@@ -144,7 +144,7 @@ fn device_summary_serde_roundtrip() {
 
 #[test]
 fn simulated_display_summary_deserialize_defaults_enabled() {
-    let summary: SimulatedDisplaySummary = serde_json::from_str(
+    let summary: SimulatedDisplay = serde_json::from_str(
         r#"{
             "id": "0198c5b6-5100-7000-8000-00000000a001",
             "name": "Desk Preview",

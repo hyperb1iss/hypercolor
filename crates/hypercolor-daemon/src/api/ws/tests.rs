@@ -2911,7 +2911,7 @@ async fn preview_capacity_wait_yields_to_task_cancellation() {
 #[tokio::test]
 async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
     let state = Arc::new(AppState::new());
-    let config = crate::simulators::SimulatedDisplayConfig {
+    let config = hypercolor_types::api::simulators::SimulatedDisplay {
         id: DeviceId::new(),
         name: "WS Preview Display".to_owned(),
         width: 240,
@@ -2987,7 +2987,7 @@ async fn relay_display_preview_reattaches_after_frame_stream_reopens() {
 async fn relay_display_preview_attaches_when_an_unknown_device_connects() {
     let state = Arc::new(AppState::new());
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
-    let config = crate::simulators::SimulatedDisplayConfig {
+    let config = hypercolor_types::api::simulators::SimulatedDisplay {
         id: DeviceId::new(),
         name: "Late WS Preview Display".to_owned(),
         width: 240,
