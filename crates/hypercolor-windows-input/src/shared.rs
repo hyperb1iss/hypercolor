@@ -13,14 +13,6 @@ use hypercolor_types::host_input::{
     host_key_name_from_windows, host_media_key_name_from_windows,
 };
 
-/// Which scan-code prefix a key report carried.
-///
-/// A boolean `extended` cannot distinguish `E0` (the extended block: arrows,
-/// right-hand modifiers, the navigation cluster) from `E1` (Pause/Break), and
-/// collapsing them would let an unrecognized `E1` sequence collide with an
-/// unprefixed code of the same value.
-pub use hypercolor_types::host_input::HostScanCodePrefix as RawKeyPrefix;
-
 /// Which top-level HID collection a device was registered under.
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
