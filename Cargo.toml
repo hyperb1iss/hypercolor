@@ -96,6 +96,7 @@ anyhow = "1.0"
 
 # Async runtime
 tokio = { version = "1.53", features = ["full"] }
+socket2 = { version = "0.6", features = ["all"] }
 async-trait = "0.1"
 futures-core = "0.3"
 futures-util = "0.3"
