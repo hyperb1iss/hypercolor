@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use hypercolor_core::input::{
-    AudioSource, AudioSourceRole, InputData, InputManager, InputSource, InteractionSource,
-    InteractionSourceRole, ManagedSourceRole, SourceKind, SourceRoleBinding,
+    AudioSource, AudioSourceRole, InputData, InputManager, InteractionSource,
+    InteractionSourceRole, ManagedSource, ManagedSourceRole, SourceKind, SourceRoleBinding,
 };
 
 fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
@@ -31,7 +31,7 @@ impl<R> CountingSource<R> {
     }
 }
 
-impl<R: Send> InputSource for CountingSource<R> {
+impl<R: Send> ManagedSource for CountingSource<R> {
     fn name(&self) -> &'static str {
         "counting-source"
     }

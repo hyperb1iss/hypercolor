@@ -15,7 +15,7 @@ use hypercolor_core::device::{
     RECONNECT_STABLE_AFTER, ReconnectPolicy,
 };
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+    InputData, InputManager, InteractionSource, InteractionSourceRole, ManagedSource,
     ManagedSourceKey, ManagedSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceState,
     SourceStatusHandle, SourceStatusReporter, SourceSwapTarget,
 };
@@ -219,7 +219,7 @@ impl FaultInputSource {
     }
 }
 
-impl InputSource for FaultInputSource {
+impl ManagedSource for FaultInputSource {
     fn name(&self) -> &str {
         self.name
     }

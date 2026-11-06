@@ -2697,7 +2697,7 @@ mod tests {
     };
     use hypercolor_core::input::{
         DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphSnapshot, InputManager,
-        InputSource, InputSourceSlot, InteractionData, InteractionSource, InteractionSourceRole,
+        InputSourceSlot, InteractionData, InteractionSource, InteractionSourceRole, ManagedSource,
         ManagedSourceKey, ManagedSourceRole, MotionAggregate, Q16_16_SCALE, ScrollAggregate,
         SourceIssue, SourceKind, SourceRoleBinding, SourceStatusWriter, SourceSwapTarget,
     };
@@ -2792,7 +2792,7 @@ mod tests {
         }
     }
 
-    impl InputSource for EventOnceSource {
+    impl ManagedSource for EventOnceSource {
         fn name(&self) -> &'static str {
             "event-once"
         }
@@ -2835,7 +2835,7 @@ mod tests {
         }
     }
 
-    impl InputSource for WarmingSensorSource {
+    impl ManagedSource for WarmingSensorSource {
         fn name(&self) -> &'static str {
             "warming-sensor"
         }
@@ -2899,7 +2899,7 @@ mod tests {
         }
     }
 
-    impl InputSource for FixedInteractionSource {
+    impl ManagedSource for FixedInteractionSource {
         fn name(&self) -> &'static str {
             "fixed-interaction"
         }

@@ -243,9 +243,8 @@ Rule of thumb: events are broadcast, data streams are watch.
   Input: `FrameInput` (timing, audio, interaction, screen, sensors, sources). Output: `Canvas`.
 - **`ManagedSource`** (`core/src/input/traits.rs`): the base input-source trait, requiring `name`,
   `start`, `stop`, `sample`, and `is_running`, and refined by `AudioSource`, `ScreenSource`,
-  `InteractionSource`, and `DataSource` via `SourceRoleBinding`. `InputSource` is a legacy alias
-  for it (`pub use ManagedSource as InputSource`), so prefer the canonical name in new code.
-  One broken source never crashes the render loop.
+  `InteractionSource`, and `DataSource` via `SourceRoleBinding`. One broken source never crashes
+  the render loop.
 - **`Protocol`** (`hal/src/protocol.rs`): USB/HID wire-format encoding per device family.
   See hal-driver-development skill for implementation patterns.
 

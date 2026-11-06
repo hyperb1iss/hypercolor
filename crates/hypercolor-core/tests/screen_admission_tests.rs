@@ -6,7 +6,7 @@ use hypercolor_core::input::screen::consumer::{
     ScreenByteAdmissionError, ScreenByteReservation, ScreenCaptureInput,
 };
 use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
-use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_core::input::{InputData, ManagedSource};
 
 #[test]
 fn admission_reservation_reconciles_only_before_freeze() {

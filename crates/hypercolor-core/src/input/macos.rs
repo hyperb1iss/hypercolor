@@ -21,8 +21,8 @@ use hypercolor_types::host_input::{HostInputEvent, HostPointerSnapshot};
 use tracing::{info, warn};
 
 use crate::input::traits::{
-    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource, InteractionData,
-    InteractionDegradation, InteractionSource, InteractionSourceRole,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InteractionData,
+    InteractionDegradation, InteractionSource, InteractionSourceRole, ManagedSource,
     ProtectedSourceAuthorizationAction, SourceCapabilityContext, SourceRoleBinding,
 };
 use crate::input::{
@@ -55,8 +55,6 @@ fn native_process_architecture() -> (Option<MacosArchitecture>, MacosArchitectur
     let translated = capabilities.map(|capabilities| capabilities.translated_process);
     (host, executable, translated)
 }
-
-pub type MacosInputFoldDiagnostics = HostInputFoldDiagnostics;
 
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
@@ -342,7 +340,7 @@ impl MacosHostInput {
     }
 
     #[must_use]
-    pub fn fold_diagnostics(&self) -> MacosInputFoldDiagnostics {
+    pub fn fold_diagnostics(&self) -> HostInputFoldDiagnostics {
         self.fold.diagnostics()
     }
 
@@ -781,7 +779,7 @@ fn protected_input_action_issue(state: MacosProtectedSourceState) -> Option<Sour
     }
 }
 
-impl InputSource for MacosHostInput {
+impl ManagedSource for MacosHostInput {
     fn name(&self) -> &str {
         &self.name
     }

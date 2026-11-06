@@ -13,7 +13,7 @@ use hypercolor_types::net::NetStats;
 use sysinfo::Networks;
 
 use super::traits::{
-    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, SourceRoleBinding,
+    DataSource, DataSourceKind, DataSourceRole, InputData, ManagedSource, SourceRoleBinding,
 };
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
@@ -82,7 +82,7 @@ impl Default for NetSource {
     }
 }
 
-impl InputSource for NetSource {
+impl ManagedSource for NetSource {
     fn name(&self) -> &str {
         &self.name
     }

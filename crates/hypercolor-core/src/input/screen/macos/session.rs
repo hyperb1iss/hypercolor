@@ -27,7 +27,7 @@ use super::{
     ScreenByteAdmissionCoordinator, ScreenComputeCapacityPolicy, production_stream_request,
 };
 #[cfg(feature = "macos-capture-fixtures")]
-use super::{CapturePlanePool, InputSource, ScreenCaptureInput};
+use super::{CapturePlanePool, ManagedSource, ScreenCaptureInput};
 use super::{
     CaptureSessionAuthority, CaptureWorker, MacosExactCommandEndpoint, MacosScreenCaptureInput,
     MacosWorkerSpawn, PreparedWorker, ScreenCaptureDemand, color_space_name, dynamic_range_name,

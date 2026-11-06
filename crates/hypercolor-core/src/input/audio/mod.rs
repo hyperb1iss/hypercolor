@@ -1,6 +1,6 @@
 //! Audio input pipeline — FFT analysis, beat detection, feature extraction.
 //!
-//! This module implements [`InputSource`] for real-time audio analysis, feeding
+//! This module implements [`ManagedSource`] for real-time audio analysis, feeding
 //! the effect engine with [`AudioData`] snapshots every frame.
 //!
 //! # Architecture
@@ -12,7 +12,7 @@
 //! - [`features`] — mel filterbank, chromagram, band energy, RMS, smoothing
 //! - [`beat`] — spectral flux onset, adaptive threshold, BPM estimation
 //!
-//! The [`AudioInput`] struct wraps these into a complete [`InputSource`] that
+//! The [`AudioInput`] struct wraps these into a complete [`ManagedSource`] that
 //! can be fed from either a live audio device (via cpal, behind feature gate)
 //! or synthetic sample buffers for testing.
 
@@ -38,7 +38,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 use libpulse_binding as pulse;
 
 use crate::input::traits::{
-    AudioSource, AudioSourceRole, InputData, InputSource, SourceRoleBinding,
+    AudioSource, AudioSourceRole, InputData, ManagedSource, SourceRoleBinding,
 };
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use hypercolor_macos_capture::microphone_record_permission;
@@ -313,7 +313,7 @@ impl AudioAnalyzer {
     }
 }
 
-// ── AudioInput (InputSource implementation) ──────────────────────────────
+// ── AudioInput (ManagedSource implementation) ──────────────────────────────
 
 struct CapturedAudioSnapshot {
     data: Arc<InputData>,
@@ -889,7 +889,7 @@ pub fn classify_audio_capture_backend(
     }
 }
 
-/// Audio input source implementing [`InputSource`].
+/// Audio input source implementing [`ManagedSource`].
 ///
 /// Wraps [`AudioAnalyzer`] and provides the standard lifecycle methods.
 /// In production, a cpal audio stream pushes samples into the analyzer
@@ -1322,7 +1322,7 @@ impl AudioInput {
     }
 }
 
-impl InputSource for AudioInput {
+impl ManagedSource for AudioInput {
     fn name(&self) -> &str {
         &self.name
     }

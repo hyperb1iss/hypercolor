@@ -2,10 +2,10 @@ use super::super::ScreenComputeCapacityPolicy;
 #[cfg(feature = "macos-capture-fixtures")]
 use super::super::{Arc, CpuReductionExecutor};
 use super::super::{
-    CaptureEpoch, CaptureRotation, CaptureSessionAuthority, CaptureSourceId, Instant,
-    MacosCaptureFrame, MacosExactPublicationShared, MacosExactRuntime, MacosPublicationSource,
-    PixelExtent, PixelRect, PlatformGpuApi, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCommittedState,
+    CaptureBackendId, CaptureEpoch, CaptureRotation, CaptureSessionAuthority, CaptureSourceId,
+    Instant, MacosCaptureFrame, MacosExactPublicationShared, MacosExactRuntime,
+    MacosPublicationSource, PixelExtent, PixelRect, PlatformGpuApi, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenBackendResourceIdentity, ScreenCommittedState,
     ScreenCursorCapabilities, ScreenPhysicalGpuDeviceIdentity, ScreenPublicationHub,
     ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, SourceScale, anyhow,
 };
@@ -88,7 +88,7 @@ impl MacosPublicationSource {
                 self.colorimetry,
                 self.cursor_capabilities(),
                 ScreenBackendResourceIdentity::new(
-                    ScreenCaptureBackend::ScreenCaptureKit,
+                    CaptureBackendId::ScreenCaptureKit,
                     ScreenResourceApi::Cpu,
                     self.epoch.session_generation,
                     self.resource_generation,
@@ -123,7 +123,7 @@ impl MacosPublicationSource {
                 self.colorimetry,
                 self.cursor_capabilities(),
                 ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                    ScreenCaptureBackend::ScreenCaptureKit,
+                    CaptureBackendId::ScreenCaptureKit,
                     ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
                     ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(registry_id),
                     self.epoch.session_generation,

@@ -36,7 +36,7 @@ use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
     AudioSource, AudioSourceRole, BrowserConnectionIncarnation, BrowserInputChildKey,
-    BrowserInputEdge, BrowserPreviewId, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    BrowserInputEdge, BrowserPreviewId, InputData, ManagedSource, ManagedSourceRole, SourceIssue,
     SourceKind, SourceRoleBinding, SourceSessionWriter, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_daemon::LayoutTransactionRejection;
@@ -259,7 +259,7 @@ impl ObservableInputSource {
     }
 }
 
-impl InputSource for ObservableInputSource {
+impl ManagedSource for ObservableInputSource {
     fn name(&self) -> &'static str {
         "ObservableInputSource"
     }

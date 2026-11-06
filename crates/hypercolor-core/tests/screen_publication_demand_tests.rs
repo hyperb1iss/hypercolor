@@ -10,17 +10,17 @@ use hypercolor_core::input::screen::implementer::{
     PhysicalOrigin, ScreenWorkerExactLedgerBuilder, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenProcessingProfile,
-    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenPublicationTransitionError, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
-    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparation,
+    CaptureBackendId, InputPublicationDemandRevision, RegisteredScreenBranchDemand,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenExtentRequest, ScreenInputGraphGeneration,
+    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationHub,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationTransitionError,
+    ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+    InputData, InputManager, InteractionSource, InteractionSourceRole, ManagedSource,
     ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceRoleBinding,
 };
 use tokio::sync::{Barrier, Notify};
@@ -188,7 +188,7 @@ fn resolved_source(
             CapturePixelFormat::Rgba8,
             CaptureColorimetry::SRGB,
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 7,
                 11,
@@ -197,7 +197,7 @@ fn resolved_source(
     )
 }
 
-impl InputSource for ExactDemandProbe {
+impl ManagedSource for ExactDemandProbe {
     fn name(&self) -> &'static str {
         "exact_demand_probe"
     }
@@ -323,7 +323,7 @@ impl SourceRoleBinding for ExactDemandProbe {
 
 struct PassiveSource;
 
-impl InputSource for PassiveSource {
+impl ManagedSource for PassiveSource {
     fn name(&self) -> &'static str {
         "passive"
     }

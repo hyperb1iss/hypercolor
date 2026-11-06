@@ -13,17 +13,17 @@ use super::{
     preflight_capture_exact_scope_bytes, reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
-    CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CpuReductionExecutor, ExactBoxList, InputPublicationDemandRevision,
-    PhysicalOrigin, PixelExtent, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
-    ScreenCaptureDemand, ScreenCommittedState, ScreenExtentRequest, ScreenInputGraphGeneration,
-    ScreenPlanBuilder, ScreenProcessingProfile, ScreenProcessingProfileConfig,
-    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenPublicationSlotPolicy, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy, ScreenWorkerBinding,
-    ScreenWorkerExactLedgerBuilder, SourceScale,
+    CaptureBackendId, CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat,
+    CaptureRotation, CaptureSourceId, CpuReductionExecutor, ExactBoxList,
+    InputPublicationDemandRevision, PhysicalOrigin, PixelExtent, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenByteAdmissionCoordinator, ScreenCaptureDemand, ScreenCommittedState, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationHub,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
+    ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenWorkerBinding, ScreenWorkerExactLedgerBuilder, SourceScale,
 };
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -55,7 +55,7 @@ fn exact_scope_test_source() -> ResolvedScreenSource {
             CapturePixelFormat::Rgba8,
             CaptureColorimetry::SRGB,
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 7,
                 11,

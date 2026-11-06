@@ -7,7 +7,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::screen::ScreenCaptureDemand;
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, ManagedSourceRole, ScreenReconfigurationConflict,
+    InputData, InputManager, ManagedSource, ManagedSourceRole, ScreenReconfigurationConflict,
     ScreenSource, ScreenSourceRole, ScreenSourceSwapCommitError, SourceIssue, SourceKind,
     SourceRoleBinding, SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
 };
@@ -37,7 +37,7 @@ impl TestScreenSource {
     }
 }
 
-impl InputSource for TestScreenSource {
+impl ManagedSource for TestScreenSource {
     fn name(&self) -> &'static str {
         "test_screen"
     }

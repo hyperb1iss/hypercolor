@@ -30,14 +30,14 @@ use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
 #[cfg(not(feature = "macos-capture-fixtures"))]
 use super::ScreenColorTransformCapabilities;
 use super::{
-    AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureCadence,
-    CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange, CaptureEpoch,
-    CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar, CaptureRotation,
-    CaptureSourceId, CaptureTransferFunction, LedToneMapCalibration, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenBackendResourceIdentity, ScreenBranchPayload,
-    ScreenBranchPublisher, ScreenCaptureBackend, ScreenCaptureCadence, ScreenCaptureDemand,
+    AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureBackendId,
+    CaptureCadence, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange,
+    CaptureEpoch, CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar,
+    CaptureRotation, CaptureSourceId, CaptureTransferFunction, LedToneMapCalibration, PixelExtent,
+    PixelRect, PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
+    ScreenBranchPayload, ScreenBranchPublisher, ScreenCaptureCadence, ScreenCaptureDemand,
     ScreenCommittedState, ScreenCursorCapabilities, ScreenCursorPolicy,
     ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId,
     ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
@@ -62,7 +62,7 @@ use super::{
 use crate::input::status::SourceSessionSlot;
 use crate::input::traits::SourceDiagnosticArtifactAction;
 use crate::input::traits::{
-    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, ManagedSource,
     ProtectedSourceAuthorizationAction, ScreenSource, ScreenSourcePickerAction, ScreenSourceRole,
     SourceCapabilityContext, SourceRoleBinding,
 };

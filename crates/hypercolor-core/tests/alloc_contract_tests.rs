@@ -26,12 +26,12 @@ use hypercolor_core::input::screen::consumer::{
 };
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::wayland::{
-    DoubleBuffer, SpaChunkView, SpaVideoFormat, decode_chunk,
+    DoubleBuffer, PackedVideoFormat, SpaChunkView, decode_chunk,
 };
 use hypercolor_core::input::{
     AudioSource, AudioSourceRole, BrowserInputHandle, BrowserInputRegistrySnapshot,
     DeviceInputHandle, DeviceInputRegistrySnapshot, InputData, InputGraphSnapshot, InputManager,
-    InputSource, InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole,
+    InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole, ManagedSource,
     ManagedSourceRole, MotionAggregate, ScreenData, ScreenSource, ScreenSourceRole, SourceKind,
     SourceRoleBinding, SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
 };
@@ -369,7 +369,7 @@ impl<R> SharedSampleSource<R> {
     }
 }
 
-impl<R: Send> InputSource for SharedSampleSource<R> {
+impl<R: Send> ManagedSource for SharedSampleSource<R> {
     fn name(&self) -> &'static str {
         "shared-allocation-sample"
     }
@@ -767,7 +767,7 @@ fn wayland_decode_round(data: &[u8], buffers: &mut DoubleBuffer) -> Stats {
         10,
         2,
         2,
-        SpaVideoFormat::Rgba,
+        PackedVideoFormat::Rgba,
         None,
         CaptureRotation::Identity,
     );
@@ -958,7 +958,7 @@ fn counting_allocator_is_active_and_scoped() {
                     10,
                     2,
                     2,
-                    SpaVideoFormat::Rgba,
+                    PackedVideoFormat::Rgba,
                     None,
                     CaptureRotation::Identity,
                 ),

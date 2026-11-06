@@ -36,7 +36,7 @@ Stage timing targets (at 60 fps, 16.6 ms total budget):
 
 ## Stage 1: Input sampling
 
-`InputManager::sample_all()` polls every registered `InputSource` in registration order and assembles a `FrameInput` snapshot. The snapshot carries:
+`InputManager::sample_all()` polls every registered `ManagedSource` in registration order and assembles a `FrameInput` snapshot. The snapshot carries:
 
 - `time_secs` and `delta_secs`: effect timing; always animate off these, not `frame_number`, because the tier is adaptive.
 - `frame_number`: monotonically increasing `u64` starting at 0.
@@ -47,7 +47,7 @@ Stage timing targets (at 60 fps, 16.6 ms total budget):
 - `sources: FrameDataSources`: media (MPRIS), network stats refreshed at 1 Hz, and lighting state for display faces.
 - `canvas_width` and `canvas_height`: current canvas dimensions (default **640×480**, configurable via `daemon.canvas_width` / `daemon.canvas_height`).
 
-One broken source never crashes the render loop; `InputSource` implementations are isolated by design.
+One broken source never crashes the render loop; `ManagedSource` implementations are isolated by design.
 
 ## Stage 2: Effect rendering and SparkleFlinger
 

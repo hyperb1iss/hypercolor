@@ -12,7 +12,7 @@ use hypercolor_core::input::screen::implementer::{
     PlatformGpuApi,
 };
 use hypercolor_core::input::screen::planner::{
-    ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor, ScreenCaptureBackend,
+    CaptureBackendId, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
     ScreenCursorPolicy, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
     ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
     ScreenPhysicalGpuDeviceIdentity, ScreenPlanGeneration, ScreenPublicationKind,
@@ -235,7 +235,7 @@ fn validate_windows_target_manifest(
     );
     let source = descriptor.source();
     anyhow::ensure!(
-        source.resources().backend() == &ScreenCaptureBackend::DesktopDuplication
+        source.resources().backend() == &CaptureBackendId::DesktopDuplication
             && source.resources().api()
                 == &ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         "Windows target manifest was paired with a non-D3D11 source"

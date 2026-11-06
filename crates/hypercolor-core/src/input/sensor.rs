@@ -17,7 +17,7 @@ use sysinfo::{
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::traits::{
-    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, SourceRoleBinding,
+    DataSource, DataSourceKind, DataSourceRole, InputData, ManagedSource, SourceRoleBinding,
 };
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
@@ -82,7 +82,7 @@ impl Default for SensorSource {
     }
 }
 
-impl InputSource for SensorSource {
+impl ManagedSource for SensorSource {
     fn name(&self) -> &'static str {
         "sensors"
     }
@@ -557,7 +557,7 @@ impl NvidiaTelemetry {
 #[cfg(test)]
 mod tests {
     use super::{SensorPoller, SensorSource, publish_sensor_snapshot};
-    use crate::input::{InputData, InputSource, SourceState};
+    use crate::input::{InputData, ManagedSource, SourceState};
     use hypercolor_types::sensor::SystemSnapshot;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;

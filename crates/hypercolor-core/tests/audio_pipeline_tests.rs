@@ -2,7 +2,7 @@
 //!
 //! All tests use synthetic audio data — no microphone or sound card needed.
 //! Tests verify FFT accuracy, feature extraction, beat detection, and the
-//! full `AudioInput` → `InputSource` pipeline.
+//! full `AudioInput` → `ManagedSource` pipeline.
 
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
@@ -19,7 +19,7 @@ use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_fr
 use hypercolor_core::input::audio::{
     AudioCaptureBackend, AudioInput, classify_audio_capture_backend, default_input_fallback_allowed,
 };
-use hypercolor_core::input::{InputData, InputManager, InputSource, ManagedSourceRole};
+use hypercolor_core::input::{InputData, InputManager, ManagedSource, ManagedSourceRole};
 use hypercolor_types::audio::{
     AudioData, AudioInputPermission, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS,
     SPECTRUM_BINS,

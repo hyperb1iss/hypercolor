@@ -25,9 +25,9 @@ use super::plan::{
     ScreenWorkerPreparationTicket,
 };
 use super::publication::{
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
+    CaptureBackendId, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenExecutorColorCapabilities, ScreenExtentRequest,
     ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationKind,
     ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
@@ -236,7 +236,7 @@ fn synthetic_source(extent: PixelExtent) -> ResolvedScreenSource {
             CaptureColorimetry::SRGB,
             ScreenCursorCapabilities::clean_with_separate_cursor(),
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 1,
                 1,

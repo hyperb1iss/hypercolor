@@ -6,7 +6,7 @@ struct FixedSensorSource {
     running: bool,
 }
 
-impl hypercolor_core::input::InputSource for FixedSensorSource {
+impl hypercolor_core::input::ManagedSource for FixedSensorSource {
     fn name(&self) -> &'static str {
         "fixed-sensors"
     }

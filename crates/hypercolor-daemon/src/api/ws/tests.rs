@@ -22,7 +22,7 @@ use hypercolor_core::input::screen::planner::{
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
     DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphHandle, InputManager,
-    InputSource, InteractionSource, InteractionSourceRole, ManagedSourceKey, ManagedSourceRole,
+    InteractionSource, InteractionSourceRole, ManagedSource, ManagedSourceKey, ManagedSourceRole,
     SourceIssue, SourceKind, SourceRoleBinding, SourceSessionSlot, SourceStatusHandle,
     SourceStatusReporter, SourceSwapTarget,
 };
@@ -588,7 +588,7 @@ impl StatusEventTestSource {
     }
 }
 
-impl InputSource for StatusEventTestSource {
+impl ManagedSource for StatusEventTestSource {
     fn name(&self) -> &'static str {
         "Status Event Test"
     }
@@ -635,7 +635,7 @@ struct MutableSensorSource {
     running: bool,
 }
 
-impl InputSource for MutableSensorSource {
+impl ManagedSource for MutableSensorSource {
     fn name(&self) -> &'static str {
         "mutable-sensors"
     }

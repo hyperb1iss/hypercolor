@@ -5,7 +5,7 @@ use std::time::Duration;
 use hypercolor_core::input::screen::consumer::{ScreenByteAdmissionError, ScreenCaptureDemand};
 use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, ManagedSourceRole, ScreenReconfigurationConflict,
+    InputData, InputManager, ManagedSource, ManagedSourceRole, ScreenReconfigurationConflict,
     ScreenSource, ScreenSourceRole, SourceRoleBinding,
 };
 
@@ -29,7 +29,7 @@ impl PlannedScreenSource {
     }
 }
 
-impl InputSource for PlannedScreenSource {
+impl ManagedSource for PlannedScreenSource {
     fn name(&self) -> &'static str {
         "PlannedScreenSource"
     }

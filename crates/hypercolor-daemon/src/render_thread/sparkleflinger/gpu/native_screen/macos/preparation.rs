@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 use anyhow::{Context, Result};
 use hypercolor_core::input::screen::implementer::{MacosNativeTargetManifest, PlatformGpuApi};
 use hypercolor_core::input::screen::planner::{
-    LED_TONE_MAP_ALGORITHM_REVISION, ResolvedScreenPublicationDescriptor, ScreenCaptureBackend,
+    CaptureBackendId, LED_TONE_MAP_ALGORITHM_REVISION, ResolvedScreenPublicationDescriptor,
     ScreenColorTransformCapabilities, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
     ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetPreparation,
     ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity, ScreenPlanGeneration,
@@ -218,7 +218,7 @@ fn validate_target_manifest(
     let source = descriptor.source();
     let resources = source.resources();
     anyhow::ensure!(
-        resources.backend() == &ScreenCaptureBackend::ScreenCaptureKit
+        resources.backend() == &CaptureBackendId::ScreenCaptureKit
             && resources.api() == &ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
         "macOS target manifest was paired with a non-Metal source"
     );

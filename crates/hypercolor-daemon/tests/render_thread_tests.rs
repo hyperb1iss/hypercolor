@@ -44,17 +44,17 @@ use hypercolor_core::input::screen::planner::{
     ScreenPublicationExecutorRequest,
 };
 use hypercolor_core::input::screen::planner::{
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenCursorCapabilities, ScreenNativeExecutionPolicy,
+    CaptureBackendId, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenBackendResourceIdentity, ScreenCursorCapabilities, ScreenNativeExecutionPolicy,
     ScreenPublicationExecutor, ScreenPublicationHub, ScreenResourceApi, ScreenResourceLifetime,
     ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 use hypercolor_core::input::{
-    AudioSource, AudioSourceRole, InputData, InputManager, InputSource, InteractionSource,
-    InteractionSourceRole, ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind,
-    SourceRoleBinding,
+    AudioSource, AudioSourceRole, InputData, InputManager, InteractionSource,
+    InteractionSourceRole, ManagedSource, ManagedSourceRole, ScreenSource, ScreenSourceRole,
+    SourceKind, SourceRoleBinding,
 };
 #[cfg(feature = "wgpu")]
 use hypercolor_core::scene::interpolate_color;
@@ -888,7 +888,7 @@ impl ExactScreenSource {
                 CaptureColorimetry::SRGB,
                 ScreenCursorCapabilities::clean_with_separate_cursor(),
                 ScreenBackendResourceIdentity::new(
-                    ScreenCaptureBackend::Synthetic,
+                    CaptureBackendId::Synthetic,
                     ScreenResourceApi::Cpu,
                     1,
                     1,
@@ -945,7 +945,7 @@ impl ExactScreenSource {
                 CaptureColorimetry::SRGB,
                 ScreenCursorCapabilities::clean_with_separate_cursor(),
                 ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                    ScreenCaptureBackend::ScreenCaptureKit,
+                    CaptureBackendId::ScreenCaptureKit,
                     ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
                     target.physical_gpu_device().clone(),
                     1,
@@ -1057,7 +1057,7 @@ impl Drop for ExactScreenSource {
     }
 }
 
-impl InputSource for ExactScreenSource {
+impl ManagedSource for ExactScreenSource {
     fn name(&self) -> &'static str {
         "exact_screen"
     }
@@ -1299,7 +1299,7 @@ impl MockAudioSource {
     }
 }
 
-impl InputSource for MockAudioSource {
+impl ManagedSource for MockAudioSource {
     fn name(&self) -> &'static str {
         "mock_audio"
     }
@@ -1350,7 +1350,7 @@ impl DemandGatedMockAudioSource {
     }
 }
 
-impl InputSource for DemandGatedMockAudioSource {
+impl ManagedSource for DemandGatedMockAudioSource {
     fn name(&self) -> &'static str {
         "demand_gated_audio"
     }
@@ -1421,7 +1421,7 @@ impl EventOnlySource {
     }
 }
 
-impl InputSource for EventOnlySource {
+impl ManagedSource for EventOnlySource {
     fn name(&self) -> &'static str {
         "event_only"
     }

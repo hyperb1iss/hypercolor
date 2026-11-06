@@ -10,8 +10,8 @@ use hypercolor_core::input::screen::implementer::{
     PhysicalOrigin, PlatformGpuApi, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend,
+    CaptureBackendId, RegisteredScreenBranchDemand, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
     ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExtentRequest, ScreenNativeExecutionTarget,
     ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutorRequest,
@@ -50,7 +50,7 @@ fn source(capabilities: ScreenCursorCapabilities) -> ResolvedScreenSource {
             CaptureColorimetry::SRGB,
             capabilities,
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 4,
                 5,

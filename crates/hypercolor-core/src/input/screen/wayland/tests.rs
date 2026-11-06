@@ -7,29 +7,29 @@ use std::time::{Duration, Instant};
 use super::{
     AdoptionAuthority, AdoptionWaitError, AnalysisEvent, AnalysisExchange, CaptureCallbackMetrics,
     CaptureExactCommand, CaptureFormatRequest, ChunkDropReason, CopyStats, DoubleBuffer,
-    FormatOffer, NegotiatedFormat, NegotiatedVideoFormat, PendingPipeWireAdoption,
-    PipeWireFormatAcknowledgment, PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit,
-    RestoreTokenSink, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
-    VersionedCaptureSettings, WaylandAnalysisState, WaylandCaptureActivity, WaylandCaptureUserData,
-    WaylandCaptureWorker, WaylandExactPublicationShared, WaylandScreenCaptureInput,
-    WaylandSourceMetadata, WaylandTopologySignature, commit_if_authorized, convert_packed_to_rgba,
-    decode_chunk, initial_native_extent_correction, initial_worker_demand, park_unavailable_worker,
-    prepare_wayland_exact_runtime, publish_unexpected_exit_status, request_active_worker_demand,
-    set_worker_demand, settle_pipewire_restoration, unavailable_format_outcome,
-    wait_for_adoption_result, worker_demand_epoch, worker_demanded,
+    FormatOffer, NegotiatedFormat, NegotiatedVideoFormat, PackedVideoFormat,
+    PendingPipeWireAdoption, PipeWireFormatAcknowledgment, PipeWireFormatRequest,
+    PipeWireFormatState, PipeWireLoopExit, RestoreTokenSink, SharedSettings, SpaChunkView,
+    UnavailablePark, VersionedCaptureSettings, WaylandAnalysisState, WaylandCaptureActivity,
+    WaylandCaptureUserData, WaylandCaptureWorker, WaylandExactPublicationShared,
+    WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
+    commit_if_authorized, convert_packed_to_rgba, decode_chunk, initial_native_extent_correction,
+    initial_worker_demand, park_unavailable_worker, prepare_wayland_exact_runtime,
+    publish_unexpected_exit_status, request_active_worker_demand, set_worker_demand,
+    settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
+    worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::adapter::{CaptureSessionAuthority, reap_capture_exact_runtimes};
 use crate::input::screen::{
-    CaptureColorimetry, CaptureConfig, CaptureEpoch, CaptureFrame, CaptureFrameError,
-    CaptureRotation, CaptureSourceId, InputPublicationDemandRevision,
+    CaptureBackendId, CaptureColorimetry, CaptureConfig, CaptureEpoch, CaptureFrame,
+    CaptureFrameError, CaptureRotation, CaptureSourceId, InputPublicationDemandRevision,
     MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent, PixelRect, RawCaptureSurface,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ScreenAdmissionCapacity,
-    ScreenAspectPolicy, ScreenBranchPayload, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
-    ScreenCaptureDemand, ScreenComputeCapacityPolicy, ScreenExtentRequest,
-    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenResourceApi, ScreenResourceKind, ScreenSourceSelector, ScreenUpscalePolicy,
-    ScreenWorkerBindingState, SourceScale,
+    ScreenAspectPolicy, ScreenBranchPayload, ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
+    ScreenComputeCapacityPolicy, ScreenExtentRequest, ScreenInputGraphGeneration,
+    ScreenPlanBuilder, ScreenProcessingProfile, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenResourceKind,
+    ScreenSourceSelector, ScreenUpscalePolicy, ScreenWorkerBindingState, SourceScale,
 };
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
@@ -147,7 +147,7 @@ fn negotiated_format(width: u32, height: u32, target_fps: u32) -> NegotiatedVide
     NegotiatedVideoFormat {
         width,
         height,
-        format: SpaVideoFormat::Rgba,
+        format: PackedVideoFormat::Rgba,
         framerate: hypercolor_pipewire_interop::VideoFraction {
             numerator: target_fps,
             denominator: 1,
@@ -293,7 +293,7 @@ fn rgba_view(
         stride,
         width,
         height,
-        SpaVideoFormat::Rgba,
+        PackedVideoFormat::Rgba,
         None,
         CaptureRotation::Identity,
     )
@@ -391,7 +391,7 @@ fn exact_publication_source_is_stable_until_capture_identity_changes() {
     assert_eq!(publication.config.logical_extent(), extent(2560, 1440));
     assert_eq!(
         publication.config.resources().backend(),
-        &ScreenCaptureBackend::PipeWire
+        &CaptureBackendId::PipeWire
     );
     assert_eq!(
         publication.config.resources().api(),
@@ -1392,7 +1392,7 @@ fn negotiated_format_conversion_runs_only_after_callback_copy() {
         8,
         2,
         1,
-        SpaVideoFormat::Bgra,
+        PackedVideoFormat::Bgra,
         None,
         CaptureRotation::Identity,
     );
@@ -1453,7 +1453,7 @@ fn decode_retains_valid_crop_and_transform_metadata() {
         16,
         4,
         4,
-        SpaVideoFormat::Bgra,
+        PackedVideoFormat::Bgra,
         Some(crop),
         CaptureRotation::Clockwise90,
     );
@@ -1466,7 +1466,7 @@ fn decode_retains_valid_crop_and_transform_metadata() {
         buffers.latest_transform(),
         Some(CaptureRotation::Clockwise90)
     );
-    assert_eq!(buffers.latest_format(), Some(SpaVideoFormat::Bgra));
+    assert_eq!(buffers.latest_format(), Some(PackedVideoFormat::Bgra));
 
     let invalid_crop = PixelRect::new(3, 3, 2, 2).expect("test crop is non-empty");
     let invalid = SpaChunkView::new(
@@ -1476,7 +1476,7 @@ fn decode_retains_valid_crop_and_transform_metadata() {
         16,
         4,
         4,
-        SpaVideoFormat::Bgra,
+        PackedVideoFormat::Bgra,
         Some(invalid_crop),
         CaptureRotation::Identity,
     );
@@ -1530,7 +1530,7 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
         .set_negotiated_format(NegotiatedFormat {
             width: 2,
             height: 2,
-            format: SpaVideoFormat::Rgb,
+            format: PackedVideoFormat::Rgb,
         })
         .expect("test RGB callback planes allocate");
     let rgb = [1_u8; 12];
@@ -1541,7 +1541,7 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
         6,
         2,
         2,
-        SpaVideoFormat::Rgb,
+        PackedVideoFormat::Rgb,
         None,
         CaptureRotation::Identity,
     );
@@ -1553,7 +1553,7 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
         .set_negotiated_format(NegotiatedFormat {
             width: 4,
             height: 2,
-            format: SpaVideoFormat::Rgba,
+            format: PackedVideoFormat::Rgba,
         })
         .expect("test RGBA callback planes allocate");
     let rgba = [2_u8; 32];
@@ -2008,7 +2008,7 @@ fn format_acknowledgment_treats_transport_rate_as_advisory() {
     let malformed = NegotiatedVideoFormat {
         width: 2560,
         height: 1440,
-        format: SpaVideoFormat::Rgba,
+        format: PackedVideoFormat::Rgba,
         framerate: hypercolor_pipewire_interop::VideoFraction {
             numerator: 30,
             denominator: 0,
@@ -2049,7 +2049,7 @@ fn failed_format_negotiation_retains_last_good_metadata_and_planes() {
         .set_negotiated_format(NegotiatedFormat {
             width: 2,
             height: 2,
-            format: SpaVideoFormat::Rgba,
+            format: PackedVideoFormat::Rgba,
         })
         .expect("test callback planes allocate");
     let rgba = [7_u8; 16];
@@ -2072,7 +2072,7 @@ fn failed_format_negotiation_retains_last_good_metadata_and_planes() {
         callback.set_negotiated_format(NegotiatedFormat {
             width: u32::MAX,
             height: u32::MAX,
-            format: SpaVideoFormat::Rgba,
+            format: PackedVideoFormat::Rgba,
         }),
         Err(crate::input::screen::CaptureFrameError::StorageSizeOverflow)
     ));
@@ -2081,7 +2081,7 @@ fn failed_format_negotiation_retains_last_good_metadata_and_planes() {
         Some(NegotiatedFormat {
             width: 2,
             height: 2,
-            format: SpaVideoFormat::Rgba,
+            format: PackedVideoFormat::Rgba,
         })
     );
     assert_eq!(callback.buffers.inner.capacity, previous_capacity);
@@ -2241,7 +2241,7 @@ fn transitionary_format_fences_decoding_and_discards_queued_pixels() {
         .activate_negotiated_format(NegotiatedFormat {
             width: 1,
             height: 1,
-            format: SpaVideoFormat::Rgba,
+            format: PackedVideoFormat::Rgba,
         })
         .expect("test callback format activates");
     let mapped = [9_u8; 4];

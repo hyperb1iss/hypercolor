@@ -226,7 +226,7 @@ mod tests {
     use std::sync::mpsc;
 
     use hypercolor_core::input::{
-        AudioSource, AudioSourceRole, InputData, InputSource, ManagedSourceRole, MediaSource,
+        AudioSource, AudioSourceRole, InputData, ManagedSource, ManagedSourceRole, MediaSource,
         ScreenSource, ScreenSourceRole, SourceRoleBinding,
     };
 
@@ -243,7 +243,7 @@ mod tests {
         running: bool,
     }
 
-    impl InputSource for BlockingAudioDemandSource {
+    impl ManagedSource for BlockingAudioDemandSource {
         fn name(&self) -> &'static str {
             "blocking_audio_demand"
         }
@@ -282,7 +282,7 @@ mod tests {
         }
     }
 
-    impl InputSource for FailingScreenSource {
+    impl ManagedSource for FailingScreenSource {
         fn name(&self) -> &'static str {
             "failing_screen"
         }

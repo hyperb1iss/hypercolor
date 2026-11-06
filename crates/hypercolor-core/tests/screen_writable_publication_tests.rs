@@ -14,18 +14,18 @@ use hypercolor_core::input::screen::implementer::{
     ScreenSurfacePayload, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    CommittedScreenPlan, InputPublicationDemandRevision, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan,
-    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenExecutorColorCapabilities, ScreenExtentRequest,
-    ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenPayloadKind, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError,
-    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
+    CaptureBackendId, CommittedScreenPlan, InputPublicationDemandRevision,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCapturePlan, ScreenColorTransformCapabilities,
+    ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger,
+    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPayloadKind,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
+    ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency,
+    ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding,
 };
 
 #[path = "support/native_target.rs"]
@@ -79,7 +79,7 @@ fn source(width: u32, height: u32) -> ResolvedScreenSource {
         CaptureColorimetry::SRGB,
         ScreenCursorCapabilities::clean_with_separate_cursor(),
         ScreenBackendResourceIdentity::new(
-            ScreenCaptureBackend::Synthetic,
+            CaptureBackendId::Synthetic,
             ScreenResourceApi::Cpu,
             1,
             1,
@@ -115,7 +115,7 @@ fn gpu_source(width: u32, height: u32) -> ResolvedScreenSource {
         CaptureColorimetry::SRGB,
         ScreenCursorCapabilities::clean_with_separate_cursor(),
         ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-            ScreenCaptureBackend::DesktopDuplication,
+            CaptureBackendId::DesktopDuplication,
             ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
             gpu_device(),
             1,

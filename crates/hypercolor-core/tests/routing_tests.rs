@@ -13,9 +13,9 @@ use hypercolor_core::input::routing::{
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
     DeviceInputHandle, DeviceInputRegistrySnapshot, InputData, InputEventRead, InputManager,
-    InputSource, InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole,
-    InteractionTransientTotals, KeyboardData, ManagedSourceRole, MotionAggregate, MouseData,
-    ScrollAggregate, SourceRoleBinding,
+    InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole,
+    InteractionTransientTotals, KeyboardData, ManagedSource, ManagedSourceRole, MotionAggregate,
+    MouseData, ScrollAggregate, SourceRoleBinding,
 };
 use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::event::{
@@ -188,7 +188,7 @@ struct CatalogHostSource {
     running: bool,
 }
 
-impl InputSource for CatalogHostSource {
+impl ManagedSource for CatalogHostSource {
     fn name(&self) -> &'static str {
         "catalog-host"
     }

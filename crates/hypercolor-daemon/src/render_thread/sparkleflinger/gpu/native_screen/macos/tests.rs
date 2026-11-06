@@ -68,9 +68,9 @@ use hypercolor_core::input::screen::implementer::{
 };
 
 use hypercolor_core::input::screen::planner::{
-    InputPublicationDemandRevision, LedToneMapCalibration, PreparedLedToneMap,
+    CaptureBackendId, InputPublicationDemandRevision, LedToneMapCalibration, PreparedLedToneMap,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
+    ScreenBackendResourceIdentity, ScreenColorTransformCapabilities,
     ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
     ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativePreparationPayload,
     ScreenNativeRetentionQuote, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
@@ -475,7 +475,7 @@ fn equal_native_physical_descriptors_share_the_reduction_target() {
             CapturePixelFormat::Bgra8,
             CaptureColorimetry::SRGB,
             ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                ScreenCaptureBackend::ScreenCaptureKit,
+                CaptureBackendId::ScreenCaptureKit,
                 ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
                 target.physical_gpu_device().clone(),
                 5,
@@ -606,7 +606,7 @@ fn publish_macos_screen_fixture(
             CapturePixelFormat::Bgra8,
             CaptureColorimetry::SRGB,
             ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                ScreenCaptureBackend::ScreenCaptureKit,
+                CaptureBackendId::ScreenCaptureKit,
                 ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
                 registered_target.physical_gpu_device().clone(),
                 5,

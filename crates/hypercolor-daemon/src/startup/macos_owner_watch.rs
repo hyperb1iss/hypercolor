@@ -496,7 +496,7 @@ mod tests {
     };
     use hypercolor_core::bus::HypercolorBus;
     use hypercolor_core::input::{
-        InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+        InputData, InputManager, InteractionSource, InteractionSourceRole, ManagedSource,
         ManagedSourceRole, SourceCapabilityContext, SourceRoleBinding,
     };
     use notify::{Event, EventKind};
@@ -508,7 +508,7 @@ mod tests {
         updates: Arc<AtomicUsize>,
     }
 
-    impl InputSource for BlockingCapabilitySource {
+    impl ManagedSource for BlockingCapabilitySource {
         fn name(&self) -> &'static str {
             "blocking_capability"
         }

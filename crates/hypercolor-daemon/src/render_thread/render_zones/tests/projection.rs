@@ -12,10 +12,10 @@ use hypercolor_core::input::screen::implementer::{
 };
 #[cfg(feature = "wgpu")]
 use hypercolor_core::input::screen::planner::{
-    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
-    ScreenInputGraphGeneration, ScreenPayloadKind, ScreenPlanBuilder,
+    CaptureBackendId, RegisteredScreenBranchDemand, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenExactResource, ScreenExactResourceLedger,
+    ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPayloadKind, ScreenPlanBuilder,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
 };
@@ -2543,7 +2543,7 @@ fn cpu_screen_publication(
             CapturePixelFormat::Rgba8,
             CaptureColorimetry::SRGB,
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 1,
                 1,
