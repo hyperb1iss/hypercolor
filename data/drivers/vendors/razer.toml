@@ -803,6 +803,16 @@ leds = 32
 notes = "Extended matrix 2x16, one row per strip"
 
 [[devices]]
+pid = 0x0F1F
+name = "Chroma Addressable RGB Controller"
+type = "argb_controller"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 480
+notes = "Six ARGB headers of 80 LEDs, driven by the 320-byte frame report on HID interface 1 (Spec 17 section 6.3). Bind fans or strips to each header in the attachment profile. The 90-byte brightness command on interface 0 is not used."
+
+[[devices]]
 pid = 0x0F19
 name = "Kraken Kitty Edition"
 type = "headset"
@@ -1035,12 +1045,6 @@ type = "strip"
 status = "researched"
 notes = "Enumerates as the Chroma Wireless ARGB Controller. OpenRGB issue 2203 holds undecoded captures; no wire format is documented."
 
-[[devices]]
-pid = 0x0F1F
-name = "Chroma Addressable RGB Controller"
-type = "argb_controller"
-status = "researched"
-notes = "Six ARGB channels of up to 80 LEDs. Frames travel as a separate 320-byte ARGB feature report on HID interface 1, not the 90-byte report (Spec 17 section 6.3)."
 
 [[devices]]
 pid = 0x0F3C

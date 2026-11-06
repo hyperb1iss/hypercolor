@@ -1,6 +1,7 @@
 //! Razer protocol driver family.
 
 mod activation;
+pub mod argb;
 pub mod crc;
 pub mod devices;
 pub mod kraken;
@@ -9,6 +10,7 @@ pub mod protocol;
 pub mod seiren_v3;
 pub mod types;
 
+pub use argb::{ARGB_CHANNELS, ARGB_LEDS_PER_CHANNEL, ARGB_REPORT_LEN, RazerArgbProtocol};
 pub use crc::{RAZER_REPORT_LEN, RazerReport, razer_crc};
 pub use devices::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,

@@ -141,7 +141,6 @@ fn held_accessories_stay_unregistered() {
     // Each needs a report format Hypercolor does not encode, or has no
     // public protocol facts at all.
     for pid in [
-        0x0F1F, // Chroma Addressable RGB Controller: 320-byte ARGB report
         0x0F35, // Hanbo Chroma: own report layout
         0x0F2C, // Chroma Light Strip Set: undecoded
         0x0F3C, // PWM PC Fan Controller

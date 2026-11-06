@@ -4,8 +4,8 @@
 //! speakers (Nommo, Leviathan), docks and hubs (Mouse Dock, Base Station,
 //! Thunderbolt Dock, Charging Pad, Mouse Bungee, Laptop Stand, Mug Holder),
 //! enclosures and cases (Core, Core X Chroma, Tomahawk ATX, Chroma PC Case
-//! Lighting Kit, Chroma HDK), monitors (Raptor 27), and case-mounted Razer
-//! Edition gear.
+//! Lighting Kit, Chroma HDK), the Chroma Addressable RGB Controller, monitors
+//! (Raptor 27), and case-mounted Razer Edition gear.
 
 use crate::registry::DeviceDescriptor;
 
@@ -32,7 +32,8 @@ use super::{
     build_matrix_linear_extended_1x15_backlight_device_mode_protocol,
     build_matrix_standard_extended_1x9_backlight_protocol, build_raptor_27_protocol,
     build_seiren_emote_protocol, build_seiren_v3_protocol, build_tartarus_chroma_protocol,
-    build_tomahawk_atx_protocol, hidapi_descriptor, kraken_descriptor, push_hidapi_group,
+    build_tomahawk_atx_protocol, chroma_argb_descriptor, hidapi_descriptor, kraken_descriptor,
+    push_hidapi_group,
 };
 
 #[expect(
@@ -100,6 +101,8 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
         "razer/kraken-7-1-chroma",
         build_kraken_chroma_protocol,
     ));
+
+    descriptors.push(chroma_argb_descriptor());
 
     push_hidapi_group(
         descriptors,

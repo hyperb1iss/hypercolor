@@ -28,6 +28,7 @@ use crate::registry::{
     DeviceDescriptor, HidRawReportMode, ProtocolBinding, ProtocolFactory, TransportType,
 };
 
+use super::argb::{ARGB_REPORT_LEN, RazerArgbProtocol};
 use super::crc::RAZER_REPORT_LEN;
 use super::kraken::{KRAKEN_OUTPUT_REPORT_ID, KRAKEN_REPORT_LEN, KrakenModel, KrakenProtocol};
 use super::protocol::RazerProtocol;
@@ -81,6 +82,12 @@ const KRAKEN_HID_INTERFACE: u8 = 3;
 /// collection, so it must be reached through the host HID stack and never
 /// claimed.
 const RAZER_LAPTOP_HID_INTERFACE: u8 = 2;
+
+/// Razer Chroma Addressable RGB Controller.
+pub const PID_CHROMA_ARGB_CONTROLLER: u16 = 0x0F1F;
+
+/// HID interface carrying the ARGB controller's frame reports.
+const CHROMA_ARGB_FRAME_INTERFACE: u8 = 1;
 
 /// Razer Blade 14 (2021).
 pub const PID_BLADE_14_2021: u16 = 0x0270;
@@ -246,6 +253,10 @@ fn build_kraken_kitty_v2_protocol() -> Box<dyn Protocol> {
 
 fn build_kraken_chroma_protocol() -> Box<dyn Protocol> {
     Box::new(KrakenProtocol::new(KrakenModel::Chroma))
+}
+
+fn build_chroma_argb_protocol() -> Box<dyn Protocol> {
+    Box::new(RazerArgbProtocol::new())
 }
 
 /// Build a Blade 15 (Late 2021 Advanced) protocol instance.
@@ -973,6 +984,33 @@ fn hidapi_descriptor(
     }
 }
 
+/// The Chroma Addressable RGB Controller takes color frames as a 320-byte
+/// feature report on interface 1. That interface's report descriptor is one
+/// consumer-control collection holding only the feature report, with no
+/// input or output fields, so no input device hangs off it.
+fn chroma_argb_descriptor() -> DeviceDescriptor {
+    DeviceDescriptor {
+        vendor_id: RAZER_VENDOR_ID,
+        product_id: PID_CHROMA_ARGB_CONTROLLER,
+        name: "Razer Chroma Addressable RGB Controller",
+        family: DeviceFamily::new_static("razer", "Razer"),
+        transport: TransportType::UsbHidApi {
+            interface: Some(CHROMA_ARGB_FRAME_INTERFACE),
+            report_id: HID_REPORT_ID_DEFAULT,
+            report_mode: HidRawReportMode::FeatureReport,
+            max_report_len: ARGB_REPORT_LEN + 1,
+            usage_page: Some(RAZER_CONSUMER_USAGE_PAGE),
+            usage: Some(RAZER_CONSUMER_USAGE),
+        },
+        protocol: ProtocolBinding {
+            id: "razer/chroma-argb-controller",
+            build: build_chroma_argb_protocol,
+        },
+        firmware_predicate: None,
+        serial_quirk: None,
+    }
+}
+
 /// Kraken headsets take their memory-access requests as HID output report
 /// `0x04` on the consumer-control collection of interface 3, not as the
 /// shared 90-byte feature report.
@@ -1079,12 +1117,11 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     // - Custom-matrix generic devices (DeathAdder Chroma, Naga Epic Chroma,
     //   Mamba 2012, Orbweaver Chroma) because they need
     //   device-specific LED/effect packet routing instead of shared matrix I/O.
-    // - Chroma Addressable RGB Controller (frames travel as a separate
-    //   320-byte ARGB feature report on interface 1), Hanbo Chroma (its own
-    //   report layout), Kraken V3 and V4 headsets (13-byte and 64-byte
-    //   reports), and the on/off-only Kraken 7.1 Classic. Spec 17 section
-    //   6.3 records their wire facts. The memory-access Kraken headsets
-    //   register through `kraken`.
+    // - Hanbo Chroma (its own report layout), Kraken V3 and V4 headsets
+    //   (13-byte and 64-byte reports), and the on/off-only Kraken 7.1
+    //   Classic. Spec 17 section 6.3 records their wire facts. The
+    //   memory-access Kraken headsets register through `kraken`, and the
+    //   Chroma Addressable RGB Controller through `argb`.
     // - Kraken Kitty Black Edition (VID/PID 1532:0F21) because it collides
     //   with Thunderbolt 4 Dock Chroma and Hypercolor's descriptor selection is
     //   still VID/PID-first.
