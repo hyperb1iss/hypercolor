@@ -4424,3 +4424,50 @@ async fn nzxt_init_fails_when_the_topology_reply_never_arrives() {
     assert_eq!(transport.sends().len(), 1);
     assert_eq!(protocol.total_leds(), 0);
 }
+
+/// A serial port that stops taking data must end the actor on the frame that
+/// stalls, not on the next one: a static scene may never send another.
+#[tokio::test]
+async fn a_stalled_serial_frame_ends_the_actor_without_waiting_for_another_frame() {
+    use hypercolor_hal::drivers::nollie::{NollieModel, NollieProtocol};
+
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    // Nobody reads the device end, so the frame stalls once the pipe fills.
+    let (port, _device) = tokio::io::duplex(64);
+    let transport: Arc<dyn Transport> = Arc::new(
+        UsbSerialTransport::from_stream("actor-stalled-serial", port)
+            .expect("the serial release service should start")
+            .with_write_timeout(Duration::from_millis(50)),
+    );
+    let protocol: Arc<dyn Protocol> = Arc::new(NollieProtocol::new(NollieModel::Nollie8Cdc));
+    frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
+        [0x10, 0x20, 0x30];
+        1_008
+    ])))));
+
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "nollie-cdc-stalled-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let error = timeout(Duration::from_secs(2), actor)
+        .await
+        .expect("the stalled frame should end the actor without another frame")
+        .expect("actor task joins")
+        .expect_err("a wedged serial port must hand the device back for reconnect");
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<TransportError>(),
+            Some(TransportError::Disconnected { .. })
+        )),
+        "the lifecycle must receive a reconnectable disconnect: {error:#}"
+    );
+    drop(frame_tx);
+}

@@ -188,8 +188,9 @@ impl UsbSerialTransport {
 
     /// Bound each send by `timeout` instead of [`DEFAULT_WRITE_TIMEOUT`].
     ///
-    /// A send that misses its deadline fails the transport, because the
-    /// device may already hold part of the packet.
+    /// A send that misses its deadline fails the transport and returns
+    /// [`TransportError::Disconnected`], because the device may already hold
+    /// part of the packet.
     #[must_use]
     pub fn with_write_timeout(mut self, timeout: Duration) -> Self {
         self.write_timeout = timeout;
@@ -255,7 +256,7 @@ impl UsbSerialTransport {
                     "usb serial write failed; transport is no longer usable"
                 );
                 self.closed.send_replace(true);
-                Err(error)
+                Err(out_of_service(error))
             }
         }
     }
@@ -398,6 +399,28 @@ async fn read_focus_reply(stream: &mut Box<dyn AsyncSerialIo>) -> Result<Vec<u8>
     }
 
     Ok(payload)
+}
+
+/// The error a send returns once it has taken the transport out of service.
+///
+/// Callers treat a timeout or a generic I/O error from a send as transient
+/// and try the next frame, but this transport accepts no further frames, so
+/// those become [`TransportError::Disconnected`] and the caller reconnects at
+/// once. Errors callers already treat as fatal keep their classification.
+fn out_of_service(error: TransportError) -> TransportError {
+    match error {
+        TransportError::Timeout { timeout_ms } => TransportError::Disconnected {
+            detail: format!(
+                "serial write stalled for {timeout_ms} ms; transport taken out of service"
+            ),
+        },
+        TransportError::IoError { .. } | TransportError::NotReady { .. } => {
+            TransportError::Disconnected {
+                detail: format!("{error}; transport taken out of service"),
+            }
+        }
+        other => other,
+    }
 }
 
 fn duration_ms(duration: Duration) -> u64 {

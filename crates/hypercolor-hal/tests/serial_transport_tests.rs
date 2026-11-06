@@ -22,6 +22,16 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).expect("test durations fit in u64")
 }
 
+/// Assert `error` is the disconnect a send returns once it misses its
+/// deadline, which callers treat as fatal rather than transient.
+fn assert_stalled_disconnect(error: &TransportError, write_timeout: Duration) {
+    let expected = format!("stalled for {} ms", millis(write_timeout));
+    assert!(
+        matches!(error, TransportError::Disconnected { detail } if detail.contains(&expected)),
+        "a missed write deadline should take the transport out of service: {error:?}"
+    );
+}
+
 #[tokio::test]
 async fn send_receive_reads_until_focus_terminator() {
     let (client, mut server) = tokio::io::duplex(256);
@@ -167,10 +177,7 @@ async fn write_deadline_fails_a_stalled_transport_without_parking_the_runtime() 
         .expect_err("a write the device never takes must miss its deadline");
     let elapsed = started.elapsed();
 
-    assert!(
-        matches!(error, TransportError::Timeout { timeout_ms } if timeout_ms == millis(write_timeout)),
-        "{error:?}"
-    );
+    assert_stalled_disconnect(&error, write_timeout);
     assert!(
         elapsed >= write_timeout,
         "deadline fired early: {elapsed:?}"
@@ -199,10 +206,7 @@ async fn stalled_send_reports_the_default_write_deadline() {
         .await
         .expect_err("a write the device never takes must miss its deadline");
 
-    assert!(
-        matches!(error, TransportError::Timeout { timeout_ms } if timeout_ms == millis(DEFAULT_WRITE_TIMEOUT)),
-        "{error:?}"
-    );
+    assert_stalled_disconnect(&error, DEFAULT_WRITE_TIMEOUT);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -198,7 +198,10 @@ async fn write_deadline_fails_a_wedged_tty() {
         .expect_err("a write the device never takes must miss its deadline");
     let elapsed = started.elapsed();
 
-    assert!(matches!(error, TransportError::Timeout { .. }), "{error:?}");
+    assert!(
+        matches!(&error, TransportError::Disconnected { detail } if detail.contains("stalled for 100 ms")),
+        "a missed write deadline should take the transport out of service: {error:?}"
+    );
     assert!(
         elapsed >= write_timeout,
         "deadline fired early: {elapsed:?}"
@@ -215,7 +218,7 @@ async fn write_deadline_fails_a_wedged_tty() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn hangup_surfaces_as_a_write_error() {
+async fn hangup_surfaces_as_a_disconnect_from_the_failing_write() {
     let (device, port) = pty_pair();
     let transport = trapped_transport("pty-hangup", port);
     transport
@@ -231,8 +234,8 @@ async fn hangup_surfaces_as_a_write_error() {
         .await
         .expect_err("a write to a hung-up tty must fail");
     assert!(
-        matches!(error, TransportError::IoError { .. }),
-        "EIO from a hung-up tty should surface as an I/O error: {error:?}"
+        matches!(&error, TransportError::Disconnected { detail } if detail.contains("Input/output error")),
+        "EIO from a hung-up tty should take the transport out of service: {error:?}"
     );
     assert!(matches!(
         transport.send(b"again").await,
