@@ -8,6 +8,7 @@ Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and sACN, Art-Net, or D
 Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and LIFX) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the five built-in network drivers.
 Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and Twinkly) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the five built-in network drivers.
 Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, Twinkly, and WiZ) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the six built-in network drivers.
+Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, Twinkly, WiZ, and Yeelight) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the seven built-in network drivers.
 
 {{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
@@ -26,6 +27,7 @@ Hypercolor uses three complementary methods to find network devices. All three r
 | LIFX | none (UDP broadcast) | LIFX `GetService` broadcast to port `56700` on every local IPv4 network; mDNS is not involved |
 | Twinkly | none (UDP broadcast) | A discovery datagram broadcast to port `5555` on every local IPv4 network; mDNS is not involved |
 | WiZ | none (UDP broadcast) | A `registration` request broadcast to port `38899` on every local IPv4 network; mDNS is not involved |
+| Yeelight | none (SSDP-style multicast) | A `wifi_bulb` search sent to `239.255.255.250:1982`; mDNS is not involved |
 
 mDNS only works when devices and the Hypercolor host share a broadcast domain. VLANs, AP isolation, and some router firmware block it. See [mDNS troubleshooting](#mdns-troubleshooting) below.
 
@@ -41,6 +43,7 @@ hypercolor devices discover --target wled --target hue --timeout 20
 The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `lifx`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
 The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `twinkly`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
 The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `twinkly`, `wiz`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
+The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `twinkly`, `wiz`, `yeelight`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
 
 The `--timeout` value is in seconds and defaults to 10. The daemon clamps it between 0.1 s and 60 s regardless of what you pass.
 
@@ -70,6 +73,7 @@ Network devices are fingerprinted on stable hardware identity rather than their 
 - Govee: MAC address (`net:govee:<mac>`)
 - Twinkly: MAC address (`net:twinkly:<mac>`)
 - WiZ: MAC address (`net:wiz:<mac>`)
+- Yeelight: device id (`net:yeelight:<id>`)
 - Hue: Bridge ID
 - Nanoleaf: device serial key
 - LIFX: device serial, which is its MAC address (`net:lifx:<serial>`)
@@ -91,6 +95,7 @@ Some network drivers require an explicit pairing step before Hypercolor can send
 | LIFX | No | The LIFX LAN protocol has no authentication. Discovery is the only step. |
 | Twinkly | No | Hypercolor logs in to the device's local API at connect; no button press or account is involved. A device honors one login at a time, so the Twinkly app or Home Assistant taking control signs Hypercolor out until it logs in again. |
 | WiZ | No | Commands need no credentials unless the home is set to "Only verified controls" in the WiZ app; then the home signing key goes in `signing_key` in the config file. |
+| Yeelight | No, but LAN Control must be on | Switch on LAN Control per light in the Yeelight app; there are no credentials. |
 
 To pair a device that was discovered but is not yet streaming:
 
@@ -145,6 +150,7 @@ Each network driver has its own pairing flow, streaming protocol, supported devi
 - [Govee](@/hardware/govee.md): proprietary UDP multicast discovery, LAN control must be enabled per-device in the Govee Home app, optional Developer API key for cloud fallback.
 - [Twinkly](@/hardware/twinkly.md): UDP broadcast discovery, automatic login, per-LED real-time streaming on UDP port 7777, layouts from the Twinkly app.
 - [WiZ](@/hardware/wiz.md): UDP broadcast discovery, one color per light over UDP port 38899, the signing key for verified-controls homes.
+- [Yeelight](@/hardware/yeelight.md): LAN Control per light, SSDP-style multicast discovery, music mode for streaming past the one-command-per-second quota.
 
 For devices that don't have a native Hypercolor driver, the [OpenRGB fallback](@/hardware/openrgb-fallback.md) bridge can control them through a user-managed OpenRGB server on TCP port 6742.
 
