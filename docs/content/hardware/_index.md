@@ -98,7 +98,7 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | Family | Transport | Highlights | Status |
 |---|---|---|---|
 | **Razer** | USB HID | Keyboards, mice, mousepads, laptops, headsets | Supported |
-| **Corsair** | USB HID | Peripherals (Bragi + legacy HID), Lighting Node, iCUE LINK hub, LCD modules | Supported |
+| **Corsair** | USB HID | Peripherals (Bragi and NXP/CUE), Lighting Node, iCUE LINK hub, LCD modules | Supported |
 | **ASUS** | USB HID + SMBus/I2C | Aura USB peripherals; motherboard/GPU/DRAM Aura over SMBus | Supported |
 | **Lian Li** | USB HID / USB Vendor | Uni Hub (ENE), TL Fan Hub; AL firmware 1.0 uses vendor transport, 1.7 uses HID | Supported |
 | **PrismRGB** | USB HID | Custom chunked protocol; Prism 8 is a Nollie 8 v2 rebrand | Supported |
