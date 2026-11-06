@@ -77,30 +77,42 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
         "razer/kraken-ultimate",
         build_kraken_ultimate_protocol,
     ));
-    descriptors.push(kraken_descriptor(
-        0x0510,
-        "Razer Kraken 7.1 V2",
-        "razer/kraken-v2",
-        build_kraken_v2_protocol,
-    ));
-    descriptors.push(kraken_descriptor(
-        0x0520,
-        "Razer Kraken Tournament Edition",
-        "razer/kraken-tournament-edition",
-        build_kraken_tournament_edition_protocol,
-    ));
-    descriptors.push(kraken_descriptor(
-        0x0560,
-        "Razer Kraken Kitty V2",
-        "razer/kraken-kitty-v2",
-        build_kraken_kitty_v2_protocol,
-    ));
-    descriptors.push(kraken_descriptor(
-        0x0504,
-        "Razer Kraken 7.1 Chroma",
-        "razer/kraken-7-1-chroma",
-        build_kraken_chroma_protocol,
-    ));
+    descriptors.push(
+        kraken_descriptor(
+            0x0510,
+            "Razer Kraken 7.1 V2",
+            "razer/kraken-v2",
+            build_kraken_v2_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        kraken_descriptor(
+            0x0520,
+            "Razer Kraken Tournament Edition",
+            "razer/kraken-tournament-edition",
+            build_kraken_tournament_edition_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        kraken_descriptor(
+            0x0560,
+            "Razer Kraken Kitty V2",
+            "razer/kraken-kitty-v2",
+            build_kraken_kitty_v2_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        kraken_descriptor(
+            0x0504,
+            "Razer Kraken 7.1 Chroma",
+            "razer/kraken-7-1-chroma",
+            build_kraken_chroma_protocol,
+        )
+        .experimental(),
+    );
 
     descriptors.push(chroma_argb_descriptor());
 
@@ -292,37 +304,46 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
     // OpenRazer-only accessories. OpenRazer addresses every accessory
     // report to interface 0 (wIndex 0) whichever interface its HID driver
     // binds, so these open the interface 0 node without a usage filter.
-    descriptors.push(hidapi_descriptor(
-        0x0F17,
-        "Razer Tomahawk ATX",
-        "razer/tomahawk-atx",
-        Some(0),
-        HID_REPORT_ID_DEFAULT,
-        None,
-        None,
-        build_tomahawk_atx_protocol,
-    ));
-    descriptors.push(hidapi_descriptor(
-        0x0F12,
-        "Razer Raptor 27",
-        "razer/raptor-27",
-        Some(0),
-        HID_REPORT_ID_DEFAULT,
-        None,
-        None,
-        build_raptor_27_protocol,
-    ));
+    descriptors.push(
+        hidapi_descriptor(
+            0x0F17,
+            "Razer Tomahawk ATX",
+            "razer/tomahawk-atx",
+            Some(0),
+            HID_REPORT_ID_DEFAULT,
+            None,
+            None,
+            build_tomahawk_atx_protocol,
+        )
+        .experimental(),
+    );
+    descriptors.push(
+        hidapi_descriptor(
+            0x0F12,
+            "Razer Raptor 27",
+            "razer/raptor-27",
+            Some(0),
+            HID_REPORT_ID_DEFAULT,
+            None,
+            None,
+            build_raptor_27_protocol,
+        )
+        .experimental(),
+    );
 
     // OpenRGB's detector for the Core X Chroma names interface 2 and the
     // generic desktop mouse usage, like the other enclosures above.
-    descriptors.push(hidapi_descriptor(
-        0x0F1A,
-        "Razer Core X Chroma",
-        "razer/core-x-chroma",
-        Some(2),
-        HID_REPORT_ID_DEFAULT,
-        Some(0x0001),
-        Some(0x0002),
-        build_core_x_chroma_protocol,
-    ));
+    descriptors.push(
+        hidapi_descriptor(
+            0x0F1A,
+            "Razer Core X Chroma",
+            "razer/core-x-chroma",
+            Some(2),
+            HID_REPORT_ID_DEFAULT,
+            Some(0x0001),
+            Some(0x0002),
+            build_core_x_chroma_protocol,
+        )
+        .experimental(),
+    );
 }

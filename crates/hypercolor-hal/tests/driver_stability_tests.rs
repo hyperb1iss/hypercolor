@@ -31,33 +31,54 @@ fn fake_descriptor(
 }
 
 #[test]
-fn registered_descriptors_keep_the_stable_label() {
-    let experimental = ProtocolDatabase::all()
-        .iter()
-        .filter(|descriptor| descriptor.stability.is_experimental())
-        .map(|descriptor| descriptor.protocol.id)
-        .collect::<Vec<_>>();
-    assert!(
-        experimental.is_empty(),
-        "no shipped descriptor is labeled experimental yet: {experimental:?}"
-    );
-
+fn the_label_never_changes_whether_a_registered_module_runs() {
     for module in ProtocolDatabase::module_descriptors() {
-        assert_eq!(module.stability, DriverStability::Stable, "{}", module.id);
         assert!(
             module.default_enabled,
             "{} stays enabled by default",
             module.id
         );
     }
-    for protocol in ProtocolDatabase::protocol_descriptors() {
+}
+
+const RAZER_VID: u16 = 0x1532;
+
+/// Razer accessories registered from captures and specs without a hardware
+/// run: Kraken 7.1 V2, Tournament Edition, Kitty V2, Kraken 7.1 Chroma,
+/// Tomahawk ATX, Raptor 27, and Core X Chroma.
+const UNTESTED_RAZER_PIDS: [u16; 7] = [0x0510, 0x0520, 0x0560, 0x0504, 0x0F17, 0x0F12, 0x0F1A];
+
+#[test]
+fn untested_razer_accessories_are_labeled_experimental() {
+    for product_id in UNTESTED_RAZER_PIDS {
+        let descriptor = ProtocolDatabase::lookup(RAZER_VID, product_id)
+            .unwrap_or_else(|| panic!("Razer {product_id:04x} is registered"));
         assert_eq!(
-            protocol.stability,
-            DriverStability::Stable,
+            descriptor.stability,
+            DriverStability::Experimental,
             "{}",
-            protocol.protocol_id
+            descriptor.name
         );
+        let protocol = ProtocolDatabase::protocol_descriptors_for_driver("razer")
+            .into_iter()
+            .find(|protocol| protocol.product_id == Some(product_id))
+            .unwrap_or_else(|| panic!("Razer {product_id:04x} has a protocol descriptor"));
+        assert_eq!(protocol.stability, DriverStability::Experimental);
     }
+}
+
+#[test]
+fn razer_stays_a_stable_module_around_its_experimental_accessories() {
+    let kraken_ultimate =
+        ProtocolDatabase::lookup(RAZER_VID, 0x0527).expect("Kraken Ultimate is registered");
+    assert_eq!(kraken_ultimate.stability, DriverStability::Stable);
+
+    let razer = ProtocolDatabase::module_descriptors()
+        .iter()
+        .find(|module| module.id == "razer")
+        .expect("Razer module is registered");
+    assert_eq!(razer.stability, DriverStability::Stable);
+    assert!(razer.default_enabled);
 }
 
 #[test]

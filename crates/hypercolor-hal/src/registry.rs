@@ -182,6 +182,17 @@ pub enum SerialQuirk {
 }
 
 impl DeviceDescriptor {
+    /// Label this descriptor experimental: nobody has run it on real
+    /// hardware yet (Spec 89). The label changes nothing at runtime.
+    ///
+    /// Lets a family label a new device built by a helper it shares with
+    /// shipped ones: `descriptors.push(kraken_descriptor(..).experimental())`.
+    #[must_use]
+    pub const fn experimental(mut self) -> Self {
+        self.stability = DriverStability::Experimental;
+        self
+    }
+
     /// Whether `serial` is a factory placeholder rather than a real identity.
     ///
     /// Compared case-insensitively against the trimmed value, since these

@@ -95,7 +95,7 @@ client that re-serializes an older daemon's payload, such as
 | `hypercolor_driver_api::DriverDescriptor` | `stability` | `DriverDescriptor::new` sets `Stable`; the const builder `.experimental()` sets `Experimental` |
 | `hypercolor_types::device::DriverModuleDescriptor` | `stability` | Copied from the driver descriptor, or derived for HAL families (§2.3) |
 | `hypercolor_types::device::DriverProtocolDescriptor` | `stability` | Copied from the HAL `DeviceDescriptor` that contributes the protocol |
-| `hypercolor_hal::registry::DeviceDescriptor` | `stability` | Required on every descriptor literal |
+| `hypercolor_hal::registry::DeviceDescriptor` | `stability` | Required on every descriptor literal; the const builder `.experimental()` relabels a descriptor built by a shared helper |
 
 `.experimental()` only sets the label. It never touches
 `default_enabled`, so an experimental network driver ships enabled:
@@ -112,7 +112,13 @@ pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 ```
 
 A HAL descriptor sets `stability: DriverStability::Experimental` beside
-its other fields. Existing descriptors set `DriverStability::Stable`.
+its other fields, or calls `.experimental()` on a descriptor a shared
+helper built. Descriptors that shipped before this spec set
+`DriverStability::Stable`. The first experimental descriptors are seven
+Razer accessories registered from captures without a hardware run: the
+Kraken 7.1 V2, Kraken Tournament Edition, Kraken Kitty V2, and Kraken 7.1
+Chroma headsets, the Tomahawk ATX and Raptor 27, and the Core X Chroma.
+The Razer module stays stable around them.
 
 ### 2.3 Derived module label for HAL families
 
@@ -290,7 +296,7 @@ its descriptors flips. A network driver flips by dropping
 | --- | --- |
 | `.experimental()` sets only the label; modules stay enabled by default | `crates/hypercolor-driver-api/tests/descriptor_stability_tests.rs` |
 | Serde defaults and wire names | `crates/hypercolor-types/tests/driver_stability_tests.rs` |
-| Family derivation, protocol labels, consistency rule, shipped descriptors still stable | `crates/hypercolor-hal/tests/driver_stability_tests.rs` |
+| Family derivation, protocol labels, consistency rule, the untested Razer accessories labeled inside a stable module | `crates/hypercolor-hal/tests/driver_stability_tests.rs` |
 | Unclaimed inventory claims experimental descriptors like stable ones and keeps the label | `crates/hypercolor-core/tests/unclaimed_device_tests.rs` |
 | Experimental modules enabled by default, ordinary enable flag, device label, `/drivers` and `/devices` fields | `crates/hypercolor-daemon/tests/driver_stability_tests.rs` |
 | Compiled-in drivers keep the stable label and their defaults | `crates/hypercolor-driver-builtin/tests/builtin_registry_tests.rs` |
