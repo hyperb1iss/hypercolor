@@ -19,6 +19,8 @@ const READ_EXECUTE: u32 = 0x0012_00a9;
 const ADD_CHILDREN: u32 = 0x0000_0006;
 const FULL_CONTROL: u32 = 0x001f_01ff;
 const DELETE: u32 = 0x0001_0000;
+/// `ERROR_INVALID_OWNER`.
+const ERROR_INVALID_OWNER: i32 = 1307;
 
 fn sid(text: &str) -> WindowsSid {
     WindowsSid::parse(text).expect("SID")
@@ -115,18 +117,24 @@ fn the_created_directory_carries_a_descriptor_the_writers_accept() {
             .trim_start_matches(r"\\?\"),
     );
     let parent = WindowsDirectory::open(&root, WindowsDirectoryAccess::Write).expect("parent");
-    let created = parent
-        .create_child_directory_with_security(OsStr::new("logs"), LOG_DIRECTORY_SDDL)
-        .expect("create with the log directory descriptor");
-    let mut security = created.security().expect("security");
+    let created =
+        match parent.create_child_directory_with_security(OsStr::new("logs"), LOG_DIRECTORY_SDDL) {
+            Ok(created) => created,
+            // Only an elevated administrator may name Administrators as owner;
+            // the broker and the setup always run so.
+            Err(error) if error.raw_os_error() == Some(ERROR_INVALID_OWNER) => {
+                eprintln!("skipping the owned descriptor check unelevated: {error}");
+                return;
+            }
+            Err(error) => panic!("create with the log directory descriptor: {error}"),
+        };
+    let security = created.security().expect("security");
+    assert_eq!(security.owner, sid(ADMINISTRATORS));
     assert!(security.dacl_protected, "nothing inherits from ProgramData");
     assert!(
         security.grants_read(&[sid(USERS)]),
         "standard users can read the logs"
     );
-    // The test runs as whoever the runner is; the descriptor's entries are
-    // what is under test.
-    security.owner = sid(SYSTEM);
     assert_eq!(refusal(&security, Ownership::Exclusive), None);
     assert_eq!(refusal(&security, Ownership::Shared), None);
 }
