@@ -208,15 +208,26 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> WindowsInstallPlatform<E,
         let Some(unit) = &expected.running_unit else {
             return runtime.is_stopped();
         };
-        let Some(running) = self.runtime_of(runtime, unit) else {
-            return false;
-        };
         let is_prior = record
             .prior
             .as_ref()
             .is_some_and(|prior| &prior.unit == unit);
+        // The two processes exit one at a time, so a stop this transaction
+        // began and never saw through leaves one of them. It must still
+        // read as the prior for a recovery to finish that stop.
+        if checkpoint == PlatformCheckpoint::PriorOriginal {
+            return is_prior
+                && !runtime.is_stopped()
+                && record.baseline.is_some_and(|baseline| {
+                    runtime
+                        .processes()
+                        .all(|process| process.id == baseline.app || process.id == baseline.daemon)
+                });
+        }
+        let Some(running) = self.runtime_of(runtime, unit) else {
+            return false;
+        };
         match checkpoint {
-            PlatformCheckpoint::PriorOriginal => is_prior && record.baseline == Some(running),
             PlatformCheckpoint::CandidateRuntime => {
                 unit == &record.candidate.unit && receipt.is_none_or(|receipt| receipt == &running)
             }

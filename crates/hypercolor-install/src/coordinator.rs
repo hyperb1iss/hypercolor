@@ -595,10 +595,27 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         // rollback's own ProvePrior can name the restored release.
         let _ = self.platform.take_restored_release();
         let mut restored = None;
+        let mut restarted_prior = false;
         loop {
             let action = journal
                 .next_action
                 .ok_or(InstallCoordinatorError::MissingNextAction)?;
+            // A power loss takes a prior this rollback had started, and no
+            // service manager brings back a runtime that lives in a user's
+            // session. Going back one step starts it again, once per run so
+            // a prior that keeps dying still ends this run.
+            if action == InstallAction::ProvePrior
+                && !restarted_prior
+                && self.prior_runtime_lost(&journal, lock)?
+            {
+                restarted_prior = true;
+                journal.advance(
+                    InstallDisposition::Rollback,
+                    Some(InstallAction::RestorePriorRuntime),
+                )?;
+                self.persist(&mut journal, lock)?;
+                continue;
+            }
             if action == InstallAction::FinishRollback {
                 journal.advance(InstallDisposition::RolledBack, None)?;
                 self.persist(&mut journal, lock)?;
@@ -647,6 +664,27 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 }
             }
         }
+    }
+
+    /// Whether the prior that should be up for its proof is gone and all
+    /// else stands exactly where `RestorePriorRuntime` starts from.
+    fn prior_runtime_lost(
+        &mut self,
+        journal: &InstallJournalV1,
+        lock: &super::store::InstallLock,
+    ) -> Result<bool, InstallCoordinatorError> {
+        if journal.prior_platform.running_unit.is_none() {
+            return Ok(false);
+        }
+        let actual = self.inspect_state(lock)?;
+        self.matches_checkpoint_at(
+            &actual,
+            &Checkpoints::new(journal).prior_autostart,
+            PlatformCheckpoint::PriorAutostart,
+            journal.layout_operation_index,
+            &journal.platform_record,
+            journal.candidate_owner_receipt.as_ref(),
+        )
     }
 
     fn reconcile_layout_operation(

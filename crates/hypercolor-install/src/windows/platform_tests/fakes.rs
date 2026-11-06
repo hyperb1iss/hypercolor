@@ -106,6 +106,12 @@ pub(super) struct World {
     pub(super) app_reachable: bool,
     /// The app exits when it is asked to.
     pub(super) app_obeys: bool,
+    /// The daemon exits when the app is asked to quit, and the app hangs.
+    pub(super) app_hangs_on_quit: bool,
+    /// A started release dies right after one look at it.
+    pub(super) dies_after_start: bool,
+    /// How many more looks the started release survives.
+    pub(super) looks_left: Option<u32>,
     /// Daemons of this version never answer on their local API.
     pub(super) unhealthy_version: Option<String>,
     /// Apps of this version start, but their daemons never get ready.
@@ -327,7 +333,16 @@ impl WindowsInstallExecutor for FakeExecutor {
     }
 
     fn observe_runtime(&mut self) -> Result<WindowsRuntimeObservation, InstallPlatformError> {
-        let world = lock(&self.world);
+        let mut world = lock(&self.world);
+        match world.looks_left {
+            Some(0) => {
+                world.apps.clear();
+                world.daemons.clear();
+                world.looks_left = None;
+            }
+            Some(looks) => world.looks_left = Some(looks - 1),
+            None => {}
+        }
         Ok(WindowsRuntimeObservation {
             apps: world.apps.clone(),
             daemons: world.daemons.clone(),
@@ -459,7 +474,9 @@ impl WindowsSessionHost for FakeSession {
         boundary(&self.boundaries, "quit:before");
         let reachable = {
             let mut world = lock(&self.world);
-            if world.app_reachable && world.app_obeys {
+            if world.app_reachable && world.app_hangs_on_quit {
+                world.daemons.clear();
+            } else if world.app_reachable && world.app_obeys {
                 world.apps.clear();
                 world.daemons.clear();
             }
@@ -489,6 +506,9 @@ impl WindowsSessionHost for FakeSession {
             let unit = UnitId::new(unit)
                 .map_err(|source| InstallPlatformError::new(source.to_string()))?;
             world.launch(&unit);
+            if world.dies_after_start {
+                world.looks_left = Some(1);
+            }
             world.apps[0].clone()
         };
         boundary(&self.boundaries, "start:after");
