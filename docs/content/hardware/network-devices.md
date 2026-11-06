@@ -4,7 +4,7 @@ description = "How Hypercolor discovers and pairs Wi-Fi and LAN RGB devices: mDN
 weight = 40
 +++
 
-Network RGB devices (Philips Hue, Nanoleaf, WLED, and Govee) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the four built-in network drivers.
+Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and Twinkly) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the five built-in network drivers.
 
 {{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
@@ -20,6 +20,7 @@ Hypercolor uses three complementary methods to find network devices. All three r
 | Nanoleaf | `_nanoleafapi._tcp.local.` | TXT record carries model name, firmware, and panel count |
 | WLED | `_wled._tcp.local.` | Enriched via HTTP `/json/info` after advertisement |
 | Govee | none (UDP multicast) | Govee uses a proprietary UDP scan on `239.255.255.250:4001`; mDNS is not involved |
+| Twinkly | none (UDP broadcast) | A discovery datagram broadcast to port `5555` on every local IPv4 network; mDNS is not involved |
 
 mDNS only works when devices and the Hypercolor host share a broadcast domain. VLANs, AP isolation, and some router firmware block it. See [mDNS troubleshooting](#mdns-troubleshooting) below.
 
@@ -32,7 +33,7 @@ mDNS only works when devices and the Hypercolor host share a broadcast domain. V
 hypercolor devices discover --target wled --target hue --timeout 20
 ```
 
-The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
+The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `twinkly`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
 
 The `--timeout` value is in seconds and defaults to 10. The daemon clamps it between 0.1 s and 60 s regardless of what you pass.
 
@@ -60,6 +61,7 @@ Network devices are fingerprinted on stable hardware identity rather than their 
 
 - WLED: MAC address (`net:wled:<mac>`)
 - Govee: MAC address (`net:govee:<mac>`)
+- Twinkly: MAC address (`net:twinkly:<mac>`)
 - Hue: Bridge ID
 - Nanoleaf: device serial key
 
@@ -77,6 +79,7 @@ Some network drivers require an explicit pairing step before Hypercolor can send
 | Hue | Yes: link button on Bridge | `username` (used as the DTLS PSK identity) and `clientkey` (the PSK hex string). Both are required to open the Entertainment API streaming connection on UDP port 2100. |
 | Nanoleaf | Yes: hold power button 5-7 s | Posts to `/api/v1/new` and receives `auth_token`, stored and used for REST calls and to enable UDP External Control on port 60222. |
 | Govee | Optional: Developer API key | LAN UDP control works without a key. The API key enables cloud fallback for devices that don't support the LAN protocol. |
+| Twinkly | No | Hypercolor logs in to the device's local API at connect; no button press or account is involved. A device honors one login at a time, so the Twinkly app or Home Assistant taking control signs Hypercolor out until it logs in again. |
 
 To pair a device that was discovered but is not yet streaming:
 
@@ -128,6 +131,7 @@ Each network driver has its own pairing flow, streaming protocol, supported devi
 - [Nanoleaf](@/hardware/nanoleaf.md): mDNS discovery, power-button token pairing (hold 5-7 s), UDP External Control on port 60222.
 - [WLED](@/hardware/wled.md): mDNS discovery, no authentication required, DDP streaming on port 4048 by default, or E1.31/sACN for multi-controller setups.
 - [Govee](@/hardware/govee.md): proprietary UDP multicast discovery, LAN control must be enabled per-device in the Govee Home app, optional Developer API key for cloud fallback.
+- [Twinkly](@/hardware/twinkly.md): UDP broadcast discovery, automatic login, per-LED real-time streaming on UDP port 7777, layouts from the Twinkly app.
 
 For devices that don't have a native Hypercolor driver, the [OpenRGB fallback](@/hardware/openrgb-fallback.md) bridge can control them through a user-managed OpenRGB server on TCP port 6742.
 

@@ -46,9 +46,10 @@ Network drivers live in separate crates behind the `hypercolor-driver-api` trait
 | Nanoleaf | HTTP pairing + UDP External Control | mDNS `_nanoleafapi._tcp.local.` | Hold power button 5-7 s to enter pairing mode |
 | WLED | DDP (default) or E1.31/sACN | mDNS `_wled._tcp.local.` | No authentication needed |
 | Govee | LAN UDP + optional cloud API | UDP multicast `239.255.255.250:4001` | LAN control must be enabled in the Govee Home app first |
+| Twinkly | Local REST API + real-time UDP frames | UDP broadcast discovery datagram to port 5555 | No pairing; experimental, not yet verified on hardware |
 | OpenRGB bridge | OpenRGB SDK over TCP | Connects on demand to the Hypercolor-managed server on `127.0.0.1:6742` | Fallback bridge; drives only hardware no enabled native driver covers; disabled by default |
 
-The ROLI Blocks bridge is a fifth registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
+The ROLI Blocks bridge is another registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
 
 See [network devices](@/hardware/network-devices.md) for the setup overview, then follow the per-vendor guide for pairing details.
 
@@ -78,6 +79,7 @@ graph TD
     NET --> NL[Nanoleaf UDP :60222]
     NET --> WLED[WLED DDP :4048]
     NET --> GV[Govee LAN UDP :4003]
+    NET --> TW[Twinkly real-time UDP :7777]
     NET --> ORG[OpenRGB SDK :6742]
     USB --> Razer[Razer peripherals]
     USB --> Corsair[Corsair devices]
@@ -87,7 +89,7 @@ graph TD
     SMB --> ASUS_SMB[ASUS motherboard / GPU / DRAM]
 {% </mermaid> %}
 
-Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
+Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`, Twinkly: `net:twinkly:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
 
 ---
 
@@ -109,11 +111,12 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **Nanoleaf** | Network / UDP | mDNS discovery, token pairing, UDP External Control | Supported |
 | **WLED** | Network / UDP | DDP and E1.31/sACN; RGB and RGBW; no authentication | Supported |
 | **Govee** | Network / UDP + Cloud | LAN UDP control; optional cloud API fallback | Supported |
+| **Twinkly** | Network / HTTP + UDP | Per-LED strings, curtains, Squares, and trees; layout from the Twinkly app | Experimental (unverified on hardware) |
 | **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
 | **[ROLI Blocks bridge](@/hardware/roli-blocks.md)** | Unix socket / blocksd | Lightpad grids and 24 LUMI key colors | Supported with matching blocksd capabilities (Unix only) |
 | **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
 
-Neither bridge is counted among the 12 driver families with shipping device support. The OpenRGB bridge ships compiled in but its config entry is minted disabled; run `hypercolor devices coverage` first and enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md) only when a device reads `unclaimed` or `none`. The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
+Neither bridge is counted among the 13 driver families with shipping device support. Twinkly, one of the 13, ships enabled but is labeled experimental until someone verifies it on real lights. The OpenRGB bridge ships compiled in but its config entry is minted disabled; run `hypercolor devices coverage` first and enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md) only when a device reads `unclaimed` or `none`. The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the fourteenth family implemented in the tree; it is excluded from the thirteen because no Dygma device lights up yet.
 
 {% <callout type="warning"> %}
 If another RGB manager (Aura Sync, openrazer daemon, iCUE via Wine, or an OpenRGB you started yourself) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. The OpenRGB server Hypercolor manages is exempt: it is configured to skip natively owned devices. See [conflicting software](@/hardware/conflicting-software.md).
@@ -127,7 +130,7 @@ Hypercolor discovers devices automatically at startup and whenever a rescan is t
 
 **USB/SMBus:** scans for known VID/PID combinations and probes `/dev/i2c-*` bus nodes at startup. Hotplug events trigger rescan automatically when the daemon is running.
 
-**Network:** runs mDNS browsing for each network driver's service type. Devices can also be added by IP address in the config; the key differs per driver (`known_ips` for WLED and Govee, `bridge_ips` for Hue, `device_ips` for Nanoleaf) for networks where mDNS is blocked across VLANs. See [network discovery troubleshooting](@/troubleshooting/network-discovery.md) for the exact snippets.
+**Network:** runs mDNS browsing for each network driver's service type. Devices can also be added by IP address in the config; the key differs per driver (`known_ips` for WLED and Govee, `bridge_ips` for Hue, `device_ips` for Nanoleaf and Twinkly) for networks where mDNS is blocked across VLANs. See [network discovery troubleshooting](@/troubleshooting/network-discovery.md) for the exact snippets.
 
 Trigger a manual scan:
 
@@ -157,6 +160,7 @@ Each transport path has its own setup page because the failure modes are differe
 - [Nanoleaf](@/hardware/nanoleaf.md): power-button pairing, panel layout
 - [WLED](@/hardware/wled.md): DDP vs E1.31, RGB vs RGBW
 - [Govee](@/hardware/govee.md): LAN control setup, Razer-streaming SKUs, cloud API key
+- [Twinkly](@/hardware/twinkly.md): discovery, the one-login rule, layouts, frame rate
 - [OpenRGB fallback](@/hardware/openrgb-fallback.md): coverage view, per-platform install, the managed server and detector partition, zone sizes
 - [My device isn't supported](@/hardware/unsupported-devices.md): native status, unclaimed hardware, the bridge, and a prefilled device-support request
 - [Device quirks](@/hardware/device-quirks.md): rebrands, firmware splits, known edge cases
