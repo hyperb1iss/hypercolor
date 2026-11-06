@@ -51,16 +51,16 @@ switches the device to real-time mode.
 ## One login at a time
 
 A Twinkly device honors only its most recent login. When the Twinkly app, Home Assistant's
-Twinkly integration, or a second Hypercolor logs in, Hypercolor's session stops working
-and the lights stop following your effects. Hypercolor checks its session every 5 seconds
-and logs in again when it has been signed out once.
+Twinkly integration, or a second Hypercolor logs in, Hypercolor is signed out. Hypercolor
+checks its session every 5 seconds, and the first time it finds itself signed out it
+steps back instead of fighting for the lights: it stops sending colors, leaves the lights to
+the other app, logs a warning that another app took control, and shows **Control** as
+`yielded_to_another_app` in the device diagnostics.
 
-If another app keeps signing it out (three times within two minutes), Hypercolor stops
-fighting for the lights. It pauses, leaves them to the other app, logs a warning that
-another app is controlling the lights, and shows **Control** as `yielded_to_another_app`
-in the device diagnostics. After 30 seconds it takes the lights back once; if the other app
-grabs them again, the next pause doubles, up to 10 minutes. Reconnecting the device
-(Refresh Layout, or disabling and enabling it) resumes right away.
+After 30 seconds Hypercolor tries once to take the lights back. If the other app signs it
+out again, the next pause doubles, up to 10 minutes; holding the lights for 10 minutes
+resets it. Reconnecting the device (Refresh Layout, or disabling and enabling it) takes the
+lights back right away.
 
 - Close the Twinkly app while Hypercolor is driving the lights.
 - Do not run Home Assistant's Twinkly integration against the same lights; it polls every

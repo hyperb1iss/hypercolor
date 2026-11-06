@@ -270,39 +270,48 @@ token are dropped silently; only REST calls reveal it, with a 401.
 
 ### 5.3 Upkeep
 
-While connected, a background task runs every 5 s:
+While Hypercolor holds the login, a background task runs every 5 s. It
+always checks ownership first, with an authenticated `GET led/mode`:
 
-| Condition | Action |
-|-----------|--------|
-| Token within 5 minutes (or half its lifetime, whichever is less) of expiry | Log in, verify, hand the new token to the frame encoder, `POST led/mode rt` |
-| `GET led/mode` returns 401 | Log in again, unless the contention rule in section 5.4 applies |
-| `GET led/mode` returns a mode other than `rt` | `POST led/mode rt` |
+| Result of the check | Action |
+|---------------------|--------|
+| 401 | Another client logged in: yield at once (section 5.4). Never log in again here |
+| A mode other than `rt` | `POST led/mode rt` |
+| `rt`, token within 5 minutes (or half its lifetime, whichever is less) of expiry | Log in, verify, hand the new token to the frame encoder, `POST led/mode rt`; a 401 anywhere in that refresh is a loss |
 | Any other failure | Count it; after 3 consecutive failures the session reports a write error, and the host's lifecycle reconnects the device |
 
-The 5 s interval bounds the dark period after another client signs
-Hypercolor out once.
+Checking first means a proactive refresh can never take the login back from
+a client that has just logged in, even when the device reports a token
+lifetime short enough to refresh on every cycle.
 
-### 5.4 Contention
+### 5.4 Ownership
 
-When another client keeps logging in (the Twinkly app in use, or Home
-Assistant's integration polling every 30 s), re-logging in on every 401 would
-fight it forever: each login signs the other client out. The session instead
-counts lost logins, including a 401 in the middle of its own re-login:
+A device honors one login, so any login by another client (the Twinkly app,
+Home Assistant's integration, a second Hypercolor) signs Hypercolor out, and
+logging in again would sign that client out in turn. Rate thresholds cannot
+tell a rival from a glance: a client that logs in every 90 s never trips "3
+losses in 2 minutes" and gets fought forever. The session therefore yields
+on the first loss:
 
-| Rule | Default |
-|------|---------|
-| Lost logins that count as contention | 3 within 2 minutes |
-| First pause | 30 s |
-| Each later pause | doubled, up to 10 minutes |
-| Pause reset | after 2 minutes without a lost login |
+| State | Behavior |
+|-------|----------|
+| Owning | Section 5.3 |
+| Yielded | No requests to the device; frames answered `Declined` (the device keeps what the other app set); metadata `control_state = yielded_to_another_app`; a warning that another app took control |
 
-During a pause the session sends nothing to the device, answers frames with
-`Declined` (the device keeps showing what the other app set), reports
-`control_state = yielded_to_another_app` in its metadata, and logs a warning
-that another app is controlling the lights. When the pause ends it logs in
-once to take the lights back; if the other client signs it out again, the
-next pause is longer. A user action that reconnects the device (Refresh
-Layout, or disabling and enabling it) starts a fresh session with no pause.
+| Transition | Rule |
+|------------|------|
+| Owning to Yielded | Any 401 the session did not cause: the ownership check or a refresh |
+| Yielded to Owning | When the pause ends, one resume: log in, verify, `POST led/mode rt`. Only when every step succeeds does the session clear `yielded` and own the lights again |
+| Resume fails with a 401 | Another client is still active: yield again with the next, longer pause |
+| Resume fails otherwise | Re-arm the same pause; the failure counts toward the 3-failure limit |
+
+Pauses start at 30 s and double after each loss, up to 10 minutes; holding
+the login for 10 minutes without a loss is the quiet period that resets the
+pause to 30 s. The resume is the only way to learn whether the other client
+went quiet, because every authenticated request needs a login; against a
+persistent rival it costs one login per pause. A user action that reconnects
+the device (Refresh Layout, or disabling and enabling it) starts a fresh
+session that owns the lights immediately.
 
 ---
 
@@ -520,8 +529,8 @@ Connect reads `GET led/mode` right after login and remembers the mode unless
 it is already `rt`. Disconnect stops the upkeep task, closes the sink, and
 puts that mode back with `POST led/mode`, bounded to 2 s and best effort (a
 failure is logged at debug level). The restore is skipped when the session
-is paused for contention, so Hypercolor never takes the lights from another
-app on the way out, and when the session already failed.
+is yielded to another app, so Hypercolor never takes the lights from it on
+the way out, and when the session already failed.
 
 ### 10.6 Controls
 
@@ -573,9 +582,9 @@ Nothing touches the LAN. Every test binds 127.0.0.1.
    frames, far beyond any device.
 4. **Maximum real-time rate** is unknown (section 8.1); the configurable
    `max_fps` is the escape hatch.
-5. **Token contention** with the Twinkly app or Home Assistant pauses
-   streaming for a growing interval (section 5.4); the two cannot share a
-   device.
+5. **Token contention**: Hypercolor yields to the Twinkly app or Home
+   Assistant on the first lost login and retries after a growing pause
+   (section 5.4); the two cannot share a device.
 6. **Sync groups**: a group master's layout covers its members; streaming to
    a grouped device is untested in every source.
 7. **AWW profile and the `/xled/v2` Pro API** are unsupported (section 2).
