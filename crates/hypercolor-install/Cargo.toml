@@ -28,6 +28,9 @@ uuid = { workspace = true }
 zbus = { workspace = true, features = ["p2p"] }
 tempfile = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 hypercolor-macos-owner = { workspace = true }
 rustix = { version = "1.1.5", features = ["fs", "process"] }
