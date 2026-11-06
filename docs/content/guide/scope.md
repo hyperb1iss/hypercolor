@@ -18,6 +18,7 @@ Hypercolor drives hardware through two transport layers.
 | `corsair` | K100/K70 keyboards, Commander Pro, Lighting Node, iCUE LINK, Corsair mice |
 | `nollie` | Nollie 1/2/4/8/16/32, Nollie L1/L2, Matrix, TT (19 controllers) |
 | `qmk` | Keychron Q/V series, Glorious GMMK Pro, ZSA Moonlander, ZSA Voyager |
+| `wooting` | Wooting One, Two, Two HE, 60HE, 60HE+, 60HE v2, 80HE, UwU RGB (per-key RGB). Experimental: built from the protocol spec and not yet run on Wooting hardware |
 | `asus` | Aura Addressable (Gen 1-4), Aura Motherboard (Gen 1-5), Aura Terminal, Aura DRAM (SMBus) |
 | `lianli` | Uni Hub (SL, SL V2, SL Infinity, AL, AL V2), TL Fan Hub |
 | `nzxt` | Smart Device V2, RGB & Fan Controller, Control Hub, N7 motherboards, Kraken X3/Z3/Elite V2 lighting. Experimental: built from the protocol spec and not yet run on NZXT hardware |
