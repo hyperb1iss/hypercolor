@@ -12,8 +12,12 @@
 mod coordinator;
 #[cfg(unix)]
 mod linux;
+#[cfg(unix)]
+mod macho_cdhash;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(unix)]
+pub mod macos_bundle;
 mod model;
 #[cfg(unix)]
 mod ownership;
@@ -64,9 +68,11 @@ pub use ownership::{
 #[cfg(unix)]
 pub use payload::{
     MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
-    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError,
-    copy_installed_release_unit, stage_release_payload, stage_release_payload_from_authority,
-    validate_release_payload, validate_release_payload_from_authority,
+    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError, bind_macos_bundle_unit,
+    copy_installed_release_unit, retain_macos_bundle_unit, stage_macos_bundle_unit,
+    stage_macos_bundle_unit_from_authority, stage_release_payload,
+    stage_release_payload_from_authority, validate_release_payload,
+    validate_release_payload_from_authority,
 };
 #[cfg(target_os = "macos")]
 pub use payload::{MacosReleaseProvenance, bind_macos_release_provenance};
