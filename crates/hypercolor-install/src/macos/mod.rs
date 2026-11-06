@@ -2,7 +2,6 @@ mod effects;
 mod executor;
 mod launcher_store;
 mod legacy;
-mod macho_cdhash;
 mod model;
 mod native;
 mod native_identity;
@@ -21,8 +20,8 @@ mod validation;
 
 use super::{InstallPlatformError, UnitId, UnitRecord};
 
+pub(crate) use super::macho_cdhash::thin_macho_cdhash;
 pub use executor::MacosInstallExecutor;
-pub(crate) use macho_cdhash::thin_macho_cdhash;
 pub use model::{
     MacosCandidateLayout, MacosDirectoryState, MacosEntryPublication, MacosExactEntry,
     MacosFilePublication, MacosInstallConfig, MacosLaunchdObservation, MacosLauncherSnapshot,

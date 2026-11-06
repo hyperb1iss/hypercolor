@@ -7,11 +7,16 @@ use hypercolor_platform_fs::{
     DirectoryAuthority, DirectoryEntryKind, PrivateStagingDirectory, ReadOnlyDirectoryAuthority,
 };
 
+mod bundle;
 #[cfg(target_os = "macos")]
 mod macos;
 mod manifest;
 mod tree;
 
+pub use bundle::{
+    bind_macos_bundle_unit, retain_macos_bundle_unit, stage_macos_bundle_unit,
+    stage_macos_bundle_unit_from_authority,
+};
 #[cfg(target_os = "macos")]
 pub use macos::{MacosReleaseProvenance, bind_macos_release_provenance};
 pub use manifest::{

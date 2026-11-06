@@ -2,8 +2,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use sha2::{Digest as _, Sha256};
 
-use super::super::InstallPlatformError;
-use super::model::error;
+use super::InstallPlatformError;
 
 const MACH_HEADER_64_BYTES: u64 = 32;
 const MH_MAGIC_64: u32 = 0xfeed_facf;
@@ -221,6 +220,10 @@ fn be_u32(bytes: &[u8], offset: usize) -> Result<u32, InstallPlatformError> {
 
 fn io_error(source: std::io::Error) -> InstallPlatformError {
     error(source.to_string())
+}
+
+fn error(detail: impl Into<String>) -> InstallPlatformError {
+    InstallPlatformError::new(detail)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
