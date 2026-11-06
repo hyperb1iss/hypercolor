@@ -15,6 +15,7 @@ pub mod backend;
 pub mod color;
 pub mod config;
 pub mod controls;
+pub mod drain;
 pub mod plan;
 pub mod protocol;
 
@@ -25,9 +26,10 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigSource,
+    DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
+    DriverModule, DriverPresentationProvider, OutputBinding, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_support::control_apply;
 use hypercolor_types::config::DriverConfigEntry;
@@ -36,19 +38,20 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceColorSpace,
-    DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
-    DriverPresentation, DriverTransportKind, FingerprintNamespace, SegmentInfo,
+    DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
+    DeviceTopologyHint, DriverPresentation, DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::identity::BackendId;
 
 pub use backend::{
-    AdalightBackend, BLACKOUT_FRAMES, KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG,
-    output_cadence_for,
+    AdalightBackend, DISCONNECT_BUDGET, KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG, SnapshotConfig,
+    output_cadence_for, stall_budget,
 };
 pub use color::ColorOrder;
 pub use config::{AdalightConfig, AdalightConfigError, AdalightDeviceConfig, WhiteMode};
 pub use controls::{adalight_device_control_surface, adalight_driver_control_surface};
-pub use plan::{AdalightDevicePlan, resolve_config, resolve_device};
+pub use drain::{DrainVerdict, DrainWatch};
+pub use plan::{AdalightDevicePlan, MAX_BLACKOUT_FRAMES, resolve_config, resolve_device};
 pub use protocol::{AdalightProtocol, FrameEncoder, FrameLayout, Framing, WhiteCalibration};
 
 /// Static driver descriptor.
@@ -104,13 +107,18 @@ impl DriverModule for AdalightDriverModule {
 impl DeviceBackendFactory for AdalightDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
+        host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        // Config-free: each device carries its config entry through
-        // discovery metadata, so an edit reaches the next connection
-        // without a backend rebuild.
-        Ok(Arc::new(AdalightBackend::new()))
+        // Every adoption and open is checked against the live config, so a
+        // removed entry can never be reopened from retained metadata. Hosts
+        // without a live config store fall back to the entry the backend is
+        // built from; the reconciler rebuilds it whenever that entry
+        // changes.
+        let source = host.config_source().unwrap_or_else(|| {
+            Arc::new(SnapshotConfig::new(config.entry.clone())) as Arc<dyn DriverConfigSource>
+        });
+        Ok(Arc::new(AdalightBackend::new(source)))
     }
 }
 
@@ -162,10 +170,23 @@ pub fn configured_devices(
         .collect())
 }
 
+/// Fingerprint of the device a config entry describes.
+///
+/// Identity comes from the user's config id, never from the port or the
+/// USB-serial chip behind it.
+#[must_use]
+pub fn device_fingerprint(config_id: &str) -> DeviceFingerprint {
+    DeviceFingerprint::mint(FingerprintNamespace::Usb, DESCRIPTOR.id, config_id)
+}
+
+/// Device id of the device a config entry describes.
+#[must_use]
+pub fn device_id_for(config_id: &str) -> DeviceId {
+    device_fingerprint(config_id).stable_device_id()
+}
+
 fn discovered_device(device: &AdalightDeviceConfig, plan: &AdalightDevicePlan) -> DiscoveredDevice {
-    // Identity comes from the user's config id, never from the port or the
-    // USB-serial chip behind it.
-    let fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Usb, DESCRIPTOR.id, &plan.id);
+    let fingerprint = device_fingerprint(&plan.id);
     let color_format = if plan.white.has_white() {
         DeviceColorFormat::Rgbw
     } else {

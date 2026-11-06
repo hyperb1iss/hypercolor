@@ -5,7 +5,7 @@ use std::time::Duration;
 use hypercolor_driver_adalight::protocol::{AwaWhite, Framing};
 use hypercolor_driver_adalight::{
     AdalightConfig, AdalightConfigError, AdalightDeviceConfig, AdalightProtocol, ColorOrder,
-    WhiteCalibration, WhiteMode, resolve_config, resolve_device,
+    MAX_BLACKOUT_FRAMES, WhiteCalibration, WhiteMode, resolve_config, resolve_device, stall_budget,
 };
 use serde_json::json;
 
@@ -316,4 +316,29 @@ fn user_cap_only_ever_slows_the_device() {
     let plan = resolve_device(&config).expect("valid");
     assert_eq!(plan.effective_max_fps(), 12);
     assert_eq!(plan.frame_interval(), plan.line_interval());
+}
+
+#[test]
+fn blackout_frames_fit_half_a_second_of_line_time() {
+    let blackout = |led_count: u32| {
+        let mut config = minimal();
+        config.led_count = led_count;
+        resolve_device(&config).expect("valid").blackout_frames()
+    };
+    // At 115200 baud: 78.6 ms, 156.8 ms, 208.9 ms, and 391.2 ms frames.
+    assert_eq!(blackout(300), MAX_BLACKOUT_FRAMES);
+    assert_eq!(blackout(600), 3);
+    assert_eq!(blackout(800), 2);
+    assert_eq!(blackout(1_500), 1, "a slow frame still gets one copy");
+}
+
+#[test]
+fn stall_budget_is_four_frames_or_one_second() {
+    let mut config = minimal();
+    config.led_count = 1_000;
+    // 3006 bytes at 115200 baud: 260.9 ms per frame.
+    let slow = resolve_device(&config).expect("valid");
+    assert_eq!(stall_budget(&slow), Duration::from_micros(260_938) * 4);
+    let fast = resolve_device(&minimal()).expect("valid");
+    assert_eq!(stall_budget(&fast), Duration::from_secs(1));
 }

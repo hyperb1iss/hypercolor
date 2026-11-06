@@ -2,35 +2,42 @@
 //!
 //! Each connected device owns a session holding its resolved plan, the
 //! open port, and a reusable frame buffer whose header is built once. The
-//! backend never enumerates ports and never opens one the config does not
-//! name.
+//! backend never enumerates ports, and every adoption and every open is
+//! authorized against the live driver config at that moment: a device id
+//! must still name an entry there, with the same port, or the backend
+//! refuses it. Historical discovery metadata alone never opens a port.
 //!
 //! Pacing follows the render loop up to what the line can carry. The
 //! backend advertises the line interval as the output cadence, so the
 //! core's latest-frame queue coalesces faster frames to the newest one. As
-//! a backstop, a frame is skipped while the driver still holds a whole
-//! frame's worth of unsent bytes, and the newest frame goes out once the
-//! line catches up. Frames never queue behind the UART.
+//! a backstop, a frame is skipped while the OS driver still holds a whole
+//! frame of unsent bytes, and a backlog that stops draining fails the
+//! delivery so the lifecycle reconnects. Frames never queue behind the
+//! UART.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice,
+    DriverConfigSource, DriverConfigView, OutputCadence,
 };
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tokio_serial::{
-    DataBits, FlowControl, Parity, SerialPort, SerialPortBuilderExt, SerialStream, StopBits,
+    ClearBuffer, DataBits, FlowControl, Parity, SerialPort, SerialPortBuilderExt, SerialStream,
+    StopBits,
 };
 use tracing::{debug, info, warn};
 
-use crate::config::AdalightDeviceConfig;
-use crate::plan::{AdalightDevicePlan, resolve_device};
+use crate::config::{AdalightConfig, AdalightDeviceConfig};
+use crate::drain::{DrainVerdict, DrainWatch};
+use crate::plan::{AdalightDevicePlan, resolve_config, resolve_device};
 use crate::protocol::FrameEncoder;
 
 /// Discovery metadata key carrying the device's config entry as JSON.
@@ -43,13 +50,12 @@ pub const METADATA_DEVICE_CONFIG: &str = "adalight_device";
 /// one-second refresh keeps every known firmware showing the last frame.
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Black frames sent on disconnect. HyperSerial never blanks on idle and
-/// drops corrupt frames, and Adalight-FastLED drops frames that arrive while
-/// it latches, so one surviving copy of three turns the strip off.
-pub const BLACKOUT_FRAMES: usize = 3;
-
 /// Render loop ceiling, used to report when a line is the bottleneck.
 pub const RENDER_LOOP_MAX_FPS: u32 = 60;
+
+/// Time a disconnect may spend on its blackout frames and port close
+/// together, inside the daemon's two-second disconnect timeout.
+pub const DISCONNECT_BUDGET: Duration = Duration::from_millis(1_800);
 
 /// Shortest bound on one frame write before the port counts as stalled.
 const MIN_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -57,20 +63,61 @@ const MIN_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Frames' worth of line time a write may take before it counts as stalled.
 const WRITE_TIMEOUT_FRAMES: u32 = 4;
 
+/// Time the blackout frames may take to reach the OS driver.
+const BLACKOUT_WRITE_BOUND: Duration = Duration::from_millis(600);
+
 /// Bytes of firmware greeting read after the startup delay.
 const GREETING_MAX_BYTES: usize = 256;
 
 /// Quiet period that ends the greeting read.
 const GREETING_READ_IDLE: Duration = Duration::from_millis(25);
 
-/// Slack on top of the blackout frames' line time while a close drains.
-const CLOSE_WAIT_MARGIN: Duration = Duration::from_millis(500);
-
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
+/// A fixed driver config, for hosts that cannot provide a live one.
+///
+/// The reconciler rebuilds the backend whenever the driver's config entry
+/// changes, so the entry a backend was built from is still the newest one
+/// such a host has.
+#[derive(Debug, Clone)]
+pub struct SnapshotConfig {
+    entry: DriverConfigEntry,
+}
+
+impl SnapshotConfig {
+    /// Wrap one driver config entry.
+    #[must_use]
+    pub const fn new(entry: DriverConfigEntry) -> Self {
+        Self { entry }
+    }
+
+    /// Build an enabled entry from a typed config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config cannot be serialized.
+    pub fn from_config(config: &AdalightConfig) -> Result<Self> {
+        let serde_json::Value::Object(settings) =
+            serde_json::to_value(config).context("failed to serialize adalight config")?
+        else {
+            bail!("adalight config did not serialize to an object");
+        };
+        Ok(Self::new(DriverConfigEntry::enabled(
+            settings.into_iter().collect::<BTreeMap<_, _>>(),
+        )))
+    }
+}
+
+impl DriverConfigSource for SnapshotConfig {
+    fn driver_config(&self, driver_id: &str) -> Option<DriverConfigEntry> {
+        (driver_id == crate::DESCRIPTOR.id).then(|| self.entry.clone())
+    }
+}
+
 /// Backend for manually configured Adalight and AWA serial controllers.
-#[derive(Default)]
 pub struct AdalightBackend {
+    /// Live driver config that authorizes every adoption and open.
+    config: Arc<dyn DriverConfigSource>,
     /// Plans for adopted devices, keyed by device id.
     adopted: StdRwLock<HashMap<DeviceId, Arc<AdalightDevicePlan>>>,
     /// Connected sessions.
@@ -78,10 +125,24 @@ pub struct AdalightBackend {
 }
 
 impl AdalightBackend {
-    /// Create an empty backend.
+    /// Create a backend that checks `config` before every adoption and
+    /// open.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(config: Arc<dyn DriverConfigSource>) -> Self {
+        Self {
+            config,
+            adopted: StdRwLock::default(),
+            sessions: StdRwLock::default(),
+        }
+    }
+
+    /// Create a backend authorized by a fixed config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config cannot be serialized.
+    pub fn from_config(config: &AdalightConfig) -> Result<Self> {
+        Ok(Self::new(Arc::new(SnapshotConfig::from_config(config)?)))
     }
 
     /// Resolved plan for an adopted device.
@@ -98,6 +159,62 @@ impl AdalightBackend {
     #[must_use]
     pub fn is_connected(&self, id: &DeviceId) -> bool {
         self.session(id).is_some()
+    }
+
+    /// Plan the live config holds for `id` right now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::NotFound`] when the driver is disabled, its
+    /// config is invalid, or no entry derives this device id.
+    pub fn configured_plan(&self, id: &DeviceId) -> Result<AdalightDevicePlan, DeviceError> {
+        let not_configured = |reason: &str| DeviceError::NotFound {
+            device: format!("{id} ({reason})"),
+        };
+        let entry = self
+            .config
+            .driver_config(crate::DESCRIPTOR.id)
+            .ok_or_else(|| not_configured("the adalight driver has no config"))?;
+        if !entry.enabled {
+            return Err(not_configured("the adalight driver is disabled"));
+        }
+        let config = DriverConfigView {
+            driver_id: crate::DESCRIPTOR.id,
+            entry: &entry,
+        }
+        .parse_settings::<AdalightConfig>()
+        .map_err(|error| not_configured(&format!("the adalight config is invalid: {error}")))?;
+        let plans = resolve_config(&config)
+            .map_err(|error| not_configured(&format!("the adalight config is invalid: {error}")))?;
+        plans
+            .into_iter()
+            .find(|plan| crate::device_id_for(&plan.id) == *id)
+            .ok_or_else(|| not_configured("no serial device in the current config has this id"))
+    }
+
+    /// Live plan for `id`, required to name the same port as `expected`.
+    fn authorize(
+        &self,
+        id: &DeviceId,
+        expected: &AdalightDevicePlan,
+    ) -> Result<AdalightDevicePlan, DeviceError> {
+        let live = self.configured_plan(id)?;
+        if live.port != expected.port {
+            return Err(DeviceError::NotFound {
+                device: format!(
+                    "{id} (the current config names port {} for '{}', not {})",
+                    live.port, live.id, expected.port
+                ),
+            });
+        }
+        Ok(live)
+    }
+
+    fn forget(&self, id: &DeviceId) {
+        self.adopted
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
     }
 
     fn session(&self, id: &DeviceId) -> Option<Arc<Mutex<AdalightSession>>> {
@@ -138,8 +255,15 @@ impl DeviceBackend for AdalightBackend {
                 format!("invalid adalight device metadata: {error}"),
             )
         })?;
-        let plan = resolve_device(&config)
+        let described = resolve_device(&config)
             .map_err(|error| DeviceError::protocol(device_id, error.to_string()))?;
+        let plan = match self.authorize(&device_id, &described) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.forget(&device_id);
+                return Err(error);
+            }
+        };
         self.adopted
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -152,18 +276,32 @@ impl DeviceBackend for AdalightBackend {
     }
 
     fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        // The daemon asks for the policy before it adopts a device, so the
+        // startup delay comes from the live config, not the adopted plan.
         let policy = DeviceLifecyclePolicy::default();
-        match self.adopted_plan(&info.id) {
-            Some(plan) => policy
-                .with_connect_timeout(policy.connect_timeout().saturating_add(plan.startup_delay)),
-            None => policy,
-        }
+        let startup_delay = self
+            .configured_plan(&info.id)
+            .map(|plan| plan.startup_delay)
+            .ok()
+            .or_else(|| self.adopted_plan(&info.id).map(|plan| plan.startup_delay))
+            .unwrap_or_default();
+        policy.with_connect_timeout(policy.connect_timeout().saturating_add(startup_delay))
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let plan = self
+        let adopted = self
             .adopted_plan(id)
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
+        // Authorize against the config as it is now, not as it was when the
+        // device was discovered or adopted.
+        let plan = match self.authorize(id, &adopted) {
+            Ok(plan) => Arc::new(plan),
+            Err(error) => {
+                self.forget(id);
+                return Err(error);
+            }
+        };
+
         if let Some(existing) = self.session(id) {
             let mut existing = existing.lock().await;
             if *existing.plan == *plan {
@@ -171,7 +309,7 @@ impl DeviceBackend for AdalightBackend {
             }
             // The config changed under a live session: release the old port
             // before reopening, since the open is exclusive.
-            existing.close_and_wait().await;
+            existing.close_and_wait(DISCONNECT_BUDGET).await;
             drop(existing);
             self.sessions
                 .write()
@@ -179,10 +317,30 @@ impl DeviceBackend for AdalightBackend {
                 .remove(id);
         }
 
+        // Closing an old session can take a while; check again right
+        // before the open.
+        let plan = match self.authorize(id, &plan) {
+            Ok(plan) => Arc::new(plan),
+            Err(error) => {
+                self.forget(id);
+                return Err(error);
+            }
+        };
+        self.adopted
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, Arc::clone(&plan));
+
         let mut port = open_port(*id, &plan).await?;
         if !plan.startup_delay.is_zero() {
             tokio::time::sleep(plan.startup_delay).await;
             log_greeting(*id, &plan, &mut port).await;
+            // The entry may have been removed while the board booted.
+            if let Err(error) = self.authorize(id, &plan) {
+                self.forget(id);
+                close_port(port).await;
+                return Err(error);
+            }
         }
 
         let line_max_fps = plan.line_max_fps();
@@ -218,6 +376,7 @@ impl DeviceBackend for AdalightBackend {
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        let started = Instant::now();
         let session = self
             .sessions
             .write()
@@ -231,11 +390,13 @@ impl DeviceBackend for AdalightBackend {
             debug!(
                 device_id = %id,
                 port = %session.plan.port,
-                error = %error,
-                "best-effort serial blackout frame failed"
+                error = %format!("{error:#}"),
+                "best-effort serial blackout frames failed"
             );
         }
-        session.close_and_wait().await;
+        session
+            .close_and_wait(DISCONNECT_BUDGET.saturating_sub(started.elapsed()))
+            .await;
         info!(device_id = %id, "Disconnected serial LED controller");
         Ok(())
     }
@@ -319,6 +480,15 @@ pub fn output_cadence_for(plan: &AdalightDevicePlan) -> OutputCadence {
         .with_max_frame_silence(KEEPALIVE_INTERVAL)
 }
 
+/// Longest a backlog or a single write may go without progress before the
+/// port counts as stalled: four frames of line time, at least one second.
+#[must_use]
+pub fn stall_budget(plan: &AdalightDevicePlan) -> Duration {
+    plan.frame_time()
+        .saturating_mul(WRITE_TIMEOUT_FRAMES)
+        .max(MIN_WRITE_TIMEOUT)
+}
+
 async fn open_port(id: DeviceId, plan: &AdalightDevicePlan) -> Result<SerialStream, DeviceError> {
     let builder = tokio_serial::new(plan.port.clone(), plan.baud_rate)
         .data_bits(DataBits::Eight)
@@ -336,6 +506,16 @@ async fn open_port(id: DeviceId, plan: &AdalightDevicePlan) -> Result<SerialStre
     .await
     .map_err(|error| DeviceError::connection(id, format!("serial open task failed: {error}")))?;
     opened.map_err(|error| map_open_error(id, &port, &error))
+}
+
+/// Close a port that never became a session, off the async workers.
+async fn close_port(port: SerialStream) {
+    let handle = tokio::runtime::Handle::current();
+    let close = handle.clone().spawn_blocking(move || {
+        let _runtime = handle.enter();
+        drop(port);
+    });
+    let _ = tokio::time::timeout(DISCONNECT_BUDGET, close).await;
 }
 
 fn map_open_error(id: DeviceId, port: &str, error: &tokio_serial::Error) -> DeviceError {
@@ -447,53 +627,75 @@ struct AdalightSession {
     plan: Arc<AdalightDevicePlan>,
     port: Option<SerialStream>,
     encoder: FrameEncoder,
-    write_timeout: Duration,
+    stall_budget: Duration,
     /// Whether any frame has gone out, so a blackout frame is worth sending.
     has_sent: bool,
-    /// Whether the driver reported its output queue depth; once a query
+    /// Whether the OS driver reports its output queue depth; once a query
     /// fails the backstop is skipped for the rest of the session.
     queue_depth_supported: bool,
+    drain: DrainWatch,
     last_size_mismatch_warn_at: Option<Instant>,
 }
 
 impl AdalightSession {
     fn new(device_id: DeviceId, plan: Arc<AdalightDevicePlan>, port: SerialStream) -> Self {
         let encoder = FrameEncoder::new(plan.layout, plan.color_order);
-        let write_timeout = plan
-            .frame_time()
-            .saturating_mul(WRITE_TIMEOUT_FRAMES)
-            .max(MIN_WRITE_TIMEOUT);
+        let stall_budget = stall_budget(&plan);
         Self {
             device_id,
             plan,
             port: Some(port),
             encoder,
-            write_timeout,
+            stall_budget,
             has_sent: false,
             queue_depth_supported: true,
+            drain: DrainWatch::new(),
             last_size_mismatch_warn_at: None,
         }
     }
 
     async fn write_colors(&mut self, colors: &[[u8; 3]]) -> Result<DeviceWriteOutcome> {
         self.warn_on_size_mismatch(colors.len());
-        if self.line_backlogged() {
-            return Ok(DeviceWriteOutcome::SuppressedCadence);
+        match self.drain_verdict() {
+            DrainVerdict::Clear => {}
+            DrainVerdict::Backlogged => return Ok(DeviceWriteOutcome::SuppressedCadence),
+            DrainVerdict::Stalled {
+                queued,
+                stalled_for,
+            } => bail!(
+                "serial driver for {} has held {queued} unsent bytes without draining for {} ms",
+                self.plan.port,
+                stalled_for.as_millis()
+            ),
         }
         self.encoder.encode(colors);
-        self.send_frame().await?;
+        self.send_frame(self.stall_budget).await?;
         self.has_sent = true;
         Ok(DeviceWriteOutcome::Sent)
     }
 
-    /// Send black frames so the strip goes dark when output stops.
+    /// Send black frames so the strip goes dark when output stops. Frames
+    /// still waiting in the OS driver are discarded first, so the blackout
+    /// goes out at once and the close drains only the blackout.
     async fn finish(&mut self) -> Result<()> {
-        if !self.has_sent || self.port.is_none() {
+        if !self.has_sent {
             return Ok(());
         }
+        let Some(port) = self.port.as_ref() else {
+            return Ok(());
+        };
+        if let Err(error) = port.clear(ClearBuffer::Output) {
+            debug!(
+                device_id = %self.device_id,
+                port = %self.plan.port,
+                error = %error,
+                "serial driver could not discard queued output before blackout"
+            );
+        }
+        self.drain.reset();
         self.encoder.encode_black();
-        for _ in 0..BLACKOUT_FRAMES {
-            self.send_frame().await?;
+        for _ in 0..self.plan.blackout_frames() {
+            self.send_frame(BLACKOUT_WRITE_BOUND).await?;
         }
         Ok(())
     }
@@ -514,16 +716,11 @@ impl AdalightSession {
         }))
     }
 
-    /// Close the port and wait, within a bound, until it is released, so a
+    /// Close the port and wait up to `bound` for it to be released, so a
     /// reconnect does not race the old descriptor's exclusive lock. A
     /// wedged driver can hold a tty close for its full closing wait; past
     /// the bound the close finishes in the background.
-    async fn close_and_wait(&mut self) {
-        let bound = self
-            .plan
-            .frame_time()
-            .saturating_mul(u32::try_from(BLACKOUT_FRAMES + 1).unwrap_or(u32::MAX))
-            .saturating_add(CLOSE_WAIT_MARGIN);
+    async fn close_and_wait(&mut self, bound: Duration) {
         let Some(task) = self.close() else {
             return;
         };
@@ -537,33 +734,38 @@ impl AdalightSession {
         }
     }
 
-    async fn send_frame(&mut self) -> Result<()> {
+    async fn send_frame(&mut self, bound: Duration) -> Result<()> {
         let port = self
             .port
             .as_mut()
             .ok_or_else(|| anyhow!("serial port is closed"))?;
-        tokio::time::timeout(self.write_timeout, port.write_all(self.encoder.as_bytes()))
+        tokio::time::timeout(bound, port.write_all(self.encoder.as_bytes()))
             .await
             .with_context(|| {
                 format!(
                     "serial write to {} stalled for {} ms",
                     self.plan.port,
-                    self.write_timeout.as_millis()
+                    bound.as_millis()
                 )
             })?
             .with_context(|| format!("serial write to {} failed", self.plan.port))
     }
 
-    /// Whether the driver still holds a whole frame of unsent bytes.
-    fn line_backlogged(&mut self) -> bool {
+    /// Whether the next frame may go out, given the OS driver's queue.
+    fn drain_verdict(&mut self) -> DrainVerdict {
         if !self.queue_depth_supported {
-            return false;
+            return DrainVerdict::Clear;
         }
         let Some(port) = self.port.as_ref() else {
-            return false;
+            return DrainVerdict::Clear;
         };
         match port.bytes_to_write() {
-            Ok(queued) => queued as usize >= self.plan.frame_bytes(),
+            Ok(queued) => self.drain.observe(
+                queued,
+                self.plan.frame_bytes(),
+                self.stall_budget,
+                Instant::now(),
+            ),
             Err(error) => {
                 debug!(
                     device_id = %self.device_id,
@@ -572,7 +774,7 @@ impl AdalightSession {
                     "serial driver does not report its output queue; relying on cadence alone"
                 );
                 self.queue_depth_supported = false;
-                false
+                DrainVerdict::Clear
             }
         }
     }

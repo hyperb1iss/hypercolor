@@ -23,6 +23,15 @@ use crate::protocol::{
 /// frame per second cannot animate, so config validation rejects it.
 pub const MAX_FRAME_TIME: Duration = Duration::from_secs(1);
 
+/// Most black frames sent on disconnect. HyperSerial never blanks on idle
+/// and drops corrupt frames, and Adalight-FastLED drops frames that arrive
+/// while it latches, so any one surviving copy turns the strip off.
+pub const MAX_BLACKOUT_FRAMES: usize = 3;
+
+/// Line time the blackout frames may occupy together, so a disconnect
+/// drains well inside the daemon's two-second disconnect timeout.
+pub const BLACKOUT_LINE_BUDGET: Duration = Duration::from_millis(500);
+
 /// Fully resolved plan for one device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdalightDevicePlan {
@@ -101,6 +110,17 @@ impl AdalightDevicePlan {
             return line;
         }
         line.max(Duration::from_secs(1) / self.max_fps)
+    }
+
+    /// Black frames sent on disconnect: as many as fit in
+    /// [`BLACKOUT_LINE_BUDGET`] of line time, from one to
+    /// [`MAX_BLACKOUT_FRAMES`].
+    #[must_use]
+    pub fn blackout_frames(&self) -> usize {
+        let frame = self.frame_time().as_micros().max(1);
+        usize::try_from(BLACKOUT_LINE_BUDGET.as_micros() / frame)
+            .unwrap_or(MAX_BLACKOUT_FRAMES)
+            .clamp(1, MAX_BLACKOUT_FRAMES)
     }
 
     /// Frame rate the device is driven at: the line limit, or the user cap
