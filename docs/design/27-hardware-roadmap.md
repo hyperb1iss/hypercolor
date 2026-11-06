@@ -1,36 +1,38 @@
 # 27 — Hardware Support Roadmap
 
-**Status:** Roadmap. The vendor priorities and protocol notes are still useful;
-every device count below is stale and none of them should be quoted.
-
-**Drift, checked 2026-08-25 at `7620eae44`:** the generated compatibility matrix
-in `data/compat/compatibility.json` is the only authority for these numbers, and
-it disagrees with every count in this document. It records 414 tracked devices
-across 32 vendors, of which 179 ship with a working driver across 12 driver
-families (not 13). Per driver, supported counts are Razer 70 (this doc says
-111), Corsair 49 (says 14), Nollie 20 (says 4), QMK 11 (says 10), ASUS 10,
-Lian Li 9 (says 10), Govee 4, PrismRGB 2 (says 4), and one each for Push 2,
-Nanoleaf, Hue, and WLED. Dygma is the family that dropped out: its two devices
-are now status `blocked`, with zero supported. Regenerate with `just compat`
-and read `data/compat/README-hardware.md` rather than editing these tables.
+**Status:** Roadmap. The vendor priorities, protocol notes, and phasing are
+still useful. Device counts do not live here: they went stale every time a
+driver landed, so this document now points at the generated matrix instead.
 
 ## Current State
 
-Hypercolor supports **~160 devices** across 13 driver families spanning USB and network:
+The compatibility matrix is the only authority for what Hypercolor supports
+and how each device was verified:
+
+- [`docs/content/hardware/compatibility.md`](../content/hardware/compatibility.md)
+  for the readable matrix, including the per-device **Verified** column
+  (Spec 89).
+- `data/compat/compatibility.json` for tooling, with per-vendor and total
+  `supportedByVerification` counts.
+- `data/compat/README-hardware.md` for the summary table the root README
+  embeds.
+
+Regenerate all three with `just compat`; never copy numbers from them into
+prose.
 
 ### USB Drivers (hypercolor-hal)
 
-| Driver         | Devices | Protocol                                             | Transport  |
-| -------------- | ------- | ---------------------------------------------------- | ---------- |
-| Razer          | 111     | RazerProtocol (Modern/Extended/Extended3F), SeirenV3 | USB HID    |
-| Corsair        | 14      | CorsairLink, LightingNode, CorsairLcd                | USB HID    |
-| ASUS Aura      | 10      | AuraUsb (5 controller generations)                   | USB HidRaw |
-| Lian Li        | 10      | Ene6k77, TlFan, LegacyUniHub                         | USB HID    |
-| QMK            | 10      | QmkProtocol (standardized)                           | USB HID    |
-| PrismRGB       | 4       | PrismRgb                                             | USB HID    |
-| Nollie         | 4       | Nollie (Gen1/Gen2/Legacy)                            | USB HID    |
-| Dygma          | 2       | Dygma (wired/wireless)                               | USB Serial |
-| Ableton Push 2 | 1       | Push2 (MIDI + display)                               | USB MIDI   |
+| Driver         | Protocol families                                     | Transport  |
+| -------------- | ----------------------------------------------------- | ---------- |
+| Razer          | RazerProtocol (Modern/Extended/Extended3F), SeirenV3, Kraken | USB HID    |
+| Corsair        | iCUE LINK, Lighting Node, LCD, Bragi peripherals      | USB HID    |
+| ASUS Aura      | AuraUsb (5 controller generations), Aura SMBus DRAM   | USB HidRaw, SMBus |
+| Lian Li        | Ene6k77, TL fan, legacy Uni Hub, wireless, LCD        | USB HID, USB bulk |
+| QMK            | QmkProtocol (standardized)                            | USB HID    |
+| PrismRGB       | PrismRgb                                              | USB HID    |
+| Nollie         | Nollie (Gen1/Gen2/Legacy)                             | USB HID, USB serial |
+| Dygma          | Dygma (wired/wireless), blocked on firmware           | USB Serial |
+| Ableton Push 2 | Push2 (MIDI + display)                                | USB MIDI   |
 
 ### Network Drivers (hypercolor-driver-\*)
 
@@ -41,8 +43,15 @@ Hypercolor supports **~160 devices** across 13 driver families spanning USB and 
 | Nanoleaf    | REST + UDP External Control   | Network (HTTP + UDP)   | mDNS discovery, panel topology, power button pairing      |
 | Govee       | Govee LAN (UDP port 4003)     | Network (UDP + HTTP)   | LAN discovery, cloud inventory, Razer-streaming for compatible SKUs |
 
-Plus the ROLI Blocks out-of-process bridge (Spec 30) and Corsair iCUE LINK Phase 2
-(native per-LED protocol, Spec 18) in progress.
+Plus the ROLI Blocks out-of-process bridge (Spec 30) and the opt-in OpenRGB
+fallback bridge (Spec 81).
+
+### Verification is the next frontier
+
+Most supported rows are `unverified`: the driver exists, but nobody has run
+that exact device. New drivers written without the hardware ship labeled
+`experimental` and stay `unverified` until an owner reports back (Spec 89).
+Expanding hardware-verified coverage is worth as much as adding new rows.
 
 ---
 
@@ -65,21 +74,21 @@ audio reactivity, and a modern Rust codebase that outperforms the C++/Python alt
 These drivers exist and are production-ready. Focus on expanding device tables and
 hardening edge cases.
 
-**Razer** — 111 devices with excellent protocol coverage across keyboards, mice, keypads,
-laptops, and microphones. Keep expanding as new hardware ships. Protocol is mature and
+**Razer**: broad protocol coverage across keyboards, mice, keypads, laptops,
+headsets, and microphones. Keep expanding as new hardware ships. Protocol is mature and
 well-understood.
 
 **Corsair** — LINK hub, Lighting Node, LCD drivers exist. Phase 2 (native iCUE LINK
 protocol for per-LED 60fps) is the big unlock. Commander Core/XT and V2 peripherals are
 the next device families to add.
 
-**ASUS Aura** — 10 devices across 5 controller generations (motherboard + addressable +
-terminal). Expand motherboard coverage as new chipsets ship.
+**ASUS Aura**: five USB controller generations (motherboard + addressable +
+terminal) plus SMBus DRAM lighting. Expand motherboard coverage as new chipsets ship.
 
-**Lian Li** — 10 UNI HUB variants. ENE 6K77 and TL/Nuvoton protocols implemented. Watch
+**Lian Li**: UNI HUB variants plus wireless fans and LCDs. ENE 6K77 and TL/Nuvoton protocols implemented. Watch
 for new product lines (SL/AL/TL V3, etc.).
 
-**QMK** — 10 keyboards, but QMK's standardized protocol means adding a new keyboard is
+**QMK**: a handful of keyboards, but QMK's standardized protocol means adding a new keyboard is
 just a device descriptor. Expand the table opportunistically (community PRs welcome).
 
 **WLED** — Full network driver with DDP + E1.31 streaming, mDNS discovery, and segment
@@ -274,7 +283,7 @@ Key open-source projects to convert into facts-only protocol specs before implem
 
 | Milestone         | Target                                           |
 | ----------------- | ------------------------------------------------ |
-| Tier 1 solidified | Stable across all 13 driver families             |
+| Tier 1 solidified | Stable and hardware-verified across every shipping driver family |
 | NZXT shipped      | First AIO cooler support on Linux                |
 | Tier 2 complete   | ~250+ devices, covers 80% of enthusiast builds   |
 | Tier 3 complete   | ~350+ devices, competitive with OpenRGB coverage |

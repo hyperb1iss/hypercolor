@@ -12,6 +12,12 @@ Hypercolor talks to RGB hardware through two parallel systems: a **Hardware Abst
 
 This section covers how the transport stack is organized, what device families are supported, and how to get each one working. The [compatibility matrix](@/hardware/compatibility.md) is the authoritative device list; start there if you want to confirm whether your hardware is supported.
 
+### Supported, verified, and experimental
+
+"Supported" in the matrix means a Hypercolor driver exists for the device. Its **Verified** column says whether anyone has confirmed that driver on the real thing: **Hardware** when a maintainer ran it, **Community** when a user reported it working, and **Unverified** when the driver was built from a protocol spec or captures and is waiting for its first owner to try it. Unverified devices are enabled like any other, so if you own one, you are probably the first to test it, and an issue saying it works (or doesn't) moves it along.
+
+Drivers written for hardware nobody has run yet also carry an `experimental` label. It changes nothing at runtime; you see it as `stability` in `GET /api/v1/drivers`, as `experimental` on a device in `GET /api/v1/devices`, and in the Tier column of `hypercolor drivers list`. Code with a known safety risk, such as a protocol path that could take over your keyboard's input driver, is not shipped at all until that risk is fixed.
+
 ---
 
 ## Device categories
