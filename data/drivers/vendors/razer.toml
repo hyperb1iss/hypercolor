@@ -857,77 +857,77 @@ transport = "usb_hid"
 leds = 14
 notes = "Extended matrix 1x14, HID report ID 0x07"
 
-# ─── Registered, awaiting hardware confirmation ───────────────────
+# ─── Registered ───────────────────
 
 [[devices]]
 pid = 0x0F17
 name = "Tomahawk ATX"
 type = "case"
-status = "in_progress"
+status = "supported"
 driver = "razer"
 transport = "usb_hid"
 leds = 20
-notes = "OpenRazer facts: 0x1F transaction ID, extended matrix 1x20 on HID interface 0. Awaiting hardware confirmation."
+notes = "OpenRazer facts: 0x1F transaction ID, extended matrix 1x20 on HID interface 0."
 
 [[devices]]
 pid = 0x0F12
 name = "Raptor 27"
 type = "monitor"
-status = "in_progress"
+status = "supported"
 driver = "razer"
 transport = "usb_hid"
 leds = 12
-notes = "OpenRazer facts: 0x1F transaction ID, extended matrix 1x12 on HID interface 0. Awaiting hardware confirmation."
+notes = "OpenRazer facts: 0x1F transaction ID, extended matrix 1x12 on HID interface 0."
 
 [[devices]]
 pid = 0x0F1A
 name = "Core X Chroma"
 type = "other"
-status = "in_progress"
+status = "supported"
 driver = "razer"
 transport = "usb_hid"
 leds = 16
-notes = "OpenRGB facts: 0x3F transaction ID, extended matrix 1x16 on HID interface 2 (OpenRazer sends 0x1F). Awaiting hardware confirmation."
+notes = "OpenRGB facts: 0x3F transaction ID, extended matrix 1x16 on HID interface 2 (OpenRazer sends 0x1F)."
 
 [[devices]]
 pid = 0x0510
 name = "Kraken 7.1 V2"
 type = "headset"
-status = "in_progress"
+status = "supported"
 driver = "razer"
 transport = "usb_hid"
 leds = 1
-notes = "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+notes = "Kraken memory-access protocol (Spec 83), Kraken V2 address map."
 
 [[devices]]
 pid = 0x0520
 name = "Kraken Tournament Edition"
 type = "headset"
-status = "in_progress"
+status = "supported"
 driver = "razer"
 transport = "usb_hid"
 leds = 1
-notes = "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+notes = "Kraken memory-access protocol (Spec 83), Kraken V2 address map."
 
 [[devices]]
 pid = 0x0560
 name = "Kraken Kitty V2"
 type = "headset"
-status = "in_progress"
+status = "supported"
 driver = "razer"
 transport = "usb_hid"
 leds = 1
-notes = "Sold as the Kitty Black Edition V2. Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+notes = "Sold as the Kitty Black Edition V2. Kraken memory-access protocol (Spec 83), Kraken V2 address map."
 
 [[devices]]
 pid = 0x0504
 name = "Kraken 7.1 Chroma"
 type = "headset"
-status = "in_progress"
+status = "supported"
 driver = "razer"
 transport = "usb_hid"
 leds = 1
-notes = "Kraken memory-access protocol (Spec 83), Kraken 7.1 Chroma address map with the LED mode register at 0x1008. Awaiting hardware confirmation."
+notes = "Kraken memory-access protocol (Spec 83), Kraken 7.1 Chroma address map with the LED mode register at 0x1008."
 
 # ─── Not Yet Supported ───────────────────────────────────────────────
 

@@ -5,8 +5,8 @@
     "vendors": 38,
     "devices": 487,
     "byStatus": {
-      "supported": 256,
-      "in_progress": 35,
+      "supported": 290,
+      "in_progress": 1,
       "planned": 0,
       "researched": 64,
       "known": 130,
@@ -15,7 +15,7 @@
     "supportedByVerification": {
       "hardware": 16,
       "community": 1,
-      "unverified": 239
+      "unverified": 273
     },
     "drivers": [
       "adalight",
@@ -27,6 +27,7 @@
       "lifx",
       "nanoleaf",
       "nollie",
+      "nzxt",
       "pixel",
       "prismrgb",
       "push2",
@@ -35,6 +36,7 @@
       "twinkly",
       "wiz",
       "wled",
+      "wooting",
       "yeelight"
     ]
   },
@@ -4542,12 +4544,12 @@
           "vidHex": null,
           "name": "Kraken Elite V2",
           "type": "aio",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": 24,
-          "notes": "Pump ring lighting, 512-byte reports. The external channel has no documented commit packet and is held back. Awaiting hardware confirmation."
+          "notes": "Pump ring lighting, 512-byte reports. The external channel has no documented commit packet and is held back."
         },
         {
           "pid": 8199,
@@ -4556,12 +4558,12 @@
           "vidHex": null,
           "name": "Kraken X3",
           "type": "aio",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Pump ring and external channel from the topology query. The logo packet for this PID is unresolved, so the logo stays dark. Awaiting hardware confirmation."
+          "notes": "Pump ring and external channel from the topology query. The logo packet for this PID is unresolved, so the logo stays dark."
         },
         {
           "pid": 8212,
@@ -4570,12 +4572,12 @@
           "vidHex": null,
           "name": "Kraken X3 RGB",
           "type": "aio",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Pump ring, external channel (40 LEDs max), and logo. Awaiting hardware confirmation."
+          "notes": "Pump ring, external channel (40 LEDs max), and logo."
         },
         {
           "pid": 12296,
@@ -4584,12 +4586,12 @@
           "vidHex": null,
           "name": "Kraken Z3",
           "type": "aio",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": 40,
-          "notes": "40-LED external channel on the Gen2 stream packets. Awaiting hardware confirmation."
+          "notes": "40-LED external channel on the Gen2 stream packets."
         },
         {
           "pid": 8215,
@@ -4598,12 +4600,12 @@
           "vidHex": null,
           "name": "N5 Z690",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
         },
         {
           "pid": 8203,
@@ -4612,12 +4614,12 @@
           "vidHex": null,
           "name": "N7 B550",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
         },
         {
           "pid": 8219,
@@ -4626,12 +4628,12 @@
           "vidHex": null,
           "name": "N7 B650E",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back. Awaiting hardware confirmation."
+          "notes": "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back."
         },
         {
           "pid": 8197,
@@ -4640,12 +4642,12 @@
           "vidHex": null,
           "name": "N7 Z390",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Three NZXT headers on the Gen2 stream packets. Awaiting hardware confirmation."
+          "notes": "Three NZXT headers on the Gen2 stream packets."
         },
         {
           "pid": 8202,
@@ -4654,12 +4656,12 @@
           "vidHex": null,
           "name": "N7 Z490",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
         },
         {
           "pid": 8204,
@@ -4668,12 +4670,12 @@
           "vidHex": null,
           "name": "N7 Z590",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
         },
         {
           "pid": 8214,
@@ -4682,12 +4684,12 @@
           "vidHex": null,
           "name": "N7 Z690",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+          "notes": "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
         },
         {
           "pid": 8221,
@@ -4696,12 +4698,12 @@
           "vidHex": null,
           "name": "N7 Z790",
           "type": "motherboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back. Awaiting hardware confirmation."
+          "notes": "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back."
         },
         {
           "pid": 8201,
@@ -4710,12 +4712,12 @@
           "vidHex": null,
           "name": "RGB and Fan Controller",
           "type": "fan_controller",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022 (0x2022 is the Control Hub). Lighting only; fan control is not implemented. Awaiting hardware confirmation."
+          "notes": "Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022 (0x2022 is the Control Hub). Lighting only; fan control is not implemented."
         },
         {
           "pid": 8193,
@@ -4724,12 +4726,12 @@
           "vidHex": null,
           "name": "Smart Device V2 (Hue 2)",
           "type": "argb_controller",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "nzxt",
           "transport": "usb_hid_raw",
           "leds": null,
-          "notes": "Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F. Channels and accessories come from the topology query. Awaiting hardware confirmation."
+          "notes": "Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F. Channels and accessories come from the topology query."
         },
         {
           "pid": 223,
@@ -4845,8 +4847,8 @@
         }
       ],
       "counts": {
-        "supported": 0,
-        "in_progress": 14,
+        "supported": 14,
+        "in_progress": 0,
         "planned": 0,
         "researched": 4,
         "known": 4,
@@ -4855,7 +4857,7 @@
       "supportedByVerification": {
         "hardware": 0,
         "community": 0,
-        "unverified": 0
+        "unverified": 14
       },
       "totalDevices": 22,
       "drivers": [
@@ -5864,6 +5866,20 @@
           "notes": "Standard matrix 1x9"
         },
         {
+          "pid": 3866,
+          "pidHex": "0x0F1A",
+          "vid": null,
+          "vidHex": null,
+          "name": "Core X Chroma",
+          "type": "other",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 16,
+          "notes": "OpenRGB facts: 0x3F transaction ID, extended matrix 1x16 on HID interface 2 (OpenRazer sends 0x1F)."
+        },
+        {
           "pid": 554,
           "pidHex": "0x022A",
           "vid": null,
@@ -6270,6 +6286,34 @@
           "notes": null
         },
         {
+          "pid": 1284,
+          "pidHex": "0x0504",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken 7.1 Chroma",
+          "type": "headset",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol (Spec 83), Kraken 7.1 Chroma address map with the LED mode register at 0x1008."
+        },
+        {
+          "pid": 1296,
+          "pidHex": "0x0510",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken 7.1 V2",
+          "type": "headset",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol (Spec 83), Kraken V2 address map."
+        },
+        {
           "pid": 3865,
           "pidHex": "0x0F19",
           "vid": null,
@@ -6282,6 +6326,34 @@
           "transport": "usb_hid",
           "leds": 4,
           "notes": "Extended matrix 1x4 on HID interface 1"
+        },
+        {
+          "pid": 1376,
+          "pidHex": "0x0560",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken Kitty V2",
+          "type": "headset",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Sold as the Kitty Black Edition V2. Kraken memory-access protocol (Spec 83), Kraken V2 address map."
+        },
+        {
+          "pid": 1312,
+          "pidHex": "0x0520",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken Tournament Edition",
+          "type": "headset",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol (Spec 83), Kraken V2 address map."
         },
         {
           "pid": 1319,
@@ -6550,6 +6622,20 @@
           "notes": null
         },
         {
+          "pid": 3858,
+          "pidHex": "0x0F12",
+          "vid": null,
+          "vidHex": null,
+          "name": "Raptor 27",
+          "type": "monitor",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 12,
+          "notes": "OpenRazer facts: 0x1F transaction ID, extended matrix 1x12 on HID interface 0."
+        },
+        {
           "pid": 3867,
           "pidHex": "0x0F1B",
           "vid": null,
@@ -6662,6 +6748,20 @@
           "notes": null
         },
         {
+          "pid": 3863,
+          "pidHex": "0x0F17",
+          "vid": null,
+          "vidHex": null,
+          "name": "Tomahawk ATX",
+          "type": "case",
+          "status": "supported",
+          "verification": "unverified",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 20,
+          "notes": "OpenRazer facts: 0x1F transaction ID, extended matrix 1x20 on HID interface 0."
+        },
+        {
           "pid": 145,
           "pidHex": "0x0091",
           "vid": null,
@@ -6674,104 +6774,6 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": null
-        },
-        {
-          "pid": 3866,
-          "pidHex": "0x0F1A",
-          "vid": null,
-          "vidHex": null,
-          "name": "Core X Chroma",
-          "type": "other",
-          "status": "in_progress",
-          "verification": "unverified",
-          "driver": "razer",
-          "transport": "usb_hid",
-          "leds": 16,
-          "notes": "OpenRGB facts: 0x3F transaction ID, extended matrix 1x16 on HID interface 2 (OpenRazer sends 0x1F). Awaiting hardware confirmation."
-        },
-        {
-          "pid": 1284,
-          "pidHex": "0x0504",
-          "vid": null,
-          "vidHex": null,
-          "name": "Kraken 7.1 Chroma",
-          "type": "headset",
-          "status": "in_progress",
-          "verification": "unverified",
-          "driver": "razer",
-          "transport": "usb_hid",
-          "leds": 1,
-          "notes": "Kraken memory-access protocol (Spec 83), Kraken 7.1 Chroma address map with the LED mode register at 0x1008. Awaiting hardware confirmation."
-        },
-        {
-          "pid": 1296,
-          "pidHex": "0x0510",
-          "vid": null,
-          "vidHex": null,
-          "name": "Kraken 7.1 V2",
-          "type": "headset",
-          "status": "in_progress",
-          "verification": "unverified",
-          "driver": "razer",
-          "transport": "usb_hid",
-          "leds": 1,
-          "notes": "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
-        },
-        {
-          "pid": 1376,
-          "pidHex": "0x0560",
-          "vid": null,
-          "vidHex": null,
-          "name": "Kraken Kitty V2",
-          "type": "headset",
-          "status": "in_progress",
-          "verification": "unverified",
-          "driver": "razer",
-          "transport": "usb_hid",
-          "leds": 1,
-          "notes": "Sold as the Kitty Black Edition V2. Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
-        },
-        {
-          "pid": 1312,
-          "pidHex": "0x0520",
-          "vid": null,
-          "vidHex": null,
-          "name": "Kraken Tournament Edition",
-          "type": "headset",
-          "status": "in_progress",
-          "verification": "unverified",
-          "driver": "razer",
-          "transport": "usb_hid",
-          "leds": 1,
-          "notes": "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
-        },
-        {
-          "pid": 3858,
-          "pidHex": "0x0F12",
-          "vid": null,
-          "vidHex": null,
-          "name": "Raptor 27",
-          "type": "monitor",
-          "status": "in_progress",
-          "verification": "unverified",
-          "driver": "razer",
-          "transport": "usb_hid",
-          "leds": 12,
-          "notes": "OpenRazer facts: 0x1F transaction ID, extended matrix 1x12 on HID interface 0. Awaiting hardware confirmation."
-        },
-        {
-          "pid": 3863,
-          "pidHex": "0x0F17",
-          "vid": null,
-          "vidHex": null,
-          "name": "Tomahawk ATX",
-          "type": "case",
-          "status": "in_progress",
-          "verification": "unverified",
-          "driver": "razer",
-          "transport": "usb_hid",
-          "leds": 20,
-          "notes": "OpenRazer facts: 0x1F transaction ID, extended matrix 1x20 on HID interface 0. Awaiting hardware confirmation."
         },
         {
           "pid": 1396,
@@ -7083,8 +7085,8 @@
         }
       ],
       "counts": {
-        "supported": 98,
-        "in_progress": 7,
+        "supported": 105,
+        "in_progress": 0,
         "planned": 0,
         "researched": 22,
         "known": 0,
@@ -7093,7 +7095,7 @@
       "supportedByVerification": {
         "hardware": 4,
         "community": 1,
-        "unverified": 93
+        "unverified": 100
       },
       "totalDevices": 127,
       "drivers": [
@@ -8024,12 +8026,12 @@
           "vidHex": null,
           "name": "Wooting 60HE",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "5 x 14 matrix on wire rows 1-5, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+          "notes": "5 x 14 matrix on wire rows 1-5, one 257-byte RGB565 report per frame."
         },
         {
           "pid": 4880,
@@ -8038,12 +8040,12 @@
           "vidHex": null,
           "name": "Wooting 60HE (ARM)",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer."
         },
         {
           "pid": 4928,
@@ -8052,12 +8054,12 @@
           "vidHex": null,
           "name": "Wooting 60HE v2",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer."
         },
         {
           "pid": 4896,
@@ -8066,12 +8068,12 @@
           "vidHex": null,
           "name": "Wooting 60HE+",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+          "notes": "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer."
         },
         {
           "pid": 5120,
@@ -8080,12 +8082,12 @@
           "vidHex": null,
           "name": "Wooting 80HE",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "6 x 17 matrix. The lightbar keeps its own animation and is not host-addressable. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+          "notes": "6 x 17 matrix. The lightbar keeps its own animation and is not host-addressable. Needs firmware 2.12 or newer."
         },
         {
           "pid": 4352,
@@ -8094,12 +8096,12 @@
           "vidHex": null,
           "name": "Wooting One",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "6 x 17 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+          "notes": "6 x 17 matrix, one 257-byte RGB565 report per frame."
         },
         {
           "pid": 65281,
@@ -8108,12 +8110,12 @@
           "vidHex": "0x03EB",
           "name": "Wooting One (v1 firmware)",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "Original analog keyboard on 2017-2019 firmware. Four CRC-protected PWM reports per frame. Awaiting hardware confirmation."
+          "notes": "Original analog keyboard on 2017-2019 firmware. Four CRC-protected PWM reports per frame."
         },
         {
           "pid": 4608,
@@ -8122,12 +8124,12 @@
           "vidHex": null,
           "name": "Wooting Two",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame."
         },
         {
           "pid": 65282,
@@ -8136,12 +8138,12 @@
           "vidHex": "0x03EB",
           "name": "Wooting Two (v1 firmware)",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "Five CRC-protected PWM reports per frame, the fifth for the numpad. Awaiting hardware confirmation."
+          "notes": "Five CRC-protected PWM reports per frame, the fifth for the numpad."
         },
         {
           "pid": 4640,
@@ -8150,12 +8152,12 @@
           "vidHex": null,
           "name": "Wooting Two HE",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame."
         },
         {
           "pid": 4656,
@@ -8164,12 +8166,12 @@
           "vidHex": null,
           "name": "Wooting Two HE (ARM)",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "6 x 21 matrix. Needs firmware 2.12 or newer, which moved lighting to the multi-report collection. Awaiting hardware confirmation."
+          "notes": "6 x 21 matrix. Needs firmware 2.12 or newer, which moved lighting to the multi-report collection."
         },
         {
           "pid": 4624,
@@ -8178,12 +8180,12 @@
           "vidHex": null,
           "name": "Wooting Two Lekker Edition",
           "type": "keyboard",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+          "notes": "6 x 21 matrix, one 257-byte RGB565 report per frame."
         },
         {
           "pid": 5392,
@@ -8192,12 +8194,12 @@
           "vidHex": null,
           "name": "Wooting UwU RGB",
           "type": "other",
-          "status": "in_progress",
+          "status": "supported",
           "verification": "unverified",
           "driver": "wooting",
           "transport": "usb_hid",
           "leds": null,
-          "notes": "Three-key analog keypad; lightbar, keys, and buttons share a 5 x 7 matrix. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+          "notes": "Three-key analog keypad; lightbar, keys, and buttons share a 5 x 7 matrix. Needs firmware 2.12 or newer."
         },
         {
           "pid": 5376,
@@ -8215,8 +8217,8 @@
         }
       ],
       "counts": {
-        "supported": 0,
-        "in_progress": 13,
+        "supported": 13,
+        "in_progress": 0,
         "planned": 0,
         "researched": 0,
         "known": 1,
@@ -8225,7 +8227,7 @@
       "supportedByVerification": {
         "hardware": 0,
         "community": 0,
-        "unverified": 0
+        "unverified": 13
       },
       "totalDevices": 14,
       "drivers": [

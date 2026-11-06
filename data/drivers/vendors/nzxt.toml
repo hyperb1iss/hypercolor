@@ -10,21 +10,21 @@ notes = "Lighting built from Spec 39 and not yet run on NZXT hardware. Pump, fan
 pid = 0x3012
 name = "Kraken Elite V2"
 type = "aio"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
 leds = 24
-notes = "Pump ring lighting, 512-byte reports. The external channel has no documented commit packet and is held back. Awaiting hardware confirmation."
+notes = "Pump ring lighting, 512-byte reports. The external channel has no documented commit packet and is held back."
 
 [[devices]]
 pid = 0x3008
 name = "Kraken Z3"
 type = "aio"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
 leds = 40
-notes = "40-LED external channel on the Gen2 stream packets. Awaiting hardware confirmation."
+notes = "40-LED external channel on the Gen2 stream packets."
 
 [[devices]]
 pid = 0x300C
@@ -44,19 +44,19 @@ notes = "Pump and fan control documented; lighting and LCD packets are not."
 pid = 0x2007
 name = "Kraken X3"
 type = "aio"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Pump ring and external channel from the topology query. The logo packet for this PID is unresolved, so the logo stays dark. Awaiting hardware confirmation."
+notes = "Pump ring and external channel from the topology query. The logo packet for this PID is unresolved, so the logo stays dark."
 
 [[devices]]
 pid = 0x2014
 name = "Kraken X3 RGB"
 type = "aio"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Pump ring, external channel (40 LEDs max), and logo. Awaiting hardware confirmation."
+notes = "Pump ring, external channel (40 LEDs max), and logo."
 
 [[devices]]
 pid = 0x170E
@@ -70,19 +70,19 @@ status = "known"
 pid = 0x2001
 name = "Smart Device V2 (Hue 2)"
 type = "argb_controller"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F. Channels and accessories come from the topology query. Awaiting hardware confirmation."
+notes = "Multiple PIDs: 0x2001, 0x2002, 0x2006, 0x200D, 0x200F. Channels and accessories come from the topology query."
 
 [[devices]]
 pid = 0x2009
 name = "RGB and Fan Controller"
 type = "fan_controller"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022 (0x2022 is the Control Hub). Lighting only; fan control is not implemented. Awaiting hardware confirmation."
+notes = "Multiple PIDs: 0x2009, 0x200E, 0x2010-0x2012, 0x2019, 0x201F-0x2022 (0x2022 is the Control Hub). Lighting only; fan control is not implemented."
 
 [[devices]]
 pid = 0x1714
@@ -106,73 +106,73 @@ notes = "Held back: channel count, probe channel numbering, and the direct-mode 
 pid = 0x2005
 name = "N7 Z390"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Three NZXT headers on the Gen2 stream packets. Awaiting hardware confirmation."
+notes = "Three NZXT headers on the Gen2 stream packets."
 
 [[devices]]
 pid = 0x200A
 name = "N7 Z490"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
 
 [[devices]]
 pid = 0x200B
 name = "N7 B550"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
 
 [[devices]]
 pid = 0x200C
 name = "N7 Z590"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
 
 [[devices]]
 pid = 0x2016
 name = "N7 Z690"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
 
 [[devices]]
 pid = 0x2017
 name = "N5 Z690"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back. Awaiting hardware confirmation."
+notes = "Two NZXT headers plus the 12V RGB header as a fixed-color zone. The ARGB header is held back."
 
 [[devices]]
 pid = 0x201B
 name = "N7 B650E"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back. Awaiting hardware confirmation."
+notes = "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back."
 
 [[devices]]
 pid = 0x201D
 name = "N7 Z790"
 type = "motherboard"
-status = "in_progress"
+status = "supported"
 driver = "nzxt"
 transport = "usb_hid_raw"
-notes = "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back. Awaiting hardware confirmation."
+notes = "Four NZXT headers on the Gen2 stream packets. The two ARGB headers are held back."
 
 # ─── Peripherals ─────────────────────────────────────────────────────
 
