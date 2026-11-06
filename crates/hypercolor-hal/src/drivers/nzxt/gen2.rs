@@ -419,17 +419,30 @@ impl Protocol for NzxtGen2Protocol {
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
+        if data.is_empty() {
+            // hidapi reports a read timeout as an empty buffer. The topology
+            // reply is required, so this fails init the way a hidraw timeout
+            // does instead of leaving the device with no channels.
+            return Err(ProtocolError::MalformedResponse {
+                detail: format!(
+                    "{} sent no topology reply (0x21 0x03) within the response timeout",
+                    self.name
+                ),
+            });
+        }
+
         if !is_topology_response(data) {
-            // Fan status (0x67 0x02), Kraken status (0x75 0x02), and empty
-            // hidapi timeout reads all land here. Busy asks the backend to
-            // resend the query so the reply it is waiting for still arrives.
+            // Fan status (0x67 0x02) and Kraken status (0x75 0x02) arrive on
+            // the device's own schedule. Unsolicited makes the backend read
+            // the next report without resending, so the reply queued behind
+            // them is the one that gets read.
             debug!(
                 device = self.name,
                 report = format_args!("{:02X?}", &data[..data.len().min(2)]),
-                "NZXT Gen2 report is not the topology reply; asking for a resend"
+                "NZXT Gen2 report is not the topology reply; reading past it"
             );
             return Ok(ProtocolResponse {
-                status: ResponseStatus::Busy,
+                status: ResponseStatus::Unsolicited,
                 data: Vec::new(),
             });
         }

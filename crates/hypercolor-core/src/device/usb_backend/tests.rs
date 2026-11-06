@@ -4354,3 +4354,73 @@ async fn a_command_fails_once_unsolicited_reports_exceed_the_budget() {
     assert_eq!(transport.sends(), vec![vec![0xA6]]);
     assert_eq!(protocol.seen().len(), 17);
 }
+
+fn nzxt_status_report(prefix: [u8; 2]) -> Vec<u8> {
+    let mut report = vec![0_u8; 64];
+    report[..2].copy_from_slice(&prefix);
+    report
+}
+
+/// The Linux hwmon driver enables Gen2 fan polling, so `0x67 0x02` status
+/// reports can sit queued ahead of the `0x21 0x03` topology reply.
+#[tokio::test]
+async fn nzxt_topology_survives_status_reports_queued_ahead_of_the_reply() {
+    use hypercolor_hal::drivers::nzxt::{Gen2Profile, NzxtGen2Protocol};
+
+    let protocol = NzxtGen2Protocol::new("NZXT Backend Test", Gen2Profile::controller());
+    let mut topology = vec![0_u8; 64];
+    topology[..2].copy_from_slice(&[0x21, 0x03]);
+    topology[14] = 2;
+    // Channel 0: two F120 RGB (18 LEDs each). Channel 1: one Hue 2 strip.
+    topology[15] = 0x13;
+    topology[16] = 0x13;
+    topology[21] = 0x04;
+    let transport = ResponsePlanTransport::new(vec![
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x75, 0x02]),
+        topology,
+    ]);
+
+    UsbBackend::run_commands(&protocol, &transport, &protocol.init_sequence())
+        .await
+        .expect("init should read past the status reports to the topology reply");
+
+    assert_eq!(
+        transport.sends().len(),
+        1,
+        "the topology query is sent once"
+    );
+    assert_eq!(transport.reads().len(), 5);
+    assert_eq!(protocol.total_leds(), 18 + 18 + 10);
+    let zones: Vec<String> = protocol.zones().into_iter().map(|zone| zone.name).collect();
+    assert_eq!(
+        zones,
+        [
+            "Channel 1 F120 RGB 1",
+            "Channel 1 F120 RGB 2",
+            "Channel 2 Hue 2 Strip 10 LED",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn nzxt_init_fails_when_the_topology_reply_never_arrives() {
+    use hypercolor_hal::drivers::nzxt::{Gen2Profile, NzxtGen2Protocol};
+
+    let protocol = NzxtGen2Protocol::new("NZXT Backend Test", Gen2Profile::controller());
+    // Two status reports, then the scripted transport returns empty reads,
+    // which is how hidapi reports a timeout.
+    let transport = ResponsePlanTransport::new(vec![
+        nzxt_status_report([0x67, 0x02]),
+        nzxt_status_report([0x67, 0x02]),
+    ]);
+
+    UsbBackend::run_commands(&protocol, &transport, &protocol.init_sequence())
+        .await
+        .expect_err("init must not succeed without a topology reply");
+
+    assert_eq!(transport.sends().len(), 1);
+    assert_eq!(protocol.total_leds(), 0);
+}

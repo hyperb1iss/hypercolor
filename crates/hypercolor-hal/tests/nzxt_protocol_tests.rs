@@ -223,24 +223,29 @@ fn gen2_layout_is_empty_until_the_topology_reply() {
 }
 
 #[test]
-fn unrelated_reports_ask_for_a_resend() {
+fn unrelated_reports_are_read_past_without_a_resend() {
     let protocol = controller();
 
     let fan_status = protocol
         .parse_response(&[0x67, 0x02, 0x00, 0x00])
         .expect("fan status is not an error");
-    assert_eq!(fan_status.status, ResponseStatus::Busy);
+    assert_eq!(fan_status.status, ResponseStatus::Unsolicited);
 
     let kraken_status = protocol
         .parse_response(&[0x75, 0x02])
         .expect("Kraken status is not an error");
-    assert_eq!(kraken_status.status, ResponseStatus::Busy);
+    assert_eq!(kraken_status.status, ResponseStatus::Unsolicited);
 
-    let empty = protocol
-        .parse_response(&[])
-        .expect("an empty hidapi read is not an error");
-    assert_eq!(empty.status, ResponseStatus::Busy);
+    assert_eq!(protocol.total_leds(), 0);
+}
 
+#[test]
+fn an_empty_read_fails_init_because_the_topology_reply_is_required() {
+    let protocol = controller();
+    assert!(
+        protocol.parse_response(&[]).is_err(),
+        "hidapi signals a timeout with an empty read"
+    );
     assert_eq!(protocol.total_leds(), 0);
 }
 
