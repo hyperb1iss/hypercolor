@@ -240,6 +240,29 @@ test-one name *args='':
 test-one name *args='':
     HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ test_features }} {{ name }} {{ args }}
 
+# Drive the LIFX driver against lifx-emulator bound to 127.0.0.1 (Spec 88 §12.1)
+[unix]
+lifx-emulator-test port='56799':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="$(pwd)"
+    workdir="${CARGO_TARGET_DIR:-$root/target}/lifx-emulator"
+    mkdir -p "$workdir"
+    log="$workdir/emulator.log"
+    # Run from an empty directory so no stray lifx-emulator.yaml is loaded.
+    (cd "$workdir" && exec uvx lifx-emulator@4.11.0 \
+        --config "$root/crates/hypercolor-driver-lifx/tests/fixtures/lifx-emulator.yaml" \
+        --bind 127.0.0.1 --port {{ port }}) > "$log" 2>&1 &
+    emulator_pid=$!
+    trap 'kill "$emulator_pid" 2>/dev/null || true; wait "$emulator_pid" 2>/dev/null || true' EXIT
+    for _ in $(seq 1 120); do
+        grep -q "Server running" "$log" && break
+        kill -0 "$emulator_pid" 2>/dev/null || { cat "$log"; exit 1; }
+        sleep 0.5
+    done
+    HYPERCOLOR_LIFX_EMULATOR=127.0.0.1:{{ port }} HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh \
+        cargo test -p hypercolor-driver-lifx --test lifx_emulator_tests -- --nocapture
+
 # Manually run the Cinder/Leptos extension design audit snapshot generator
 cinder-audit:
     ./scripts/cinder-audit.sh >/dev/null

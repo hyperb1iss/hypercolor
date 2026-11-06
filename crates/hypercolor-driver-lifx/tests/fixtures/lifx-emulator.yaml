@@ -1,0 +1,47 @@
+# lifx-emulator fleet for lifx_emulator_tests.rs (Spec 88 section 12.1).
+# Loopback only: no HTTP API, no mDNS, no generated devices beyond this list.
+bind: 127.0.0.1
+api: false
+verbose: false
+color: 0
+color_temperature: 0
+infrared: 0
+hev: 0
+multizone: 0
+tile: 0
+switch: 0
+
+devices:
+  - product_id: 27
+    serial: d073d5000001
+    label: Emu Bulb
+    power_level: 0
+  - product_id: 38
+    serial: d073d5000002
+    label: Emu Beam
+    zone_count: 82
+  - product_id: 38
+    serial: d073d5000003
+    label: Emu Old Beam
+    zone_count: 40
+  - product_id: 55
+    serial: d073d5000004
+    label: Emu Tiles
+    tile_count: 3
+  - product_id: 57
+    serial: d073d5000005
+    label: Emu Candle
+  - product_id: 176
+    serial: d073d5000006
+    label: Emu Ceiling
+  - product_id: 201
+    serial: d073d5000007
+    label: Emu Big Ceiling
+  - product_id: 70
+    serial: d073d5000008
+    label: Emu Switch
+
+scenarios:
+  devices:
+    d073d5000003:
+      firmware_version: [2, 60]
