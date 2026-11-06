@@ -149,12 +149,19 @@ Search replies are unauthenticated, so the decoder and the scan bound them:
 | `id` | `0x` followed by 1 to 16 hexadecimal digits (the specification's 64-bit id), lowercased; anything else rejects the reply |
 | `name`, `model` | kept to their first 64 characters (the specification caps names at 64 bytes) |
 | Address | the `Location` IP must be the reply's source IP: a light answers for itself |
-| Admission | one id per source IP and each id once per scan, at most 256 per scan; further replies are dropped with a warning that names `device_ips` |
+| Duplicate id | an id another source already reported is dropped |
+| Per source | each source IP reports only its most recent id; a later reply replaces the earlier one instead of adding a second identity |
+| Admission | at most 256 source addresses per scan; further new addresses are dropped with a warning that names `device_ips` |
 
-Display names are built character by character, never by byte index, so no
-input can split a character. Across scans, a host can introduce at most one
-new id per scan; ids are not otherwise reconciled against tracked devices,
-because a real light can change address.
+Every check runs before any state changes, and the only state a scan keeps
+is one entry per admitted source address, so spoofed replies cannot grow
+memory past the cap. Display names are built character by character, never
+by byte index, so no input can split a character.
+
+Across scans, an address that reports a new id each time still produces one
+current identity per scan; the device registry keeps earlier identities it
+has seen. Aging out devices that stop answering is a registry concern for
+every driver, not something one driver can do.
 
 **Discovery never opens a control connection.** A device allows only four,
 and the search reply already says everything the driver needs.
@@ -186,7 +193,8 @@ and notifications, and acts on quota errors (section 6.1).
 | Incoming line | 4096 bytes, refused while it streams in | The connection is treated as failed; the largest real message is a few hundred bytes |
 | Outgoing write | 1 s per frame | A peer that stops reading cannot stall the frame path; a timed-out write leaves a partial JSON line, so the connection is dropped |
 | Reader end | end of stream, read error, or oversized line | The session is marked failed, so the next write reports it (even an unchanged color) and the host reconnects |
-| Disconnect | waits at most 1 s for a stalled writer | Both connections are closed then, even if a frame sink is still held, because a light allows only four |
+| Disconnect | marks the session closed first, then waits at most 1 s for a stalled writer | A write waiting for the lock sees the close and bails; a write in flight drops the connections when it finishes; if the lock is still held after 1 s, a cleanup task closes both connections as soon as the writer lets go. Either way no connection outlives the session, even with a frame sink still held, because a light allows only four |
+| Music setup | a write or read failure on the control connection while starting music mode | The connect fails and the host retries, instead of reusing a connection that may hold a partial line |
 
 ---
 
@@ -401,8 +409,9 @@ Every test binds 127.0.0.1.
 4. **UDP session mode** on port 55444 (`udp_sess_new`) is unimplemented; its
    quota status is undocumented.
 5. **Background and segment lights** are not driven.
-6. **Invented identities across scans**: one host can add one id per scan
-   (section 3.3); the registry, not the driver, would have to age them out.
+6. **Identities across scans**: an address reporting a new id every scan
+   leaves its earlier ids in the registry (section 3.3); registry aging is
+   tracked as a core follow-up.
 
 ---
 
