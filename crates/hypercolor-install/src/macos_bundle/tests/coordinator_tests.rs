@@ -15,7 +15,7 @@ use crate::{
 };
 
 type Platform = MacosBundleInstallPlatform<FakeExecutor, FakeService>;
-type Arrange = fn(&Harness);
+type Arrange = (&'static str, &'static str, fn(&Harness));
 
 pub(super) fn identity_of(unit: &UnitRecord) -> MacosBundleIdentity {
     crate::payload::bind_macos_bundle_unit(unit)
@@ -504,32 +504,58 @@ fn a_first_install_moves_the_staged_bundle_into_the_empty_slot() {
 
 #[test]
 fn preparation_refuses_what_it_cannot_swap_and_writes_nothing() {
-    let cases: [(&str, Arrange); 5] = [
-        ("installed bundle is not the active unit's", |harness| {
-            lock(&harness.world).installed = MacosBundleSlot::Bundle(harness.candidate.clone());
-        }),
-        ("earlier transaction left a staged copy", |harness| {
-            lock(&harness.world).staged.insert(
-                "e".repeat(64),
-                MacosBundleSlot::Bundle(harness.prior.clone()),
-            );
-        }),
-        ("earlier transaction left a leftover", |harness| {
-            lock(&harness.world)
-                .interrupted
-                .insert(format!("{}.discard", "e".repeat(64)));
-        }),
-        ("not enough room", |harness| {
+    let cases: [Arrange; 6] = [
+        (
+            "installed bundle is not the active unit's",
+            "adopt it",
+            |harness| {
+                lock(&harness.world).installed = MacosBundleSlot::Bundle(harness.candidate.clone());
+            },
+        ),
+        (
+            "earlier transaction left a staged copy",
+            "settle it first",
+            |harness| {
+                lock(&harness.world).staged.insert(
+                    "e".repeat(64),
+                    MacosBundleSlot::Bundle(harness.prior.clone()),
+                );
+            },
+        ),
+        (
+            "earlier transaction left a leftover",
+            "settle it first",
+            |harness| {
+                lock(&harness.world)
+                    .interrupted
+                    .insert(format!("{}.discard", "e".repeat(64)));
+            },
+        ),
+        (
+            "an unsettled rollback of this candidate",
+            "settle it first",
+            |harness| {
+                let name = harness.fixture.candidate.id().as_str().to_owned();
+                lock(&harness.world)
+                    .interrupted
+                    .insert(format!("{name}.discard"));
+            },
+        ),
+        ("not enough room", "insufficient disk", |harness| {
             lock(&harness.world).available_bytes = 1024;
         }),
-        ("a registered agent with no active unit", |harness| {
-            harness.fixture.deactivate();
-            let mut world = lock(&harness.world);
-            world.installed = MacosBundleSlot::Absent;
-            world.running = None;
-        }),
+        (
+            "a registered agent with no active unit",
+            "no unit is active",
+            |harness| {
+                harness.fixture.deactivate();
+                let mut world = lock(&harness.world);
+                world.installed = MacosBundleSlot::Absent;
+                world.running = None;
+            },
+        ),
     ];
-    for (case, arrange) in cases {
+    for (case, detail, arrange) in cases {
         let harness = Harness::new();
         arrange(&harness);
         let before = lock(&harness.world).clone();
@@ -538,7 +564,8 @@ fn preparation_refuses_what_it_cannot_swap_and_writes_nothing() {
             .expect("no crash")
             .expect_err(case);
         assert!(
-            matches!(error, InstallCoordinatorError::PreparePlatform(_)),
+            matches!(error, InstallCoordinatorError::PreparePlatform(_))
+                && error.to_string().contains(detail),
             "{case}: {error}"
         );
         assert!(harness.fixture.journal().is_none(), "{case}");

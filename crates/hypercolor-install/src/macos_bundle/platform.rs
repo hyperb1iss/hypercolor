@@ -14,7 +14,7 @@ use super::model::{
 };
 use super::record::{BundleBinding, BundleRecord, decode_receipt, encode_receipt};
 use super::service::MacosBundleService;
-use super::swap::{SWAP_OPERATION_COUNT, SwapPosition, SwapStep, is_leftover_of};
+use super::swap::{SWAP_OPERATION_COUNT, SwapPosition, SwapStep};
 use crate::InstallStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,18 +374,15 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
                  not be told apart",
             ));
         }
-        let staging_name = candidate.id().as_str().to_owned();
-        if !inspection.bundles.staged.is_empty()
-            || inspection
-                .bundles
-                .interrupted
-                .iter()
-                .any(|leftover| !is_leftover_of(leftover, &staging_name))
-        {
+        // Even a retry of this candidate settles first: a leftover would
+        // count against the reservation and be removed while the prior is
+        // stopped.
+        if !inspection.bundles.staged.is_empty() || !inspection.bundles.interrupted.is_empty() {
             return Err(error(
                 "the macOS staging root still holds an earlier transaction; settle it first",
             ));
         }
+        let staging_name = candidate.id().as_str().to_owned();
         if inspection.service.registered && inspection.active.is_none() {
             return Err(error(
                 "a daemon agent is registered but no unit is active; adopt the installation \
