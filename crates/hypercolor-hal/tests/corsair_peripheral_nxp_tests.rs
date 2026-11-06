@@ -41,7 +41,7 @@ fn pointer_config(
 }
 
 #[test]
-fn init_queries_firmware_then_enters_software_lighting_mode() {
+fn init_enters_software_lighting_mode_without_touching_input_routing() {
     let protocol = CorsairNxpProtocol::new(keyboard_config(
         "K70 Lux",
         NxpLightingKind::FullRangeKeyboard,
@@ -49,13 +49,19 @@ fn init_queries_firmware_then_enters_software_lighting_mode() {
     ));
     let commands = protocol.init_sequence();
 
-    assert_eq!(commands.len(), 2);
+    assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].data.len(), NXP_PACKET_SIZE);
-    assert_eq!(commands[0].data[0], NxpCommand::Get as u8);
-    assert_eq!(commands[0].data[1], NxpField::Ident as u8);
-    assert_eq!(commands[1].data[0], NxpCommand::Set as u8);
-    assert_eq!(commands[1].data[1], NxpField::Lighting as u8);
-    assert_eq!(commands[1].data[2], NxpLightingMode::Software as u8);
+    assert_eq!(commands[0].data[0], NxpCommand::Set as u8);
+    assert_eq!(commands[0].data[1], NxpField::Lighting as u8);
+    assert_eq!(commands[0].data[2], NxpLightingMode::Software as u8);
+    assert!(commands[0].data[3..].iter().all(|byte| *byte == 0));
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data[1] != NxpField::KeyInput as u8
+                && command.data[1] != NxpField::Special as u8),
+        "lighting init must leave key input and special-function routing alone"
+    );
 }
 
 #[test]
@@ -71,6 +77,116 @@ fn shutdown_restores_hardware_mode_when_safe() {
     assert_eq!(commands[0].data[0], NxpCommand::Set as u8);
     assert_eq!(commands[0].data[1], NxpField::Lighting as u8);
     assert_eq!(commands[0].data[2], NxpLightingMode::Hardware as u8);
+}
+
+#[test]
+fn unclean_exit_devices_skip_the_hardware_mode_handover() {
+    let protocol = CorsairNxpProtocol::new(
+        keyboard_config("K95 RGB", NxpLightingKind::Packed512Keyboard, 144).with_unclean_exit(),
+    );
+
+    assert_eq!(protocol.init_sequence().len(), 1);
+    assert!(protocol.shutdown_sequence().is_empty());
+}
+
+/// Older NXP firmware answers through feature reports, not input reports,
+/// so any command that waited for an input report would stall it.
+#[test]
+fn every_nxp_command_is_write_only_and_one_packet_long() {
+    let configs = [
+        keyboard_config("K70 Lux", NxpLightingKind::FullRangeKeyboard, 144),
+        keyboard_config("K70 RGB", NxpLightingKind::Packed512Keyboard, 144),
+        keyboard_config("K55", NxpLightingKind::ZonedKeyboard, 3),
+        keyboard_config("K70 Non-RGB", NxpLightingKind::MonochromeKeyboard, 144),
+        pointer_config(
+            "M65",
+            CorsairPeripheralClass::Mouse,
+            NxpLightingKind::Mouse,
+            6,
+        ),
+        pointer_config(
+            "Polaris",
+            CorsairPeripheralClass::Mousepad,
+            NxpLightingKind::Mousepad,
+            15,
+        ),
+    ];
+
+    for config in configs {
+        let protocol = CorsairNxpProtocol::new(config);
+        let colors = vec![[0x40_u8, 0x80, 0xC0]; config.led_count];
+        let commands = protocol
+            .init_sequence()
+            .into_iter()
+            .chain(protocol.encode_frame(&colors))
+            .chain(protocol.shutdown_sequence())
+            .collect::<Vec<_>>();
+
+        assert!(!commands.is_empty(), "{}", config.name);
+        for command in commands {
+            assert!(!command.expects_response, "{}", config.name);
+            assert_eq!(command.data.len(), NXP_PACKET_SIZE, "{}", config.name);
+        }
+    }
+}
+
+#[test]
+fn reused_command_buffers_match_fresh_encodes() {
+    let protocol = CorsairNxpProtocol::new(keyboard_config(
+        "K70 Lux",
+        NxpLightingKind::FullRangeKeyboard,
+        144,
+    ));
+    let first = vec![[1_u8, 2, 3]; 144];
+    let second = vec![[9_u8, 8, 7]; 144];
+    let mut reused = Vec::new();
+
+    protocol.encode_frame_into(&first, &mut reused);
+    protocol.encode_frame_into(&second, &mut reused);
+    let fresh = protocol.encode_frame(&second);
+
+    assert_eq!(reused.len(), fresh.len());
+    for (reused, fresh) in reused.iter().zip(&fresh) {
+        assert_eq!(reused.data, fresh.data);
+        assert_eq!(reused.expects_response, fresh.expects_response);
+    }
+}
+
+#[test]
+fn short_frames_pad_with_black_and_long_frames_truncate() {
+    let protocol = CorsairNxpProtocol::new(pointer_config(
+        "M65",
+        CorsairPeripheralClass::Mouse,
+        NxpLightingKind::Mouse,
+        3,
+    ));
+
+    let short = protocol.encode_frame(&[[10_u8, 20, 30]]);
+    assert_eq!(short[0].data[2], 3);
+    assert_eq!(
+        &short[0].data[4..16],
+        &[1, 10, 20, 30, 2, 0, 0, 0, 3, 0, 0, 0]
+    );
+
+    let long = protocol.encode_frame(&[[1_u8, 1, 1]; 8]);
+    assert_eq!(long[0].data[2], 3);
+    assert!(long[0].data[16..].iter().all(|byte| *byte == 0));
+}
+
+#[test]
+fn full_range_chunks_stop_at_the_declared_plane_boundaries() {
+    let protocol = CorsairNxpProtocol::new(keyboard_config(
+        "K70 Lux",
+        NxpLightingKind::FullRangeKeyboard,
+        144,
+    ));
+    let colors = vec![[0xFF_u8, 0, 0]; 144];
+    let commands = protocol.encode_frame(&colors);
+
+    // The third red chunk declares 48 bytes but a 144-slot plane only has
+    // 24 left after the first two chunks; the rest stays zero.
+    assert!(commands[2].data[4..28].iter().all(|byte| *byte == 0xFF));
+    assert!(commands[2].data[28..].iter().all(|byte| *byte == 0));
 }
 
 #[test]
