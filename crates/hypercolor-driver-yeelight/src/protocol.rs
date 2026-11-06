@@ -19,6 +19,9 @@ pub const SEARCH_PORT: u16 = 1982;
 /// TCP control port in practice (the search reply's `Location` is
 /// authoritative).
 pub const CONTROL_PORT: u16 = 55443;
+/// Longest line accepted from a device. The largest legitimate message is
+/// a `props` notification or a `get_prop` result of a few hundred bytes.
+pub const MAX_LINE_BYTES: usize = 4096;
 /// Search request, every line ending CRLF.
 pub const SEARCH_REQUEST: &str = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1982\r\nMAN: \"ssdp:discover\"\r\nST: wifi_bulb\r\n";
 /// Transition carried by `sudden` commands; devices ignore it but the
@@ -421,6 +424,7 @@ impl DeviceError {
 /// # Errors
 ///
 /// Returns an error when the line is not a JSON object.
-pub fn decode_message(line: &str) -> Result<DeviceMessage, ProtocolError> {
-    serde_json::from_str(line.trim()).map_err(|error| ProtocolError::Json(error.to_string()))
+pub fn decode_message(line: &[u8]) -> Result<DeviceMessage, ProtocolError> {
+    serde_json::from_slice(line.trim_ascii())
+        .map_err(|error| ProtocolError::Json(error.to_string()))
 }

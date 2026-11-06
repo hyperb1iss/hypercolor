@@ -10,7 +10,6 @@
 
 pub mod backend;
 pub mod config;
-pub mod framing;
 pub mod protocol;
 pub mod scanner;
 

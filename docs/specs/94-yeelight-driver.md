@@ -191,8 +191,9 @@ and notifications, and acts on quota errors (section 6.1).
 | Bound | Value | Effect |
 |-------|-------|--------|
 | Incoming line | 4096 bytes, refused while it streams in | The connection is treated as failed; the largest real message is a few hundred bytes |
+| Line in progress | 2 s from its first byte | The connection may stay silent indefinitely, but a line that starts and stalls fails the connection |
 | Outgoing write | 1 s per frame | A peer that stops reading cannot stall the frame path; a timed-out write leaves a partial JSON line, so the connection is dropped |
-| Reader end | end of stream, read error, or oversized line | The session is marked failed, so the next write reports it (even an unchanged color) and the host reconnects |
+| Reader end | end of stream, read error, or an oversized or stalled line | The session is marked failed, so the next write reports it (even an unchanged color) and the host reconnects |
 | Disconnect | marks the session closed first, then waits at most 1 s for a stalled writer | A write waiting for the lock sees the close and bails; a write in flight drops the connections when it finishes; if the lock is still held after 1 s, a cleanup task closes both connections as soon as the writer lets go. Either way no connection outlives the session, even with a frame sink still held, because a light allows only four |
 | Music setup | a write or read failure on the control connection while starting music mode | The connect fails and the host retries, instead of reusing a connection that may hold a partial line |
 

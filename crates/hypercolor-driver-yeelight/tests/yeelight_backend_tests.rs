@@ -4,7 +4,7 @@
 mod support;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{DeviceBackend, DeviceWriteOutcome, DiscoveredDevice};
 use hypercolor_driver_yeelight::backend::representative_color;
@@ -14,7 +14,7 @@ use hypercolor_driver_yeelight::{
     YeelightBackend, YeelightScanOptions, YeelightScanner, discovered_device,
 };
 use hypercolor_types::device::{DeviceError, DeviceTopologyHint};
-use support::{FakeSpec, FakeYeelight, TestResult};
+use support::{ControlPush, FakeSpec, FakeYeelight, TestResult};
 
 async fn discover(fake: &FakeYeelight, config: &YeelightConfig) -> TestResult<DiscoveredDevice> {
     let profiles = YeelightScanner::new(YeelightScanOptions {
@@ -402,6 +402,48 @@ async fn a_closed_control_connection_fails_the_next_write() -> TestResult {
         backend.write_colors(&id, &[[0, 255, 0]]).await,
         Err(DeviceError::WriteError { .. })
     ));
+    Ok(())
+}
+
+/// Connect to a fake that pushes `push`, and return the write error the
+/// session reports once its reader gives up, with the time that took.
+async fn write_failure_under(push: ControlPush) -> TestResult<(String, Duration)> {
+    let fake = FakeYeelight::spawn(FakeSpec {
+        control_push: Some(push),
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let config = YeelightConfig {
+        music_mode: false,
+        ..YeelightConfig::default()
+    };
+    let (backend, discovered) = connected(&fake, config).await?;
+    let started = Instant::now();
+    for _ in 0..400 {
+        let written = backend
+            .write_colors(&discovered.info.id, &[[0, 255, 0]])
+            .await;
+        if let Err(error @ DeviceError::WriteError { .. }) = written {
+            return Ok((error.to_string(), started.elapsed()));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err("the session never failed".into())
+}
+
+#[tokio::test]
+async fn an_endless_control_line_fails_the_session_at_the_line_cap() -> TestResult {
+    let (message, elapsed) = write_failure_under(ControlPush::EndlessLine).await?;
+    assert!(message.contains("longer than 4096"), "{message}");
+    assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_dripped_control_line_fails_the_session_at_the_line_deadline() -> TestResult {
+    let (message, elapsed) = write_failure_under(ControlPush::Drip).await?;
+    assert!(message.contains("did not finish"), "{message}");
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
     Ok(())
 }
 

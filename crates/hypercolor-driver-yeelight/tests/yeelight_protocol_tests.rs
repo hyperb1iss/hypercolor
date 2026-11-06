@@ -151,12 +151,13 @@ fn commands_match_the_wire() {
 
 #[test]
 fn replies_and_notifications_decode() {
-    let ok = decode_message(r#"{"id":1,"result":["ok"]}"#).expect("result");
+    let ok = decode_message(br#"{"id":1,"result":["ok"]}"#).expect("result");
     assert_eq!(ok.id, Some(1));
     assert!(ok.error.is_none());
 
-    let quota = decode_message(r#"{"id":7,"error":{"code":-1,"message":"client quota exceeded"}}"#)
-        .expect("error");
+    let quota =
+        decode_message(br#"{"id":7,"error":{"code":-1,"message":"client quota exceeded"}}"#)
+            .expect("error");
     assert!(
         quota
             .error
@@ -164,7 +165,7 @@ fn replies_and_notifications_decode() {
             .is_some_and(DeviceError::is_quota_exceeded)
     );
     let unsupported =
-        decode_message(r#"{"id":8,"error":{"code":-1,"message":"unsupported method"}}"#)
+        decode_message(br#"{"id":8,"error":{"code":-1,"message":"unsupported method"}}"#)
             .expect("error");
     assert!(
         !unsupported
@@ -173,10 +174,10 @@ fn replies_and_notifications_decode() {
             .is_some_and(DeviceError::is_quota_exceeded)
     );
 
-    let props = decode_message(r#"{"method":"props","params":{"power":"on","bright":"10"}}"#)
+    let props = decode_message(br#"{"method":"props","params":{"power":"on","bright":"10"}}"#)
         .expect("props");
     assert_eq!(props.method.as_deref(), Some("props"));
-    assert!(decode_message("garbage").is_err());
+    assert!(decode_message(b"garbage").is_err());
 }
 
 #[test]

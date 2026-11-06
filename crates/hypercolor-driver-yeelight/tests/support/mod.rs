@@ -19,6 +19,15 @@ pub type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>
 
 pub const COLOR_SUPPORT: &str = "get_prop set_default set_power toggle set_bright start_cf stop_cf set_scene cron_add cron_get cron_del set_ct_abx set_rgb set_hsv set_adjust adjust_bright adjust_ct adjust_color set_music set_name";
 
+/// What a misbehaving fake pushes on the control connection, unprompted.
+#[derive(Debug, Clone, Copy)]
+pub enum ControlPush {
+    /// Bytes with no newline, as fast as the socket takes them.
+    EndlessLine,
+    /// One byte of a line at a time, forever.
+    Drip,
+}
+
 /// What the fake reports and how it behaves.
 #[derive(Debug, Clone)]
 pub struct FakeSpec {
@@ -41,6 +50,8 @@ pub struct FakeSpec {
     pub location_ip: Option<Ipv4Addr>,
     /// Close the control connection on `set_music` without answering.
     pub close_on_music: bool,
+    /// Push this instead of serving commands.
+    pub control_push: Option<ControlPush>,
 }
 
 impl FakeSpec {
@@ -57,6 +68,7 @@ impl FakeSpec {
             rogue_from: None,
             location_ip: None,
             close_on_music: false,
+            control_push: None,
         }
     }
 }
@@ -229,6 +241,19 @@ async fn serve_commands(
     tasks: &Mutex<Vec<JoinHandle<()>>>,
 ) {
     let (read_half, mut write_half) = stream.into_split();
+    match spec.control_push {
+        Some(ControlPush::EndlessLine) => {
+            while write_half.write_all(&[b'x'; 1024]).await.is_ok() {}
+            return;
+        }
+        Some(ControlPush::Drip) => {
+            while write_half.write_all(b"x").await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            return;
+        }
+        None => {}
+    }
     let mut lines = BufReader::new(read_half).lines();
     let mut served = 0_usize;
     while let Ok(Some(line)) = lines.next_line().await {
