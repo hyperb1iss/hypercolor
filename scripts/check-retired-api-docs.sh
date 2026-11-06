@@ -12,10 +12,11 @@ failed=0
 target_manifest="$repo_root/crates/hypercolor-daemon/tests/fixtures/rest_v1/spec78-target-manifest.json"
 rest_reference="$repo_root/docs/content/api/rest.md"
 
+# rest.md is generated from the OpenAPI document, so it carries every
+# manifest operation, the WebSocket upgrade included.
 expected_operations="$(
   jq -r '.paths[] | .path as $path | .methods[] | "\(.) \($path)"' \
     "$target_manifest" \
-    | grep -Ev '^GET /api/v1/ws$' \
     | sort -u
 )"
 documented_operations="$(

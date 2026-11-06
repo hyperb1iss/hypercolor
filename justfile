@@ -420,6 +420,14 @@ docs-dev:
 docs-build:
     cd docs && zola build
 
+# Regenerate the REST reference pages from the daemon's OpenAPI document
+rest-reference *args='':
+    bun scripts/gen-rest-reference.ts {{ args }}
+
+# Verify the REST reference pages match the daemon's OpenAPI document
+rest-reference-check:
+    bun scripts/gen-rest-reference.ts --check
+
 # ─── Running ──────────────────────────────────────────────
 
 # Run the daemon with the full renderer set enabled
