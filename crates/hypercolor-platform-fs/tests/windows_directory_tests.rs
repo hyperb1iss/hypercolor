@@ -102,6 +102,27 @@ fn create_refuses_a_taken_name() {
 }
 
 #[test]
+fn rename_replaces_a_file_a_reader_holds_open() {
+    let (_guard, root) = scratch();
+    let directory = open_write(&root);
+    for (name, bytes) in [("staged", b"new".as_slice()), ("current", b"old")] {
+        let mut file = directory.create_file(OsStr::new(name)).expect("create");
+        file.write_all(bytes).expect("write");
+        file.sync_all().expect("sync");
+    }
+    let mut reader = directory.open_file(OsStr::new("current")).expect("open");
+
+    directory
+        .rename(OsStr::new("staged"), OsStr::new("current"), true)
+        .expect("a reader never blocks a replacement");
+
+    assert_eq!(fs::read(root.join("current")).expect("read"), b"new");
+    let mut held = Vec::new();
+    reader.read_to_end(&mut held).expect("read held file");
+    assert_eq!(held, b"old", "the reader keeps the bytes it opened");
+}
+
+#[test]
 fn rename_replaces_only_when_asked() {
     let (_guard, root) = scratch();
     let directory = open_write(&root);

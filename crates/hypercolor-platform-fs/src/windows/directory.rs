@@ -18,13 +18,14 @@ use std::path::{Component, Path, PathBuf};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
-    FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
-    FileRenameInformation, NtCreateFile, NtSetInformationFile,
+    FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
+    FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation,
+    FileRenameInformationEx, NtCreateFile, NtSetInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     DuplicateHandle, ERROR_LOCK_VIOLATION, ERROR_NO_MORE_FILES, GENERIC_READ, GENERIC_WRITE,
     HANDLE, INVALID_HANDLE_VALUE, LocalFree, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
-    UNICODE_STRING,
+    STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
 };
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows_sys::Win32::Security::Authorization::{
@@ -824,7 +825,6 @@ impl WindowsDirectory {
         // SAFETY: The buffer is zeroed, 8-byte aligned and large enough for
         // the header, the name and a terminator; each write stays inside it.
         unsafe {
-            (*info).Anonymous.ReplaceIfExists = replace;
             (*info).RootDirectory = self.handle.as_raw_handle();
             (*info).FileNameLength = name_bytes as u32;
             std::ptr::copy_nonoverlapping(
@@ -833,19 +833,43 @@ impl WindowsDirectory {
                 to_wide.len(),
             );
         }
-        let mut status_block = IO_STATUS_BLOCK::default();
-        // SAFETY: The handle is live and opened with DELETE, and the buffer
-        // holds one complete FILE_RENAME_INFORMATION of `total` bytes whose
-        // root directory handle is this live directory.
-        let status = unsafe {
-            NtSetInformationFile(
-                source.as_raw_handle(),
-                &mut status_block,
-                buffer.as_ptr().cast(),
-                total as u32,
-                FileRenameInformation,
-            )
+        let set_rename = |class, flags: u32| {
+            // SAFETY: The union's fields share offset zero, and the buffer
+            // outlives the write.
+            unsafe { (*info).Anonymous.Flags = flags };
+            let mut status_block = IO_STATUS_BLOCK::default();
+            // SAFETY: The handle is live and opened with DELETE, and the
+            // buffer holds one complete FILE_RENAME_INFORMATION of `total`
+            // bytes whose root directory handle is this live directory.
+            unsafe {
+                NtSetInformationFile(
+                    source.as_raw_handle(),
+                    &mut status_block,
+                    buffer.as_ptr().cast(),
+                    total as u32,
+                    class,
+                )
+            }
         };
+        // A plain rename fails while anyone holds the replaced file open,
+        // which would let a reader that takes no lock fail a journal write.
+        // POSIX semantics replace the name and leave the reader its bytes.
+        let mut status = set_rename(
+            FileRenameInformationEx,
+            FILE_RENAME_POSIX_SEMANTICS
+                | if replace {
+                    FILE_RENAME_REPLACE_IF_EXISTS
+                } else {
+                    0
+                },
+        );
+        // File systems without POSIX semantics answer one of these.
+        if matches!(
+            status,
+            STATUS_INVALID_PARAMETER | STATUS_NOT_SUPPORTED | STATUS_INVALID_INFO_CLASS
+        ) {
+            status = set_rename(FileRenameInformation, u32::from(replace));
+        }
         nt_result(status)?;
         drop(source);
         self.sync()
