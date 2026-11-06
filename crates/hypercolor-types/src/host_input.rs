@@ -208,6 +208,11 @@ pub struct HostInputBatch<'a> {
 }
 
 /// Primitive representation of a Windows set-1 scan-code prefix.
+///
+/// A boolean `extended` cannot distinguish `E0` (the extended block: arrows,
+/// right-hand modifiers, the navigation cluster) from `E1` (Pause/Break), and
+/// collapsing them would let an unrecognized `E1` sequence collide with an
+/// unprefixed code of the same value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostScanCodePrefix {
     None,
