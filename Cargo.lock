@@ -4890,6 +4890,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uuid 1.28.0",
+ "windows-service",
  "zbus",
 ]
 
