@@ -41,6 +41,7 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         assert!(ids.contains(&"openrgb".to_owned()));
         assert!(ids.contains(&"twinkly".to_owned()));
         assert!(ids.contains(&"wiz".to_owned()));
+        assert!(ids.contains(&"yeelight".to_owned()));
     }
 
     #[cfg(feature = "hal")]
@@ -50,7 +51,9 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
     }
 
     #[cfg(feature = "network")]
-    for driver_id in ["wled", "govee", "hue", "nanoleaf", "twinkly", "wiz"] {
+    for driver_id in [
+        "wled", "govee", "hue", "nanoleaf", "twinkly", "wiz", "yeelight",
+    ] {
         let driver = registry
             .get(driver_id)
             .expect("network driver should be registered");

@@ -31,6 +31,8 @@ use hypercolor_driver_twinkly::TwinklyDriverModule;
 use hypercolor_driver_wiz::WizDriverModule;
 #[cfg(feature = "wled")]
 use hypercolor_driver_wled::WledDriverModule;
+#[cfg(feature = "yeelight")]
+use hypercolor_driver_yeelight::YeelightDriverModule;
 
 /// Build the compiled-in driver module registry for this process.
 ///
@@ -77,6 +79,7 @@ pub fn register_driver_modules(
         feature = "openrgb",
         feature = "twinkly",
         feature = "wiz",
+        feature = "yeelight",
         feature = "hal"
     )))]
     let _ = registry;
@@ -107,6 +110,9 @@ pub fn register_driver_modules(
 
     #[cfg(feature = "wiz")]
     registry.register(WizDriverModule::new())?;
+
+    #[cfg(feature = "yeelight")]
+    registry.register(YeelightDriverModule::new())?;
 
     #[cfg(feature = "hal")]
     {
@@ -144,6 +150,7 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         feature = "openrgb",
         feature = "twinkly",
         feature = "wiz",
+        feature = "yeelight",
         feature = "hal"
     )))]
     let _ = config;
@@ -192,6 +199,12 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
     config
         .drivers
         .entry(hypercolor_driver_wiz::DESCRIPTOR.id.to_owned())
+        .or_default();
+
+    #[cfg(feature = "yeelight")]
+    config
+        .drivers
+        .entry(hypercolor_driver_yeelight::DESCRIPTOR.id.to_owned())
         .or_default();
 
     #[cfg(feature = "hal")]
