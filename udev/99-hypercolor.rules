@@ -513,22 +513,34 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1e71", ATTR{idPro
 # ─── Ableton ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2982", MODE="0660", GROUP="users", TAG+="uaccess"
 
-# ─── QMK community implementation keyboards ───────────────────────────────────────────────
+# ─── QMK community implementation keyboards ───────────────────────────────────
+# Scoped per product to the raw HID interface, the only one Hypercolor
+# opens. QMK builds it as a non-boot HID interface with an IN and an OUT
+# endpoint, while its keyboard, NKRO, mouse, and media-key interfaces have an
+# IN endpoint only and stay root-only. The rules match that shape instead of
+# an interface number, which shifts with the features a firmware enables.
+# Older firmware gave the debug console interface an OUT endpoint as well,
+# so a build with the console enabled also exposes its debug text. None of
+# these gets a usb_device grant: Hypercolor never opens that node, and write
+# access to it is enough to detach usbhid from the keyboard.
+#
 # Keychron
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0110d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0120d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0130d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0150d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0160d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3434p0310d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ZSA (Moonlander, Voyager)
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3297", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3297", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3297p0791d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v3297p1969d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # Drop / OLKB
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="feed", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="feed", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:vFEEDp6060d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # Glorious (GMMK)
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v320Fp5044d*ic03isc00ip00in*", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Wooting ──────────────────────────────────────────────────────────────────
 # Keyboards, so each rule is scoped to the configuration interface the
