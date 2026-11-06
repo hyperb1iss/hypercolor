@@ -1,0 +1,41 @@
+[vendor]
+name = "Yeelight"
+vid = []
+website = "https://www.yeelight.com"
+notes = "Driven over the official Yeelight LAN Control protocol: SSDP-style search on UDP port 1982 or configured IPs, JSON commands on TCP port 55443, and music mode, where the light connects back to Hypercolor and the 60-commands-per-minute quota is lifted. Every Yeelight light is one color. LAN Control must be switched on per light in the Yeelight app. Experimental: tested against an in-repo fake device, not yet verified on real Yeelight hardware."
+
+[[devices]]
+name = "Yeelight Color Bulbs"
+type = "other"
+status = "supported"
+driver = "yeelight"
+transport = "network_tcp"
+leds = 1
+notes = "Color bulbs (color, color1 to color6), one color and brightness per frame through set_scene, streamed in music mode. Experimental, unverified on hardware."
+
+[[devices]]
+name = "Yeelight Light Strips"
+type = "strip"
+status = "supported"
+driver = "yeelight"
+transport = "network_tcp"
+leds = 1
+notes = "Lightstrip and Lightstrip Plus (stripe, strip1 to strip6) as one color. Per-segment Lightstrip Pro control is undocumented and not driven. Experimental, unverified on hardware."
+
+[[devices]]
+name = "Yeelight Lamps"
+type = "other"
+status = "supported"
+driver = "yeelight"
+transport = "network_tcp"
+leds = 1
+notes = "Bedside lamps and color desk lamps with LAN Control. Some Xiaomi-branded lamps no longer offer LAN Control. Experimental, unverified on hardware."
+
+[[devices]]
+name = "Yeelight White and Ceiling Lights"
+type = "other"
+status = "supported"
+driver = "yeelight"
+transport = "network_tcp"
+leds = 1
+notes = "White and tunable white bulbs and ceiling lights follow the effect's brightness; background lights are not driven. Experimental, unverified on hardware."
