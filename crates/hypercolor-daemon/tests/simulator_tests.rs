@@ -13,9 +13,10 @@ use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store;
 use hypercolor_daemon::simulators::SimulatedDisplayExt;
 use hypercolor_daemon::simulators::{
-    SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
-    default_layout_device_id, logical_device_ids_for_simulator,
+    SimulatedDisplayStore, activate_simulated_displays, default_layout_device_id,
+    logical_device_ids_for_simulator,
 };
+use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::device::{DeviceId, DeviceState, OwnedDisplayFramePayload};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::spatial::{
@@ -47,8 +48,8 @@ fn spawn_layout_publisher(state: &Arc<AppState>) -> LayoutPublisher {
     }))
 }
 
-fn simulator_config(enabled: bool) -> SimulatedDisplayConfig {
-    SimulatedDisplayConfig {
+fn simulator_config(enabled: bool) -> SimulatedDisplay {
+    SimulatedDisplay {
         id: DeviceId::from_uuid(Uuid::now_v7()),
         name: "Wave 1 Simulator".to_owned(),
         width: 480,
@@ -106,11 +107,7 @@ async fn body_bytes(response: axum::response::Response) -> axum::body::Bytes {
         .expect("failed to read response body")
 }
 
-async fn publish_display_frame(
-    state: &Arc<AppState>,
-    config: &SimulatedDisplayConfig,
-    jpeg: Vec<u8>,
-) {
+async fn publish_display_frame(state: &Arc<AppState>, config: &SimulatedDisplay, jpeg: Vec<u8>) {
     state.domains.display.frames().write().await.set_frame(
         config.id,
         DisplayFrameSnapshot {
@@ -433,7 +430,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         .expect("created simulator should include an id")
         .parse()
         .expect("created simulator id should parse");
-    let preview_config = SimulatedDisplayConfig {
+    let preview_config = SimulatedDisplay {
         id: device_id,
         name: created["data"]["name"]
             .as_str()

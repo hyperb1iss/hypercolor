@@ -12,12 +12,12 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             axum::routing::get(simulators::list_simulated_displays)
                 .post(simulators::create_simulated_display),
             [
-                OperationDoc::get_vec::<crate::simulators::SimulatedDisplayConfig>(
+                OperationDoc::get_vec::<hypercolor_types::api::simulators::SimulatedDisplay>(
                     "list_simulated_displays",
                     "displays",
                     "List simulated displays",
                 ),
-                OperationDoc::post::<crate::simulators::SimulatedDisplayConfig>(
+                OperationDoc::post::<hypercolor_types::api::simulators::SimulatedDisplay>(
                     "create_simulated_display",
                     "displays",
                     "Create simulated display",
@@ -32,12 +32,12 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                 .patch(simulators::patch_simulated_display)
                 .delete(simulators::delete_simulated_display),
             [
-                OperationDoc::get::<crate::simulators::SimulatedDisplayConfig>(
+                OperationDoc::get::<hypercolor_types::api::simulators::SimulatedDisplay>(
                     "get_simulated_display",
                     "displays",
                     "Get simulated display",
                 ),
-                OperationDoc::patch::<crate::simulators::SimulatedDisplayConfig>(
+                OperationDoc::patch::<hypercolor_types::api::simulators::SimulatedDisplay>(
                     "patch_simulated_display",
                     "displays",
                     "Patch simulated display",

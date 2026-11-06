@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::screen::ScreenId;
 use crate::state::{
     CanvasFrame, ControlValue, DaemonState, DeviceSummary, EffectSummary, Notification,
-    PreviewSource, SceneDocument, SceneSummary, SimulatedDisplaySummary, SpectrumSnapshot,
+    PreviewSource, SceneDocument, SceneSummary, SimulatedDisplay, SpectrumSnapshot,
 };
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
@@ -54,7 +54,7 @@ pub enum Action {
     /// Dynamic control-surface fetch failed for one device.
     DeviceControlSurfacesFailed { device_id: String, error: String },
     /// Virtual display simulator list refreshed.
-    SimulatedDisplaysUpdated(Arc<Vec<SimulatedDisplaySummary>>),
+    SimulatedDisplaysUpdated(Arc<Vec<SimulatedDisplay>>),
     /// Favorites list refreshed.
     FavoritesUpdated(Arc<Vec<String>>),
     /// New canvas frame received (binary WS).

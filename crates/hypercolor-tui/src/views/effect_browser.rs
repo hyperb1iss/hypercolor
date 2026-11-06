@@ -19,8 +19,8 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
     CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
-    SceneDocument, SimulatedDisplaySummary, ZoneResource, preview_zone, primary_zone,
-    scene_is_multi_zone, scene_zone, zone_effect_controls, zone_effect_id,
+    SceneDocument, SimulatedDisplay, ZoneResource, preview_zone, primary_zone, scene_is_multi_zone,
+    scene_zone, zone_effect_controls, zone_effect_id,
 };
 use crate::widgets::{
     ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
@@ -78,7 +78,7 @@ pub struct EffectBrowserView {
 
     // Canvas preview
     canvas_frame: Option<CanvasPreviewState>,
-    simulators: Vec<SimulatedDisplaySummary>,
+    simulators: Vec<SimulatedDisplay>,
     preview_source: PreviewSource,
     simulator_frame: Option<CanvasPreviewState>,
     simulator_frame_id: Option<String>,

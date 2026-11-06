@@ -53,11 +53,11 @@ use hypercolor_daemon::library::JsonLibraryStore;
 use hypercolor_daemon::persistence::AtomicFileWriter;
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store;
-#[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::simulators::SimulatedDisplayConfig;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::api::scenes::{ReplaceSceneLayerRequest, ReplaceSceneRequest};
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::control::ControlValue as SurfaceControlValue;
@@ -10066,7 +10066,7 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
         .simulated_displays
         .write()
         .await
-        .upsert(SimulatedDisplayConfig {
+        .upsert(SimulatedDisplay {
             id: device_id,
             name: "Cancellation Simulator".to_owned(),
             width: 16,
@@ -10245,7 +10245,7 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
         .simulated_displays
         .write()
         .await
-        .upsert(SimulatedDisplayConfig {
+        .upsert(SimulatedDisplay {
             id: device_id,
             name: "Collision Simulator".to_owned(),
             width: 16,

@@ -34,7 +34,7 @@ use serde::de::DeserializeOwned;
 
 use crate::state::{
     CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary,
-    PresetTemplate, SceneSummary, SimulatedDisplaySummary,
+    PresetTemplate, SceneSummary, SimulatedDisplay,
 };
 
 /// HTTP client for the daemon REST API.
@@ -172,7 +172,7 @@ impl DaemonClient {
     }
 
     /// Fetch all configured virtual display simulators.
-    pub async fn get_simulated_displays(&self) -> Result<Vec<SimulatedDisplaySummary>> {
+    pub async fn get_simulated_displays(&self) -> Result<Vec<SimulatedDisplay>> {
         self.get_data("/simulators/displays").await
     }
 

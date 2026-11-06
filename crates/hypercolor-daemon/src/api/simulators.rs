@@ -20,10 +20,10 @@ use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 use crate::simulators::{
-    SimulatedDisplayConfig, SimulatedDisplayExt, activate_simulated_displays,
-    logical_device_ids_for_simulator,
+    SimulatedDisplayExt, activate_simulated_displays, logical_device_ids_for_simulator,
 };
 
+use hypercolor_types::api::simulators::SimulatedDisplay;
 pub use hypercolor_types::api::simulators::{
     CreateSimulatedDisplayRequest, DeleteSimulatedDisplayResponse, UpdateSimulatedDisplayRequest,
 };
@@ -61,7 +61,7 @@ pub async fn create_simulated_display(
     State(state): State<Arc<AppState>>,
     ApiJson(body): ApiJson<CreateSimulatedDisplayRequest>,
 ) -> Response {
-    let config = SimulatedDisplayConfig {
+    let config = SimulatedDisplay {
         id: DeviceId::new(),
         name: body.name,
         width: body.width,
@@ -113,7 +113,7 @@ pub async fn patch_simulated_display(
                 .into_response();
         };
 
-        let updated = SimulatedDisplayConfig {
+        let updated = SimulatedDisplay {
             id: existing.id,
             name: body.name.unwrap_or(existing.name),
             width: body.width.unwrap_or(existing.width),
@@ -305,7 +305,7 @@ fn parse_simulator_id(raw: &str) -> Result<DeviceId, DomainError> {
         .map_err(|_| DomainError::validation(format!("Invalid simulator id: {raw}")))
 }
 
-fn validate_simulator_config(config: &SimulatedDisplayConfig) -> Result<(), String> {
+fn validate_simulator_config(config: &SimulatedDisplay) -> Result<(), String> {
     if config.name.trim().is_empty() {
         return Err("Simulator name must not be empty".to_owned());
     }

@@ -11,8 +11,9 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::simulators::SimulatedDisplayExt;
-use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
+use hypercolor_daemon::simulators::activate_simulated_displays;
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
@@ -37,7 +38,7 @@ fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
 }
 
 async fn register_display(state: &Arc<AppState>, name: &str) -> DeviceId {
-    let config = SimulatedDisplayConfig {
+    let config = SimulatedDisplay {
         id: DeviceId::from_uuid(Uuid::now_v7()),
         name: name.to_owned(),
         width: 480,
