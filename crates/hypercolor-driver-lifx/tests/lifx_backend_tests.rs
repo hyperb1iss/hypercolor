@@ -464,6 +464,10 @@ fn legacy_strip_fake() -> Vec<FakeDevice> {
 // Gap: a handoff must not report transport start, or success while a send
 // failure is unresolved.
 #[tokio::test(flavor = "current_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "Windows does not surface ICMP refusal on a connected UDP send"
+)]
 async fn handoffs_never_report_success_over_an_unresolved_failure() -> TestResult {
     let fake = FakeLifx::spawn(legacy_strip_fake()).await?;
     let addr = fake.addr();

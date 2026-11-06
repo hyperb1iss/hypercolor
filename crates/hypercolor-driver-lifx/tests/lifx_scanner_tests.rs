@@ -195,6 +195,10 @@ async fn discovered_devices_carry_routing_metadata() -> TestResult {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
 async fn probing_a_silent_address_times_out() -> TestResult {
     let silent = tokio::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
     let error = probe_at(
@@ -271,6 +275,10 @@ fn rounds_fail_when_any_light_could_not_be_asked() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
 async fn one_failed_unicast_send_fails_the_scan_even_when_others_succeed() -> TestResult {
     let fake = FakeLifx::spawn(vec![FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb)]).await?;
     // Port 0 is rejected locally, so this send never leaves the host.
@@ -284,6 +292,10 @@ async fn one_failed_unicast_send_fails_the_scan_even_when_others_succeed() -> Te
 }
 
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
 async fn a_scan_that_cannot_reach_the_network_fails_instead_of_finding_nothing() -> TestResult {
     // Sending to port 0 is rejected locally, so this never leaves the host.
     let unreachable = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
