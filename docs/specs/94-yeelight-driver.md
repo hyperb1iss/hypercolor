@@ -140,6 +140,22 @@ The decoder splits each line on its first colon and trims, so empty values
 such as `Date:` parse, and accepts `NOTIFY * HTTP/1.1` advertisements, which
 carry the same headers. A reply without `Location` or `id` is rejected.
 
+### 3.3 Bounds on search replies
+
+Search replies are unauthenticated, so the decoder and the scan bound them:
+
+| Rule | Value |
+|------|-------|
+| `id` | `0x` followed by 1 to 16 hexadecimal digits (the specification's 64-bit id), lowercased; anything else rejects the reply |
+| `name`, `model` | kept to their first 64 characters (the specification caps names at 64 bytes) |
+| Address | the `Location` IP must be the reply's source IP: a light answers for itself |
+| Admission | one id per source IP and each id once per scan, at most 256 per scan; further replies are dropped with a warning that names `device_ips` |
+
+Display names are built character by character, never by byte index, so no
+input can split a character. Across scans, a host can introduce at most one
+new id per scan; ids are not otherwise reconciled against tracked devices,
+because a real light can change address.
+
 **Discovery never opens a control connection.** A device allows only four,
 and the search reply already says everything the driver needs.
 
@@ -162,6 +178,15 @@ object followed by CRLF.
 discriminator. `props` notifications are pushed to every connection on any
 state change. A background task reads the control connection, skips results
 and notifications, and acts on quota errors (section 6.1).
+
+### 4.1 Framing and transport bounds
+
+| Bound | Value | Effect |
+|-------|-------|--------|
+| Incoming line | 4096 bytes, refused while it streams in | The connection is treated as failed; the largest real message is a few hundred bytes |
+| Outgoing write | 1 s per frame | A peer that stops reading cannot stall the frame path; a timed-out write leaves a partial JSON line, so the connection is dropped |
+| Reader end | end of stream, read error, or oversized line | The session is marked failed, so the next write reports it (even an unchanged color) and the host reconnects |
+| Disconnect | waits at most 1 s for a stalled writer | Both connections are closed then, even if a frame sink is still held, because a light allows only four |
 
 ---
 
@@ -230,7 +255,9 @@ Without music mode the driver stays inside the per-connection quota:
   without `set_scene`), reported as 1 fps.
 - A write that arrives before the previous frame's commands have used up
   their seconds returns `SuppressedCadence` without touching the device.
-- A quota error pauses output for 15 s.
+- A quota error pauses output for 15 s and marks the light's state unknown:
+  the rejected command never landed, so the first frame after the pause is
+  sent in full even when the color has not changed.
 - A 3 s maximum frame silence makes the host replay the newest frame, so a
   frame the guard skipped is still delivered; replaying an unchanged state
   costs no command.
@@ -248,6 +275,10 @@ Music mode is the specification's streaming path:
    nothing back.
 5. Stop with `set_music [0]` on the control connection (sent on disconnect,
    best effort), or by closing the music connection.
+
+The listener accepts only a connection whose source IP is the light's
+control peer, within the original 3 s deadline; any other LAN host that
+connects first is dropped with a warning, and frames never reach it.
 
 Music mode needs `set_music` in `support`, IPv4, and a path from the device
 back to the host. When any step fails, the driver logs why and streams in
@@ -322,8 +353,9 @@ max_fps = 25                # music-mode updates per second, 1 to 60
 ### 8.5 Backend
 
 One control connection per device, plus the music connection when music
-mode is on. Disconnect closes the sink, sends `set_music [0]`, and drops both
-connections; the light keeps its last color.
+mode is on. Disconnect closes the sink, sends `set_music [0]` (bounded to
+1 s), and closes both connections even when a frame sink is still held; the
+light keeps its last color.
 
 ### 8.6 Controls
 
@@ -369,6 +401,8 @@ Every test binds 127.0.0.1.
 4. **UDP session mode** on port 55444 (`udp_sess_new`) is unimplemented; its
    quota status is undocumented.
 5. **Background and segment lights** are not driven.
+6. **Invented identities across scans**: one host can add one id per scan
+   (section 3.3); the registry, not the driver, would have to age them out.
 
 ---
 
