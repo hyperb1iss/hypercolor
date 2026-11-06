@@ -32,6 +32,9 @@ enabled = false
 [drivers.nollie]
 enabled = false
 
+[drivers.nzxt]
+enabled = false
+
 [drivers.openrgb]
 enabled = false
 
