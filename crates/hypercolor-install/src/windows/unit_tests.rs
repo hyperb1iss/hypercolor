@@ -378,6 +378,14 @@ fn links_device_names_and_case_collisions_in_the_inputs_are_refused() {
     assert!(!output.exists());
 
     let fixture = Fixture::new();
+    write(&fixture.sources.stage_dir.join("ui/\u{3c3}.js"), b"medial");
+    write(&fixture.sources.stage_dir.join("ui/\u{3c2}.js"), b"final");
+    assert!(
+        produce_windows_unit(&fixture.sources, &fixture.output("sigma")).is_err(),
+        "NTFS folds both sigmas to one name"
+    );
+
+    let fixture = Fixture::new();
     write(&fixture.sources.stage_dir.join("ui/Index.html"), b"other");
     assert!(
         matches!(

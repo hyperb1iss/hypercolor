@@ -26,7 +26,9 @@ use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 
 use super::error::ReleasePayloadError;
-use super::manifest::{MANIFEST_NAME, PermissionClass, ValidatedManifest, WindowsVendor};
+use super::manifest::{
+    MANIFEST_NAME, PermissionClass, ValidatedManifest, WindowsVendor, fold_case,
+};
 use crate::model::UnitId;
 
 /// Where every release keeps its store inventory, relative to the unit.
@@ -238,7 +240,7 @@ pub enum WindowsUnitError {
 
 /// Produce one Windows release unit at `output`, which must not exist yet.
 ///
-/// On failure nothing is left at `output`.
+/// On failure the producer removes the directory it created at `output`.
 ///
 /// # Errors
 ///
@@ -293,7 +295,8 @@ struct Plan {
     directories: BTreeSet<String>,
     files: BTreeMap<String, PathBuf>,
     generated: BTreeMap<String, Vec<u8>>,
-    /// Every planned path, case-folded, with its original spelling.
+    /// Every planned path, folded as NTFS compares names, with its original
+    /// spelling.
     folded: BTreeMap<String, String>,
 }
 
@@ -347,7 +350,7 @@ impl Plan {
                 "{path:?} is not a unit path Windows reads as written"
             )));
         }
-        match self.folded.get(&path.to_lowercase()) {
+        match self.folded.get(&fold_case(path)) {
             Some(existing) if directory && existing == path && self.directories.contains(path) => {
                 Ok(false)
             }
@@ -358,7 +361,7 @@ impl Plan {
                 "{path} and {existing} name the same member on a case-insensitive volume"
             ))),
             None => {
-                self.folded.insert(path.to_lowercase(), path.to_owned());
+                self.folded.insert(fold_case(path), path.to_owned());
                 Ok(true)
             }
         }
