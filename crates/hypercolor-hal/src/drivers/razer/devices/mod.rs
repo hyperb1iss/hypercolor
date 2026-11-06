@@ -407,6 +407,52 @@ macro_rules! razer_laptop_builder {
     };
 }
 
+// Custom-frame apply packet that OpenRGB and OpenRazer both send to
+// extended-matrix accessories: class 0x0F, id 0x02, a declared 12-byte
+// payload, and arguments [NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME].
+const REFERENCE_APPLY_DATA_SIZE: u8 = 0x0C;
+const REFERENCE_APPLY_ARGS: [u8; 5] = [NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x00];
+const REFERENCE_APPLY_ARGS_LEN: u8 = 3;
+
+razer_matrix_builder!(
+    build_tomahawk_atx_protocol,
+    RazerProtocolVersion::Modern,
+    RazerLightingCommandSet::Extended,
+    RazerMatrixType::Extended,
+    (1, 20),
+    LED_ID_ZERO,
+    .with_extended_custom_effect_activation(
+        REFERENCE_APPLY_DATA_SIZE,
+        REFERENCE_APPLY_ARGS,
+        REFERENCE_APPLY_ARGS_LEN
+    )
+);
+razer_matrix_builder!(
+    build_raptor_27_protocol,
+    RazerProtocolVersion::Modern,
+    RazerLightingCommandSet::Extended,
+    RazerMatrixType::Extended,
+    (1, 12),
+    LED_ID_ZERO,
+    .with_extended_custom_effect_activation(
+        REFERENCE_APPLY_DATA_SIZE,
+        REFERENCE_APPLY_ARGS,
+        REFERENCE_APPLY_ARGS_LEN
+    )
+);
+razer_matrix_builder!(
+    build_core_x_chroma_protocol,
+    RazerProtocolVersion::Extended,
+    RazerLightingCommandSet::Extended,
+    RazerMatrixType::Extended,
+    (1, 16),
+    LED_ID_ZERO,
+    .with_extended_custom_effect_activation(
+        REFERENCE_APPLY_DATA_SIZE,
+        REFERENCE_APPLY_ARGS,
+        REFERENCE_APPLY_ARGS_LEN
+    )
+);
 razer_matrix_builder!(
     build_matrix_extended_modern_1x1_backlight_protocol,
     RazerProtocolVersion::Modern,
