@@ -535,30 +535,211 @@ fn runtime_document_has_complete_operation_contracts() {
     assert_local_refs_resolve(&document, &document);
 }
 
-#[test]
-fn no_enveloped_read_answers_a_bare_array() {
-    let document = openapi_document();
-    let schemas = &document["components"]["schemas"];
-    let paths = document["paths"].as_object().expect("paths object");
+/// Follow a local `$ref` to the component it names.
+fn resolve_schema<'a>(
+    document: &'a serde_json::Value,
+    schema: &'a serde_json::Value,
+) -> &'a serde_json::Value {
+    let mut current = schema;
+    for _ in 0..32 {
+        let Some(reference) = current["$ref"].as_str() else {
+            return current;
+        };
+        let name = reference
+            .strip_prefix("#/components/schemas/")
+            .unwrap_or_else(|| panic!("unexpected non-local reference {reference}"));
+        current = &document["components"]["schemas"][name];
+    }
+    panic!("reference chain from {schema} does not terminate");
+}
+
+/// Whether a JSON value matching `schema` can be an array, following local
+/// references and every `oneOf`, `anyOf`, and `allOf` branch.
+fn schema_admits_array(
+    document: &serde_json::Value,
+    schema: &serde_json::Value,
+    depth: usize,
+) -> bool {
+    assert!(
+        depth < 32,
+        "schema nesting from {schema} does not terminate"
+    );
+    let schema = resolve_schema(document, schema);
+    let typed_array = match &schema["type"] {
+        serde_json::Value::String(kind) => kind == "array",
+        serde_json::Value::Array(kinds) => kinds.iter().any(|kind| kind == "array"),
+        _ => false,
+    };
+    typed_array
+        || ["oneOf", "anyOf", "allOf"].iter().any(|combinator| {
+            schema[*combinator].as_array().is_some_and(|branches| {
+                branches
+                    .iter()
+                    .any(|branch| schema_admits_array(document, branch, depth + 1))
+            })
+        })
+}
+
+/// Every successful JSON `GET` response whose payload can be a bare array:
+/// the envelope's `data` for enveloped bodies, the body itself otherwise.
+fn bare_array_reads(document: &serde_json::Value) -> Vec<String> {
     let mut bare = Vec::new();
+    let Some(paths) = document["paths"].as_object() else {
+        return bare;
+    };
     for (path, item) in paths {
-        let Some(data_ref) =
-            item["get"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
-                ["data"]["$ref"]
-                .as_str()
-        else {
+        let Some(responses) = item["get"]["responses"].as_object() else {
             continue;
         };
-        let name = data_ref
-            .strip_prefix("#/components/schemas/")
-            .expect("data refs point at component schemas");
-        if schemas[name]["type"] == "array" {
-            bare.push(format!("{path} -> {name}"));
+        for (status, response) in responses {
+            if !status.starts_with('2') {
+                continue;
+            }
+            let Some(body) = response["content"]["application/json"].get("schema") else {
+                continue;
+            };
+            let body = resolve_schema(document, body);
+            let payload = body["properties"].get("data").unwrap_or(body);
+            if schema_admits_array(document, payload, 0) {
+                bare.push(format!("GET {path} {status}"));
+            }
         }
     }
+    bare
+}
+
+#[test]
+fn no_enveloped_read_answers_a_bare_array() {
+    let bare = bare_array_reads(&openapi_document());
     assert!(
         bare.is_empty(),
         "collection reads answer ListResponse, not a bare array: {bare:?}"
+    );
+}
+
+#[test]
+fn the_bare_array_guard_rejects_every_array_spelling() {
+    use utoipa::PartialSchema;
+
+    let enveloped = |data: serde_json::Value| {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "data": data, "meta": { "$ref": "#/components/schemas/ResponseMeta" } },
+        })
+    };
+    let document_with = |status: &str, body: serde_json::Value, schemas: serde_json::Value| {
+        serde_json::json!({
+            "paths": {
+                "/api/v1/things": {
+                    "get": { "responses": { status: { "content": { "application/json": { "schema": body } } } } }
+                }
+            },
+            "components": { "schemas": schemas },
+        })
+    };
+    let thing_array = serde_json::json!({ "type": "array", "items": { "type": "string" } });
+    // What utoipa emits for `OperationDoc::get::<Option<Vec<T>>>`.
+    let optional_vec = serde_json::to_value(<Option<Vec<String>> as PartialSchema>::schema())
+        .expect("schema serializes");
+    assert_ne!(
+        optional_vec["type"], "array",
+        "utoipa wraps an optional list, so a plain type check cannot see it"
+    );
+    let list_response = serde_json::json!({
+        "type": "object",
+        "properties": { "items": thing_array.clone(), "total": { "type": "integer" } },
+    });
+
+    let rejected = [
+        (
+            "inline array",
+            document_with("200", enveloped(thing_array.clone()), serde_json::json!({})),
+        ),
+        (
+            "referenced array",
+            document_with(
+                "200",
+                enveloped(serde_json::json!({ "$ref": "#/components/schemas/ThingList" })),
+                serde_json::json!({ "ThingList": thing_array.clone() }),
+            ),
+        ),
+        (
+            "utoipa Option<Vec<T>>",
+            document_with(
+                "200",
+                enveloped(optional_vec.clone()),
+                serde_json::json!({}),
+            ),
+        ),
+        (
+            "referenced Option<Vec<T>>",
+            document_with(
+                "200",
+                enveloped(serde_json::json!({ "$ref": "#/components/schemas/ThingListOptional" })),
+                serde_json::json!({ "ThingListOptional": optional_vec }),
+            ),
+        ),
+        (
+            "nullable type list",
+            document_with(
+                "200",
+                enveloped(serde_json::json!({ "type": ["array", "null"] })),
+                serde_json::json!({}),
+            ),
+        ),
+        (
+            "anyOf branch",
+            document_with(
+                "200",
+                enveloped(
+                    serde_json::json!({ "anyOf": [{ "type": "object" }, thing_array.clone()] }),
+                ),
+                serde_json::json!({}),
+            ),
+        ),
+        (
+            "allOf through a reference",
+            document_with(
+                "200",
+                enveloped(
+                    serde_json::json!({ "allOf": [{ "$ref": "#/components/schemas/ThingList" }] }),
+                ),
+                serde_json::json!({ "ThingList": thing_array.clone() }),
+            ),
+        ),
+        (
+            "referenced envelope",
+            document_with(
+                "200",
+                serde_json::json!({ "$ref": "#/components/schemas/ThingEnvelope" }),
+                serde_json::json!({ "ThingEnvelope": enveloped(thing_array.clone()) }),
+            ),
+        ),
+        (
+            "non-200 success",
+            document_with("206", enveloped(thing_array.clone()), serde_json::json!({})),
+        ),
+        (
+            "raw array body",
+            document_with("200", thing_array, serde_json::json!({})),
+        ),
+    ];
+    for (label, document) in &rejected {
+        assert_eq!(
+            bare_array_reads(document).len(),
+            1,
+            "{label} must be rejected"
+        );
+    }
+
+    let accepted = document_with(
+        "200",
+        enveloped(serde_json::json!({ "$ref": "#/components/schemas/ThingListResponse" })),
+        serde_json::json!({ "ThingListResponse": list_response }),
+    );
+    assert!(
+        bare_array_reads(&accepted).is_empty(),
+        "a ListResponse body is not a bare array"
     );
 }
 
