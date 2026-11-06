@@ -70,8 +70,9 @@ crates/
   hypercolor-windows-telemetry/    # Windows WMI/PawnIO sensors and board identity (stubs elsewhere)
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
   hypercolor-windows-launcher/     # Stable Windows launcher and update recovery bootstrap, the programs outside release units
+  hypercolor-windows-install-native/ # Audited Win32 process and firewall calls behind the Windows install platform
   hypercolor-platform-fs/          # Audited platform filesystem operations
-  hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd and macOS launchd platforms, payload validation
+  hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd, macOS launchd and Windows machine platforms, payload validation
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
   hypercolor-driver-support/       # Native credential and discovery services layered on the driver API

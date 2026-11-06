@@ -172,6 +172,7 @@ hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop", v
 hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture", version = "0.9.0" }
 hypercolor-macos-input = { path = "crates/hypercolor-macos-input", version = "0.9.0" }
 hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner", version = "0.9.0" }
+hypercolor-windows-install-native = { path = "crates/hypercolor-windows-install-native", version = "0.9.0" }
 hypercolor-windows-session = { path = "crates/hypercolor-windows-session", version = "0.9.0" }
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture", version = "0.9.0" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop", version = "0.9.0" }

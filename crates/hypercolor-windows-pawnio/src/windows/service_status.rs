@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use windows_service::service::{ServiceAccess, ServiceExitCode, ServiceStartType, ServiceState};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-use super::broker::{SERVICE_NAME, direct_mode_enabled, ping};
+use super::broker::{SERVICE_NAME, direct_mode_enabled, ping_broker};
 use super::service_log::broker_log_path;
 use super::{PawnIoError, PawnIoResult};
 
@@ -135,7 +135,7 @@ pub fn broker_service_status() -> PawnIoResult<BrokerServiceStatus> {
     };
 
     let (answering, version) = if state == BrokerServiceState::Running {
-        match ping() {
+        match ping_broker() {
             Ok(version) => (Some(true), Some(version)),
             Err(PawnIoError::BrokerUnavailable { .. }) => (Some(false), None),
             // Any other error is a well-formed reply from a broker that
