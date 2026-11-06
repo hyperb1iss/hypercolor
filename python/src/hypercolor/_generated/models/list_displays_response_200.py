@@ -8,7 +8,7 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 if TYPE_CHECKING:
-    from ..models.display_summary_list_item import DisplaySummaryListItem
+    from ..models.display_summary_list_response import DisplaySummaryListResponse
     from ..models.response_meta import ResponseMeta
 
 
@@ -19,21 +19,20 @@ T = TypeVar("T", bound="ListDisplaysResponse200")
 class ListDisplaysResponse200:
     """
     Attributes:
-        data (list[DisplaySummaryListItem]):
+        data (DisplaySummaryListResponse): Canonical list payload: honest pagination or none at all.
+
+            `page: None` means the response is complete — no fabricated
+            `limit`/`has_more` block pretending a paging contract that doesn't
+            exist. `page: Some` means the endpoint genuinely pages.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
-    data: list[DisplaySummaryListItem]
+    data: DisplaySummaryListResponse
     meta: ResponseMeta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        data = []
-        for componentsschemas_display_summary_list_item_data in self.data:
-            componentsschemas_display_summary_list_item = (
-                componentsschemas_display_summary_list_item_data.to_dict()
-            )
-            data.append(componentsschemas_display_summary_list_item)
+        data = self.data.to_dict()
 
         meta = self.meta.to_dict()
 
@@ -50,22 +49,13 @@ class ListDisplaysResponse200:
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
-        from ..models.display_summary_list_item import (
-            DisplaySummaryListItem,
+        from ..models.display_summary_list_response import (
+            DisplaySummaryListResponse,
         )
         from ..models.response_meta import ResponseMeta
 
         d = dict(src_dict)
-        data = []
-        _data = d.pop("data")
-        for componentsschemas_display_summary_list_item_data in _data:
-            componentsschemas_display_summary_list_item = (
-                DisplaySummaryListItem.from_dict(
-                    componentsschemas_display_summary_list_item_data
-                )
-            )
-
-            data.append(componentsschemas_display_summary_list_item)
+        data = DisplaySummaryListResponse.from_dict(d.pop("data"))
 
         meta = ResponseMeta.from_dict(d.pop("meta"))
 

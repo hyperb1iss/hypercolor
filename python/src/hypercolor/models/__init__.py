@@ -28,7 +28,9 @@ from .._generated.models.control_action_result import ControlActionResult
 from .._generated.models.control_action_status import ControlActionStatus
 from .._generated.models.control_definition import ControlDefinition
 from .._generated.models.control_surface_document import ControlSurfaceDocument
-from .._generated.models.control_surface_list_response import ControlSurfaceListResponse
+from .._generated.models.control_surface_document_list_response import (
+    ControlSurfaceDocumentListResponse,
+)
 from .._generated.models.control_type import ControlType
 from .._generated.models.control_value import ControlValue
 from .._generated.models.control_value_kind import ControlValueKind
@@ -47,7 +49,7 @@ from .._generated.models.discovery_scanning_response import DiscoveryScanningRes
 from .._generated.models.display_descriptor import DisplayDescriptor
 from .._generated.models.display_face_response import DisplayFaceResponse
 from .._generated.models.display_face_scope import DisplayFaceScope
-from .._generated.models.display_summary_list_item import DisplaySummaryListItem
+from .._generated.models.display_summary import DisplaySummary
 from .._generated.models.driver_capability_set import DriverCapabilitySet
 from .._generated.models.driver_module_descriptor import DriverModuleDescriptor
 from .._generated.models.driver_presentation import DriverPresentation
@@ -112,7 +114,7 @@ __all__ = [
     "ControlActionStatus",
     "ControlDefinition",
     "ControlSurfaceDocument",
-    "ControlSurfaceListResponse",
+    "ControlSurfaceDocumentListResponse",
     "ControlType",
     "ControlValue",
     "ControlValueKind",
@@ -131,7 +133,7 @@ __all__ = [
     "DisplayDescriptor",
     "DisplayFaceResponse",
     "DisplayFaceScope",
-    "DisplaySummaryListItem",
+    "DisplaySummary",
     "DriverCapabilitySet",
     "DriverModuleDescriptor",
     "DriverPresentation",

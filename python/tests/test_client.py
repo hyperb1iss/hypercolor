@@ -1055,9 +1055,10 @@ async def test_get_control_surfaces_uses_pythonic_filters(client: HypercolorClie
             200,
             content=_envelope(
                 {
-                    "surfaces": [
+                    "items": [
                         _control_surface("device:keyboard"),
-                    ]
+                    ],
+                    "total": 1,
                 }
             ),
         )
@@ -1714,33 +1715,36 @@ async def test_scene_display_and_diagnostics_helpers(
         return_value=httpx.Response(
             200,
             content=_envelope(
-                [
-                    {
-                        "id": "streamdeck",
-                        "name": "Stream Deck",
-                        "vendor": "elgato",
-                        "family": "stream_deck",
-                        "width": 72,
-                        "height": 72,
-                        "circular": False,
-                        "descriptor": {
-                            "api_version": 1,
+                {
+                    "items": [
+                        {
+                            "id": "streamdeck",
+                            "name": "Stream Deck",
+                            "vendor": "elgato",
+                            "family": "stream_deck",
                             "width": 72,
                             "height": 72,
                             "circular": False,
-                            "shape": "square",
-                            "class": "panel",
-                            "safe_area": {
-                                "x": 0.0,
-                                "y": 0.0,
-                                "width": 1.0,
-                                "height": 1.0,
+                            "descriptor": {
+                                "api_version": 1,
+                                "width": 72,
+                                "height": 72,
+                                "circular": False,
+                                "shape": "square",
+                                "class": "panel",
+                                "safe_area": {
+                                    "x": 0.0,
+                                    "y": 0.0,
+                                    "width": 1.0,
+                                    "height": 1.0,
+                                },
+                                "target_fps": 30,
+                                "pixel_format": "rgb",
                             },
-                            "target_fps": 30,
-                            "pixel_format": "rgb",
-                        },
-                    }
-                ]
+                        }
+                    ],
+                    "total": 1,
+                }
             ),
         )
     )

@@ -159,7 +159,7 @@ from .bridge_device_summary import BridgeDeviceSummary
 from .canvas_image_format import CanvasImageFormat
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
-from .capture_monitor_list_item import CaptureMonitorListItem
+from .capture_monitor_list_response import CaptureMonitorListResponse
 from .capture_picker_response import CapturePickerResponse
 from .clear_scene_request import ClearSceneRequest
 from .clear_scene_response_200 import ClearSceneResponse200
@@ -176,7 +176,7 @@ from .component_template import ComponentTemplate
 from .config_document import ConfigDocument
 from .config_key_response import ConfigKeyResponse
 from .config_key_schema_entry import ConfigKeySchemaEntry
-from .config_key_schema_entry_list_item import ConfigKeySchemaEntryListItem
+from .config_key_schema_entry_list_response import ConfigKeySchemaEntryListResponse
 from .config_mutation_response import ConfigMutationResponse
 from .control_access import ControlAccess
 from .control_action_descriptor import ControlActionDescriptor
@@ -209,8 +209,8 @@ from .control_object_field_value_type import ControlObjectFieldValueType
 from .control_owner import ControlOwner
 from .control_persistence import ControlPersistence
 from .control_surface_document import ControlSurfaceDocument
+from .control_surface_document_list_response import ControlSurfaceDocumentListResponse
 from .control_surface_document_values import ControlSurfaceDocumentValues
-from .control_surface_list_response import ControlSurfaceListResponse
 from .control_surface_scope import ControlSurfaceScope
 from .control_type import ControlType
 from .control_value import ControlValue
@@ -309,7 +309,7 @@ from .display_rect import DisplayRect
 from .display_rotation import DisplayRotation
 from .display_shape import DisplayShape
 from .display_summary import DisplaySummary
-from .display_summary_list_item import DisplaySummaryListItem
+from .display_summary_list_response import DisplaySummaryListResponse
 from .driver_capability_set import DriverCapabilitySet
 from .driver_config_entry import DriverConfigEntry
 from .driver_config_response import DriverConfigResponse
@@ -612,7 +612,7 @@ from .set_display_face_response_200 import SetDisplayFaceResponse200
 from .show_config_response_200 import ShowConfigResponse200
 from .side_effect_outcome import SideEffectOutcome
 from .simulated_display import SimulatedDisplay
-from .simulated_display_list_item import SimulatedDisplayListItem
+from .simulated_display_list_response import SimulatedDisplayListResponse
 from .snapshot_scene_request import SnapshotSceneRequest
 from .snapshot_scene_response_201 import SnapshotSceneResponse201
 from .software_conflict import SoftwareConflict
@@ -782,7 +782,7 @@ __all__ = (
     "CanvasImageFormat",
     "CaptureAuthorizationResponse",
     "CaptureMonitor",
-    "CaptureMonitorListItem",
+    "CaptureMonitorListResponse",
     "CapturePickerResponse",
     "ClearSceneRequest",
     "ClearSceneResponse200",
@@ -799,7 +799,7 @@ __all__ = (
     "ConfigDocument",
     "ConfigKeyResponse",
     "ConfigKeySchemaEntry",
-    "ConfigKeySchemaEntryListItem",
+    "ConfigKeySchemaEntryListResponse",
     "ConfigMutationResponse",
     "ControlAccess",
     "ControlActionDescriptor",
@@ -826,8 +826,8 @@ __all__ = (
     "ControlOwner",
     "ControlPersistence",
     "ControlSurfaceDocument",
+    "ControlSurfaceDocumentListResponse",
     "ControlSurfaceDocumentValues",
-    "ControlSurfaceListResponse",
     "ControlSurfaceScope",
     "ControlType",
     "ControlValue",
@@ -926,7 +926,7 @@ __all__ = (
     "DisplayRotation",
     "DisplayShape",
     "DisplaySummary",
-    "DisplaySummaryListItem",
+    "DisplaySummaryListResponse",
     "DriverCapabilitySet",
     "DriverConfigEntry",
     "DriverConfigResponse",
@@ -1215,7 +1215,7 @@ __all__ = (
     "ShowConfigResponse200",
     "SideEffectOutcome",
     "SimulatedDisplay",
-    "SimulatedDisplayListItem",
+    "SimulatedDisplayListResponse",
     "SnapshotSceneRequest",
     "SnapshotSceneResponse201",
     "SoftwareConflict",
