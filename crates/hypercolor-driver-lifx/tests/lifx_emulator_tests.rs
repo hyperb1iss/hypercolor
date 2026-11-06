@@ -165,6 +165,7 @@ async fn emulated_fleet_discovers_connects_and_renders() -> TestResult {
         broadcast_targets: Vec::new(),
         timeout: Duration::from_secs(1),
         request_policy: policy,
+        ..LifxScanOptions::default()
     })
     .scan_profiles()
     .await?;

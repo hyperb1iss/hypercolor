@@ -156,7 +156,7 @@ impl DiscoveryCapability for LifxDriverModule {
                 Vec::new()
             },
             timeout: request.timeout,
-            request_policy: RequestPolicy::default(),
+            ..LifxScanOptions::default()
         });
         let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
         let mut devices: Vec<DiscoveredDevice> = outcome
@@ -166,14 +166,16 @@ impl DiscoveryCapability for LifxDriverModule {
             .collect();
         for reply in &outcome.unprobed {
             let serial = reply.serial.to_string();
-            if let Some(tracked) = tracked_devices.iter().find(|tracked| {
-                tracked.metadata.get(scanner::metadata_key::SERIAL) == Some(&serial)
-            }) {
-                devices.push(scanner::remembered_device(
-                    reply,
-                    &tracked.info,
-                    &tracked.metadata,
-                ));
+            let remembered = tracked_devices
+                .iter()
+                .filter(|tracked| {
+                    tracked.metadata.get(scanner::metadata_key::SERIAL) == Some(&serial)
+                })
+                .find_map(|tracked| {
+                    scanner::remembered_device(reply, &tracked.info, &tracked.metadata)
+                });
+            if let Some(device) = remembered {
+                devices.push(device);
             }
         }
         Ok(devices)

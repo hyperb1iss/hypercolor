@@ -37,6 +37,7 @@ async fn discover(fake: &FakeLifx, config: &LifxConfig) -> TestResult<Vec<Discov
         broadcast_targets: Vec::new(),
         timeout: Duration::from_millis(600),
         request_policy: policy(),
+        ..LifxScanOptions::default()
     })
     .scan_profiles()
     .await?;

@@ -235,25 +235,46 @@ fn device_surface_shows_diagnostics_and_the_refresh_action() {
 }
 
 #[test]
-fn tracked_lights_that_miss_their_probe_are_reported_at_their_new_address() {
+fn a_failed_probe_counts_as_presence_only_at_the_verified_route() {
     let tracked = tracked("192.168.1.40", "56700");
     let mut metadata = tracked.metadata.clone();
     metadata.insert("serial".to_owned(), "d073d5010203".to_owned());
-    let reply = ServiceReply {
-        serial: Serial([0xd0, 0x73, 0xd5, 1, 2, 3]),
-        addr: SocketAddr::from((Ipv4Addr::new(192, 168, 1, 77), 56_700)),
+    let serial = Serial([0xd0, 0x73, 0xd5, 1, 2, 3]);
+    let verified = SocketAddr::from((Ipv4Addr::new(192, 168, 1, 40), 56_700));
+
+    let same = ServiceReply {
+        serial,
+        addr: verified,
     };
-    let discovered = remembered_device(&reply, &tracked.info, &metadata);
+    let discovered =
+        remembered_device(&same, &tracked.info, &metadata).expect("present at its verified route");
     assert_eq!(discovered.info.id, tracked.info.id);
-    assert_eq!(discovered.metadata["ip"], "192.168.1.77");
-    assert_eq!(discovered.metadata["serial"], "d073d5010203");
+    assert_eq!(
+        discovered.metadata, metadata,
+        "the verified route is kept as it was"
+    );
     assert_eq!(
         discovered.fingerprint,
-        hypercolor_driver_lifx::topology::fingerprint_for_serial(reply.serial)
+        hypercolor_driver_lifx::topology::fingerprint_for_serial(serial)
     );
-    assert_eq!(
-        hypercolor_driver_lifx::scanner::route_from_metadata(&discovered.metadata)
-            .expect("routable"),
-        (reply.addr, reply.serial)
-    );
+
+    for unverified in [
+        SocketAddr::from((Ipv4Addr::new(192, 168, 1, 77), 56_700)),
+        SocketAddr::from((Ipv4Addr::new(192, 168, 1, 40), 56_701)),
+    ] {
+        let echo = ServiceReply {
+            serial,
+            addr: unverified,
+        };
+        assert!(
+            remembered_device(&echo, &tracked.info, &metadata).is_none(),
+            "an unverified endpoint {unverified} neither keeps the light present nor moves it"
+        );
+    }
+
+    let other = ServiceReply {
+        serial: Serial([0xd0, 0x73, 0xd5, 9, 9, 9]),
+        addr: verified,
+    };
+    assert!(remembered_device(&other, &tracked.info, &metadata).is_none());
 }

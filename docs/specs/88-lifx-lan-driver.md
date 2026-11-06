@@ -930,15 +930,34 @@ address too, so a light keeps working on networks that filter broadcast.
 5. Probe the serials, at most 32 at a time, and drop non-lights and foreign
    vendors.
 
-A scan fails, rather than returning an empty list, when an address family
-that had targets could not run: its socket could not be bound or set up for
-broadcast, or every GetService send was rejected. An address family with no
-targets is skipped. The distinction matters because the host retires
-tracked devices that a successful scan does not report.
+A successful scan lets the host retire every tracked light it did not
+report, so a scan that could not see every light it was meant to see fails
+instead of returning a partial list. The driver API has no partial-result
+flag, so the failure is an error. A scan fails when:
 
-A light that answers GetService but fails its probe is alive. If the host
-already tracks it (matched by serial), the scan reports it with its last
-known info at its current address instead of leaving it out.
+- an address family that had targets could not bind its socket or enable
+  broadcast;
+- any unicast GetService was rejected (configured and tracked lights are
+  asked by unicast, so that light was never asked);
+- every broadcast GetService was rejected (one failed interface is
+  tolerated, since tracked lights also get a unicast probe);
+- more distinct serials answered than the candidate limit (section 4.4),
+  so some were never probed.
+
+An address family with no targets is skipped and is not a failure. When a
+scan fails, the host keeps every existing LIFX mapping and registers no
+devices from that scan; lights first seen in it are registered by the next
+complete scan.
+
+A light that answers GetService but fails its probe has not proven where it
+is, because a StateService reply is unverified: anyone on the LAN can send
+one naming a tracked serial. Only a reply from the light's last verified
+endpoint (the route its tracked metadata holds) counts as presence, and the
+light is then reported with its tracked info and route unchanged. A reply
+from any other endpoint is ignored, so it can neither keep a dead light
+present nor redirect where the backend connects; a light that really moved
+and failed its probe is retired and found again by the next scan that
+probes it successfully.
 
 Metadata published per device: `ip`, `port`, `serial`, `vendor_id`,
 `product_id`, `firmware`, `device_class`, `zones`, and `tiles` for matrices.
@@ -1031,6 +1050,7 @@ CopyFrameBuffer arrives.
 | Nobody has run the driver on real LIFX hardware | ships experimental and off by default |
 | The 20 messages per second figure comes from 2016-era documentation | exposed as `max_messages_per_second`; revisit after hardware tests |
 | Tile chain frame rate is 4 FPS at the default budget | a direct consequence of one Set64 per tile; users who accept the risk can raise the budget |
+| A home with more than 512 LIFX lights would fail every scan as incomplete | well beyond real homes; the limit is one constant |
 | A five-message burst may be more than some firmware likes | the burst is one Tile chain frame, the pattern LIFX's own clients send; the long-run rate stays at the budget |
 | Saturation in linear light may look more saturated than the LIFX app for pastels | intentional (LEDs reward saturation); revisit with hardware |
 | `user_y` direction is not stated in the documentation | taken as growing upward; users can rotate the zone in the layout editor |

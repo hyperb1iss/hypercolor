@@ -10,7 +10,7 @@ use std::time::Duration;
 use hypercolor_driver_lifx::protocol::Serial;
 use hypercolor_driver_lifx::scanner::{
     LifxScanOptions, LifxScanner, MAX_CONCURRENT_PROBES, MAX_DISCOVERY_CANDIDATES,
-    discovered_device, ensure_round_reached_the_network, metadata_key, probe_at,
+    discovered_device, ensure_round_covered_its_targets, metadata_key, probe_at,
     route_from_metadata,
 };
 use hypercolor_driver_lifx::topology::{LifxTopology, Orientation};
@@ -27,6 +27,7 @@ fn options(targets: Vec<SocketAddr>) -> LifxScanOptions {
             reply_timeout: Duration::from_millis(200),
             attempts: 2,
         },
+        ..LifxScanOptions::default()
     }
 }
 
@@ -230,19 +231,56 @@ async fn probing_a_wrong_serial_gets_no_answer() -> TestResult {
     Ok(())
 }
 
+fn addr(last: u8) -> SocketAddr {
+    SocketAddr::from((Ipv4Addr::new(192, 0, 2, last), 56_700))
+}
+
 #[test]
-fn a_round_whose_sends_all_failed_is_an_error() {
-    let round = |attempted, failed| DiscoveryRound {
-        sends_attempted: attempted,
-        sends_failed: failed,
+fn rounds_fail_when_any_light_could_not_be_asked() {
+    let round = |failed: Vec<SocketAddr>, dropped| DiscoveryRound {
+        sends_attempted: 4,
+        sends_failed: failed.len(),
+        failed_targets: failed,
+        dropped,
         ..DiscoveryRound::default()
     };
-    assert!(ensure_round_reached_the_network("IPv4", &round(3, 3)).is_err());
-    assert!(ensure_round_reached_the_network("IPv4", &round(3, 2)).is_ok());
+    let broadcast = [addr(255), addr(254)];
+
+    assert!(ensure_round_covered_its_targets("IPv4", &round(Vec::new(), 0), &broadcast).is_ok());
     assert!(
-        ensure_round_reached_the_network("IPv6", &round(0, 0)).is_ok(),
+        ensure_round_covered_its_targets("IPv4", &round(vec![addr(10)], 0), &broadcast).is_err(),
+        "a tracked light that was never asked must not be retired"
+    );
+    assert!(
+        ensure_round_covered_its_targets("IPv4", &round(vec![addr(255)], 0), &broadcast).is_ok(),
+        "one failed broadcast interface is covered by unicast probes"
+    );
+    assert!(
+        ensure_round_covered_its_targets("IPv4", &round(vec![addr(255), addr(254)], 0), &broadcast)
+            .is_err(),
+        "no local network was asked"
+    );
+    assert!(
+        ensure_round_covered_its_targets("IPv4", &round(Vec::new(), 3), &broadcast).is_err(),
+        "lights past the candidate limit were never probed"
+    );
+    assert!(
+        ensure_round_covered_its_targets("IPv6", &DiscoveryRound::default(), &[]).is_ok(),
         "an unused family is not a failure"
     );
+}
+
+#[tokio::test]
+async fn one_failed_unicast_send_fails_the_scan_even_when_others_succeed() -> TestResult {
+    let fake = FakeLifx::spawn(vec![FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb)]).await?;
+    // Port 0 is rejected locally, so this send never leaves the host.
+    let rejected = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let error = LifxScanner::new(options(vec![fake.addr(), rejected]))
+        .scan()
+        .await
+        .expect_err("a scan that skipped a tracked light must not look complete");
+    assert!(error.to_string().contains("scan is incomplete"), "{error}");
+    Ok(())
 }
 
 #[tokio::test]
@@ -253,10 +291,7 @@ async fn a_scan_that_cannot_reach_the_network_fails_instead_of_finding_nothing()
         .scan()
         .await
         .expect_err("a scan whose only send failed must not look empty");
-    assert!(
-        error.to_string().contains("GetService send failed"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("scan is incomplete"), "{error}");
     Ok(())
 }
 
@@ -302,10 +337,8 @@ async fn discovery_rounds_keep_at_most_their_cap() -> TestResult {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn reply_floods_are_capped_and_probes_stay_bounded() -> TestResult {
-    let total = MAX_DISCOVERY_CANDIDATES + 40;
-    let fleet = (0..total)
+fn bulb_fleet(count: usize) -> Vec<FakeDevice> {
+    (0..count)
         .map(|index| {
             let mut device = FakeDevice::new(0, 27, (3, 70), FakeKind::Bulb);
             let index = u16::try_from(index).expect("fits");
@@ -319,19 +352,52 @@ async fn reply_floods_are_capped_and_probes_stay_bounded() -> TestResult {
             ];
             device
         })
-        .collect();
-    let fake = FakeLifx::spawn(fleet).await?;
+        .collect()
+}
+
+#[test]
+fn default_limits_leave_headroom_for_large_homes() {
+    let defaults = LifxScanOptions::default();
+    assert_eq!(defaults.max_candidates, MAX_DISCOVERY_CANDIDATES);
+    assert_eq!(MAX_DISCOVERY_CANDIDATES, 512);
+    assert_eq!(defaults.max_concurrent_probes, MAX_CONCURRENT_PROBES);
+    assert_eq!(MAX_CONCURRENT_PROBES, 32);
+}
+
+// The limit tests use small limits so they exercise the same code without
+// depending on a loaded machine draining hundreds of replies in time.
+
+#[tokio::test]
+async fn a_reply_flood_past_the_cap_fails_the_scan_without_probing() -> TestResult {
+    let fake = FakeLifx::spawn(bulb_fleet(12)).await?;
+    let error = LifxScanner::new(LifxScanOptions {
+        max_candidates: 8,
+        ..options(vec![fake.addr()])
+    })
+    .scan()
+    .await
+    .expect_err("a truncated scan must not look complete");
+    assert!(error.to_string().contains("scan is incomplete"), "{error}");
+    assert!(
+        fake.received()
+            .iter()
+            .all(|message| message.message_type == 2),
+        "nothing past discovery ran"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probes_never_exceed_the_concurrency_limit() -> TestResult {
+    let fake = FakeLifx::spawn(bulb_fleet(24)).await?;
     let outcome = LifxScanner::new(LifxScanOptions {
-        timeout: Duration::from_secs(4),
+        max_candidates: 24,
+        max_concurrent_probes: 4,
         ..options(vec![fake.addr()])
     })
     .scan()
     .await?;
-    assert_eq!(
-        outcome.profiles.len() + outcome.unprobed.len(),
-        MAX_DISCOVERY_CANDIDATES,
-        "replies beyond the cap are never probed"
-    );
+    assert_eq!(outcome.profiles.len() + outcome.unprobed.len(), 24);
 
     // Each probe owns one socket and one serial from its first request to
     // its last, so overlapping probe lifetimes measure the concurrency. The
@@ -347,21 +413,20 @@ async fn reply_floods_are_capped_and_probes_stay_bounded() -> TestResult {
             .or_insert((message.arrived, message.arrived));
         entry.1 = message.arrived;
     }
-    assert_eq!(lifetimes.len(), MAX_DISCOVERY_CANDIDATES);
+    assert_eq!(lifetimes.len(), 24);
     let mut edges: Vec<(std::time::Instant, i32)> = lifetimes
         .values()
         .flat_map(|(start, end)| [(*start, 1), (*end, -1)])
         .collect();
-    edges.sort_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
+    // At equal instants an end sorts before a start, so touching lifetimes
+    // do not count as overlapping.
+    edges.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
     let mut live = 0;
     let mut peak = 0;
     for (_, delta) in edges {
         live += delta;
         peak = peak.max(live);
     }
-    assert!(
-        usize::try_from(peak).expect("positive") <= MAX_CONCURRENT_PROBES,
-        "{peak} probes overlapped"
-    );
+    assert!(peak <= 4, "{peak} probes overlapped with a limit of 4");
     Ok(())
 }

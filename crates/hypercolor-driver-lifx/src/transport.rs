@@ -65,6 +65,8 @@ pub struct DiscoveryRound {
     pub sends_attempted: usize,
     /// Sends the socket rejected (no route, interface down, and so on).
     pub sends_failed: usize,
+    /// The targets whose send was rejected.
+    pub failed_targets: Vec<SocketAddr>,
     /// Distinct serials ignored because the cap was reached.
     pub dropped: usize,
 }
@@ -188,6 +190,7 @@ impl LifxClient {
             if let Err(error) = self.socket.send_to(&self.send_buf, target).await {
                 trace!(%target, %error, "LIFX GetService send failed");
                 round.sends_failed += 1;
+                round.failed_targets.push(*target);
             }
         }
 

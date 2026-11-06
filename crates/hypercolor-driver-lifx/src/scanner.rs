@@ -39,7 +39,8 @@ const MAX_COLLECTION_WINDOW: Duration = Duration::from_secs(2);
 
 /// Distinct serials one scan will probe. A large LIFX home runs dozens to a
 /// couple of hundred lights, so 512 leaves headroom while bounding the work
-/// a burst of forged StateService replies can cause.
+/// a burst of forged StateService replies can cause. A scan that sees more
+/// fails as incomplete instead of retiring lights it never probed.
 pub const MAX_DISCOVERY_CANDIDATES: usize = 512;
 
 /// Probes in flight at once, each holding one UDP socket. A healthy probe
@@ -68,6 +69,23 @@ pub struct LifxScanOptions {
     pub timeout: Duration,
     /// Per-request retry policy for probes.
     pub request_policy: RequestPolicy,
+    /// Distinct serials the scan will probe before failing as incomplete.
+    pub max_candidates: usize,
+    /// Probes in flight at once.
+    pub max_concurrent_probes: usize,
+}
+
+impl Default for LifxScanOptions {
+    fn default() -> Self {
+        Self {
+            unicast_targets: Vec::new(),
+            broadcast_targets: Vec::new(),
+            timeout: Duration::from_secs(2),
+            request_policy: RequestPolicy::default(),
+            max_candidates: MAX_DISCOVERY_CANDIDATES,
+            max_concurrent_probes: MAX_CONCURRENT_PROBES,
+        }
+    }
 }
 
 /// Every IPv4 broadcast address worth sending discovery to: the limited
@@ -134,7 +152,7 @@ impl LifxScanner {
         let mut tasks = JoinSet::new();
         let mut pending = replies.into_iter();
         loop {
-            while tasks.len() < MAX_CONCURRENT_PROBES {
+            while tasks.len() < self.options.max_concurrent_probes.max(1) {
                 let Some(reply) = pending.next() else {
                     break;
                 };
@@ -179,43 +197,39 @@ impl LifxScanner {
             .collect();
         let v4_targets: Vec<SocketAddr> = v4_unicast.iter().chain(&v4_broadcast).copied().collect();
 
+        let limit = self.options.max_candidates;
         let (v4, v6) = tokio::join!(
-            discovery_pass("IPv4", &v4_targets, !v4_broadcast.is_empty(), window),
-            discovery_pass("IPv6", &v6_unicast, false, window),
+            discovery_pass("IPv4", &v4_targets, &v4_broadcast, window, limit),
+            discovery_pass("IPv6", &v6_unicast, &[], window, limit),
         );
         let (v4, v6) = (v4?, v6?);
 
         let mut collected: Vec<ServiceReply> = Vec::new();
-        let mut dropped = v4.dropped + v6.dropped;
         for reply in v4.replies.into_iter().chain(v6.replies) {
             if collected.iter().any(|known| known.serial == reply.serial) {
                 continue;
             }
-            if collected.len() >= MAX_DISCOVERY_CANDIDATES {
-                dropped += 1;
-                continue;
+            if collected.len() >= self.options.max_candidates {
+                bail!(
+                    "LIFX discovery found more than {} lights; the scan is incomplete",
+                    self.options.max_candidates
+                );
             }
             collected.push(reply);
-        }
-        if dropped > 0 {
-            warn!(
-                kept = collected.len(),
-                dropped,
-                limit = MAX_DISCOVERY_CANDIDATES,
-                "LIFX discovery reached its candidate limit; extra replies were ignored"
-            );
         }
         Ok(collected)
     }
 }
 
 /// Run one address family's GetService round, or skip it when it has no
-/// targets.
+/// targets. `broadcast` holds the subset of `targets` that are broadcast
+/// addresses.
 async fn discovery_pass(
     family: &'static str,
     targets: &[SocketAddr],
-    broadcast: bool,
+    broadcast: &[SocketAddr],
     window: Duration,
+    limit: usize,
 ) -> Result<DiscoveryRound> {
     let Some(first) = targets.first() else {
         return Ok(DiscoveryRound::default());
@@ -223,31 +237,62 @@ async fn discovery_pass(
     let mut client = LifxClient::bind_for(first)
         .await
         .with_context(|| format!("failed to bind the LIFX {family} discovery socket"))?;
-    if broadcast {
+    if !broadcast.is_empty() {
         client
             .enable_broadcast()
             .with_context(|| format!("failed to enable broadcast on the LIFX {family} socket"))?;
     }
     let round = client
-        .discover(targets, window, MAX_DISCOVERY_CANDIDATES)
+        .discover(targets, window, limit)
         .await
         .with_context(|| format!("LIFX {family} discovery failed"))?;
-    ensure_round_reached_the_network(family, &round)?;
+    ensure_round_covered_its_targets(family, &round, broadcast)?;
     Ok(round)
 }
 
-/// Fail a discovery round whose every GetService send was rejected: the
-/// scan never reached the network, so an empty result says nothing about
-/// which lights are present.
+/// Fail a discovery round that did not cover everything it was asked to.
+///
+/// A scan that reports success lets the host retire every tracked light it
+/// did not report, so a round must fail when it could not have seen some of
+/// them:
+///
+/// - any unicast send was rejected: configured and tracked lights are
+///   probed by unicast, so that light was never asked;
+/// - every broadcast send was rejected: nothing on the local networks was
+///   asked (a single failed interface is tolerated, because each tracked
+///   light also gets a unicast probe);
+/// - the candidate limit dropped replies: those lights were never probed.
 ///
 /// # Errors
 ///
-/// Returns an error when the round attempted sends and none succeeded.
-pub fn ensure_round_reached_the_network(family: &str, round: &DiscoveryRound) -> Result<()> {
-    if round.sends_attempted > 0 && round.sends_failed == round.sends_attempted {
+/// Returns an error naming the first coverage gap found.
+pub fn ensure_round_covered_its_targets(
+    family: &str,
+    round: &DiscoveryRound,
+    broadcast: &[SocketAddr],
+) -> Result<()> {
+    if let Some(target) = round
+        .failed_targets
+        .iter()
+        .find(|target| !broadcast.contains(target))
+    {
+        bail!("LIFX {family} GetService to {target} failed; the scan is incomplete");
+    }
+    let broadcast_failures = round
+        .failed_targets
+        .iter()
+        .filter(|target| broadcast.contains(target))
+        .count();
+    if !broadcast.is_empty() && broadcast_failures == broadcast.len() {
         bail!(
-            "every LIFX {family} GetService send failed ({} targets)",
-            round.sends_attempted
+            "every LIFX {family} broadcast GetService send failed ({} addresses)",
+            broadcast.len()
+        );
+    }
+    if round.dropped > 0 {
+        bail!(
+            "LIFX {family} discovery ignored {} lights past its light limit; the scan is incomplete",
+            round.dropped
         );
     }
     Ok(())
@@ -499,29 +544,37 @@ pub fn discovered_device(
 }
 
 /// Discovery record for a light the host already tracks that answered
-/// discovery but failed its probe this scan. It is alive at `reply.addr`,
-/// so it is reported with its last known info instead of being left out,
-/// which the host would read as the light having gone away.
+/// discovery but failed its probe this scan.
+///
+/// A StateService reply is unverified: anyone on the LAN can send one that
+/// names a tracked serial. Only a reply from the light's last verified
+/// endpoint (the route its tracked metadata holds) counts as presence, and
+/// the record keeps that route and info unchanged. A reply from anywhere
+/// else returns `None`, so it can neither keep a dead light present nor
+/// redirect where the backend connects.
 #[must_use]
 pub fn remembered_device(
     reply: &ServiceReply,
     info: &DeviceInfo,
     metadata: &HashMap<String, String>,
-) -> DiscoveredDevice {
-    let mut metadata = metadata.clone();
-    metadata.insert(metadata_key::IP.to_owned(), reply.addr.ip().to_string());
-    metadata.insert(metadata_key::PORT.to_owned(), reply.addr.port().to_string());
-    metadata.insert(metadata_key::SERIAL.to_owned(), reply.serial.to_string());
-    DiscoveredDevice {
-        fingerprint: fingerprint_for_serial(reply.serial),
+) -> Option<DiscoveredDevice> {
+    let (verified_addr, verified_serial) = route_from_metadata(metadata).ok()?;
+    if verified_serial != reply.serial
+        || verified_addr.ip() != reply.addr.ip()
+        || verified_addr.port() != reply.addr.port()
+    {
+        return None;
+    }
+    Some(DiscoveredDevice {
+        fingerprint: fingerprint_for_serial(verified_serial),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: info.clone(),
-        metadata,
+        metadata: metadata.clone(),
         claim: PortableIdentityClaim::mac_address(
-            &reply.serial.to_string(),
-            NetworkAttachment::Peer(reply.addr.ip()),
+            &verified_serial.to_string(),
+            NetworkAttachment::Peer(verified_addr.ip()),
         ),
-    }
+    })
 }
 
 /// Address and serial recorded in discovery metadata.

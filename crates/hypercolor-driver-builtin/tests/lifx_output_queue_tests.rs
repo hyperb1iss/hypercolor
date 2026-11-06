@@ -107,6 +107,7 @@ async fn legacy_strip() -> TestResult<(FakeLifx, BackendManager)> {
         broadcast_targets: Vec::new(),
         timeout: Duration::from_millis(600),
         request_policy: policy,
+        ..LifxScanOptions::default()
     })
     .scan_profiles()
     .await?;
