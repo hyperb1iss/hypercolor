@@ -1,14 +1,16 @@
-//! Bundle units built from scratch, with synthetic signed thin Mach-O
-//! executables.
+//! Bundle units built from scratch: a real release store, real units with
+//! synthetic signed thin Mach-O executables, and the roots a platform binds.
 
+use std::cell::RefCell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
-use crate::UnitId;
+use crate::macos_bundle::MacosBundleConfig;
+use crate::{InstallLock, InstallStore, UnitId, UnitRecord, stage_macos_bundle_unit};
 
 const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade_0cc0;
 const CSMAGIC_CODEDIRECTORY: u32 = 0xfade_0c02;
@@ -181,4 +183,85 @@ impl UnitTree {
         let files: usize = self.files.iter().map(|(_, _, bytes)| bytes.len()).sum();
         (self.manifest().len() + files) as u64
     }
+}
+
+/// A release store, an `Applications` directory, and the units in them.
+///
+/// The fixture takes its store's lock once and every helper and transaction
+/// shares it, the way one activator process holds it. Releasing and taking
+/// it again would race other tests: a process they spawn inherits every
+/// open descriptor until it execs, so a released `flock` can still look
+/// held for a moment.
+pub(super) struct Fixture {
+    pub(super) root: tempfile::TempDir,
+    pub(super) store: InstallStore,
+    lock: RefCell<InstallLock>,
+    pub(super) prior: UnitRecord,
+    pub(super) candidate: UnitRecord,
+}
+
+impl Fixture {
+    /// A store whose prior is active, with the candidate staged beside it.
+    pub(super) fn new() -> Self {
+        Self::with_candidate(UnitTree::new("candidate", "candidate", "0.9.1"))
+    }
+
+    pub(super) fn with_candidate(candidate: UnitTree) -> Self {
+        let root = tempfile::tempdir().expect("fixture root");
+        let store = InstallStore::new(root.path().join("releases"), 64 * 1024);
+        let lock = store.acquire_lock().expect("fixture lock");
+        let prior = stage(&store, &lock, &UnitTree::new("prior", "prior", "0.9.0"));
+        let candidate = stage(&store, &lock, &candidate);
+        store
+            .set_active(Some(prior.id()), &lock)
+            .expect("activate the prior");
+        fs::create_dir(root.path().join("Applications")).expect("applications directory");
+        Self {
+            root,
+            store,
+            lock: RefCell::new(lock),
+            prior,
+            candidate,
+        }
+    }
+
+    pub(super) fn config(&self) -> MacosBundleConfig {
+        MacosBundleConfig {
+            installed_bundle: self.applications().join("Hypercolor.app"),
+            release_root: self.store.root().to_path_buf(),
+        }
+    }
+
+    pub(super) fn applications(&self) -> PathBuf {
+        self.root.path().join("Applications")
+    }
+
+    /// Run `body` under the fixture's store lock.
+    pub(super) fn with_lock<R>(&self, body: impl FnOnce(&mut InstallLock) -> R) -> R {
+        body(&mut self.lock.borrow_mut())
+    }
+
+    pub(super) fn active_unit(&self) -> Option<UnitId> {
+        self.with_lock(|lock| self.store.active_unit(lock).expect("active unit"))
+    }
+
+    pub(super) fn journal(&self) -> Option<crate::InstallJournalV1> {
+        self.with_lock(|lock| self.store.load_journal(lock).expect("load journal"))
+    }
+
+    pub(super) fn deactivate(&self) {
+        self.with_lock(|lock| self.store.set_active(None, lock).expect("deactivate"));
+    }
+
+    pub(super) fn retain(&self, unit: &UnitId) -> UnitRecord {
+        self.with_lock(|lock| {
+            crate::retain_macos_bundle_unit(&self.store, lock, unit).expect("retain unit")
+        })
+    }
+}
+
+pub(super) fn stage(store: &InstallStore, lock: &InstallLock, tree: &UnitTree) -> UnitRecord {
+    let source = tempfile::tempdir().expect("unit source");
+    let id = tree.write(source.path());
+    stage_macos_bundle_unit(store, lock, source.path(), &id).expect("stage bundle unit")
 }

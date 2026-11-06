@@ -349,6 +349,10 @@ pub enum PlatformTransactionRecord {
         schema_version: u32,
         payload: Vec<u8>,
     },
+    MacosAppBundle {
+        schema_version: u32,
+        payload: Vec<u8>,
+    },
 }
 
 impl PlatformTransactionRecord {
@@ -370,6 +374,18 @@ impl PlatformTransactionRecord {
         Ok(record)
     }
 
+    pub fn macos_app_bundle(
+        schema_version: u32,
+        payload: Vec<u8>,
+    ) -> Result<Self, InstallModelError> {
+        let record = Self::MacosAppBundle {
+            schema_version,
+            payload,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     pub fn validate(&self) -> Result<(), InstallModelError> {
         let (schema_version, payload) = match self {
             Self::Linux {
@@ -377,6 +393,10 @@ impl PlatformTransactionRecord {
                 payload,
             }
             | Self::Macos {
+                schema_version,
+                payload,
+            }
+            | Self::MacosAppBundle {
                 schema_version,
                 payload,
             } => (*schema_version, payload),
@@ -389,7 +409,9 @@ impl PlatformTransactionRecord {
         }
         let limit = match self {
             Self::Linux { .. } => MAX_LINUX_TRANSACTION_RECORD_BYTES,
-            Self::Macos { .. } => MAX_PLATFORM_TRANSACTION_RECORD_BYTES,
+            Self::Macos { .. } | Self::MacosAppBundle { .. } => {
+                MAX_PLATFORM_TRANSACTION_RECORD_BYTES
+            }
         };
         if payload.len() > limit {
             return Err(InstallModelError::PlatformRecordTooLarge { limit });
@@ -400,7 +422,9 @@ impl PlatformTransactionRecord {
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         match self {
-            Self::Linux { payload, .. } | Self::Macos { payload, .. } => payload,
+            Self::Linux { payload, .. }
+            | Self::Macos { payload, .. }
+            | Self::MacosAppBundle { payload, .. } => payload,
         }
     }
 }
@@ -413,6 +437,10 @@ pub enum PlatformOwnerReceipt {
         payload: Vec<u8>,
     },
     Macos {
+        schema_version: u32,
+        payload: Vec<u8>,
+    },
+    MacosAppBundle {
         schema_version: u32,
         payload: Vec<u8>,
     },
@@ -437,6 +465,18 @@ impl PlatformOwnerReceipt {
         Ok(receipt)
     }
 
+    pub fn macos_app_bundle(
+        schema_version: u32,
+        payload: Vec<u8>,
+    ) -> Result<Self, InstallModelError> {
+        let receipt = Self::MacosAppBundle {
+            schema_version,
+            payload,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
     pub fn validate(&self) -> Result<(), InstallModelError> {
         let (schema_version, payload) = match self {
             Self::Linux {
@@ -444,6 +484,10 @@ impl PlatformOwnerReceipt {
                 payload,
             }
             | Self::Macos {
+                schema_version,
+                payload,
+            }
+            | Self::MacosAppBundle {
                 schema_version,
                 payload,
             } => (*schema_version, payload),
@@ -467,13 +511,19 @@ impl PlatformOwnerReceipt {
             (self, record),
             (Self::Linux { .. }, PlatformTransactionRecord::Linux { .. })
                 | (Self::Macos { .. }, PlatformTransactionRecord::Macos { .. })
+                | (
+                    Self::MacosAppBundle { .. },
+                    PlatformTransactionRecord::MacosAppBundle { .. }
+                )
         )
     }
 
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         match self {
-            Self::Linux { payload, .. } | Self::Macos { payload, .. } => payload,
+            Self::Linux { payload, .. }
+            | Self::Macos { payload, .. }
+            | Self::MacosAppBundle { payload, .. } => payload,
         }
     }
 }
