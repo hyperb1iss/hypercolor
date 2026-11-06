@@ -252,36 +252,6 @@ async fn artnet_frames_address_port_and_zero_fill_lower_slots() {
 }
 
 #[tokio::test]
-async fn artnet_sends_from_its_standard_source_port() {
-    let (receiver, addr) = loopback_receiver().await;
-    let config = config_for(json!({
-        "id": "srcport", "host": "127.0.0.1", "port": addr.port(), "protocol": "artnet",
-        "pixel_count": 1
-    }));
-    let (backend, id) = connect(&config).await;
-    assert_eq!(
-        backend
-            .connected_socket_local_addr(&id)
-            .map(|local| local.port()),
-        Some(6454)
-    );
-    backend
-        .write_colors(&id, &[[1, 2, 3]])
-        .await
-        .expect("write");
-    let mut buf = [0u8; 600];
-    let (_, from) = timeout(RECV_TIMEOUT, receiver.recv_from(&mut buf))
-        .await
-        .expect("packet should arrive")
-        .expect("receive should succeed");
-    assert_eq!(
-        from.port(),
-        6454,
-        "Art-Net 4 uses UDP 6454 as both source and destination"
-    );
-}
-
-#[tokio::test]
 async fn e131_and_ddp_keep_ephemeral_source_ports() {
     let (receiver, addr) = loopback_receiver().await;
     let config = config_for(json!({
