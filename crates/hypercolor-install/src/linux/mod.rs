@@ -6,7 +6,7 @@ mod effects;
 mod executor;
 #[cfg(test)]
 mod executor_tests;
-mod http;
+pub(crate) mod http;
 mod legacy;
 #[cfg(test)]
 mod legacy_tests;
@@ -17,10 +17,10 @@ mod location_tests;
 mod locator;
 mod locator_receipt;
 mod manager_bus;
-mod model;
+pub(crate) mod model;
 mod platform;
 mod prior;
-mod proof;
+pub(crate) mod proof;
 mod record;
 mod runtime;
 mod service;

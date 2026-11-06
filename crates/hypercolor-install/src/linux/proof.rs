@@ -692,7 +692,7 @@ pub(super) fn require_running_observation(
     Ok(())
 }
 
-pub(super) fn verify_http(
+pub(crate) fn verify_http(
     health: LinuxHttpResponse,
     system: LinuxHttpResponse,
     version: &str,
