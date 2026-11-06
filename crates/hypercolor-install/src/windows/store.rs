@@ -268,7 +268,26 @@ impl InstallStore {
     /// Returns an error for a foreign lock or an unreadable or invalid
     /// pointer.
     pub fn active_unit(&self, lock: &InstallLock) -> Result<Option<UnitId>, InstallStoreError> {
-        let state = self.state_directory(lock)?;
+        self.read_active_from(self.state_directory(lock)?)
+    }
+
+    /// The unit the active pointer names, read without the transaction
+    /// lock. The pointer is replaced in one step, so a reader always sees
+    /// one whole pointer; a platform uses this to view the state whose
+    /// lock its coordinator holds.
+    ///
+    /// # Errors
+    /// Returns an error for an unreadable or invalid pointer.
+    pub fn read_active_unit(&self) -> Result<Option<UnitId>, InstallStoreError> {
+        let state = WindowsDirectory::open(&self.state_root, WindowsDirectoryAccess::Read)
+            .map_err(|source| self.open_root_error(&self.state_root, source))?;
+        self.read_active_from(&state)
+    }
+
+    fn read_active_from(
+        &self,
+        state: &WindowsDirectory,
+    ) -> Result<Option<UnitId>, InstallStoreError> {
         let file = match state.open_file(OsStr::new(ACTIVE_POINTER_FILE)) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

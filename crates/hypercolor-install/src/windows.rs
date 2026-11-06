@@ -23,6 +23,10 @@ mod machine_layout;
 mod manifest;
 mod model;
 #[cfg(windows)]
+mod native;
+#[cfg(all(test, windows))]
+mod native_tests;
+#[cfg(windows)]
 mod ownership;
 #[cfg(windows)]
 mod payload;
@@ -75,6 +79,8 @@ pub use update_service::{
     restore_bootstrap, run_update_service, session_logon_notice, update_service_sddl,
 };
 
+#[cfg(windows)]
+pub use native::WindowsNativeExecutor;
 #[cfg(windows)]
 pub use ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
 #[cfg(windows)]
