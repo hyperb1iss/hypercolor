@@ -533,23 +533,24 @@ response.
 <details>
 <summary>Item fields: <code>DeviceSummary</code></summary>
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |
-| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |
-| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |
-| `brightness` | integer (int32) | yes |
-| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |
-| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |
-| `firmware_version` | string or null | no |
-| `id` | string | yes |
-| `layout_device_id` | string | yes |
-| `name` | string | yes |
-| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |
-| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |
-| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |
-| `status` | string | yes |
-| `total_leds` | integer (int32) | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |  |
+| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |  |
+| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |  |
+| `brightness` | integer (int32) | yes |  |
+| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |  |
+| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |  |
+| `experimental` | boolean | no | Whether the driver module or protocol driving this device is labeled experimental: nobody has run it on real hardware yet (Spec 89). Omitted when false. |
+| `firmware_version` | string or null | no |  |
+| `id` | string | yes |  |
+| `layout_device_id` | string | yes |  |
+| `name` | string | yes |  |
+| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |  |
+| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |  |
+| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |  |
+| `status` | string | yes |  |
+| `total_leds` | integer (int32) | yes |  |
 
 </details>
 {% </api_endpoint> %}
@@ -649,6 +650,7 @@ and removals.
 | --- | --- | --- | --- |
 | `bus_path` | string or null | no | Host bus path (`<bus>-<port chain>`), when the platform reports one. |
 | `claimable_by` | string or null | no |  |
+| `experimental` | boolean | no | Whether the descriptor `claimable_by` refers to is labeled experimental: nobody has run it on real hardware yet (Spec 89). |
 | `interface_classes` | array of integer (int32) | no | USB interface class codes of the active configuration, sorted and deduplicated; empty where the platform does not expose them. |
 | `manufacturer` | string or null | no | Who made the device: its manufacturer string when the host reports a non-blank one, otherwise the company that owns `vendor_id` in the curated vendor table. Absent when neither is known, which is the usual case on Windows for vendors outside that table. |
 | `product` | string or null | no |  |
@@ -673,23 +675,24 @@ Segments, LED layout, firmware version, and attachment configuration.
 <details>
 <summary>Fields: <code>DeviceSummary</code></summary>
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |
-| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |
-| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |
-| `brightness` | integer (int32) | yes |
-| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |
-| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |
-| `firmware_version` | string or null | no |
-| `id` | string | yes |
-| `layout_device_id` | string | yes |
-| `name` | string | yes |
-| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |
-| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |
-| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |
-| `status` | string | yes |
-| `total_leds` | integer (int32) | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |  |
+| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |  |
+| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |  |
+| `brightness` | integer (int32) | yes |  |
+| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |  |
+| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |  |
+| `experimental` | boolean | no | Whether the driver module or protocol driving this device is labeled experimental: nobody has run it on real hardware yet (Spec 89). Omitted when false. |
+| `firmware_version` | string or null | no |  |
+| `id` | string | yes |  |
+| `layout_device_id` | string | yes |  |
+| `name` | string | yes |  |
+| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |  |
+| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |  |
+| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |  |
+| `status` | string | yes |  |
+| `total_leds` | integer (int32) | yes |  |
 
 </details>
 {% </api_endpoint> %}
@@ -720,23 +723,24 @@ the panel is mounted so everything drawn on it turns to read upright. Sending
 <details>
 <summary>Fields: <code>DeviceSummary</code></summary>
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |
-| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |
-| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |
-| `brightness` | integer (int32) | yes |
-| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |
-| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |
-| `firmware_version` | string or null | no |
-| `id` | string | yes |
-| `layout_device_id` | string | yes |
-| `name` | string | yes |
-| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |
-| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |
-| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |
-| `status` | string | yes |
-| `total_leds` | integer (int32) | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |  |
+| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |  |
+| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |  |
+| `brightness` | integer (int32) | yes |  |
+| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |  |
+| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |  |
+| `experimental` | boolean | no | Whether the driver module or protocol driving this device is labeled experimental: nobody has run it on real hardware yet (Spec 89). Omitted when false. |
+| `firmware_version` | string or null | no |  |
+| `id` | string | yes |  |
+| `layout_device_id` | string | yes |  |
+| `name` | string | yes |  |
+| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |  |
+| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |  |
+| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |  |
+| `status` | string | yes |  |
+| `total_leds` | integer (int32) | yes |  |
 
 </details>
 {% </api_endpoint> %}

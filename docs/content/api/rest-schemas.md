@@ -817,6 +817,7 @@ Stable module descriptor for native and future Wasm driver registries.
 | `display_name` | string | yes | Human-readable driver name. |
 | `id` | string | yes | Stable driver identifier. |
 | `module_kind` | [`DriverModuleKind`](@/api/rest-schemas.md#DriverModuleKind) | yes | High-level module category. |
+| `stability` | [`DriverStability`](@/api/rest-schemas.md#DriverStability) | no | Release label of the module as a whole (Spec 89). Omitted when stable. |
 | `transports` | array of [`DriverTransportDescriptor`](@/api/rest-schemas.md#DriverTransportDescriptor) | yes | Transport categories used by this driver and their platform support. |
 | `vendor_name` | string or null | no | Optional vendor or organization name. |
 
@@ -844,8 +845,22 @@ Protocol descriptor contributed by a driver module.
 | `product_id` | integer (int32) or null | no | USB product ID when the protocol maps to a concrete USB device. |
 | `protocol_id` | string | yes | Stable protocol implementation identifier. |
 | `route_backend_id` | string | yes | Output backend ID that should route devices using this protocol. |
+| `stability` | [`DriverStability`](@/api/rest-schemas.md#DriverStability) | no | Release label of this protocol (Spec 89). A stable module can carry experimental protocols. Omitted when stable. |
 | `transport` | [`DriverTransportKind`](@/api/rest-schemas.md#DriverTransportKind) | yes | Transport category used by this protocol. |
 | `vendor_id` | integer (int32) or null | no | USB vendor ID when the protocol maps to a concrete USB device. |
+
+<div class="schema-anchor" id="DriverStability"></div>
+
+### DriverStability
+
+Release label of a driver module or of one protocol it contributes.
+
+A label, not a gate: experimental drivers are enabled and claim devices
+exactly like stable ones. It records that nobody has run the code on
+real hardware yet. A protocol with a known safety hazard is not
+registered at all until it is safe. See Spec 89.
+
+One of `stable`, `experimental`.
 
 <div class="schema-anchor" id="DriverSummary"></div>
 
@@ -1174,23 +1189,24 @@ Lightweight reference to a discovered device.
 
 One device in the list/detail responses.
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |
-| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |
-| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |
-| `brightness` | integer (int32) | yes |
-| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |
-| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |
-| `firmware_version` | string or null | no |
-| `id` | string | yes |
-| `layout_device_id` | string | yes |
-| `name` | string | yes |
-| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |
-| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |
-| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |
-| `status` | string | yes |
-| `total_leds` | integer (int32) | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `attachments` | [`DeviceComponentsResponse`](@/api/rest-schemas.md#DeviceComponentsResponse) or null | no |  |
+| `auth` | [`DeviceAuthSummary`](@/api/rest-schemas.md#DeviceAuthSummary) or null | no |  |
+| `bridge` | [`BridgeDeviceSummary`](@/api/rest-schemas.md#BridgeDeviceSummary) or null | no |  |
+| `brightness` | integer (int32) | yes |  |
+| `connection` | [`DeviceConnectionSummary`](@/api/rest-schemas.md#DeviceConnectionSummary) | no |  |
+| `display_rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) or null | no |  |
+| `experimental` | boolean | no | Whether the driver module or protocol driving this device is labeled experimental: nobody has run it on real hardware yet (Spec 89). Omitted when false. |
+| `firmware_version` | string or null | no |  |
+| `id` | string | yes |  |
+| `layout_device_id` | string | yes |  |
+| `name` | string | yes |  |
+| `origin` | [`DeviceOrigin`](@/api/rest-schemas.md#DeviceOrigin) | yes |  |
+| `presentation` | [`DriverPresentation`](@/api/rest-schemas.md#DriverPresentation) | yes |  |
+| `segments` | array of [`SegmentSummary`](@/api/rest-schemas.md#SegmentSummary) | no |  |
+| `status` | string | yes |  |
+| `total_leds` | integer (int32) | yes |  |
 
 Used by [`GET /api/v1/devices/{id}`](@/api/rest.md#get_device) response, [`PUT /api/v1/devices/{id}`](@/api/rest.md#update_device) response.
 
@@ -1475,6 +1491,7 @@ nothing on them can carry lighting.
 | --- | --- | --- | --- |
 | `bus_path` | string or null | no | Host bus path (`<bus>-<port chain>`), when the platform reports one. |
 | `claimable_by` | string or null | no |  |
+| `experimental` | boolean | no | Whether the descriptor `claimable_by` refers to is labeled experimental: nobody has run it on real hardware yet (Spec 89). |
 | `interface_classes` | array of integer (int32) | no | USB interface class codes of the active configuration, sorted and deduplicated; empty where the platform does not expose them. |
 | `manufacturer` | string or null | no | Who made the device: its manufacturer string when the host reports a non-blank one, otherwise the company that owns `vendor_id` in the curated vendor table. Absent when neither is known, which is the usual case on Windows for vendors outside that table. |
 | `product` | string or null | no |  |
