@@ -4667,6 +4667,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-driver-adalight"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hypercolor-driver-api",
+ "hypercolor-driver-support",
+ "hypercolor-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-serial",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "hypercolor-driver-api"
 version = "0.9.0"
 dependencies = [
@@ -4687,6 +4706,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hypercolor-core",
+ "hypercolor-driver-adalight",
  "hypercolor-driver-api",
  "hypercolor-driver-govee",
  "hypercolor-driver-hue",

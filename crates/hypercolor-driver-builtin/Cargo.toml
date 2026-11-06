@@ -12,9 +12,11 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = ["network", "hal"]
+default = ["network", "hal", "serial"]
 hal = ["dep:hypercolor-hal"]
 network = ["govee", "hue", "lifx", "nanoleaf", "openrgb", "pixel", "twinkly", "wiz", "wled", "yeelight"]
+serial = ["adalight"]
+adalight = ["dep:hypercolor-driver-adalight"]
 govee = ["dep:hypercolor-driver-govee"]
 hue = ["dep:hypercolor-driver-hue"]
 lifx = ["dep:hypercolor-driver-lifx"]
@@ -28,6 +30,7 @@ wled = ["dep:hypercolor-driver-wled"]
 
 [dependencies]
 hypercolor-core = { path = "../hypercolor-core", version = "0.9.0", default-features = false }
+hypercolor-driver-adalight = { workspace = true, optional = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-support = { workspace = true }
 hypercolor-driver-govee = { workspace = true, optional = true }

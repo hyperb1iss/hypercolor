@@ -176,6 +176,7 @@ hypercolor-windows-session = { path = "crates/hypercolor-windows-session", versi
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture", version = "0.9.0" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop", version = "0.9.0" }
 hypercolor-windows-telemetry = { path = "crates/hypercolor-windows-telemetry", version = "0.9.0" }
+hypercolor-driver-adalight = { path = "crates/hypercolor-driver-adalight", version = "0.9.0" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api", version = "0.9.0" }
 hypercolor-driver-support = { path = "crates/hypercolor-driver-support", version = "0.9.0" }
 hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", version = "0.9.0", default-features = false }

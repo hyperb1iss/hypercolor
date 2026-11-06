@@ -82,6 +82,7 @@ crates/
   hypercolor-driver-govee/         # Govee smart-lighting driver (LAN UDP + Govee Cloud API)
   hypercolor-driver-pixel/         # Generic pixel controller driver: E1.31 sACN, Art-Net, DDP to configured hosts
   hypercolor-pixel-protocols/      # Leaf: DDP, E1.31, Art-Net packet encoders and DMX universe math
+  hypercolor-driver-adalight/      # Adalight and HyperSerial AWA serial LED driver: manually configured ports, no USB-id claiming
   hypercolor-openrgb-sdk/          # Clean OpenRGB SDK protocol client
   hypercolor-driver-openrgb/       # OpenRGB fallback bridge driver (opt-in)
   hypercolor-openrgb-host/         # OpenRGB host integration: binary detection, server probe, install hints, permissions, managed config dir, headless server launch
@@ -139,11 +140,13 @@ graph TD
     DAPI & DS --> GV[hypercolor-driver-govee]
     PP[hypercolor-pixel-protocols] --> WLED & PX[hypercolor-driver-pixel]
     DAPI & DS --> PX
+    DAPI & DS --> ADA[hypercolor-driver-adalight]
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
     ORS & PER --> OH[hypercolor-openrgb-host]
     OH --> APP & CLI
     DAPI --> NET[hypercolor-network]
     CORE & DAPI & HAL & HUE & NL & WLED & GV & PX & ORD & DS --> DB[hypercolor-driver-builtin]
+    CORE & DAPI & HAL & HUE & NL & WLED & GV & ADA & ORD & DS --> DB[hypercolor-driver-builtin]
     CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     PFS --> INST[hypercolor-install] --> CLI
@@ -433,7 +436,8 @@ skills/                       # User-facing skills (shipped)
 
 **Driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD),
 Dygma, Ableton Push 2, QMK, PrismRGB, Nollie. Network backends: Hue, Nanoleaf, WLED, Govee,
-plus an opt-in OpenRGB SDK bridge as a fallback driver.
+plus an opt-in OpenRGB SDK bridge as a fallback driver. Serial: Adalight and HyperSerial AWA
+boards on manually configured ports.
 
 For HAL driver implementation patterns (zerocopy structs, CommandBuffer, Protocol trait,
 wire-format gotchas), see the `hal-driver-development` skill. For protocol research
