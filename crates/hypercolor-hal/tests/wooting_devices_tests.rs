@@ -198,6 +198,8 @@ fn wooting_transports_cannot_detach_a_kernel_driver() {
 fn the_hid_stack_transports_contain_no_interface_claim() {
     // The descriptors above only ever reach these two modules. Neither may
     // gain a claim or detach call, since a detached keyboard stops typing.
+    // This is a textual guard on the source, not behavioral proof: it
+    // catches the direct nusb calls, not a detach reached some other way.
     for (name, source) in [
         (
             "transport/hidapi.rs",
