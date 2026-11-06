@@ -16,6 +16,12 @@
 //! every check reads [`ServoRenderer::presented_frames`] instead of trusting
 //! the canvas, and a poisoned runtime fails the case and the run.
 //!
+//! The first rendering context in a process pages Mesa and its LLVM JIT in
+//! from disk, which on a busy CI disk outlasts the worker's session budget
+//! and poisons the runtime before any page loads. The harness brings GL up
+//! once before the first case, so every case still runs under the production
+//! budget, and a host with no working GL fails with the real error.
+//!
 //! This binary runs its own harness (`harness = false`). Servo sets up
 //! process-global state once and cannot start again in the same process, and
 //! a process that exits while the runtime is alive aborts in SpiderMonkey's
@@ -39,6 +45,7 @@ use std::panic::{self, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -47,9 +54,9 @@ mod frame_state;
 
 use hypercolor_core::effect::console::EffectConsoleJournal;
 use hypercolor_core::effect::{
-    EffectRenderer, ServoRenderer, ServoTelemetrySnapshot, load_html_effect_file,
-    parse_html_effect_metadata, servo_runtime_poison_reason, servo_telemetry_snapshot,
-    shutdown_servo_runtime,
+    EffectRenderer, ServoRenderer, ServoTelemetrySnapshot, bootstrap_software_rendering_context,
+    load_html_effect_file, parse_html_effect_metadata, servo_runtime_poison_reason,
+    servo_telemetry_snapshot, shutdown_servo_runtime,
 };
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
@@ -68,6 +75,8 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// checks together. Local runs need well under a second; the margin is for
 /// software GL with a cold shader cache on a loaded CI runner.
 const RENDER_DEADLINE: Duration = Duration::from_secs(30);
+/// Longest the first GL bring-up may take, cold disk included.
+const GL_WARMUP_DEADLINE: Duration = Duration::from_secs(120);
 /// How long a deliberately broken page gets to fail once it is presenting.
 const PROBE_WINDOW: Duration = Duration::from_secs(2);
 /// Per-channel slack for solid-color pages.
@@ -293,6 +302,15 @@ fn main() -> ExitCode {
     }
 
     install_panic_hook();
+    if selected.iter().any(|case| args.runs(case)) {
+        match warm_up_gl() {
+            Ok(elapsed) => println!("\nsoftware GL came up in {elapsed:.2?}"),
+            Err(error) => {
+                println!("\nerror: software GL did not come up: {error}\n");
+                return ExitCode::from(101);
+            }
+        }
+    }
     println!("\nrunning {} tests", selected.len());
     let suite_started = Instant::now();
     let mut passed = 0_usize;
@@ -361,6 +379,32 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(101)
+    }
+}
+
+/// Create and drop one software rendering context, the same one the worker
+/// falls back to, so the first session finds Mesa already paged in.
+fn warm_up_gl() -> Result<Duration, String> {
+    let started = Instant::now();
+    let (done_tx, done_rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("servo-gl-warmup".to_owned())
+        .spawn(move || {
+            let result = bootstrap_software_rendering_context(CANVAS_WIDTH, CANVAS_HEIGHT)
+                .map(drop)
+                .map_err(|error| format!("{error:#}"));
+            let _ = done_tx.send(result);
+        })
+        .map_err(|error| format!("failed to spawn the GL warm-up thread: {error}"))?;
+    match done_rx.recv_timeout(GL_WARMUP_DEADLINE) {
+        Ok(Ok(())) => Ok(started.elapsed()),
+        Ok(Err(error)) => Err(error),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(format!("still waiting after {GL_WARMUP_DEADLINE:?}"))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("the GL warm-up thread panicked".to_owned())
+        }
     }
 }
 
