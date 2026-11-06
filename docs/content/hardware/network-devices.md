@@ -4,7 +4,7 @@ description = "How Hypercolor discovers and pairs Wi-Fi and LAN RGB devices: mDN
 weight = 40
 +++
 
-Network RGB devices (Philips Hue, Nanoleaf, WLED, and Govee) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the four built-in network drivers.
+Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and sACN, Art-Net, or DDP pixel controllers) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the built-in network drivers. Pixel controllers are the one exception to automatic discovery: you list them in the config, as described on their [setup page](@/hardware/pixel-controllers.md).
 
 {{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
@@ -127,6 +127,7 @@ Each network driver has its own pairing flow, streaming protocol, supported devi
 - [Philips Hue](@/hardware/hue.md): mDNS and N-UPnP discovery, link-button pairing (30-second window), Entertainment API DTLS streaming on UDP port 2100.
 - [Nanoleaf](@/hardware/nanoleaf.md): mDNS discovery, power-button token pairing (hold 5-7 s), UDP External Control on port 60222.
 - [WLED](@/hardware/wled.md): mDNS discovery, no authentication required, DDP streaming on port 4048 by default, or E1.31/sACN for multi-controller setups.
+- [Pixel controllers](@/hardware/pixel-controllers.md): Falcon, FPP, ESPixelStick, and DMX nodes over E1.31 (sACN), Art-Net, or DDP. Configured by hand with a host and universe or offset; no discovery traffic.
 - [Govee](@/hardware/govee.md): proprietary UDP multicast discovery, LAN control must be enabled per-device in the Govee Home app, optional Developer API key for cloud fallback.
 
 For devices that don't have a native Hypercolor driver, the [OpenRGB fallback](@/hardware/openrgb-fallback.md) bridge can control them through a user-managed OpenRGB server on TCP port 6742.

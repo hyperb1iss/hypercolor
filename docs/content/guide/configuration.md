@@ -387,7 +387,7 @@ Disable a driver entirely:
 enabled = false
 ```
 
-Driver IDs correspond to the names registered in the driver registry. Available IDs include `govee`, `hue`, `nanoleaf`, `wled`, plus compile-time HAL driver IDs for USB/HID families.
+Driver IDs correspond to the names registered in the driver registry. Available IDs include `govee`, `hue`, `nanoleaf`, `pixel`, `wled`, plus compile-time HAL driver IDs for USB/HID families.
 
 ---
 

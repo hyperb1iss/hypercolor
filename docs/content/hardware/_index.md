@@ -46,9 +46,10 @@ Network drivers live in separate crates behind the `hypercolor-driver-api` trait
 | Nanoleaf | HTTP pairing + UDP External Control | mDNS `_nanoleafapi._tcp.local.` | Hold power button 5-7 s to enter pairing mode |
 | WLED | DDP (default) or E1.31/sACN | mDNS `_wled._tcp.local.` | No authentication needed |
 | Govee | LAN UDP + optional cloud API | UDP multicast `239.255.255.250:4001` | LAN control must be enabled in the Govee Home app first |
+| Pixel controllers | E1.31 (sACN), Art-Net 4, or DDP over unicast UDP | None: devices are listed in config | Falcon, FPP, ESPixelStick, and DMX nodes; experimental |
 | OpenRGB bridge | OpenRGB SDK over TCP | Connects on demand to the Hypercolor-managed server on `127.0.0.1:6742` | Fallback bridge; drives only hardware no enabled native driver covers; disabled by default |
 
-The ROLI Blocks bridge is a fifth registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
+The ROLI Blocks bridge is another registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
 
 See [network devices](@/hardware/network-devices.md) for the setup overview, then follow the per-vendor guide for pairing details.
 

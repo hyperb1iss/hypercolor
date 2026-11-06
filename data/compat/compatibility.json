@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
-    "vendors": 32,
-    "devices": 438,
+    "vendors": 33,
+    "devices": 442,
     "byStatus": {
-      "supported": 223,
+      "supported": 227,
       "in_progress": 8,
       "planned": 0,
       "researched": 67,
@@ -20,6 +20,7 @@
       "lianli",
       "nanoleaf",
       "nollie",
+      "pixel",
       "prismrgb",
       "push2",
       "qmk",
@@ -4181,6 +4182,88 @@
         "argb_controller"
       ],
       "sourceFile": "data/drivers/vendors/philips.toml"
+    },
+    {
+      "slug": "pixel-controllers",
+      "name": "Pixel Controllers (E1.31 / Art-Net / DDP)",
+      "website": null,
+      "vids": [],
+      "vidsHex": [],
+      "notes": "Any receiver that accepts E1.31 (sACN), Art-Net 4 ArtDmx, or DDP over unicast UDP. Devices are configured by hand under drivers.pixel. Experimental: built and tested against the published standards, not yet run on real controllers.",
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Art-Net or sACN DMX node",
+          "type": "other",
+          "status": "supported",
+          "driver": "pixel",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "DMX fixtures behind a node, addressed by universe and start channel. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "ESPixelStick",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "pixel",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "E1.31, Art-Net, or DDP input, RGB or RGBW pixels. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Falcon F16V4 / F16V5",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "pixel",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "E1.31, Art-Net, or DDP input. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Falcon Player (FPP)",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "pixel",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "E1.31, Art-Net, or DDP input (DDP destination ID 1). Experimental, not yet tested on hardware."
+        }
+      ],
+      "counts": {
+        "supported": 4,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [
+        "pixel"
+      ],
+      "transports": [
+        "network_udp"
+      ],
+      "deviceTypes": [
+        "argb_controller",
+        "other"
+      ],
+      "sourceFile": "data/drivers/vendors/pixel-controllers.toml"
     },
     {
       "slug": "prismrgb",
