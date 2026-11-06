@@ -6,9 +6,15 @@
 //!
 //! The renderer is asynchronous: `init` only queues a page load, and each
 //! render call collects whatever frame the worker finished since the last
-//! call. Cases therefore tick in real time until the renderer stops warming
-//! and the frame they expect arrives, under a deadline generous enough for
-//! software GL on a shared CI runner.
+//! call. Cases therefore tick in real time until the worker has presented
+//! frames for the page and the frame they expect arrives. Each page gets
+//! one hard deadline, generous enough for software GL on a shared CI
+//! runner, that covers its load, retries, and pixel checks.
+//!
+//! Only frames the worker presented count. A renderer that loses its
+//! session or fails its load stops warming and returns placeholders, so
+//! every check reads [`ServoRenderer::presented_frames`] instead of trusting
+//! the canvas, and a poisoned runtime fails the case and the run.
 //!
 //! This binary runs its own harness (`harness = false`). Servo sets up
 //! process-global state once and cannot start again in the same process, and
@@ -24,16 +30,15 @@
 //!
 //! The ignored sweep renders every generated effect; run it after a Servo
 //! bump with `-- --include-ignored`.
-//!
-//! [`ServoRenderer`]: hypercolor_core::effect::ServoRenderer
 
 use std::collections::HashSet;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::panic;
+use std::panic::{self, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,8 +47,9 @@ mod frame_state;
 
 use hypercolor_core::effect::console::EffectConsoleJournal;
 use hypercolor_core::effect::{
-    EffectRenderer, ServoTelemetrySnapshot, create_renderer_for_metadata, load_html_effect_file,
-    parse_html_effect_metadata, servo_telemetry_snapshot, shutdown_servo_runtime,
+    EffectRenderer, ServoRenderer, ServoTelemetrySnapshot, load_html_effect_file,
+    parse_html_effect_metadata, servo_runtime_poison_reason, servo_telemetry_snapshot,
+    shutdown_servo_runtime,
 };
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
@@ -58,17 +64,19 @@ const CANVAS_HEIGHT: u32 = 200;
 const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 /// Real time between ticks, matching the frame clock's 60 fps step.
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
-/// Longest a case waits for a page to load or to present the frame it
-/// expects. Local runs need well under a second; the margin is for software
-/// GL on a loaded CI runner.
+/// Hard deadline for one page: its load, degraded-render retries, and pixel
+/// checks together. Local runs need well under a second; the margin is for
+/// software GL with a cold shader cache on a loaded CI runner.
 const RENDER_DEADLINE: Duration = Duration::from_secs(30);
+/// How long a deliberately broken page gets to fail once it is presenting.
+const PROBE_WINDOW: Duration = Duration::from_secs(2);
 /// Per-channel slack for solid-color pages.
 const COLOR_TOLERANCE: u8 = 12;
 /// Share of pixels a solid-color page must cover.
 const SOLID_COVERAGE: f32 = 0.98;
 /// Distinct values each animation clock must show after the page is ready.
 const ANIMATION_DISTINCT_VALUES: usize = 8;
-/// Distinct drawn frames a catalog effect must present to count as animating.
+/// Distinct presented frames a catalog effect must show to count as animating.
 const CATALOG_DISTINCT_FRAMES: usize = 3;
 /// A channel at or above this level counts the pixel as lit.
 const LIT_CHANNEL_THRESHOLD: u8 = 24;
@@ -96,8 +104,12 @@ const RED: [u8; 3] = [255, 0, 0];
 const GREEN: [u8; 3] = [0, 255, 0];
 /// Asymmetric so a red/blue channel swap in readback cannot pass.
 const AZURE: [u8; 3] = [0, 128, 255];
+/// Fixed green and blue channels that mark each animation clock's half.
+const PAGE_CLOCK_MARK: (u8, u8) = (40, 200);
+const HOST_CLOCK_MARK: (u8, u8) = (200, 40);
 
-const AUDIO_TEST_FRAMES: usize = 120;
+/// Distinct presented Shockwave frames each audio run measures.
+const SHOCKWAVE_FRAMES: usize = 60;
 const BASS_END: usize = 40;
 const MID_END: usize = 130;
 const SHOCKWAVE_PIXEL_THRESHOLD: u8 = 80;
@@ -136,6 +148,21 @@ const CASES: &[Case] = &[
     Case {
         name: "servo_switches_effects_on_the_shared_worker",
         run: switches_effects_on_the_shared_worker,
+        ignored: None,
+    },
+    Case {
+        name: "servo_rejects_a_page_that_never_draws",
+        run: rejects_a_page_that_never_draws,
+        ignored: None,
+    },
+    Case {
+        name: "servo_rejects_a_page_that_never_presents",
+        run: rejects_a_page_that_never_presents,
+        ignored: None,
+    },
+    Case {
+        name: "servo_rejects_clocks_split_across_frames",
+        run: rejects_clocks_split_across_frames,
         ignored: None,
     },
     Case {
@@ -228,6 +255,26 @@ impl HarnessArgs {
     fn runs(&self, case: &Case) -> bool {
         case.ignored.is_none() || self.ignored_only || self.include_ignored
     }
+
+    /// An empty selection is a mistake unless a substring filter aimed at
+    /// another test binary: `cargo test <filter>` hands the same filter to
+    /// every binary, and libtest reports those runs green.
+    fn empty_selection_is_error(&self) -> bool {
+        self.filters.is_empty() || self.exact
+    }
+}
+
+/// Set while a case runs a probe that must panic, so the expected failure
+/// stays out of the output.
+static EXPECTING_PANIC: AtomicBool = AtomicBool::new(false);
+
+fn install_panic_hook() {
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        if !EXPECTING_PANIC.load(Ordering::SeqCst) {
+            default_hook(info);
+        }
+    }));
 }
 
 fn main() -> ExitCode {
@@ -240,12 +287,18 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    if selected.is_empty() && args.empty_selection_is_error() {
+        println!("\nerror: no Servo smoke case matched the given arguments\n");
+        return ExitCode::from(101);
+    }
 
+    install_panic_hook();
     println!("\nrunning {} tests", selected.len());
     let suite_started = Instant::now();
     let mut passed = 0_usize;
     let mut skipped = 0_usize;
     let mut failed = Vec::new();
+    let mut poisoned = None;
     for case in &selected {
         if !args.runs(case) {
             skipped += 1;
@@ -254,7 +307,20 @@ fn main() -> ExitCode {
             continue;
         }
         let started = Instant::now();
-        match panic::catch_unwind(case.run) {
+        let outcome = panic::catch_unwind(case.run);
+        // A poisoned runtime fails the case that left it behind, whatever
+        // the case itself concluded, and every later case would fail anyway.
+        if let Some(reason) = servo_runtime_poison_reason() {
+            println!(
+                "test {} ... FAILED ({:.2?}), Servo runtime poisoned: {reason}",
+                case.name,
+                started.elapsed()
+            );
+            failed.push(case.name);
+            poisoned = Some(reason);
+            break;
+        }
+        match outcome {
             Ok(Outcome::Passed) => {
                 passed += 1;
                 println!("test {} ... ok ({:.2?})", case.name, started.elapsed());
@@ -270,6 +336,9 @@ fn main() -> ExitCode {
         }
     }
 
+    if let Some(reason) = &poisoned {
+        println!("\nremaining cases skipped: the Servo runtime is poisoned ({reason})");
+    }
     let shutdown = shutdown_servo_runtime();
     if let Err(error) = &shutdown {
         println!("\nServo runtime shutdown failed: {error:#}");
@@ -280,7 +349,7 @@ fn main() -> ExitCode {
             println!("    {name}");
         }
     }
-    let ok = failed.is_empty() && shutdown.is_ok();
+    let ok = failed.is_empty() && poisoned.is_none() && shutdown.is_ok();
     println!(
         "\ntest result: {}. {passed} passed; {} failed; {skipped} ignored; finished in {:.2?}\n",
         if ok { "ok" } else { "FAILED" },
@@ -295,13 +364,43 @@ fn main() -> ExitCode {
     }
 }
 
+/// Run `probe`, which must panic, and return its message.
+fn expect_failure(what: &str, probe: impl FnOnce() + UnwindSafe) -> String {
+    EXPECTING_PANIC.store(true, Ordering::SeqCst);
+    let result = panic::catch_unwind(probe);
+    EXPECTING_PANIC.store(false, Ordering::SeqCst);
+    let Err(payload) = result else {
+        panic!("{what}: the harness accepted a deliberately broken page");
+    };
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_owned())
+        })
+        .unwrap_or_default()
+}
+
 // ── Rendering driver ───────────────────────────────────────────
 
-/// One effect loaded into a real Servo renderer and ticked in real time.
+/// One render call's result.
+struct Tick {
+    frame: Canvas,
+    /// Whether the worker presented a new frame for this page since the
+    /// previous tick.
+    fresh: bool,
+}
+
+/// One effect loaded into a real Servo renderer and ticked in real time
+/// against a single hard deadline.
 struct ServoRun {
     name: String,
-    renderer: Box<dyn EffectRenderer>,
+    renderer: ServoRenderer,
     frame_state: TestFrameState,
+    deadline: Instant,
+    presented_seen: u64,
     console_cursor: u64,
     telemetry_before: ServoTelemetrySnapshot,
     degraded_renders: usize,
@@ -316,15 +415,22 @@ impl ServoRun {
     fn start_with_state(metadata: &EffectMetadata, frame_state: TestFrameState) -> Self {
         let console_cursor = EffectConsoleJournal::global().latest_seq();
         let telemetry_before = servo_telemetry_snapshot();
-        let mut renderer = create_renderer_for_metadata(metadata)
-            .expect("HTML metadata should select the Servo renderer");
+        // The same choice the effect factory makes for HTML effects; the
+        // concrete type exposes the presented-frame count.
+        let mut renderer = if metadata.category == EffectCategory::Display {
+            ServoRenderer::new_display_face()
+        } else {
+            ServoRenderer::new()
+        };
         frame_state
-            .initialize(renderer.as_mut(), metadata)
+            .initialize(&mut renderer, metadata)
             .expect("Servo renderer should queue its page load");
         Self {
             name: metadata.name.clone(),
             renderer,
             frame_state,
+            deadline: Instant::now() + RENDER_DEADLINE,
+            presented_seen: 0,
             console_cursor,
             telemetry_before,
             degraded_renders: 0,
@@ -332,20 +438,59 @@ impl ServoRun {
         }
     }
 
+    /// Pull the deadline in, so a deliberately broken page fails quickly.
+    fn shorten_deadline(&mut self, window: Duration) {
+        self.deadline = self.deadline.min(Instant::now() + window);
+    }
+
+    /// Fail once the page's deadline has passed.
+    fn check_deadline(&self, failure: &str) {
+        assert!(
+            Instant::now() < self.deadline,
+            "{}: {failure} before the page deadline{}",
+            self.name,
+            self.diagnostics()
+        );
+    }
+
+    /// Fail on a poisoned runtime or any failed session or page load since
+    /// this page started.
+    fn assert_healthy(&self) {
+        if let Some(reason) = servo_runtime_poison_reason() {
+            panic!(
+                "{}: the Servo runtime is poisoned: {reason}{}",
+                self.name,
+                self.diagnostics()
+            );
+        }
+        let now = servo_telemetry_snapshot();
+        let before = &self.telemetry_before;
+        let failures = (now.session_create_failures_total - before.session_create_failures_total)
+            + (now.page_load_failures_total - before.page_load_failures_total)
+            + (now.renderer_load_failures_total - before.renderer_load_failures_total);
+        assert_eq!(
+            failures,
+            0,
+            "{}: a Servo session or page load failed{}",
+            self.name,
+            self.diagnostics()
+        );
+    }
+
     /// Render one frame under silence, then wait out the frame interval.
-    fn tick(&mut self) -> Canvas {
+    fn tick(&mut self) -> Tick {
         self.tick_with_audio(&AudioData::silence())
     }
 
     /// A degraded render (a hard stall or a saturated queue) is retried the
     /// way the render loop retains the last frame and keeps ticking: a slow
-    /// software-GL frame fails the case only when it never lands.
-    fn tick_with_audio(&mut self, audio: &AudioData) -> Canvas {
-        let mut degraded_since: Option<Instant> = None;
+    /// software-GL frame fails the page only when it misses the deadline.
+    fn tick_with_audio(&mut self, audio: &AudioData) -> Tick {
         loop {
+            self.assert_healthy();
             match self
                 .frame_state
-                .render(self.renderer.as_mut(), FRAME_DT_SECONDS, audio)
+                .render(&mut self.renderer, FRAME_DT_SECONDS, audio)
             {
                 Ok(frame) => {
                     assert_eq!(
@@ -354,67 +499,51 @@ impl ServoRun {
                         "{}: frame size drifted from the canvas size",
                         self.name
                     );
+                    let presented = self.renderer.presented_frames();
+                    let fresh = presented > self.presented_seen;
+                    self.presented_seen = presented;
                     thread::sleep(FRAME_INTERVAL);
-                    return frame;
+                    return Tick { frame, fresh };
                 }
                 Err(error) => {
-                    let since = *degraded_since.get_or_insert_with(Instant::now);
                     self.degraded_renders += 1;
                     self.last_degraded = Some(format!("{error:#}"));
-                    assert!(
-                        since.elapsed() < RENDER_DEADLINE,
-                        "{}: Servo rendering stayed degraded for {RENDER_DEADLINE:?}: {error:#}{}",
-                        self.name,
-                        self.diagnostics()
-                    );
+                    self.check_deadline(&format!("rendering stayed degraded ({error:#})"));
                     thread::sleep(FRAME_INTERVAL);
                 }
             }
         }
     }
 
-    /// Tick until the page has loaded and presented its first frame.
+    /// Tick until the worker has presented a frame for this page.
     fn wait_until_ready(&mut self) {
-        let started = Instant::now();
-        while self.renderer.is_warming() {
+        while self.renderer.presented_frames() == 0 {
+            self.tick();
+            // A render only succeeds without a stall, so a renderer that
+            // stopped warming here failed its load or lost its session and
+            // is drawing placeholders.
             assert!(
-                started.elapsed() < RENDER_DEADLINE,
-                "{}: Servo presented no first frame within {RENDER_DEADLINE:?}{}",
+                self.renderer.presented_frames() > 0 || self.renderer.is_warming(),
+                "{}: Servo stopped warming without presenting a frame{}",
                 self.name,
                 self.diagnostics()
             );
-            self.tick();
+            self.check_deadline("Servo presented no frame");
         }
-        // A failed load also stops warming, then renders placeholders.
-        assert_eq!(
-            servo_telemetry_snapshot().renderer_load_failures_total,
-            self.telemetry_before.renderer_load_failures_total,
-            "{}: the Servo page load failed{}",
-            self.name,
-            self.diagnostics()
-        );
     }
 
-    /// Tick until a frame satisfies `accept`, and return that frame.
-    fn render_until(
-        &mut self,
-        expectation: &str,
-        mut accept: impl FnMut(&Canvas) -> bool,
-    ) -> Canvas {
+    /// Tick until a presented frame satisfies `accept`, and return it.
+    fn render_until(&mut self, expectation: &str, mut accept: impl FnMut(&Tick) -> bool) -> Canvas {
         self.wait_until_ready();
-        let started = Instant::now();
         loop {
-            let frame = self.tick();
-            if accept(&frame) {
-                return frame;
+            let tick = self.tick();
+            if accept(&tick) {
+                return tick.frame;
             }
-            assert!(
-                started.elapsed() < RENDER_DEADLINE,
-                "{}: no frame showed {expectation} within {RENDER_DEADLINE:?}; last frame: {}{}",
-                self.name,
-                describe_frame(&frame),
-                self.diagnostics()
-            );
+            self.check_deadline(&format!(
+                "no frame showed {expectation}; last frame: {}",
+                describe_frame(&tick.frame)
+            ));
         }
     }
 
@@ -436,10 +565,13 @@ impl ServoRun {
         let now = servo_telemetry_snapshot();
         let before = &self.telemetry_before;
         let mut text = format!(
-            "\n  servo: page loads {} (failed {}), renderer load failures {}, cpu frames {}, cached frames {}, soft stalls {}",
+            "\n  servo: presented frames {}, warming {}, page loads {} (failed {}), renderer load failures {}, session create failures {}, cpu frames {}, cached frames {}, soft stalls {}",
+            self.renderer.presented_frames(),
+            self.renderer.is_warming(),
             now.page_loads_total - before.page_loads_total,
             now.page_load_failures_total - before.page_load_failures_total,
             now.renderer_load_failures_total - before.renderer_load_failures_total,
+            now.session_create_failures_total - before.session_create_failures_total,
             now.render_cpu_frames_total - before.render_cpu_frames_total,
             now.render_cached_frames_total - before.render_cached_frames_total,
             now.soft_stalls_total - before.soft_stalls_total,
@@ -460,15 +592,28 @@ impl ServoRun {
         text
     }
 
+    /// Destroy the page and hand back the frame clock for the next one.
     fn finish(mut self) -> TestFrameState {
-        if let Some(reason) = &self.last_degraded {
+        std::mem::replace(
+            &mut self.frame_state,
+            TestFrameState::new(CANVAS_WIDTH, CANVAS_HEIGHT),
+        )
+    }
+}
+
+impl Drop for ServoRun {
+    /// Destroys the page even when a check panicked, so a failed case leaves
+    /// no session behind on the shared worker.
+    fn drop(&mut self) {
+        if let Some(reason) = &self.last_degraded
+            && !thread::panicking()
+        {
             println!(
                 "    {}: recovered after {} degraded renders; last: {reason}",
                 self.name, self.degraded_renders
             );
         }
         self.renderer.destroy();
-        self.frame_state
     }
 }
 
@@ -586,7 +731,7 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);"
 fn renders_canvas2d_page_pixels() -> Outcome {
     let dir = tempdir().expect("tempdir should create");
     let mut run = ServoRun::start(&fill_page(&dir, "canvas2d-red", RED));
-    run.render_until("a solid red canvas", |frame| is_solid(frame, RED));
+    run.render_until("a solid red canvas", |tick| is_solid(&tick.frame, RED));
     run.finish();
     Outcome::Passed
 }
@@ -603,9 +748,50 @@ gl.clearColor(0, 128 / 255, 1, 1);
 gl.clear(gl.COLOR_BUFFER_BIT);",
     );
     let mut run = ServoRun::start(&metadata);
-    run.render_until("a solid azure WebGL2 clear", |frame| is_solid(frame, AZURE));
+    run.render_until("a solid azure WebGL2 clear", |tick| {
+        is_solid(&tick.frame, AZURE)
+    });
     run.finish();
     Outcome::Passed
+}
+
+/// Read both animation clocks from one frame: the page clock from the left
+/// half and the host clock from the right. `None` unless both halves carry
+/// their marks, so frames that each show only one clock prove nothing.
+fn read_animation_clocks(frame: &Canvas) -> Option<(u8, u8)> {
+    let y = CANVAS_HEIGHT / 2;
+    let left = frame.get_pixel(CANVAS_WIDTH / 4, y);
+    let right = frame.get_pixel(CANVAS_WIDTH * 3 / 4, y);
+    let left_marked =
+        channel_close(left.g, PAGE_CLOCK_MARK.0) && channel_close(left.b, PAGE_CLOCK_MARK.1);
+    let right_marked =
+        channel_close(right.g, HOST_CLOCK_MARK.0) && channel_close(right.b, HOST_CLOCK_MARK.1);
+    (left_marked && right_marked).then_some((left.r, right.r))
+}
+
+/// Tick until both clocks have shown enough distinct values in presented
+/// frames that carry both of them.
+fn watch_animation_clocks(run: &mut ServoRun) {
+    run.wait_until_ready();
+    let mut page_clock = HashSet::new();
+    let mut host_clock = HashSet::new();
+    while page_clock.len() < ANIMATION_DISTINCT_VALUES
+        || host_clock.len() < ANIMATION_DISTINCT_VALUES
+    {
+        let tick = run.tick();
+        if tick.fresh
+            && let Some((page, host)) = read_animation_clocks(&tick.frame)
+        {
+            page_clock.insert(page);
+            host_clock.insert(host);
+        }
+        run.check_deadline(&format!(
+            "animation latched; the page clock showed {} distinct values and the host clock {}; last frame: {}",
+            page_clock.len(),
+            host_clock.len(),
+            describe_frame(&tick.frame)
+        ));
+    }
 }
 
 /// The left half counts the page's own animation frames; the right half
@@ -613,10 +799,6 @@ gl.clear(gl.COLOR_BUFFER_BIT);",
 /// Both clocks must keep advancing, so neither Servo's animation pipeline
 /// nor the host frame payload can latch one frame and pass.
 fn keeps_presenting_page_and_host_animation() -> Outcome {
-    // Fixed green and blue channels mark each half as page content.
-    const LEFT_MARK: (u8, u8) = (40, 200);
-    const RIGHT_MARK: (u8, u8) = (200, 40);
-
     let dir = tempdir().expect("tempdir should create");
     let metadata = write_page(
         &dir,
@@ -634,35 +816,8 @@ function draw() {
 }
 requestAnimationFrame(draw);",
     );
-
     let mut run = ServoRun::start(&metadata);
-    run.wait_until_ready();
-    let y = CANVAS_HEIGHT / 2;
-    let mut page_clock = HashSet::new();
-    let mut host_clock = HashSet::new();
-    let started = Instant::now();
-    while page_clock.len() < ANIMATION_DISTINCT_VALUES
-        || host_clock.len() < ANIMATION_DISTINCT_VALUES
-    {
-        let frame = run.tick();
-        let left = frame.get_pixel(CANVAS_WIDTH / 4, y);
-        let right = frame.get_pixel(CANVAS_WIDTH * 3 / 4, y);
-        if channel_close(left.g, LEFT_MARK.0) && channel_close(left.b, LEFT_MARK.1) {
-            page_clock.insert(left.r);
-        }
-        if channel_close(right.g, RIGHT_MARK.0) && channel_close(right.b, RIGHT_MARK.1) {
-            host_clock.insert(right.r);
-        }
-        assert!(
-            started.elapsed() < RENDER_DEADLINE,
-            "{}: animation latched; the page clock showed {} distinct values and the host clock {} within {RENDER_DEADLINE:?}; last frame: {}{}",
-            run.name,
-            page_clock.len(),
-            host_clock.len(),
-            describe_frame(&frame),
-            run.diagnostics()
-        );
-    }
+    watch_animation_clocks(&mut run);
     run.finish();
     Outcome::Passed
 }
@@ -675,22 +830,103 @@ fn switches_effects_on_the_shared_worker() -> Outcome {
     let green = fill_page(&dir, "switch-green", GREEN);
 
     let mut first = ServoRun::start(&red);
-    first.render_until("the first effect's red", |frame| is_solid(frame, RED));
+    first.render_until("the first effect's red", |tick| is_solid(&tick.frame, RED));
     let frame_state = first.finish();
 
     let mut second = ServoRun::start_with_state(&green, frame_state);
-    second.render_until("the second effect's green", |frame| is_solid(frame, GREEN));
+    second.render_until("the second effect's green", |tick| {
+        is_solid(&tick.frame, GREEN)
+    });
     for _ in 0..SETTLE_TICKS {
-        let frame = second.tick();
+        let tick = second.tick();
         assert!(
-            is_solid(&frame, GREEN),
+            is_solid(&tick.frame, GREEN),
             "{}: output left green after the switch; frame: {}{}",
             second.name,
-            describe_frame(&frame),
+            describe_frame(&tick.frame),
             second.diagnostics()
         );
     }
     second.finish();
+    Outcome::Passed
+}
+
+// ── Broken pages the harness must reject ───────────────────────
+
+/// A page that throws before drawing still presents frames (its black
+/// background), and the pixel check must refuse them.
+fn rejects_a_page_that_never_draws() -> Outcome {
+    let dir = tempdir().expect("tempdir should create");
+    let metadata = write_page(
+        &dir,
+        "never-draws",
+        "throw new Error('deliberately broken before drawing');",
+    );
+    let message = expect_failure("a page that never draws", || {
+        let mut run = ServoRun::start(&metadata);
+        run.wait_until_ready();
+        run.shorten_deadline(PROBE_WINDOW);
+        run.render_until("a solid red canvas", |tick| is_solid(&tick.frame, RED));
+    });
+    assert!(
+        message.contains("no frame showed a solid red canvas"),
+        "a page that never draws failed for the wrong reason: {message}"
+    );
+    Outcome::Passed
+}
+
+/// A page whose load fails stops warming and renders placeholders, which
+/// change every frame and clear the lit threshold. Readiness must fail on
+/// the missing presentation instead of waiting for the deadline.
+fn rejects_a_page_that_never_presents() -> Outcome {
+    let dir = tempdir().expect("tempdir should create");
+    let metadata = page_metadata(dir.path().join("missing-page.html"));
+    let started = Instant::now();
+    let message = expect_failure("a page that never presents", || {
+        let mut run = ServoRun::start(&metadata);
+        run.wait_until_ready();
+    });
+    assert!(
+        message.contains("stopped warming without presenting a frame"),
+        "a page that never presents failed for the wrong reason: {message}"
+    );
+    assert!(
+        started.elapsed() < RENDER_DEADLINE / 2,
+        "a failed load took {:.2?} to surface",
+        started.elapsed()
+    );
+    Outcome::Passed
+}
+
+/// Full-canvas fills that alternate between the two clock colors put each
+/// mark in its own frame. Neither clock is proven, so the check must fail.
+fn rejects_clocks_split_across_frames() -> Outcome {
+    let dir = tempdir().expect("tempdir should create");
+    let metadata = write_page(
+        &dir,
+        "split-clocks",
+        "const ctx = canvas.getContext('2d');
+let frames = 0;
+function draw() {
+  frames += 1;
+  ctx.fillStyle = frames % 2
+    ? `rgb(${(frames * 9) % 256},40,200)`
+    : `rgb(${(frames * 9) % 256},200,40)`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);",
+    );
+    let message = expect_failure("clocks split across frames", || {
+        let mut run = ServoRun::start(&metadata);
+        run.wait_until_ready();
+        run.shorten_deadline(PROBE_WINDOW);
+        watch_animation_clocks(&mut run);
+    });
+    assert!(
+        message.contains("animation latched"),
+        "clocks split across frames failed for the wrong reason: {message}"
+    );
     Outcome::Passed
 }
 
@@ -760,19 +996,20 @@ struct CatalogExpectation {
     animated: bool,
 }
 
-/// Load one generated effect and prove it renders as expected.
+/// Load one generated effect and prove it renders as expected. Readiness
+/// alone already requires a presented frame.
 fn prove_catalog_effect(root: &Path, file_name: &str, expectation: CatalogExpectation) {
     let metadata = catalog_metadata(root, file_name);
     let mut run = ServoRun::start(&metadata);
     run.wait_until_ready();
     if expectation.drawn {
-        run.render_until("drawn pixels", is_drawn);
+        run.render_until("drawn pixels", |tick| is_drawn(&tick.frame));
     }
     if expectation.animated {
         let mut frames = HashSet::new();
-        run.render_until("animation", |frame| {
-            if !expectation.drawn || is_drawn(frame) {
-                frames.insert(frame.as_rgba_bytes().to_vec());
+        run.render_until("animation across presented frames", |tick| {
+            if tick.fresh && (!expectation.drawn || is_drawn(&tick.frame)) {
+                frames.insert(tick.frame.as_rgba_bytes().to_vec());
             }
             frames.len() >= CATALOG_DISTINCT_FRAMES
         });
@@ -972,16 +1209,40 @@ fn music_like_audio_frame(frame_index: usize) -> AudioData {
     audio
 }
 
-fn render_audio_sequence(metadata: &EffectMetadata, sequence: &[AudioData]) -> Vec<Canvas> {
+/// What one Shockwave run measured.
+struct AudioRun {
+    frames: Vec<Canvas>,
+    ticks: usize,
+}
+
+/// Feed `audio_for(tick)` at the host's 60 fps cadence and keep only the
+/// distinct frames the worker presented, so render latency cannot pad the
+/// sequence with repeats of one frame.
+fn render_audio_sequence(
+    metadata: &EffectMetadata,
+    audio_for: impl Fn(usize) -> AudioData,
+) -> AudioRun {
     let mut run = ServoRun::start(metadata);
     run.wait_until_ready();
-    let frames = sequence
-        .iter()
-        .map(|audio| run.tick_with_audio(audio))
-        .collect();
+    let mut frames: Vec<Canvas> = Vec::with_capacity(SHOCKWAVE_FRAMES);
+    let mut ticks = 0;
+    while frames.len() < SHOCKWAVE_FRAMES {
+        let tick = run.tick_with_audio(&audio_for(ticks));
+        ticks += 1;
+        let repeats_last = frames
+            .last()
+            .is_some_and(|last| last.as_rgba_bytes() == tick.frame.as_rgba_bytes());
+        if tick.fresh && !repeats_last {
+            frames.push(tick.frame);
+        }
+        run.check_deadline(&format!(
+            "presented only {} distinct audio frames in {ticks} ticks",
+            frames.len()
+        ));
+    }
     run.assert_no_console_errors();
     run.finish();
-    frames
+    AudioRun { frames, ticks }
 }
 
 /// Live audio must reach the page: Shockwave surges harder on a music-like
@@ -992,12 +1253,18 @@ fn shockwave_prefers_live_music_over_fallback_pulse() -> Outcome {
         Err(skipped) => return skipped,
     };
     let metadata = catalog_metadata(&root, "shockwave.html");
-    let active_audio: Vec<_> = (0..AUDIO_TEST_FRAMES).map(music_like_audio_frame).collect();
-    let silence_audio = vec![AudioData::silence(); AUDIO_TEST_FRAMES];
 
-    let active = sequence_activity_metrics(&render_audio_sequence(&metadata, &active_audio));
-    let silence = sequence_activity_metrics(&render_audio_sequence(&metadata, &silence_audio));
-    println!("    shockwave active={active:?}\n    shockwave silence={silence:?}");
+    let active_run = render_audio_sequence(&metadata, music_like_audio_frame);
+    let silence_run = render_audio_sequence(&metadata, |_| AudioData::silence());
+    let active = sequence_activity_metrics(&active_run.frames);
+    let silence = sequence_activity_metrics(&silence_run.frames);
+    println!(
+        "    shockwave active over {} frames in {} ticks: {active:?}\n    shockwave silence over {} frames in {} ticks: {silence:?}",
+        active_run.frames.len(),
+        active_run.ticks,
+        silence_run.frames.len(),
+        silence_run.ticks
+    );
 
     assert!(
         active.average_delta_pixels > silence.average_delta_pixels * 1.35,
