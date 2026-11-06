@@ -21,6 +21,8 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_driver_govee::GoveeDriverModule;
 #[cfg(feature = "hue")]
 use hypercolor_driver_hue::HueDriverModule;
+#[cfg(feature = "lifx")]
+use hypercolor_driver_lifx::LifxDriverModule;
 #[cfg(feature = "nanoleaf")]
 use hypercolor_driver_nanoleaf::NanoleafDriverModule;
 #[cfg(feature = "openrgb")]
@@ -71,6 +73,7 @@ pub fn register_driver_modules(
         feature = "wled",
         feature = "govee",
         feature = "hue",
+        feature = "lifx",
         feature = "nanoleaf",
         feature = "openrgb",
         feature = "pixel",
@@ -92,6 +95,9 @@ pub fn register_driver_modules(
 
     #[cfg(feature = "hue")]
     registry.register(HueDriverModule::new(Arc::clone(&credential_store)))?;
+
+    #[cfg(feature = "lifx")]
+    registry.register(LifxDriverModule::new())?;
 
     #[cfg(feature = "nanoleaf")]
     registry.register(NanoleafDriverModule::new(Arc::clone(&credential_store)))?;
@@ -134,6 +140,7 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         feature = "wled",
         feature = "govee",
         feature = "hue",
+        feature = "lifx",
         feature = "nanoleaf",
         feature = "openrgb",
         feature = "pixel",
@@ -157,6 +164,12 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
     config
         .drivers
         .entry(hypercolor_driver_hue::DESCRIPTOR.id.to_owned())
+        .or_default();
+
+    #[cfg(feature = "lifx")]
+    config
+        .drivers
+        .entry(hypercolor_driver_lifx::DESCRIPTOR.id.to_owned())
         .or_default();
 
     #[cfg(feature = "nanoleaf")]

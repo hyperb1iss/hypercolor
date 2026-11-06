@@ -37,6 +37,7 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         assert!(ids.contains(&"wled".to_owned()));
         assert!(ids.contains(&"govee".to_owned()));
         assert!(ids.contains(&"hue".to_owned()));
+        assert!(ids.contains(&"lifx".to_owned()));
         assert!(ids.contains(&"nanoleaf".to_owned()));
         assert!(ids.contains(&"openrgb".to_owned()));
         assert!(ids.contains(&"pixel".to_owned()));
@@ -49,7 +50,7 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
     }
 
     #[cfg(feature = "network")]
-    for driver_id in ["wled", "govee", "hue", "nanoleaf", "pixel"] {
+    for driver_id in ["govee", "hue", "lifx", "nanoleaf", "pixel", "wled"] {
         let driver = registry
             .get(driver_id)
             .expect("network driver should be registered");

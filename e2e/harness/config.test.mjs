@@ -6,7 +6,7 @@ test("browser fixtures disable every hardware and network driver", () => {
   const config = buildConfigToml();
   const drivers = [...config.matchAll(/\[drivers\.([^\]]+)\]\nenabled = (true|false)/g)];
   assert.deepEqual(drivers.map(([, id]) => id).sort(), [
-    "asus", "blocks", "corsair", "dygma", "govee", "hue", "lianli", "nanoleaf",
+    "asus", "blocks", "corsair", "dygma", "govee", "hue", "lianli", "lifx", "nanoleaf",
     "nollie", "nzxt", "openrgb", "pixel", "prismrgb", "push2", "qmk", "razer", "smbus",
     "usb", "wled", "wooting",
   ]);

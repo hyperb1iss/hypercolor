@@ -26,6 +26,9 @@ enabled = false
 [drivers.lianli]
 enabled = false
 
+[drivers.lifx]
+enabled = false
+
 [drivers.nanoleaf]
 enabled = false
 

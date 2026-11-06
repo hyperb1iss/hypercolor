@@ -4690,6 +4690,7 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-driver-govee",
  "hypercolor-driver-hue",
+ "hypercolor-driver-lifx",
  "hypercolor-driver-nanoleaf",
  "hypercolor-driver-openrgb",
  "hypercolor-driver-pixel",
