@@ -53,6 +53,7 @@ struct SlowRecordingBackend {
     write_count: Arc<AtomicUsize>,
     target_fps: Option<u32>,
     max_frame_silence: Option<Duration>,
+    min_identical_sends: Option<u8>,
     write_times: Option<Arc<Mutex<Vec<Instant>>>>,
 }
 
@@ -146,6 +147,7 @@ impl SlowRecordingBackend {
             write_count,
             target_fps: None,
             max_frame_silence: None,
+            min_identical_sends: None,
             write_times: None,
         }
     }
@@ -157,6 +159,11 @@ impl SlowRecordingBackend {
 
     fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
         self.max_frame_silence = Some(max_frame_silence);
+        self
+    }
+
+    fn with_min_identical_sends(mut self, sends: u8) -> Self {
+        self.min_identical_sends = Some(sends);
         self
     }
 
@@ -216,9 +223,11 @@ impl DeviceBackend for SlowRecordingBackend {
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
         self.target_fps(id).map(|target_fps| {
             let cadence = OutputCadence::from_fps(target_fps);
-            self.max_frame_silence.map_or(cadence, |max_frame_silence| {
+            let cadence = self.max_frame_silence.map_or(cadence, |max_frame_silence| {
                 cadence.with_max_frame_silence(max_frame_silence)
-            })
+            });
+            self.min_identical_sends
+                .map_or(cadence, |sends| cadence.with_min_identical_sends(sends))
         })
     }
 }
@@ -4789,6 +4798,67 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
     assert_eq!(queue.frames_received, 1);
     assert_eq!(queue.frames_sent, 1);
     assert_eq!(queue.frames_dropped, 0);
+}
+
+#[tokio::test]
+async fn output_queue_sends_identical_payloads_up_to_backend_minimum() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(0)
+    .with_min_identical_sends(3);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:repeat")
+        .await
+        .expect("connect should succeed");
+    assert_eq!(
+        manager
+            .cached_output_cadence("slow", device_id)
+            .map(OutputCadence::min_identical_sends),
+        Some(3)
+    );
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:repeat", 4)]);
+    let steady = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+    for _ in 0..5 {
+        manager.write_frame(&steady, &layout);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        write_count.load(Ordering::Relaxed),
+        3,
+        "an unchanged frame goes out three times, then suppression applies"
+    );
+
+    let changed = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 80, 70]; 4],
+    }];
+    for _ in 0..5 {
+        manager.write_frame(&changed, &layout);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        write_count.load(Ordering::Relaxed),
+        6,
+        "a changed frame restarts the identical-send count"
+    );
+    let expected_changed = vec![expected_led_color([90, 80, 70]); 4];
+    let writes = writes.lock().await.clone();
+    assert!(writes[3..].iter().all(|write| write == &expected_changed));
 }
 
 #[tokio::test]

@@ -334,6 +334,7 @@ pub struct OutputCadence {
     min_interval: Option<Duration>,
     max_frame_silence: Option<Duration>,
     target_fps: u32,
+    min_identical_sends: u8,
 }
 
 impl OutputCadence {
@@ -345,6 +346,7 @@ impl OutputCadence {
                 min_interval: None,
                 max_frame_silence: None,
                 target_fps,
+                min_identical_sends: 1,
             };
         }
 
@@ -352,6 +354,7 @@ impl OutputCadence {
             min_interval: Some(Duration::from_secs_f64(1.0 / f64::from(target_fps))),
             max_frame_silence: None,
             target_fps,
+            min_identical_sends: 1,
         }
     }
 
@@ -362,6 +365,7 @@ impl OutputCadence {
             min_interval: Some(min_interval),
             max_frame_silence: None,
             target_fps,
+            min_identical_sends: 1,
         }
     }
 
@@ -375,6 +379,26 @@ impl OutputCadence {
             Some(max_frame_silence)
         };
         self
+    }
+
+    /// Send each payload at least `sends` times before suppressing it as a
+    /// duplicate.
+    ///
+    /// The output queue normally drops a frame identical to the one it just
+    /// delivered. A protocol that requires redundant copies before going
+    /// quiet (E1.31 section 6.6.2 asks for three) opts in here; repeats go
+    /// out as the render loop delivers frames, so pacing is unchanged. Values
+    /// below 1 count as 1, which is the default and keeps plain suppression.
+    #[must_use]
+    pub const fn with_min_identical_sends(mut self, sends: u8) -> Self {
+        self.min_identical_sends = if sends == 0 { 1 } else { sends };
+        self
+    }
+
+    /// Minimum transmissions of an unchanged payload before suppression.
+    #[must_use]
+    pub const fn min_identical_sends(self) -> u8 {
+        self.min_identical_sends
     }
 
     /// Minimum interval between output attempts, or `None` for unpaced output.
