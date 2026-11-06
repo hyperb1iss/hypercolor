@@ -76,13 +76,30 @@ fn partition_disables_only_enabled_drivers_that_own_an_enabled_device() {
             "razer".to_owned(),
         ]
     );
-    // Only-disabled devices (nollie), no devices (asus), and a detector
-    // family whose driver the rig never reported (nzxt) are handed back to
-    // OpenRGB. Drivers without a detector family (hue, qmk) never appear.
-    assert_eq!(
-        plan.re_enable_driver_ids,
-        vec!["asus".to_owned(), "nollie".to_owned(), "nzxt".to_owned()]
-    );
+    // Every known detector family the rig does not withhold is handed back to
+    // OpenRGB. Derive that set from the detector table so adding a native
+    // family does not break this fixture, then pin the cases this rig
+    // exercises: a driver whose only device is user-disabled (nollie) and an
+    // enabled driver with no device at all (asus) go back, and drivers with
+    // no detector family (hue, qmk) never appear.
+    let mut expected: Vec<String> = known_detector_driver_ids()
+        .into_iter()
+        .filter(|id| !plan.disabled_driver_ids.contains(id))
+        .collect();
+    expected.sort();
+    assert_eq!(plan.re_enable_driver_ids, expected);
+    for handed_back in ["asus", "nollie"] {
+        assert!(
+            plan.re_enable_driver_ids.iter().any(|id| id == handed_back),
+            "{handed_back} should be handed back to OpenRGB"
+        );
+    }
+    for absent in ["hue", "qmk"] {
+        assert!(
+            !plan.re_enable_driver_ids.iter().any(|id| id == absent),
+            "{absent} has no detector family"
+        );
+    }
 }
 
 #[test]
