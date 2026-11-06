@@ -6,6 +6,7 @@ fn main() {
         "choose_daemon_owner",
         "execute_macos_daemon_owner_offline_remedy",
         "macos_daemon_owner_offline_status",
+        "macos_app_startup_hold",
         "restart_macos_capture_owner",
         "detect_pawnio_support",
         "detect_daemon_launcher",

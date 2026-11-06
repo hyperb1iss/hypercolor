@@ -61,7 +61,7 @@ crates/
   hypercolor-macos-input/          # macOS CGEventTap keyboard and pointer capture
   hypercolor-macos-media/          # macOS now-playing media Automation adapters
   hypercolor-macos-session/        # macOS session and system-power monitoring
-  hypercolor-macos-owner/          # Shared durable macOS daemon ownership, launchd adapter, kqueue lifetime guard
+  hypercolor-macos-owner/          # Shared durable macOS daemon ownership, launchd adapter, kqueue lifetime guard, the app's update control socket
   hypercolor-windows-gpu-interop/  # Windows D3D11/Vulkan texture import boundary
   hypercolor-windows-pawnio/       # Windows SMBus access via the PawnIO kernel driver, with a broker service; stubbed on other platforms
   hypercolor-windows-capture/      # Windows DXGI Desktop Duplication screen capture

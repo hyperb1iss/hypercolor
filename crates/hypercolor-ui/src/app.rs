@@ -20,6 +20,7 @@ use crate::api;
 use crate::color::CanvasFrameAnalysis;
 use crate::components::modal::Modal;
 use crate::components::shell::Shell;
+use crate::components::startup_hold_notice::StartupHoldNotice;
 use crate::components::welcome_overlay::WelcomeOverlay;
 use crate::config_state::{ConfigContext, ConfigSchemaContext};
 use crate::device_event_logic::should_refetch_devices_for_event;
@@ -1114,6 +1115,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         </Show>
 
         <WelcomeOverlay />
+        <StartupHoldNotice />
 
         <div class="toast-host">
             <leptoaster::Toaster />

@@ -19,6 +19,7 @@ pub mod first_run;
 pub mod helper_client;
 pub mod linux_webkit;
 pub mod logging;
+pub mod macos_update;
 pub mod ownership;
 pub mod process_ext;
 pub mod state;

@@ -34,6 +34,8 @@ const MACOS_SYSTEM_SETTINGS_COMMAND: &str = "open_macos_system_settings";
 
 #[cfg(any(target_arch = "wasm32", test))]
 const VERIFIED_DAEMON_CONNECTION_COMMAND: &str = "get_verified_daemon_connection";
+#[cfg(target_arch = "wasm32")]
+const MACOS_APP_STARTUP_HOLD_EVENT: &str = "macos-app-startup-hold-changed";
 
 #[cfg(target_arch = "wasm32")]
 const VERIFIED_DAEMON_CONNECTION_EVENT: &str = "verified-daemon-connection-changed";
@@ -152,6 +154,21 @@ pub fn initialize_daemon_transport() {
 
 #[cfg(target_arch = "wasm32")]
 async fn subscribe_verified_daemon_connection_events() -> bool {
+    listen_for_tauri_event(
+        VERIFIED_DAEMON_CONNECTION_EVENT,
+        Closure::<dyn FnMut(JsValue)>::new(|value| {
+            if let Ok(event) = serde_json_from_js_value::<VerifiedDaemonConnectionEvent>(value) {
+                apply_verified_daemon_connection(event.payload);
+            }
+        }),
+    )
+    .await
+}
+
+/// Listen for one native event for the life of the page, and report whether
+/// the listener is in place.
+#[cfg(target_arch = "wasm32")]
+async fn listen_for_tauri_event(name: &str, callback: Closure<dyn FnMut(JsValue)>) -> bool {
     let Some(window) = browser_window() else {
         return false;
     };
@@ -163,16 +180,9 @@ async fn subscribe_verified_daemon_connection_events() -> bool {
     else {
         return false;
     };
-    let callback = Closure::<dyn FnMut(JsValue)>::new(|value| {
-        if let Ok(event) = serde_json_from_js_value::<VerifiedDaemonConnectionEvent>(value) {
-            apply_verified_daemon_connection(event.payload);
-        }
-    });
-    let Ok(registration) = listen.call2(
-        &JsValue::NULL,
-        &JsValue::from_str(VERIFIED_DAEMON_CONNECTION_EVENT),
-        callback.as_ref(),
-    ) else {
+    let Ok(registration) =
+        listen.call2(&JsValue::NULL, &JsValue::from_str(name), callback.as_ref())
+    else {
         return false;
     };
     let Ok(registration) = registration.dyn_into::<js_sys::Promise>() else {
@@ -321,6 +331,14 @@ pub enum MacosOwnerCoordinatorOutcome {
     Unknown,
 }
 
+/// Why the native macOS app leaves every daemon alone right now.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MacosAppStartupHold {
+    UpdateInProgress,
+    MoveToApplications,
+}
+
 /// Native app status for a selected external daemon that is offline.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct MacosDaemonOwnerOfflineStatus {
@@ -454,6 +472,46 @@ pub async fn choose_macos_daemon_owner(
     _owner: MacosDaemonOwnerChoice,
 ) -> Result<Option<MacosOwnerCoordinatorOutcome>, String> {
     Ok(None)
+}
+
+/// Follow why the native macOS app leaves every daemon alone: `on_change`
+/// hears the current answer, then each change. The listener goes in before
+/// the snapshot, so a change between the two is never missed.
+#[cfg(target_arch = "wasm32")]
+pub async fn follow_macos_app_startup_hold(
+    on_change: impl Fn(Option<MacosAppStartupHold>) + 'static,
+) {
+    #[derive(Deserialize)]
+    struct HoldEvent {
+        payload: Option<MacosAppStartupHold>,
+    }
+
+    let on_change = std::rc::Rc::new(on_change);
+    let listener = std::rc::Rc::clone(&on_change);
+    listen_for_tauri_event(
+        MACOS_APP_STARTUP_HOLD_EVENT,
+        Closure::<dyn FnMut(JsValue)>::new(move |value| {
+            if let Ok(event) = serde_json_from_js_value::<HoldEvent>(value) {
+                listener(event.payload);
+            }
+        }),
+    )
+    .await;
+    let Some(invoke) = tauri_invoke() else {
+        return;
+    };
+    if let Ok(hold) = invoke_command(&invoke, "macos_app_startup_hold", None)
+        .await
+        .and_then(serde_json_from_js_value)
+    {
+        on_change(hold);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn follow_macos_app_startup_hold(
+    _on_change: impl Fn(Option<MacosAppStartupHold>) + 'static,
+) {
 }
 
 /// Read app-local status for a selected external macOS daemon that is offline.
