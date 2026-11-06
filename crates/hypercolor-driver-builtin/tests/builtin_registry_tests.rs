@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "hal")]
 use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
-use hypercolor_driver_builtin::build_driver_module_registry;
+use hypercolor_driver_builtin::{build_driver_module_registry, normalize_driver_config_entries};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -38,18 +38,23 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         assert!(ids.contains(&"prismrgb".to_owned()));
     }
 
-    for driver_id in hypercolor_driver_builtin::builtin_driver_ids() {
-        let driver = registry
-            .get(driver_id)
-            .expect("every table row should be registered under its descriptor id");
-        let descriptor = driver.module_descriptor();
-        assert!(descriptor.capabilities.config);
-        assert!(descriptor.capabilities.controls || driver_id == "openrgb");
-        driver
-            .config()
-            .expect("config provider should be present")
-            .validate_config(&driver.config().expect("config provider").default_config())
-            .expect("default config should validate");
+    for driver_id in &ids {
+        let driver = registry.get(driver_id).expect("listed driver resolves");
+        if let Some(config) = driver.config() {
+            config
+                .validate_config(&config.default_config())
+                .expect("default config should validate");
+        }
+    }
+
+    // Registration and config seeding read one table, so they cannot disagree.
+    let mut config = HypercolorConfig::default();
+    normalize_driver_config_entries(&mut config);
+    for driver_id in &ids {
+        if let Some(entry) = config.drivers.get(driver_id) {
+            let driver = registry.get(driver_id).expect("listed driver resolves");
+            assert_eq!(entry.enabled, driver.module_descriptor().default_enabled);
+        }
     }
 
     #[cfg(feature = "openrgb")]

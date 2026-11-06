@@ -45,7 +45,8 @@ pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     DriverTransportKind::Bridge,
     true,
     false,
-);
+)
+.default_disabled();
 
 const FIELD_ENDPOINTS: &str = "endpoints";
 const FIELD_ALLOW_INSECURE_REMOTE: &str = "allow_insecure_remote";
@@ -264,7 +265,6 @@ impl DriverModule for OpenRgbDriverModule {
             presentation: true,
             ..DriverCapabilitySet::empty()
         };
-        descriptor.default_enabled = false;
         descriptor
     }
 

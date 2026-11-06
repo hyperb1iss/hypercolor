@@ -37,6 +37,8 @@ use hypercolor_driver_pixel::PixelDriverModule;
 use hypercolor_driver_twinkly::TwinklyDriverModule;
 #[cfg(feature = "wiz")]
 use hypercolor_driver_wiz::WizDriverModule;
+#[cfg(feature = "wled")]
+use hypercolor_driver_wled::WledDriverModule;
 #[cfg(feature = "yeelight")]
 use hypercolor_driver_yeelight::YeelightDriverModule;
 
@@ -44,8 +46,6 @@ use hypercolor_driver_yeelight::YeelightDriverModule;
 struct BuiltinDriver {
     descriptor: &'static DriverDescriptor,
     register: fn(&mut DriverModuleRegistry, &Arc<CredentialStore>) -> Result<()>,
-    /// Config entry minted the first time this driver is seen.
-    default_entry: fn() -> DriverConfigEntry,
 }
 
 impl BuiltinDriver {
@@ -56,13 +56,16 @@ impl BuiltinDriver {
         Self {
             descriptor,
             register,
-            default_entry: DriverConfigEntry::default,
         }
     }
 
-    const fn minted_disabled(mut self) -> Self {
-        self.default_entry = || DriverConfigEntry::disabled(BTreeMap::default());
-        self
+    /// Config entry minted the first time this driver is seen.
+    fn initial_entry(&self) -> DriverConfigEntry {
+        if self.descriptor.default_enabled {
+            DriverConfigEntry::default()
+        } else {
+            DriverConfigEntry::disabled(BTreeMap::default())
+        }
     }
 }
 
@@ -96,8 +99,7 @@ static BUILTIN_DRIVERS: &[BuiltinDriver] = &[
     #[cfg(feature = "openrgb")]
     BuiltinDriver::new(&hypercolor_driver_openrgb::DESCRIPTOR, |registry, _| {
         Ok(registry.register(OpenRgbDriverModule)?)
-    })
-    .minted_disabled(),
+    }),
     #[cfg(feature = "pixel")]
     BuiltinDriver::new(&hypercolor_driver_pixel::DESCRIPTOR, |registry, _| {
         Ok(registry.register(PixelDriverModule::new())?)
@@ -119,13 +121,6 @@ static BUILTIN_DRIVERS: &[BuiltinDriver] = &[
         Ok(registry.register(AdalightDriverModule::new())?)
     }),
 ];
-
-/// Ids of every compiled-in standalone driver.
-pub fn builtin_driver_ids() -> impl Iterator<Item = &'static str> {
-    BUILTIN_DRIVERS.iter().map(|driver| driver.descriptor.id)
-}
-#[cfg(feature = "wled")]
-use hypercolor_driver_wled::WledDriverModule;
 
 /// Build the compiled-in driver module registry for this process.
 ///
@@ -203,7 +198,7 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         config
             .drivers
             .entry(driver.descriptor.id.to_owned())
-            .or_insert_with(driver.default_entry);
+            .or_insert_with(|| driver.initial_entry());
     }
 
     #[cfg(feature = "hal")]
