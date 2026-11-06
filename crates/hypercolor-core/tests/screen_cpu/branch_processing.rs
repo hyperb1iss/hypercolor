@@ -15,10 +15,10 @@ use hypercolor_core::input::screen::implementer::{
     PreparedScreenPublication, ScreenPublicationMetadata, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    CommittedScreenPlan, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning, ScreenContentBarsPolicy,
+    CaptureBackendId, CommittedScreenPlan, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCapturePlan, ScreenColorTuning, ScreenContentBarsPolicy,
     ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy,
     ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenPlanGeneration,
@@ -72,7 +72,7 @@ fn source(source_extent: PixelExtent, colorimetry: CaptureColorimetry) -> Resolv
             CapturePixelFormat::Rgba8,
             colorimetry,
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 7,
                 11,

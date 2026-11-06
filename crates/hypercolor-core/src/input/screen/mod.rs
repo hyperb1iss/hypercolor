@@ -135,19 +135,18 @@ pub use plan::{
 pub use process::CaptureFrameProcessor;
 #[doc(hidden)]
 pub use publication::{
-    AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation,
+    AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureBackendId,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorPipeline,
     ResolvedScreenColorTransform, ResolvedScreenGeometry, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ResolvedScreenToneMap, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenBoundedExtent, ScreenCaptureBackend,
-    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenConsumerBranchId,
-    ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenGamutMapPolicy, ScreenGridPolicy,
-    ScreenHdrPolicy, ScreenLetterboxFill, ScreenNativeExecutionPolicy, ScreenNativeExecutionTarget,
-    ScreenNativeExecutionTargetId, ScreenNativeExecutionUnavailableReason,
-    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetAllocation,
-    ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
-    ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
+    ScreenBackendResourceIdentity, ScreenBoundedExtent, ScreenColorTransformCapabilities,
+    ScreenColorTuning, ScreenConsumerBranchId, ScreenContentBarsPolicy, ScreenCursorCapabilities,
+    ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenGamutMapPolicy,
+    ScreenGridPolicy, ScreenHdrPolicy, ScreenLetterboxFill, ScreenNativeExecutionPolicy,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
+    ScreenNativeRetentionQuote, ScreenNativeTargetAllocation, ScreenNativeTargetBindingError,
+    ScreenNativeTargetPreparation, ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
     ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity,
     ScreenPhysicalReductionDescriptor, ScreenProcessingProfile, ScreenProcessingProfileConfig,
     ScreenProfileScalar, ScreenPublicationError, ScreenPublicationExecutor,
@@ -262,11 +261,11 @@ pub mod planner {
     };
     pub use super::publication::{
         AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation,
-        RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorPipeline,
-        ResolvedScreenColorTransform, ResolvedScreenGeometry, ResolvedScreenPublicationDescriptor,
-        ResolvedScreenSource, ResolvedScreenSourceConfig, ResolvedScreenToneMap,
-        ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBoundedExtent,
-        ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenColorTuning,
+        CaptureBackendId, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+        ResolvedScreenColorPipeline, ResolvedScreenColorTransform, ResolvedScreenGeometry,
+        ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+        ResolvedScreenToneMap, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+        ScreenBoundedExtent, ScreenColorTransformCapabilities, ScreenColorTuning,
         ScreenConsumerBranchId, ScreenContentBarsPolicy, ScreenCursorCapabilities,
         ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenExtentRequest,
         ScreenGamutMapPolicy, ScreenGridPolicy, ScreenHdrPolicy, ScreenLetterboxFill,
@@ -347,7 +346,7 @@ pub mod implementer {
 }
 
 use crate::input::traits::{
-    InputData, InputSource, ScreenData, ScreenSource, ScreenSourceRole, ScreenZoneColors,
+    InputData, ManagedSource, ScreenData, ScreenSource, ScreenSourceRole, ScreenZoneColors,
     SourceRoleBinding,
 };
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
@@ -1054,7 +1053,7 @@ pub struct ScreenMonitor {
 
 // ── ScreenCaptureInput ────────────────────────────────────────────────────
 
-/// Reference CPU screen analyzer implementing [`InputSource`].
+/// Reference CPU screen analyzer implementing [`ManagedSource`].
 ///
 /// Owns the sector grid configuration, temporal smoother, and latest frame
 /// state. Pixel data is pushed in via [`push_frame`]; the macOS parity
@@ -1596,7 +1595,7 @@ impl ScreenCaptureInput {
     }
 }
 
-impl InputSource for ScreenCaptureInput {
+impl ManagedSource for ScreenCaptureInput {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
         "screen_capture"

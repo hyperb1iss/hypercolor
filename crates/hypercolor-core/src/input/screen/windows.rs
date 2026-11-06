@@ -38,34 +38,35 @@ use hypercolor_windows_capture::{
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureCadence,
-    CaptureCadenceError, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor,
-    CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
-    CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, CpuExactReductionWorkPlan,
-    ExactBoxList, ExactBoxNode, PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
-    PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorTransform,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenBackendResourceIdentity, ScreenBranchPayload,
-    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenByteLease, ScreenByteReservation,
-    ScreenCaptureBackend, ScreenCaptureDemand, ScreenColorTransformCapabilities,
-    ScreenCommittedState, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
-    ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenMonitor,
-    ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenProcessingProfile,
-    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenReductionFilter, ScreenRequiredResourceMinimum,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerExactLedgerBuilder,
-    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
+    AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureBackendId,
+    CaptureCadence, CaptureCadenceError, CaptureColorSpace, CaptureColorimetry, CaptureConfig,
+    CaptureCursor, CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame,
+    CaptureFrameMetadata, CaptureGeometry, CapturePacer, CapturePixelFormat, CaptureRotation,
+    CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
+    CpuExactReductionWorkPlan, ExactBoxList, ExactBoxNode, PhysicalOrigin, PixelExtent,
+    PlatformGpuApi, PlatformGpuSurface, PreparedCpuPublicationFanout,
+    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity,
+    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenBranchPublisher,
+    ScreenByteAdmissionCoordinator, ScreenByteLease, ScreenByteReservation, ScreenCaptureDemand,
+    ScreenColorTransformCapabilities, ScreenCommittedState, ScreenComputeCapacityPolicy,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
+    ScreenGpuSurfacePayload, ScreenMonitor, ScreenNativePreparationPayload,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken,
+    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
+    ScreenWorkerRetirement, SourceScale,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
 };
 use crate::input::traits::{
-    InputData, InputSource, ScreenSource, ScreenSourceRole, SourceRoleBinding,
+    InputData, ManagedSource, ScreenSource, ScreenSourceRole, SourceRoleBinding,
 };
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
@@ -391,7 +392,7 @@ impl WindowsPublicationSource {
                 self.colorimetry,
                 ScreenCursorCapabilities::clean_only(),
                 ScreenBackendResourceIdentity::new(
-                    ScreenCaptureBackend::DesktopDuplication,
+                    CaptureBackendId::DesktopDuplication,
                     ScreenResourceApi::Cpu,
                     self.epoch.session_generation,
                     self.duplication_generation,
@@ -420,7 +421,7 @@ impl WindowsPublicationSource {
                 self.colorimetry,
                 ScreenCursorCapabilities::clean_with_separate_cursor(),
                 ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                    ScreenCaptureBackend::DesktopDuplication,
+                    CaptureBackendId::DesktopDuplication,
                     ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
                     screen_gpu_identity(self.adapter_luid),
                     self.epoch.session_generation,
@@ -1023,7 +1024,7 @@ impl WindowsScreenCaptureInput {
                 SourceStatusReporter::new(
                     "windows_screen_capture",
                     SourceKind::Screen,
-                    ScreenCaptureBackend::DesktopDuplication.wire_name(),
+                    CaptureBackendId::DesktopDuplication.wire_name(),
                     true,
                     true,
                     false,
@@ -1413,7 +1414,7 @@ impl WindowsScreenCaptureInput {
     }
 }
 
-impl InputSource for WindowsScreenCaptureInput {
+impl ManagedSource for WindowsScreenCaptureInput {
     fn name(&self) -> &'static str {
         "windows_screen_capture"
     }

@@ -11,7 +11,7 @@ use hypercolor_core::input::screen::consumer::{
     CaptureConfig, CaptureEpoch, CaptureSourceId, ScreenCaptureDemand,
 };
 use hypercolor_core::input::screen::implementer::WindowsScreenCaptureInput;
-use hypercolor_core::input::{InputData, InputSource, ScreenSource};
+use hypercolor_core::input::{InputData, ManagedSource, ScreenSource};
 use hypercolor_windows_capture::CaptureError;
 
 fn fixture_epoch() -> CaptureEpoch {

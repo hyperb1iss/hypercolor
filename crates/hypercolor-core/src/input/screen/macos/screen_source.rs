@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use super::SourceDiagnosticArtifactAction;
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{
-    BackendWorkerCommand, CapturePlanePool, InputSource, ScreenCaptureInput, WorkerCommand,
+    BackendWorkerCommand, CapturePlanePool, ManagedSource, ScreenCaptureInput, WorkerCommand,
 };
 use super::{
     CaptureConfig, CaptureSourceId, LedToneMapCalibration, MacosScreenCaptureInput, PreparedWorker,

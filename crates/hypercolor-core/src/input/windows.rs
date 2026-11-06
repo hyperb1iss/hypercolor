@@ -17,8 +17,8 @@ use tracing::{info, warn};
 use crate::input::host_fold::HostInputPublishOutcome;
 use crate::input::host_fold::{HostInputFold, HostInputSink};
 use crate::input::traits::{
-    InputData, InputSource, InteractionData, InteractionDegradation, InteractionSource,
-    InteractionSourceRole, SourceRoleBinding,
+    InputData, InteractionData, InteractionDegradation, InteractionSource, InteractionSourceRole,
+    ManagedSource, SourceRoleBinding,
 };
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
@@ -317,7 +317,7 @@ impl WindowsHostInput {
     }
 }
 
-impl InputSource for WindowsHostInput {
+impl ManagedSource for WindowsHostInput {
     fn name(&self) -> &str {
         &self.name
     }

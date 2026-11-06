@@ -65,7 +65,7 @@ use crate::input::screen::{
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparationTicket,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
-use crate::input::traits::InputSource;
+use crate::input::traits::ManagedSource;
 use crate::input::{SourceKind, SourceState, SourceStatusReporter};
 
 #[test]

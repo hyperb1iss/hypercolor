@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::{
-    AudioSource, AudioSourceRole, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    AudioSource, AudioSourceRole, InputData, ManagedSource, ManagedSourceRole, SourceIssue,
     SourceKind, SourceRoleBinding, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::scene::OutputPlacement;
@@ -129,7 +129,7 @@ impl FailedInputSource {
     }
 }
 
-impl InputSource for FailedInputSource {
+impl ManagedSource for FailedInputSource {
     fn name(&self) -> &'static str {
         "FailedInputSource"
     }

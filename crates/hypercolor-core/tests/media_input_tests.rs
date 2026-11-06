@@ -5,7 +5,7 @@ use hypercolor_core::input::media::{
     MediaProviderSession, MediaSource, PlaybackStatus, PlayerSnapshot, PlayerSnapshotScanner,
     collect_player_snapshots, media_state_from_player, pick_active_player, run_artwork_loop,
 };
-use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_core::input::{InputData, ManagedSource};
 use hypercolor_core::input::{SourceFreshness, SourceState};
 use std::collections::{HashSet, VecDeque};
 use std::io::{Cursor, Read as _, Write as _};

@@ -9,7 +9,7 @@ use hypercolor_linux_input::{
 use hypercolor_types::host_input::HostInputCapabilities;
 
 use crate::input::traits::{
-    InputData, InputSource, InteractionSource, InteractionSourceRole, SourceRoleBinding,
+    InputData, InteractionSource, InteractionSourceRole, ManagedSource, SourceRoleBinding,
 };
 use crate::input::{
     HostInputFold, SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter,
@@ -160,7 +160,7 @@ impl EvdevHostInput {
     }
 }
 
-impl InputSource for EvdevHostInput {
+impl ManagedSource for EvdevHostInput {
     fn name(&self) -> &str {
         &self.name
     }

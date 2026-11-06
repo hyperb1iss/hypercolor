@@ -12,14 +12,14 @@ use hypercolor_core::input::screen::implementer::{
     ScreenPublicationHealth, SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTuning,
-    ScreenContentBarsPolicy, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
-    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationExecutorRequest,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
+    CaptureBackendId, InputPublicationDemandRevision, RegisteredScreenBranchDemand,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenColorTuning, ScreenContentBarsPolicy, ScreenExactResource,
+    ScreenExactResourceLedger, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPlanBuilder,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenResourceApi, ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
@@ -84,7 +84,7 @@ fn source() -> ResolvedScreenSource {
             CapturePixelFormat::Rgba8,
             CaptureColorimetry::SRGB,
             ScreenBackendResourceIdentity::new(
-                ScreenCaptureBackend::Synthetic,
+                CaptureBackendId::Synthetic,
                 ScreenResourceApi::Cpu,
                 7,
                 11,

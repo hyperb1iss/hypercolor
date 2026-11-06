@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use hypercolor_core::input::{InputData, InputSource, InteractionSource, WindowsHostInput};
+use hypercolor_core::input::{InputData, InteractionSource, ManagedSource, WindowsHostInput};
 use hypercolor_types::host_input::{
     HostInputBatch, HostInputCapabilities, HostInputDevice, HostInputEvent, HostKeyIdentity,
     HostKeySignal, HostRepeatEvidence,

@@ -18,8 +18,8 @@ use hypercolor_core::input::screen::implementer::WaylandScreenCaptureInput;
 use hypercolor_core::input::screen::planner::{ScreenAdmissionCapacity, ScreenCursorPolicy};
 use hypercolor_core::input::{
     AudioSource, AudioSourceRole, DataSource, DataSourceKind, DataSourceRole,
-    INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource, InteractionSource,
-    InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, MediaSource, NetSource,
+    INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InteractionSource, InteractionSourceRole,
+    ManagedSource, ManagedSourceKey, ManagedSourceRole, MediaSource, NetSource,
     PreparedAudioSourceSwap, ScreenData, ScreenReconfigurationConflict, ScreenSource,
     ScreenSourceRole, ScreenSourceSwapCommitError, SourceCapabilityConflict,
     SourceCapabilityContext, SourceFreshness, SourceIssue, SourceKind, SourceRegistrationError,
@@ -98,7 +98,7 @@ struct MutableInteractionRoleSource {
     _aggregate: Arc<AtomicBool>,
 }
 
-impl InputSource for MutableInteractionRoleSource {
+impl ManagedSource for MutableInteractionRoleSource {
     fn name(&self) -> &'static str {
         "MutableInteractionRole"
     }
@@ -128,7 +128,7 @@ struct MutableDataRoleSource {
     network: Arc<AtomicBool>,
 }
 
-impl InputSource for MutableDataRoleSource {
+impl ManagedSource for MutableDataRoleSource {
     fn name(&self) -> &'static str {
         "MutableDataRole"
     }
@@ -173,7 +173,7 @@ struct CapabilityStateAwareSource {
     running: bool,
 }
 
-impl InputSource for CapabilityStateAwareSource {
+impl ManagedSource for CapabilityStateAwareSource {
     fn name(&self) -> &'static str {
         "CapabilityStateAware"
     }
@@ -227,7 +227,7 @@ impl StatusAwareScreenSource {
     }
 }
 
-impl InputSource for StatusAwareScreenSource {
+impl ManagedSource for StatusAwareScreenSource {
     fn name(&self) -> &'static str {
         "StatusAwareScreen"
     }
@@ -326,7 +326,7 @@ impl FallibleStatusScreenSource {
     }
 }
 
-impl InputSource for FallibleStatusScreenSource {
+impl ManagedSource for FallibleStatusScreenSource {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -427,7 +427,7 @@ impl RestartingStatusScreenSource {
     }
 }
 
-impl InputSource for RestartingStatusScreenSource {
+impl ManagedSource for RestartingStatusScreenSource {
     fn name(&self) -> &'static str {
         "RestartingStatusScreen"
     }
@@ -486,7 +486,7 @@ impl MockAudioSource {
     }
 }
 
-impl InputSource for MockAudioSource {
+impl ManagedSource for MockAudioSource {
     fn name(&self) -> &'static str {
         "MockAudio"
     }
@@ -536,7 +536,7 @@ impl MismatchedStatusAudioSource {
     }
 }
 
-impl InputSource for MismatchedStatusAudioSource {
+impl ManagedSource for MismatchedStatusAudioSource {
     fn name(&self) -> &'static str {
         "MismatchedStatusAudio"
     }
@@ -585,7 +585,7 @@ impl MockScreenSource {
     }
 }
 
-impl InputSource for MockScreenSource {
+impl ManagedSource for MockScreenSource {
     fn name(&self) -> &'static str {
         "MockScreen"
     }
@@ -624,7 +624,7 @@ struct ExternallyStoppedScreenSource {
     running: Arc<AtomicBool>,
 }
 
-impl InputSource for ExternallyStoppedScreenSource {
+impl ManagedSource for ExternallyStoppedScreenSource {
     fn name(&self) -> &'static str {
         "ExternallyStoppedScreen"
     }
@@ -656,7 +656,7 @@ impl ScreenSource for ExternallyStoppedScreenSource {}
 /// A mock source that always fails on start.
 struct FailingSource;
 
-impl InputSource for FailingSource {
+impl ManagedSource for FailingSource {
     fn name(&self) -> &'static str {
         "FailingSource"
     }
@@ -697,7 +697,7 @@ impl DeltaAwareSource {
     }
 }
 
-impl InputSource for DeltaAwareSource {
+impl ManagedSource for DeltaAwareSource {
     fn name(&self) -> &'static str {
         "DeltaAware"
     }
@@ -726,7 +726,7 @@ impl InputSource for DeltaAwareSource {
     }
 }
 
-impl InputSource for FaultySampleSource {
+impl ManagedSource for FaultySampleSource {
     fn name(&self) -> &'static str {
         "FaultySample"
     }
@@ -775,7 +775,7 @@ impl<R> SequencedSource<R> {
     }
 }
 
-impl<R: Send> InputSource for SequencedSource<R> {
+impl<R: Send> ManagedSource for SequencedSource<R> {
     fn name(&self) -> &'static str {
         "Sequenced"
     }
@@ -836,7 +836,7 @@ impl EventfulSource {
     }
 }
 
-impl InputSource for EventfulSource {
+impl ManagedSource for EventfulSource {
     fn name(&self) -> &'static str {
         "EventfulSource"
     }
@@ -863,7 +863,7 @@ impl InputSource for EventfulSource {
     }
 }
 
-impl InputSource for StatuslessDemandSource {
+impl ManagedSource for StatuslessDemandSource {
     fn name(&self) -> &'static str {
         "statusless-demand"
     }
@@ -932,7 +932,7 @@ impl CountingScreenDemandSource {
     }
 }
 
-impl InputSource for CountingScreenDemandSource {
+impl ManagedSource for CountingScreenDemandSource {
     fn name(&self) -> &'static str {
         "CountingScreenDemand"
     }
@@ -983,7 +983,7 @@ impl CaptureTrackingScreenSource {
     }
 }
 
-impl InputSource for CaptureTrackingScreenSource {
+impl ManagedSource for CaptureTrackingScreenSource {
     fn name(&self) -> &'static str {
         "CaptureTrackingScreen"
     }
@@ -1033,7 +1033,7 @@ impl ScreenSource for CaptureTrackingScreenSource {
     }
 }
 
-impl InputSource for CaptureTrackingAudioSource {
+impl ManagedSource for CaptureTrackingAudioSource {
     fn name(&self) -> &'static str {
         "CaptureTrackingAudio"
     }
@@ -1069,7 +1069,7 @@ impl AudioSource for CaptureTrackingAudioSource {
     }
 }
 
-// ── InputSource Trait Tests ────────────────────────────────────────────────
+// ── ManagedSource Trait Tests ────────────────────────────────────────────────
 
 #[test]
 fn audio_source_lifecycle() {
@@ -1231,7 +1231,7 @@ struct BlockingStartAudioSource {
     running: bool,
 }
 
-impl InputSource for BlockingStartAudioSource {
+impl ManagedSource for BlockingStartAudioSource {
     fn name(&self) -> &'static str {
         "BlockingStartAudio"
     }
@@ -1271,7 +1271,7 @@ struct CountingMediaSource {
     running: bool,
 }
 
-impl InputSource for CountingMediaSource {
+impl ManagedSource for CountingMediaSource {
     fn name(&self) -> &'static str {
         "CountingMedia"
     }
@@ -2106,7 +2106,7 @@ fn stale_capacity_preparations_cannot_overwrite_a_committed_split() {
 #[test]
 fn production_source_constructors_expose_status_handles() {
     let config = AudioPipelineConfig::default();
-    let mut sources: Vec<Box<dyn InputSource>> = vec![
+    let mut sources: Vec<Box<dyn ManagedSource>> = vec![
         Box::new(AudioInput::new(&config)),
         Box::new(MediaSource::new()),
         Box::new(NetSource::new()),
@@ -2127,7 +2127,7 @@ fn production_source_constructors_expose_status_handles() {
 
     #[cfg(target_os = "windows")]
     {
-        let mut windows_sources: Vec<Box<dyn InputSource>> = vec![
+        let mut windows_sources: Vec<Box<dyn ManagedSource>> = vec![
             Box::new(WindowsScreenCaptureInput::new(
                 ScreenCaptureConfig::default(),
             )),
@@ -2151,7 +2151,7 @@ fn production_source_constructors_expose_status_handles() {
     {
         use hypercolor_core::input::EvdevHostInput;
 
-        let mut linux_sources: Vec<Box<dyn InputSource>> = vec![
+        let mut linux_sources: Vec<Box<dyn ManagedSource>> = vec![
             Box::new(EvdevHostInput::new(true, true)),
             Box::new(WaylandScreenCaptureInput::new(CaptureConfig::default())),
         ];
@@ -3241,7 +3241,7 @@ impl ReconfigurableScreenSource {
     }
 }
 
-impl InputSource for ReconfigurableScreenSource {
+impl ManagedSource for ReconfigurableScreenSource {
     fn name(&self) -> &'static str {
         "ReconfigurableScreen"
     }
@@ -3440,7 +3440,7 @@ impl CaptureTrackingInteractionSource {
     }
 }
 
-impl InputSource for CaptureTrackingInteractionSource {
+impl ManagedSource for CaptureTrackingInteractionSource {
     fn name(&self) -> &'static str {
         "CaptureTrackingInteraction"
     }

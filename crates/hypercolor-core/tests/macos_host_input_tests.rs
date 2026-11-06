@@ -259,8 +259,8 @@ mod fixtures {
     use std::sync::Arc;
 
     use hypercolor_core::input::{
-        CapabilityActionDisposition, InputData, InputManager, InputSource, InteractionSource,
-        MacosHostInput, MacosInputFixtureBackend, ManagedSourceRole, SourceCapabilityConflict,
+        CapabilityActionDisposition, InputData, InputManager, InteractionSource, MacosHostInput,
+        MacosInputFixtureBackend, ManagedSource, ManagedSourceRole, SourceCapabilityConflict,
         SourceCapabilityContext, SourceState, SourceStatus,
     };
     use hypercolor_macos_input::{event_masks, normalize_button_event};

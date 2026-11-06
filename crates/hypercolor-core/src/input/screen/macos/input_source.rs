@@ -1,9 +1,9 @@
 use super::{
-    Arc, InputData, InputSource, MacosScreenCaptureInput, ScreenCaptureDemand, ScreenSourceRole,
+    Arc, InputData, MacosScreenCaptureInput, ManagedSource, ScreenCaptureDemand, ScreenSourceRole,
     SourceRoleBinding, SourceStatusHandle, SourceStatusReporter,
 };
 
-impl InputSource for MacosScreenCaptureInput {
+impl ManagedSource for MacosScreenCaptureInput {
     fn name(&self) -> &'static str {
         "macos_screen_capture"
     }

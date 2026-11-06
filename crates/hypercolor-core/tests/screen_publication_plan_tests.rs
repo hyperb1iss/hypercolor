@@ -18,24 +18,24 @@ use hypercolor_core::input::screen::implementer::{
     SourceScale,
 };
 use hypercolor_core::input::screen::planner::{
-    ArmedScreenPlan, CommittedScreenPlan, InputPublicationDemandRevision,
+    ArmedScreenPlan, CaptureBackendId, CommittedScreenPlan, InputPublicationDemandRevision,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenBranchDeliveryLifecycle, ScreenCaptureBackend,
-    ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
-    ScreenContentBarsPolicy, ScreenContinuityError, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExactResource, ScreenExactResourceLedger, ScreenExecutorColorCapabilities,
-    ScreenExtentRequest, ScreenGridPolicy, ScreenHdrPolicy, ScreenInputGraphGeneration,
-    ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationError,
-    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHubError,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency,
-    ScreenPublicationSlotPolicy, ScreenReductionFilter, ScreenRequiredResourceMinimum,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
-    ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy,
-    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparationTicket,
+    ScreenBackendResourceIdentity, ScreenBranchDeliveryLifecycle, ScreenCapturePlan,
+    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenContentBarsPolicy,
+    ScreenContinuityError, ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExactResource,
+    ScreenExactResourceLedger, ScreenExecutorColorCapabilities, ScreenExtentRequest,
+    ScreenGridPolicy, ScreenHdrPolicy, ScreenInputGraphGeneration, ScreenLetterboxFill,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenProfileScalar, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationHubError, ScreenPublicationKind,
+    ScreenPublicationRequest, ScreenPublicationResidency, ScreenPublicationSlotPolicy,
+    ScreenReductionFilter, ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind,
+    ScreenResourceLifetime, ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
+    ScreenUnknownColorPolicy, ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerPreparationTicket,
 };
 
 #[path = "support/native_target.rs"]
@@ -168,7 +168,7 @@ fn source_config_parts(width: u32, height: u32) -> SourceConfigParts {
         color_space: CaptureColorSpace::Srgb,
         transfer_function: CaptureTransferFunction::Srgb,
         resources: ScreenBackendResourceIdentity::new(
-            ScreenCaptureBackend::Synthetic,
+            CaptureBackendId::Synthetic,
             ScreenResourceApi::Cpu,
             1,
             1,
@@ -1420,35 +1420,35 @@ fn complete_source_and_output_fields_prevent_false_sharing() {
     transfer_function.transfer_function = CaptureTransferFunction::Linear;
     let mut backend = base.clone();
     backend.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::PipeWire,
+        CaptureBackendId::PipeWire,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         1,
         1,
     );
     let mut api = base.clone();
     api.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::DesktopDuplication,
+        CaptureBackendId::DesktopDuplication,
         ScreenResourceApi::Cpu,
         1,
         1,
     );
     let mut platform_api = base.clone();
     platform_api.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::DesktopDuplication,
+        CaptureBackendId::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Vulkan),
         1,
         1,
     );
     let mut device_generation = base.clone();
     device_generation.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::DesktopDuplication,
+        CaptureBackendId::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         2,
         1,
     );
     let mut resource_generation = base.clone();
     resource_generation.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::DesktopDuplication,
+        CaptureBackendId::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         1,
         2,
@@ -1782,7 +1782,7 @@ fn admission_counts_shared_physical_work_and_writable_publication_slots() {
 fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
     let mut config = source_config_parts(7680, 4320);
     config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-        ScreenCaptureBackend::DesktopDuplication,
+        CaptureBackendId::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         gpu_device(),
         9,
@@ -1829,7 +1829,7 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
 fn executor_identity_separates_physical_sharing_and_source_deltas() {
     let mut config = source_config_parts(3840, 2160);
     config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-        ScreenCaptureBackend::DesktopDuplication,
+        CaptureBackendId::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         gpu_device(),
         9,
@@ -5381,7 +5381,7 @@ fn exact_nearest_and_bilinear_keep_distinct_target_costs() {
 fn exact_cpu_work_excludes_native_gpu_and_pre_reduced_routes() {
     let mut config = source_config_parts(1920, 1080);
     config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-        ScreenCaptureBackend::DesktopDuplication,
+        CaptureBackendId::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         gpu_device(),
         4,

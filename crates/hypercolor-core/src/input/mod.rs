@@ -1,6 +1,6 @@
 //! Input sources: audio, screen capture, interaction, and sensors.
 //!
-//! This module defines the [`InputSource`] trait for pluggable data sources
+//! This module defines the [`ManagedSource`] trait for pluggable data sources
 //! and the [`InputManager`] that orchestrates sampled sources. Browser previews
 //! publish directly through connection-scoped child slots in [`browser`].
 
@@ -42,7 +42,7 @@ pub use host_fold::{
 };
 #[doc(hidden)]
 pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
-pub use macos::{MacosHostInput, MacosInputFoldDiagnostics};
+pub use macos::MacosHostInput;
 #[cfg(feature = "macos-native-fixtures")]
 pub use macos::{MacosHostInputFixture, MacosInputFixtureBackend};
 pub use media::MediaSource;
@@ -65,7 +65,7 @@ pub use status::{
 pub use traits::{
     AudioSource, AudioSourceRole, CapabilityActionDisposition, CapabilityActionIdentity,
     DataSource, DataSourceKind, DataSourceRole, DeviceButtonHold, DeviceInteractionData, InputData,
-    InputSource, InteractionBatch, InteractionData, InteractionDegradation, InteractionDiagnostics,
+    InteractionBatch, InteractionData, InteractionDegradation, InteractionDiagnostics,
     InteractionSource, InteractionSourceRole, KeyboardData, ManagedSource, ManagedSourceKey,
     ManagedSourceRole, MotionAggregate, MouseData, PointerMode, ProtectedSourceAuthorizationAction,
     ResolvedProtectedSourceAction, ScreenData, ScreenSource, ScreenSourcePickerAction,
@@ -3486,7 +3486,7 @@ mod host_source_swap_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::{
-        InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+        InputData, InputManager, InteractionSource, InteractionSourceRole, ManagedSource,
         ManagedSourceKey, ManagedSourceRole, SourceRoleBinding, SourceState, SourceSwapConflict,
         SourceSwapTarget,
     };
@@ -3511,7 +3511,7 @@ mod host_source_swap_tests {
         }
     }
 
-    impl InputSource for HostSource {
+    impl ManagedSource for HostSource {
         fn name(&self) -> &'static str {
             self.name
         }

@@ -12,7 +12,7 @@ use hypercolor_core::input::screen::sector::{
     LetterboxBars, SectorGrid, proportional_sector_bounds,
 };
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
-use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_core::input::{InputData, ManagedSource};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
