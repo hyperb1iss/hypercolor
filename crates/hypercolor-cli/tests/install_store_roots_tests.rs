@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use hypercolor_cli::install::{InstallStore, InstallStoreError, UnitId};
+use hypercolor_install::{InstallStore, InstallStoreError, UnitId};
 
 fn split(home: &Path) -> InstallStore {
     InstallStore::with_roots(home.join("data/releases"), home.join("state/update"), 65536)

@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_cli::install::{
+use hypercolor_install::{
     DEFAULT_PROBATION_WINDOW, DirectoryRefusal, InstallAction, InstallCoordinator,
     InstallDisposition, InstallJournalV1, InstallLock, InstallOutcome, InstallPlatformError,
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
@@ -845,7 +845,7 @@ impl LinuxInstallExecutor for SimExecutor {
 
     fn snapshot_legacy_unit(
         &mut self,
-        _snapshot: &hypercolor_cli::install::LinuxLegacySnapshot,
+        _snapshot: &hypercolor_install::LinuxLegacySnapshot,
     ) -> Result<UnitRecord, InstallPlatformError> {
         Err(InstallPlatformError::new("no legacy regular-file layout"))
     }
@@ -1129,11 +1129,11 @@ impl Fixture {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).expect("freeze");
         let id = UnitId::new(sha256(&bytes)).expect("digest");
         fs::rename(&root, staging.unit_path(&id)).expect("rename");
-        let retained = hypercolor_cli::install::retain_linux_unit(&staging, &staging_lock, &id)
-            .expect("retain");
+        let retained =
+            hypercolor_install::retain_linux_unit(&staging, &staging_lock, &id).expect("retain");
         let old = self.legacy();
         let lock = old.acquire_anchored_lock(&self.home).expect("legacy lock");
-        let unit = hypercolor_cli::install::copy_installed_release_unit(&old, &lock, &retained)
+        let unit = hypercolor_install::copy_installed_release_unit(&old, &lock, &retained)
             .expect("the historical installer held a release from before user skills");
         drop(lock);
         self.legacy_activate(unit)
@@ -1149,7 +1149,7 @@ impl Fixture {
             active_root: old.active_path(),
             probation: Duration::ZERO,
             managed: None,
-            service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
+            service: hypercolor_install::LinuxServiceRenderer::PUBLIC,
         };
         let executor = SimExecutor {
             world: Rc::clone(&self.world),
@@ -1158,7 +1158,7 @@ impl Fixture {
         let known: Vec<UnitRecord> = old
             .active_unit(&lock)
             .expect("historical pointer")
-            .map(|id| hypercolor_cli::install::retain_linux_unit(&old, &lock, &id).expect("prior"))
+            .map(|id| hypercolor_install::retain_linux_unit(&old, &lock, &id).expect("prior"))
             .into_iter()
             .collect();
         let mut platform =
@@ -1187,7 +1187,7 @@ impl Fixture {
         release: &Release,
         proposal: Option<LinuxInstallLocation>,
         ownership: &OwnershipPolicy,
-    ) -> Result<hypercolor_cli::install::LinuxInstallRun, LinuxInstallCommandError> {
+    ) -> Result<hypercolor_install::LinuxInstallRun, LinuxInstallCommandError> {
         let mut host = Host::new(&self.world, release, proposal);
         run_linux_install(
             &self.home,
@@ -1435,7 +1435,7 @@ fn shared_group_world_writable_sticky_and_unresolvable_ancestors_fail_closed() {
     assert!(
         matches!(
             error,
-            LinuxInstallCommandError::Adoption(hypercolor_cli::install::LinuxAdoptionError::Locator(
+            LinuxInstallCommandError::Adoption(hypercolor_install::LinuxAdoptionError::Locator(
                 LinuxLocatorError::UnsafeDirectory(ref path, DirectoryRefusal::WorldWritable)
             )) if path == &fixture.home.join(".local/share")
         ),
@@ -2022,7 +2022,7 @@ fn uninstall_without_any_recorded_install_writes_nothing() {
         stop_at: None,
     };
     let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect("empty");
-    assert_eq!(run, hypercolor_cli::install::LinuxUninstallRun::default());
+    assert_eq!(run, hypercolor_install::LinuxUninstallRun::default());
     assert!(!fixture.home.join(".local").exists());
 }
 
@@ -2215,11 +2215,11 @@ fn longest_supported_roots_fit_the_transaction_record_and_longer_ones_refuse_ear
             journal.len()
         );
         assert!(
-            record * 4 < hypercolor_cli::install::MAX_LINUX_TRANSACTION_RECORD_BYTES * 3,
+            record * 4 < hypercolor_install::MAX_LINUX_TRANSACTION_RECORD_BYTES * 3,
             "{stage}: the longest record must keep a quarter of its budget free: {record}"
         );
         assert!(
-            journal.len() * 4 < hypercolor_cli::install::MAX_MANAGED_INSTALL_JOURNAL_BYTES * 3,
+            journal.len() * 4 < hypercolor_install::MAX_MANAGED_INSTALL_JOURNAL_BYTES * 3,
             "{stage}: the longest journal must keep a quarter of its budget free: {}",
             journal.len()
         );
@@ -2256,7 +2256,7 @@ fn longest_supported_roots_fit_the_transaction_record_and_longer_ones_refuse_ear
     );
     assert!(matches!(
         too_long,
-        Err(hypercolor_cli::install::InstallLocationError::PathTooLong { limit: 512, .. })
+        Err(hypercolor_install::InstallLocationError::PathTooLong { limit: 512, .. })
     ));
     let long_home = fixture.home.join("x");
     assert!(matches!(
@@ -2267,7 +2267,7 @@ fn longest_supported_roots_fit_the_transaction_record_and_longer_ones_refuse_ear
             &long_home.join("config"),
             fixture.uid,
         ),
-        Err(hypercolor_cli::install::InstallLocationError::PathTooLong { limit: 256, .. })
+        Err(hypercolor_install::InstallLocationError::PathTooLong { limit: 256, .. })
     ));
 }
 
@@ -2765,7 +2765,7 @@ impl Fixture {
     fn update(
         &self,
         release: &Release,
-    ) -> Result<hypercolor_cli::install::LinuxInstallRun, LinuxInstallCommandError> {
+    ) -> Result<hypercolor_install::LinuxInstallRun, LinuxInstallCommandError> {
         self.run(release, None, &self.private())
     }
 
@@ -3789,7 +3789,7 @@ fn names(units: &[&UnitId]) -> BTreeSet<String> {
     units.iter().map(|unit| unit.as_str().to_owned()).collect()
 }
 
-fn collected(run: &hypercolor_cli::install::LinuxInstallRun) -> &UnitCollection {
+fn collected(run: &hypercolor_install::LinuxInstallRun) -> &UnitCollection {
     run.collection
         .as_ref()
         .expect("a settled managed run collects")
@@ -4276,8 +4276,8 @@ fn the_service_starts_its_unit_release_whatever_active_points_at() {
 /// renderer contract's, so it returns a `Result` it never fails.
 #[allow(clippy::unnecessary_wraps)]
 fn render_official(
-    input: &hypercolor_cli::install::LinuxServiceInput<'_>,
-) -> Result<hypercolor_cli::install::LinuxRenderedService, InstallPlatformError> {
+    input: &hypercolor_install::LinuxServiceInput<'_>,
+) -> Result<hypercolor_install::LinuxRenderedService, InstallPlatformError> {
     let release = input.release.to_str().expect("UTF-8");
     let arguments = vec![
         format!("{release}/bin/hypercolor-daemon"),
@@ -4286,7 +4286,7 @@ fn render_official(
         "--effects-dir".to_owned(),
         format!("{release}/share/hypercolor/effects/bundled"),
     ];
-    Ok(hypercolor_cli::install::LinuxRenderedService::new(
+    Ok(hypercolor_install::LinuxRenderedService::new(
         format!(
             "[Service]\nType=notify\nExecStart={}\nEnvironment=HYPERCOLOR_EDITION=official\n",
             arguments.join(" ")
