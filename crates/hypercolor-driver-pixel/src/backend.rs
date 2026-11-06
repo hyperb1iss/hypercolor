@@ -81,6 +81,47 @@ struct SessionSlot {
 }
 
 impl SessionSlot {
+    fn open(session: PixelSession) -> Arc<Self> {
+        Arc::new(Self {
+            closed: AtomicBool::new(false),
+            session: Mutex::new(session),
+        })
+    }
+
+    /// Close the session under its lock and release its transport.
+    ///
+    /// When `shutdown` approves the session, the black frame and E1.31
+    /// termination go out first. Frame sinks may keep this slot alive, so
+    /// the socket is taken out of the session here rather than when the last
+    /// handle drops; that frees UDP 6454 for other applications as soon as no
+    /// open session uses it.
+    async fn close(&self, device_id: DeviceId, shutdown: impl FnOnce(&PixelSession) -> bool) {
+        let mut session = self.session.lock().await;
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if shutdown(&session)
+            && let Err(error) = session.finish().await
+        {
+            debug!(
+                device_id = %device_id,
+                target = %session.plan.target,
+                error = %error,
+                "best-effort pixel controller shutdown frames failed"
+            );
+        }
+        session.socket = None;
+    }
+
+    /// Retire a session replaced by a reconnect to `successor_target`.
+    ///
+    /// The successor carries the stream on, so shutdown frames only go out
+    /// when the device moved to a different receiver.
+    async fn retire(&self, device_id: DeviceId, successor_target: SocketAddr) {
+        self.close(device_id, |session| session.plan.target != successor_target)
+            .await;
+    }
+
     /// Lock the session and write a frame unless it was disconnected.
     async fn write(
         &self,
@@ -115,7 +156,7 @@ impl PixelBackend {
     #[must_use]
     pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
         self.session(id)
-            .and_then(|slot| slot.session.try_lock().ok().map(|s| Arc::clone(&s.socket)))
+            .and_then(|slot| slot.session.try_lock().ok().and_then(|s| s.socket.clone()))
             .and_then(|socket| socket.local_addr().ok())
     }
 
@@ -262,18 +303,21 @@ impl DeviceBackend for PixelBackend {
             universes = plan.universe_summary().unwrap_or_default(),
             "Connected pixel controller"
         );
+        let target = plan.target;
         let session = PixelSession::new(*id, plan, socket)
             .map_err(|error| DeviceError::connection(id, error))?;
-        self.sessions
+        let previous = self
+            .sessions
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                *id,
-                Arc::new(SessionSlot {
-                    closed: AtomicBool::new(false),
-                    session: Mutex::new(session),
-                }),
-            );
+            .insert(*id, SessionSlot::open(session));
+        // A repeated connect replaces the session. Retire the old one so a
+        // frame sink still holding it cannot transmit, and so it releases its
+        // socket. The map insert is atomic, so concurrent connects for one id
+        // each retire whichever slot they displaced and one open slot remains.
+        if let Some(previous) = previous {
+            previous.retire(*id, target).await;
+        }
         Ok(())
     }
 
@@ -284,20 +328,9 @@ impl DeviceBackend for PixelBackend {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id)
             .ok_or_else(|| disconnected(*id))?;
-        let mut session = slot.session.lock().await;
         // Close under the session lock: frame sinks still hold this slot,
         // and any write that waits on the lock must see the flag.
-        if slot.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-        if let Err(error) = session.finish().await {
-            debug!(
-                device_id = %id,
-                target = %session.plan.target,
-                error = %error,
-                "best-effort pixel controller shutdown frames failed"
-            );
-        }
+        slot.close(*id, |_| true).await;
         info!(device_id = %id, "Disconnected pixel controller");
         Ok(())
     }
@@ -472,7 +505,8 @@ enum WireState {
 struct PixelSession {
     device_id: DeviceId,
     plan: Arc<PixelDevicePlan>,
-    socket: Arc<UdpSocket>,
+    /// Output socket; `None` once the session is closed.
+    socket: Option<Arc<UdpSocket>>,
     /// Encoded channel stream, reused every frame.
     stream: Vec<u8>,
     wire: WireState,
@@ -545,7 +579,7 @@ impl PixelSession {
             device_id,
             stream: Vec::with_capacity(plan.total_channels()),
             plan,
-            socket,
+            socket: Some(socket),
             wire,
             has_sent: false,
             last_size_mismatch_warn_at: None,
@@ -597,6 +631,9 @@ impl PixelSession {
 
     async fn send_stream(&mut self, terminated: bool) -> Result<()> {
         let target = self.plan.target;
+        let Some(socket) = self.socket.clone() else {
+            bail!("pixel controller session transport was released");
+        };
         match (&mut self.wire, &self.plan.output) {
             (
                 WireState::E131 {
@@ -611,12 +648,12 @@ impl PixelSession {
                     let sequence = sequences.advance(universe.universe);
                     universe.packet.set_stream_terminated(terminated);
                     universe.packet.set_channels(&universe.data, sequence);
-                    send(&self.socket, universe.packet.as_bytes(), target, "E1.31").await?;
+                    send(&socket, universe.packet.as_bytes(), target, "E1.31").await?;
                 }
                 if let Some(sync) = sync.as_mut().filter(|_| !terminated) {
                     let sequence = sync.sequences.advance(sync.universe);
                     let packet = E131SyncPacket::new(sync.cid, sync.universe, sequence);
-                    send(&self.socket, packet.as_bytes(), target, "E1.31 sync").await?;
+                    send(&socket, packet.as_bytes(), target, "E1.31 sync").await?;
                 }
             }
             (
@@ -630,7 +667,7 @@ impl PixelSession {
                 for universe in universes.iter_mut() {
                     let sequence = sequences.advance(universe.port_address);
                     universe.packet.set_data(&universe.data, sequence);
-                    send(&self.socket, universe.packet.as_bytes(), target, "Art-Net").await?;
+                    send(&socket, universe.packet.as_bytes(), target, "Art-Net").await?;
                 }
             }
             (WireState::Ddp { sequence }, OutputPlan::Ddp(ddp)) => {
@@ -650,7 +687,7 @@ impl PixelSession {
                     sequence,
                 );
                 for packet in &packets {
-                    send(&self.socket, packet.as_bytes(), target, "DDP").await?;
+                    send(&socket, packet.as_bytes(), target, "DDP").await?;
                 }
             }
             _ => bail!("pixel controller session state does not match its plan"),

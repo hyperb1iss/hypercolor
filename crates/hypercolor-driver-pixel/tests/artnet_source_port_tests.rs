@@ -170,3 +170,77 @@ async fn artnet_releases_6454_after_its_last_session() {
     let rebound = bind_6454().expect("6454 is released when no Art-Net session needs it");
     drop(rebound);
 }
+
+#[tokio::test]
+async fn retained_sink_does_not_keep_6454_bound() {
+    let _guard = PORT_6454.lock().await;
+    let (receiver, addr) = loopback_receiver().await;
+    let backend = PixelBackend::new();
+    let id = connect_artnet(&backend, "retained", addr).await;
+    assert_eq!(
+        source_port_of_next_packet(&backend, &id, &receiver).await,
+        ARTNET_PORT
+    );
+
+    // The core output queue keeps the sink across disconnect.
+    let sink = backend
+        .frame_sink(&id)
+        .expect("connected device has a sink");
+    backend.disconnect(&id).await.expect("disconnect");
+    let rebound = bind_6454().expect("disconnect releases 6454 even while a sink is retained");
+    assert!(sink.is_closed());
+    assert!(
+        sink.write_colors_shared_outcome(std::sync::Arc::new(vec![[1, 1, 1]]))
+            .await
+            .is_err()
+    );
+    drop(rebound);
+    drop(sink);
+}
+
+#[tokio::test]
+async fn concurrent_reconnects_leave_one_open_session_and_release_6454() {
+    let _guard = PORT_6454.lock().await;
+    let (receiver, addr) = loopback_receiver().await;
+    let backend = PixelBackend::new();
+    let id = connect_artnet(&backend, "racing", addr).await;
+    let first_sink = backend.frame_sink(&id).expect("sink");
+
+    let (left, right) = tokio::join!(backend.connect(&id), backend.connect(&id));
+    left.expect("concurrent connect");
+    right.expect("concurrent connect");
+    let current_sink = backend.frame_sink(&id).expect("sink");
+    assert!(first_sink.is_closed(), "the displaced session is retired");
+    assert!(!current_sink.is_closed());
+
+    // One write through the backend reaches the receiver exactly once.
+    assert_eq!(
+        source_port_of_next_packet(&backend, &id, &receiver).await,
+        ARTNET_PORT
+    );
+    let mut buf = [0u8; 600];
+    assert!(
+        timeout(Duration::from_millis(200), receiver.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "no orphaned session sends a second copy"
+    );
+
+    backend.disconnect(&id).await.expect("disconnect");
+    let _ = timeout(Duration::from_millis(200), receiver.recv_from(&mut buf)).await;
+    for sink in [&first_sink, &current_sink] {
+        assert!(sink.is_closed());
+        assert!(
+            sink.write_colors_shared_outcome(std::sync::Arc::new(vec![[2, 2, 2]]))
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        timeout(Duration::from_millis(200), receiver.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "retired sinks never transmit"
+    );
+    drop(bind_6454().expect("every retired session released 6454"));
+}
