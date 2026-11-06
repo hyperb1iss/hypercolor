@@ -4,13 +4,14 @@ use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_driver_api::{
-    BackendRebindActions, DeviceControlStore, DeviceInputSink, DiscoveredDevice, DriverConfigView,
-    DriverControlHost, DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
-    DriverLifecycleActions, DriverRuntimeActions, DriverTrackedDevice,
+    BackendRebindActions, DeviceControlStore, DeviceInputSink, DiscoveredDevice,
+    DriverConfigSource, DriverConfigView, DriverControlHost, DriverControlStore,
+    DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverLifecycleActions,
+    DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValueMap};
 use hypercolor_types::device::DeviceId;
@@ -402,6 +403,25 @@ impl DriverHost for DaemonDriverHost {
 
     fn installation_id(&self) -> Option<&str> {
         self.installation_id.as_deref()
+    }
+
+    fn config_source(&self) -> Option<Arc<dyn DriverConfigSource>> {
+        self.config_manager.as_ref().map(|manager| {
+            Arc::new(LiveDriverConfig {
+                config_manager: Arc::clone(manager),
+            }) as Arc<dyn DriverConfigSource>
+        })
+    }
+}
+
+/// Reads each driver's entry from the live config at call time.
+struct LiveDriverConfig {
+    config_manager: Arc<ConfigManager>,
+}
+
+impl DriverConfigSource for LiveDriverConfig {
+    fn driver_config(&self, driver_id: &str) -> Option<DriverConfigEntry> {
+        self.config_manager.get().drivers.get(driver_id).cloned()
     }
 }
 

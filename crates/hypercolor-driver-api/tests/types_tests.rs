@@ -792,3 +792,8 @@ fn hosts_offer_no_device_input_or_installation_id_by_default() {
     assert!(NoopDriverHost.device_input().is_none());
     assert!(NoopDriverHost.installation_id().is_none());
 }
+
+#[test]
+fn hosts_offer_no_live_config_by_default() {
+    assert!(NoopDriverHost.config_source().is_none());
+}

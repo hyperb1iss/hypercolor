@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
 
 use crate::{DeviceInputSink, DiscoveredDevice, DriverControlHost};
@@ -114,6 +115,16 @@ pub trait DriverDiscoveryState: Send + Sync {
     fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>>;
 }
 
+/// Live, read-only view of driver configuration.
+///
+/// A backend that must re-check the current config at the moment it acts,
+/// such as before opening a local device path named only by config, keeps
+/// one of these instead of trusting a snapshot taken when it was built.
+pub trait DriverConfigSource: Send + Sync {
+    /// The driver's current config entry, or `None` when it has none.
+    fn driver_config(&self, driver_id: &str) -> Option<DriverConfigEntry>;
+}
+
 /// Host capabilities exposed to drivers.
 pub trait DriverHost: Send + Sync {
     /// Access the shared credential store.
@@ -146,6 +157,13 @@ pub trait DriverHost: Send + Sync {
     /// installation, such as protocol sender ids, so two hosts with the same
     /// config never collide.
     fn installation_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// Retain a live view of driver config. Hosts without a config store
+    /// may leave this unavailable; drivers then fall back to the config
+    /// view they were built with.
+    fn config_source(&self) -> Option<Arc<dyn DriverConfigSource>> {
         None
     }
 }
