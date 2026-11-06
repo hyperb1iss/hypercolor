@@ -198,19 +198,14 @@
   Pop $0
 
   ; The broker and the hardware support setup log to the machine log
-  ; directory, which the installer never listed. The broker is stopped by
-  ; now. Only the four log names are deleted, never the tree, so a link
-  ; planted there cannot steer the elevated uninstaller anywhere else;
-  ; RMDir without /r leaves either directory if anything else is inside.
-  ReadEnvStr $0 "ProgramData"
-  ${If} $0 != ""
-    Delete "$0\Hypercolor\logs\smbus-broker.log"
-    Delete "$0\Hypercolor\logs\smbus-broker.log.1"
-    Delete "$0\Hypercolor\logs\hardware-support.log"
-    Delete "$0\Hypercolor\logs\hardware-support.log.1"
-    RMDir "$0\Hypercolor\logs"
-    RMDir "$0\Hypercolor"
-  ${EndIf}
+  ; directory, which the installer never listed. Every user may create
+  ; folders under ProgramData, so this elevated uninstaller never deletes
+  ; there by path: the broker, stopped by now and still on disk, removes
+  ; the directory through handles that refuse links, and leaves alone one a
+  ; standard user could have prepared.
+  DetailPrint "Removing the Hypercolor hardware access logs"
+  nsExec::ExecToLog '"$INSTDIR\tools\hypercolor-smbus-service.exe" --remove-log-directory'
+  Pop $0
 
   ; Drop Windows Firewall exceptions so an uninstall doesn't leave
   ; rules pointing at a path that no longer exists.

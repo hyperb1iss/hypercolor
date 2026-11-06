@@ -18,11 +18,12 @@
 //! - `logs` is the writers' own: only those principals may own it or hold
 //!   any right to change it or what is created inside it.
 //!
-//! A missing `Hypercolor` or `logs` is created with a protected DACL: full
-//! control for SYSTEM and Administrators and read for Users, inherited by
-//! everything inside. A component that fails its judgement is refused,
-//! never repaired, so a privileged writer never writes through a path a
-//! standard user prepared.
+//! A missing `Hypercolor` or `logs` is created owned by Administrators with
+//! a protected DACL: full control for SYSTEM and Administrators and read
+//! for Users, inherited by everything inside. A component that fails its
+//! judgement is refused, never repaired, so a privileged writer never
+//! writes through a path a standard user prepared. The uninstaller removes
+//! `logs` through the same judged handles, for the same reason.
 
 use std::ffi::OsStr;
 use std::io;
@@ -36,11 +37,13 @@ use hypercolor_platform_fs::{
 const PRODUCT_DIRECTORY: &str = "Hypercolor";
 /// The log directory under the product directory.
 const LOG_DIRECTORY: &str = "logs";
-/// Full control for SYSTEM and Administrators, read and traverse for Users,
-/// inherited by every file and directory inside, and nothing inherited
+/// Owned by Administrators, whatever the creating token's default owner
+/// (an elevated administrator's own account on client editions); full
+/// control for SYSTEM and Administrators, read and traverse for Users,
+/// inherited by every file and directory inside; and nothing inherited
 /// from `%ProgramData%`, which lets every user add children.
 pub(super) const LOG_DIRECTORY_SDDL: &str =
-    "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
+    "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
 
 /// The local system account.
 const LOCAL_SYSTEM: &str = "S-1-5-18";
@@ -80,6 +83,41 @@ pub fn machine_log_directory() -> Option<PathBuf> {
 /// point or fails its judgement, or a directory cannot be opened or
 /// created.
 pub(super) fn open_machine_log_directory() -> io::Result<WindowsDirectory> {
+    let root = open_program_data()?;
+    let product = open_or_create(&root, PRODUCT_DIRECTORY, Ownership::Shared)?;
+    open_or_create(&product, LOG_DIRECTORY, Ownership::Exclusive)
+}
+
+/// Remove the machine log directory and everything in it, through handles
+/// that never follow a reparse point, once every component on the way
+/// passes its judgement. A missing directory is already gone. A refused
+/// component is left alone, so an elevated uninstaller never deletes
+/// through a path a standard user prepared. `Hypercolor` itself stays,
+/// locked down, since it also holds the update state.
+///
+/// # Errors
+///
+/// Returns an error when `ProgramData` is unset, a component is refused,
+/// or the removal fails.
+pub(super) fn remove_machine_log_directory() -> io::Result<()> {
+    let root = open_program_data()?;
+    let product_name = OsStr::new(PRODUCT_DIRECTORY);
+    if root.entry_metadata(product_name)?.is_none() {
+        return Ok(());
+    }
+    let product = root.open_child_directory(product_name, WindowsDirectoryAccess::Write)?;
+    judge(&product, Ownership::Shared)?;
+    let logs_name = OsStr::new(LOG_DIRECTORY);
+    if product.entry_metadata(logs_name)?.is_none() {
+        return Ok(());
+    }
+    let logs = product.open_child_directory(logs_name, WindowsDirectoryAccess::Write)?;
+    judge(&logs, Ownership::Exclusive)?;
+    drop(logs);
+    product.remove_tree(logs_name)
+}
+
+fn open_program_data() -> io::Result<WindowsDirectory> {
     let program_data = machine_log_directory()
         .as_deref()
         .and_then(Path::parent)
@@ -93,8 +131,7 @@ pub(super) fn open_machine_log_directory() -> io::Result<WindowsDirectory> {
         })?;
     let root = WindowsDirectory::open(&program_data, WindowsDirectoryAccess::Write)?;
     judge(&root, Ownership::Shared)?;
-    let product = open_or_create(&root, PRODUCT_DIRECTORY, Ownership::Shared)?;
-    open_or_create(&product, LOG_DIRECTORY, Ownership::Exclusive)
+    Ok(root)
 }
 
 fn open_or_create(

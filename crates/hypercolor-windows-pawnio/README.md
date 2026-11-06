@@ -72,8 +72,10 @@ Windows only, via `[target.'cfg(target_os = "windows")'.dependencies]`).
   every state it reports, why it stopped, panics, and the first request
   failure of each kind. It opens that directory through handles that
   refuse links and any component a standard user could change, creating
-  what is missing with a protected DACL. `--prepare-log-directory` does
-  only that, for the elevated hardware setup to keep its transcript there.
+  what is missing owned by Administrators with a protected DACL.
+  `--prepare-log-directory` does only that, for the elevated hardware setup
+  to keep its transcript there, and `--remove-log-directory` removes the
+  directory under the same checks, for the uninstaller.
 - `machine_log_directory() -> Option<PathBuf>` — that directory, where the
   broker and the hardware setup keep their logs.
 - `broker_service_status() -> PawnIoResult<BrokerServiceStatus>` — what the

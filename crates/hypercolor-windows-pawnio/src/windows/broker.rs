@@ -61,7 +61,7 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
-use super::log_directory::open_machine_log_directory;
+use super::log_directory::{open_machine_log_directory, remove_machine_log_directory};
 use super::service_log::open_broker_log;
 use super::{
     CpuVendor, IOCTL_READ_MSR, IOCTL_READ_SMN, PAWNIO_MODULE_AMD_FAMILY_17,
@@ -260,6 +260,14 @@ pub(super) fn run_smbus_service() -> Result<()> {
         return Ok(());
     }
 
+    // The elevated uninstaller removes the logs under the same checks, so it
+    // never deletes through a link planted in a directory it would refuse.
+    if std::env::args_os().any(|arg| arg == "--remove-log-directory") {
+        remove_machine_log_directory()
+            .context("the machine log directory cannot be removed safely")?;
+        return Ok(());
+    }
+
     let log_path = init_service_tracing();
     install_panic_logger();
     info!(
@@ -287,7 +295,7 @@ pub(super) fn run_smbus_service() -> Result<()> {
 
 fn print_help() {
     println!(
-        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console | --prepare-log-directory]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon.\nAs a service it logs to %ProgramData%\\Hypercolor\\logs\\smbus-broker.log.\n--prepare-log-directory creates that directory, or checks the one there, and\nexits non-zero when a standard user could change it."
+        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console | --prepare-log-directory | --remove-log-directory]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon.\nAs a service it logs to %ProgramData%\\Hypercolor\\logs\\smbus-broker.log.\n--prepare-log-directory creates that directory, or checks the one there, and\nexits non-zero when a standard user could change it.\n--remove-log-directory removes it under the same checks."
     );
 }
 

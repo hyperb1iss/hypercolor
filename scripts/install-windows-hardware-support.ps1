@@ -92,14 +92,23 @@ $logDirectory = Join-Path $env:ProgramData "Hypercolor\logs"
 $transcriptPath = Join-Path $logDirectory "hardware-support.log"
 $transcribing = $false
 $logDirectoryReady = $false
+# The broker says why it refused on standard error, which lands in the
+# installer's details pane through this script's output.
+$prepareErrors = $null
 try {
-    $prepare = Start-Process -FilePath $BrokerExe -ArgumentList "--prepare-log-directory" -WindowStyle Hidden -Wait -PassThru
+    $prepareErrors = [System.IO.Path]::GetTempFileName()
+    $prepare = Start-Process -FilePath $BrokerExe -ArgumentList "--prepare-log-directory" -NoNewWindow -Wait -PassThru -RedirectStandardError $prepareErrors
     $logDirectoryReady = $prepare.ExitCode -eq 0
     if (-not $logDirectoryReady) {
-        Write-Host "Not keeping a setup log: the broker refused $logDirectory (exit code $($prepare.ExitCode))"
+        $reason = "$(Get-Content -LiteralPath $prepareErrors -Raw -ErrorAction SilentlyContinue)".Trim()
+        Write-Host "Not keeping a setup log: the broker refused $logDirectory (exit code $($prepare.ExitCode)): $reason"
     }
 } catch {
     Write-Host "Could not prepare the setup log directory: $($_.Exception.Message)"
+} finally {
+    if ($prepareErrors) {
+        Remove-Item -LiteralPath $prepareErrors -Force -ErrorAction SilentlyContinue
+    }
 }
 if ($logDirectoryReady) {
     try {

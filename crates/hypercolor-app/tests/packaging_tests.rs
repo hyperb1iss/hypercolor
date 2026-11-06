@@ -1717,26 +1717,18 @@ fn installer_hook_cleans_up_the_broker_on_uninstall() {
         .find("!insertmacro HYPERCOLOR_STOP_BROKER")
         .expect("uninstall stops the broker");
     let logs_removed = uninstall
-        .find(r#"Delete "$0\Hypercolor\logs\smbus-broker.log""#)
-        .expect("uninstall removes the logs the broker and setup wrote");
+        .find(r#""$INSTDIR\tools\hypercolor-smbus-service.exe" --remove-log-directory"#)
+        .expect("uninstall has the broker remove the logs it and the setup wrote");
     assert!(
         stopped < logs_removed,
         "the broker holds its log open until it stops"
     );
-    for step in [
-        r#"ReadEnvStr $0 "ProgramData""#,
-        r#"Delete "$0\Hypercolor\logs\smbus-broker.log.1""#,
-        r#"Delete "$0\Hypercolor\logs\hardware-support.log""#,
-        r#"Delete "$0\Hypercolor\logs\hardware-support.log.1""#,
-        r#"RMDir "$0\Hypercolor\logs""#,
-        r#"RMDir "$0\Hypercolor""#,
-    ] {
-        assert!(uninstall.contains(step), "uninstall is missing {step}");
+    for by_path in ["ReadEnvStr", r"\Hypercolor\logs"] {
+        assert!(
+            !uninstall.contains(by_path),
+            "the elevated uninstaller never deletes under ProgramData by path ({by_path})"
+        );
     }
-    assert!(
-        !uninstall.contains(r#"RMDir /r "$0"#),
-        "the elevated uninstaller never removes the machine log tree recursively"
-    );
 }
 
 /// The installer is a 32-bit process, so a bare `powershell.exe` resolves
@@ -1944,6 +1936,7 @@ fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
         "$logDirectory = Join-Path $env:ProgramData \"Hypercolor\\logs\"",
         "$transcriptPath = Join-Path $logDirectory \"hardware-support.log\"",
         "$logDirectoryReady = $prepare.ExitCode -eq 0",
+        "-RedirectStandardError $prepareErrors",
         "Move-Item -LiteralPath $transcriptPath -Destination \"$transcriptPath.1\" -Force",
         "Start-Transcript -LiteralPath $transcriptPath -Append",
         "Stop-Transcript",
