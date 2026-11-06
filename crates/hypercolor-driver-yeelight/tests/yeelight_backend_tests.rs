@@ -484,3 +484,58 @@ async fn invalid_ids_never_become_devices() -> TestResult {
     assert!(profiles.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn a_control_failure_during_music_setup_fails_the_connect() -> TestResult {
+    let fake = FakeYeelight::spawn(FakeSpec {
+        close_on_music: true,
+        ..FakeSpec::color_bulb()
+    })
+    .await?;
+    let discovered = discover(&fake, &YeelightConfig::default()).await?;
+    let backend = YeelightBackend::new(YeelightConfig::default());
+    backend.adopt_device(&discovered)?;
+    // The closed control connection must not be reused for normal mode.
+    assert!(matches!(
+        backend.connect(&discovered.info.id).await,
+        Err(DeviceError::ConnectionFailed { .. })
+    ));
+    assert!(backend.frame_sink(&discovered.info.id).is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn writes_racing_disconnect_leave_no_connection_open() -> TestResult {
+    let fake = FakeYeelight::spawn(FakeSpec::color_bulb()).await?;
+    let (backend, discovered) = connected(&fake, YeelightConfig::default()).await?;
+    let id = discovered.info.id;
+    let sink = backend.frame_sink(&id).ok_or("frame sink")?;
+    let mut writers = Vec::new();
+    for shade in 0..32_u8 {
+        let sink = Arc::clone(&sink);
+        writers.push(tokio::spawn(async move {
+            sink.write_colors_shared(Arc::new(vec![[shade, 0, 255]]))
+                .await
+        }));
+    }
+    backend.disconnect(&id).await?;
+    for writer in writers {
+        let _ = writer.await?;
+    }
+    assert!(matches!(
+        sink.write_colors_shared(Arc::new(vec![[1, 2, 3]])).await,
+        Err(DeviceError::Disconnected { .. })
+    ));
+    for _ in 0..200 {
+        if fake.closed_connections() == (1, 1) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        fake.closed_connections(),
+        (1, 1),
+        "the retained sink holds no socket"
+    );
+    Ok(())
+}
