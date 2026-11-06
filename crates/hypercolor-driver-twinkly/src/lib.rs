@@ -41,7 +41,7 @@ use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransp
 use hypercolor_types::identity::BackendId;
 
 pub use api::{TwinklyClient, TwinklyEndpoint};
-pub use backend::TwinklyBackend;
+pub use backend::{ContentionPolicy, TwinklyBackend};
 pub use config::TwinklyConfig;
 pub use protocol::{DISCOVERY_PORT, HTTP_PORT, LedProfile, RT_PORT, RtProtocol};
 pub use scanner::{
@@ -466,6 +466,7 @@ pub fn twinkly_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlS
                 "diagnostics",
                 58,
             ),
+            (backend::CONTROL_STATE_KEY, "Control", "diagnostics", 59),
         ];
         for (key, label, group, ordering) in text_fields {
             control_surface::push_metadata_value(
