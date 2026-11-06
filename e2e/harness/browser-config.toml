@@ -53,6 +53,9 @@ enabled = false
 [drivers.twinkly]
 enabled = false
 
+[drivers.wiz]
+enabled = false
+
 [drivers.usb]
 enabled = false
 

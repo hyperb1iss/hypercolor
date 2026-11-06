@@ -27,6 +27,8 @@ use hypercolor_driver_nanoleaf::NanoleafDriverModule;
 use hypercolor_driver_openrgb::OpenRgbDriverModule;
 #[cfg(feature = "twinkly")]
 use hypercolor_driver_twinkly::TwinklyDriverModule;
+#[cfg(feature = "wiz")]
+use hypercolor_driver_wiz::WizDriverModule;
 #[cfg(feature = "wled")]
 use hypercolor_driver_wled::WledDriverModule;
 
@@ -74,6 +76,7 @@ pub fn register_driver_modules(
         feature = "nanoleaf",
         feature = "openrgb",
         feature = "twinkly",
+        feature = "wiz",
         feature = "hal"
     )))]
     let _ = registry;
@@ -101,6 +104,9 @@ pub fn register_driver_modules(
 
     #[cfg(feature = "twinkly")]
     registry.register(TwinklyDriverModule::new())?;
+
+    #[cfg(feature = "wiz")]
+    registry.register(WizDriverModule::new())?;
 
     #[cfg(feature = "hal")]
     {
@@ -137,6 +143,7 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         feature = "nanoleaf",
         feature = "openrgb",
         feature = "twinkly",
+        feature = "wiz",
         feature = "hal"
     )))]
     let _ = config;
@@ -179,6 +186,12 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
     config
         .drivers
         .entry(hypercolor_driver_twinkly::DESCRIPTOR.id.to_owned())
+        .or_default();
+
+    #[cfg(feature = "wiz")]
+    config
+        .drivers
+        .entry(hypercolor_driver_wiz::DESCRIPTOR.id.to_owned())
         .or_default();
 
     #[cfg(feature = "hal")]

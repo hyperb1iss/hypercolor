@@ -4694,6 +4694,7 @@ dependencies = [
  "hypercolor-driver-openrgb",
  "hypercolor-driver-support",
  "hypercolor-driver-twinkly",
+ "hypercolor-driver-wiz",
  "hypercolor-driver-wled",
  "hypercolor-hal",
  "hypercolor-network",
