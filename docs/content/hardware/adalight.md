@@ -37,6 +37,8 @@ These boards sit behind generic USB-serial chips (CH340, CP210x, FTDI, and stock
 
 On Linux, prefer the `/dev/serial/by-id/` path over `/dev/ttyUSB0`: it stays the same when you plug boards in a different order. On macOS, use the `cu.` device rather than `tty.`.
 
+Hypercolor opens the path exactly as you write it and follows symlinks, which is what makes the `by-id` links work. Only list paths you own or trust: whatever device a path points to is the device Hypercolor writes to.
+
 ## Add a board
 
 The driver is enabled by default and does nothing until you list a device. Add an entry to `hypercolor.toml` (`hypercolor config path` prints its location):
@@ -58,6 +60,8 @@ hypercolor devices list
 ```
 
 The strip appears like any other device, ready for the layout editor. Its identity comes from `id`, so renaming it or moving it to another port keeps its place in your layouts.
+
+Removing an entry takes effect right away: Hypercolor checks the current config every time it is about to open a port, so a removed board is never reopened, not even by **Identify** on the device it leaves behind in the device list.
 
 ## Examples
 

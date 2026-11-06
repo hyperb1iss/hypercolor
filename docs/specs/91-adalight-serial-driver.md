@@ -339,10 +339,20 @@ frame is still waiting, the write is reported as cadence-suppressed and the
 output queue resends the newest frame one interval later. Queue depth, and so
 added latency, stays under two frames.
 
+A backlog is ordinary coalescing only while it drains. An adapter that
+accepted bytes and then stopped draining would report the same full queue
+forever, every frame would be suppressed, and the strip would freeze with
+nothing to recover it. The backend therefore tracks drain progress: the
+clock starts when the queue first holds a whole frame and restarts every
+time a reading finds it shorter. A backlog that goes the whole stall budget,
+`max(1 s, 4 * frame_time)`, without shrinking fails the delivery with a
+write error, so the lifecycle reconnects. A slow but draining adapter never
+trips it.
+
 Writes never call `tcdrain` (which would block an async worker thread for
 the whole frame time). A write that cannot hand its bytes to the driver
-within `max(1 s, 4 * frame_time)` fails with a write error so the lifecycle
-can reconnect.
+within the same stall budget fails with a write error so the lifecycle can
+reconnect.
 
 ### 7.3 Keepalive
 
@@ -375,15 +385,22 @@ without sending anything. The connect timeout grows by the delay.
 
 ### 7.6 Shutdown
 
-On disconnect the driver sends three black frames, but only if it ever sent
-a frame, then closes the port on a blocking thread (closing a tty waits for
-its output to drain). Disconnect waits for the close, bounded by the
-blackout frames' line time plus 500 ms, so an immediate reconnect does not
-collide with the old descriptor's exclusive lock; a driver that holds the
-close longer finishes it in the background. The repeats matter because HyperSerial never blanks on
-idle and drops corrupt frames, and Adalight-FastLED drops frames that arrive
-while it latches; any one of the three surviving turns the strip off.
-Hyperion.ng repeats its power-off frame five times for the same reason.
+On disconnect, if it ever sent a frame, the driver first discards whatever
+is still waiting in the OS driver's output queue (`TCOFLUSH`, `PurgeComm`)
+and then sends black frames: as many as fit in 500 ms of line time, from one
+to three. The repeats matter because HyperSerial never blanks on idle and
+drops corrupt frames, and Adalight-FastLED drops frames that arrive while it
+latches; any one copy that survives turns the strip off. Hyperion.ng repeats
+its power-off frame five times for the same reason. Each blackout write is
+bounded at 600 ms.
+
+The port then closes on a blocking thread (closing a tty waits for its
+output to drain), and disconnect waits for the close so an immediate
+reconnect does not collide with the old descriptor's exclusive lock. The
+whole disconnect, blackout and close together, is bounded at 1.8 s, inside
+the daemon's 2 s disconnect timeout. A driver that holds the close longer
+finishes it in the background; a reconnect that races it gets a busy-port
+connection failure and retries.
 
 ---
 
@@ -486,33 +503,52 @@ entry. It opens no port.
 | `claim` | `None`: nothing came from hardware |
 | Metadata | `port`, `baud_rate`, `protocol`, `frame_bytes`, `line_max_fps`, and `adalight_device` (the entry as JSON) |
 
-The backend adopts a device by re-validating `adalight_device`, so a config
-edit reaches the next connection without rebuilding the backend.
+The backend re-validates `adalight_device` when it adopts a device, but that
+metadata only describes the device; it never authorizes an open (§9.4).
 
 ### 9.4 Backend
 
+- **Authorization.** The registry keeps a departed device's last discovery
+  metadata, and identify re-adopts from it and connects. So the backend
+  never treats metadata as permission. It holds a live view of the driver
+  config (`DriverHost::config_source`, which the daemon backs with its
+  config manager) and, at adoption, right before every open, and again
+  after the startup delay, looks the device id up in the config as it is at
+  that moment. The driver must be enabled, the config must be valid, an
+  entry must derive this device id, and that entry must name the same port.
+  Otherwise the backend forgets the device and refuses with `NotFound`,
+  which the lifecycle does not retry. A host without a live config store
+  gets the entry the backend was built from; the reconciler rebuilds the
+  backend whenever that entry changes.
 - **Connect** opens the configured path at the configured baud, 8N1, no flow
-  control, on a blocking thread. Unix opens take `TIOCEXCL` and an exclusive `flock`, so a second host
-  (Hyperion, Prismatik) holding the port makes the open fail instead of
-  sharing it. A missing port is a retryable connection failure; a
-  permission error is reported as such.
+  control, on a blocking thread. Unix opens take `TIOCEXCL` and an exclusive
+  `flock`, so a second host (Hyperion, Prismatik) holding the port makes the
+  open fail instead of sharing it. A missing port is a retryable connection
+  failure; a permission error is reported as such. The path is opened as
+  written, following symlinks, which is what makes `/dev/serial/by-id`
+  paths work; the configured path must therefore be one the user owns or
+  trusts, since whatever it points to is what gets opened.
 - **Write** encodes into a buffer whose header is built once, applies the
   backlog check (§7.2), and hands the frame to the driver.
-- **Disconnect** sends three black frames (§7.6) and closes the port off
-  the async workers.
+- **Disconnect** discards queued output, sends the blackout frames, and
+  closes the port off the async workers, within 1.8 s (§7.6).
 - **Cadence** `OutputCadence::from_min_interval(frame_interval,
   effective_max_fps).with_max_frame_silence(1 s)`.
 - **Lifecycle** the connect timeout is the default plus `startup_delay_ms`.
-  A connect for a device that already has a session keeps it when the
-  adopted plan is unchanged and replaces it (closing the old port first)
-  when a config edit changed the plan.
+  The daemon asks for it before adopting the device, so the delay comes
+  from the live config entry for the device id, not from the adopted plan.
+  A connect for a device that already has a session keeps it when the plan
+  is unchanged and replaces it (closing the old port first) when a config
+  edit changed the plan.
 
 ---
 
 ## 10. Safety
 
 - The driver never enumerates serial ports and never claims a USB device by
-  VID or PID. The only path it opens is one named in its config.
+  VID or PID. The only path it opens is one named in its config at the
+  moment of opening; removed, disabled, or re-pointed entries are refused
+  even when old discovery metadata still describes them (§9.4).
 - It never sends a byte outside the configured framing: no probes, no
   statistics requests, no reset sequences, no DTR or RTS changes.
 - Exclusive opens keep two hosts from interleaving frames on one port.
@@ -531,7 +567,8 @@ Everything runs without hardware.
 | `tests/protocol_tests.rs` | Golden bytes for each header variant, count encoding at 1, 2, 300, and 65,536 LEDs, the check byte, every trailer vector in §5.4, calibrated and RGBW frames, color order before the checksum, padding and truncation, bandwidth math |
 | `tests/config_tests.rs` | TOML parsing and defaults, every validation rule in §8, line budget, latch, and user cap math |
 | `tests/driver_tests.rs` | Descriptor, default config, discovery identity and metadata, stable ids across port changes, control value round trip, driver and device surfaces |
-| `tests/backend_tests.rs` | Unix only. Pseudo-terminal pairs created by the test: Ada and AWA frames read back byte for byte (including `0A 0D 11 13` to prove raw mode), padding, three-frame blackout on disconnect, no blackout before the first frame, startup delay with a greeting, idempotent connect, reconnect right after disconnect, a config edit replacing the live session, a stalled port failing within its bound, a missing path inside a fresh temp directory, cadence and lifecycle policy |
+| `tests/backend_tests.rs` | Unix only. Pseudo-terminal pairs created by the test, with a live test config the test edits: Ada and AWA frames read back byte for byte (including `0A 0D 11 13` to prove raw mode), padding, blackout on disconnect, no blackout before the first frame, startup delay with a greeting, idempotent connect, reconnect right after disconnect, a config edit replacing the live session, a stalled port failing within its bound and its disconnect finishing inside the budget, a missing path inside a fresh temp directory. Authorization: configure, discover, drive, remove the entry, disconnect, then identify's re-adopt and connect from the retained metadata are both refused and the port stays silent; an adopted device removed before connect, an entry removed during the startup delay, a moved port with stale metadata, and a disabled driver are refused. The first-connect timeout is read before adoption, as the daemon does, and covers a 6 s startup delay |
+| `tests/drain_tests.rs` | Drain watchdog decisions with synthetic readings: clear below a frame, backlog skips, a queue that never drains stalls after the budget, a slowly draining queue keeps coalescing, growth is not progress, clearing restarts the clock |
 
 The pty tests open only the slave path of a pair they just created. The
 missing-port test uses a path inside an empty temporary directory.
@@ -544,6 +581,9 @@ missing-port test uses a path inside an empty temporary directory.
   Once the `DriverStability` label lands (Spec 89), the descriptor gains
   `.experimental()` and the device database entries record
   `verification = "unverified"`.
+- **Untestable over a pty.** Linux pty slaves report an empty output queue,
+  so the backlog skip and drain watchdog are covered by `drain_tests.rs`
+  with synthetic readings rather than end to end.
 - **Native USB boards.** The backlog check reads the driver's queue depth,
   so a CDC board that drains faster than its nominal baud is still paced by
   the configured rate (§7.1). Configure such boards with a realistic rate.
