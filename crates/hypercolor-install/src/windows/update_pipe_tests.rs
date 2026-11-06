@@ -194,7 +194,8 @@ fn host_failures_refuse_the_pipe() {
 #[cfg(windows)]
 mod native {
     use std::io::{Read as _, Write as _};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::windows::named_pipe::ServerOptions;
@@ -223,12 +224,21 @@ mod native {
         }
     }
 
+    /// Tests run in parallel and the clock ticks in 100ns steps, so a
+    /// counter keeps two names from one process apart.
+    static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
     fn fresh_name() -> UpdatePipeName {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let random = format!("{:016x}{:016x}", std::process::id(), nanos as u64);
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let random = format!(
+            "{:08x}{sequence:08x}{:016x}",
+            std::process::id(),
+            nanos as u64
+        );
         UpdatePipeName::parse(&format!(r"\\.\pipe\hypercolor-update-{random}")).expect("pipe name")
     }
 
@@ -253,7 +263,8 @@ mod native {
             let mut received = Vec::new();
             // A client that refuses may close before the server finishes
             // connecting, which ends the connection without a byte either way.
-            if server.connect().await.is_ok() {
+            let connected = tokio::time::timeout(Duration::from_secs(30), server.connect()).await;
+            if matches!(connected, Ok(Ok(()))) {
                 let _ = server.write_all(b"stop").await;
                 let _ = server.read_to_end(&mut received).await;
             }
