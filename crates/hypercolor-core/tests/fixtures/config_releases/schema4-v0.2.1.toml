@@ -84,7 +84,47 @@ remote_access = false
 allow_unauthenticated_remote_access = false
 allowed_clients = []
 
-[drivers]
+[drivers.asus]
+enabled = true
+
+[drivers.corsair]
+enabled = true
+
+[drivers.dygma]
+enabled = true
+
+[drivers.govee]
+enabled = true
+
+[drivers.hue]
+enabled = true
+
+[drivers.lianli]
+enabled = true
+
+[drivers.nanoleaf]
+enabled = true
+
+[drivers.nollie]
+enabled = true
+
+[drivers.openrgb]
+enabled = false
+
+[drivers.prismrgb]
+enabled = true
+
+[drivers.push2]
+enabled = true
+
+[drivers.qmk]
+enabled = true
+
+[drivers.razer]
+enabled = true
+
+[drivers.wled]
+enabled = true
 
 [dbus]
 enabled = true

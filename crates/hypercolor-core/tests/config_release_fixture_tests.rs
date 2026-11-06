@@ -1,10 +1,19 @@
 //! Every config schema a release ever wrote still loads.
 //!
-//! Each fixture under `fixtures/config_releases/` is the exact file a tagged
-//! release saved on first run: its `HypercolorConfig::default()` with driver
-//! defaults filled in, serialized by `toml::to_string_pretty`. Releases that
-//! wrote byte-identical files share one fixture, named after the first of
-//! them:
+//! Each fixture under `fixtures/config_releases/` is the file a tagged
+//! release daemon writes on its first save after starting with no config
+//! file: the live config `ConfigManager` holds, serialized by the same
+//! `toml::to_string_pretty` its save path uses. That live config is the
+//! normalized `HypercolorConfig::default()` plus the entries the builtin
+//! driver bundle seeds at startup (the network drivers and every HAL family,
+//! with the OpenRGB bridge disabled), as a default-feature Linux release
+//! build installs them. The files were produced at each tag by building
+//! `hypercolor-driver-builtin` with its default features and running
+//! `ConfigManager::new` over a missing file followed by `update` with the
+//! seeded default, which is the sequence daemon startup performs. For v0.9.0
+//! that output is byte-identical to serializing the daemon's own
+//! `startup::default_config()`. Releases that wrote byte-identical files
+//! share one fixture, named after the first of them:
 //!
 //! | Fixture                | Schema | Written by            |
 //! | ---------------------- | ------ | --------------------- |
@@ -131,6 +140,22 @@ fn every_release_default_file_loads_at_the_current_schema() {
             "{} should land on the current beat threshold, found {}",
             fixture.name,
             config.audio.beat_sensitivity
+        );
+        assert!(
+            config
+                .drivers
+                .get("wled")
+                .is_some_and(|entry| entry.enabled),
+            "{} keeps its seeded network driver entries",
+            fixture.name
+        );
+        assert!(
+            config
+                .drivers
+                .get("openrgb")
+                .is_some_and(|entry| !entry.enabled),
+            "{} keeps the OpenRGB bridge disabled",
+            fixture.name
         );
     }
 }
