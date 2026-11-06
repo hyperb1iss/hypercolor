@@ -5,6 +5,7 @@ pub mod corsair;
 pub mod dygma;
 pub mod lianli;
 pub mod nollie;
+pub mod nzxt;
 pub mod prismrgb;
 pub mod push2;
 pub mod qmk;
