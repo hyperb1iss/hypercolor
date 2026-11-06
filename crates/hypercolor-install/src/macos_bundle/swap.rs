@@ -207,7 +207,7 @@ pub(super) fn has_leftovers(observation: &MacosBundleObservation, name: &str) ->
 
 /// Whether `leftover` is the scratch or discard name of the staged copy
 /// named `name`.
-pub(super) fn is_leftover_of(leftover: &str, name: &str) -> bool {
+fn is_leftover_of(leftover: &str, name: &str) -> bool {
     leftover.strip_prefix(name).is_some_and(|suffix| {
         suffix == super::MACOS_BUNDLE_PARTIAL_SUFFIX || suffix == super::MACOS_BUNDLE_DISCARD_SUFFIX
     })
