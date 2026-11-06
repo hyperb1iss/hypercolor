@@ -205,7 +205,9 @@ Hypercolor opens input devices only while an interactive effect is running. The
 - **Portable device identity**: devices keep their identity across cable moves, IP churn,
   and BIOS renumbering, and layouts can be rebound after hardware swaps
 - **REST API + WebSocket** for full programmatic control, with a Python client on
-  [PyPI](https://pypi.org/project/hypercolor/)
+  [PyPI](https://pypi.org/project/hypercolor/), and a
+  [stability policy](docs/content/api/stability.md) that says which interfaces
+  semantic versioning covers
 - **MCP server** for AI assistant integration (Claude Code, Cursor, and friends)
 - **CLI tool** (`hypercolor`) with table/JSON output and shell completions
 - **Hot-reload** on effect changes, no restart required

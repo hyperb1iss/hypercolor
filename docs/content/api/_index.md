@@ -133,3 +133,4 @@ MCP --> Agents[AI agents]
 - [WebSocket protocol](@/api/websocket.md): the `hypercolor-v1` subprotocol, JSON channels, and binary canvas/spectrum frames.
 - [CLI reference](@/api/cli.md): the command tree, global flags, and environment variables. Note that `server`, `servers`, and `service` are three distinct commands: `server` targets this daemon, `servers` is the multi-daemon registry, and `service` manages the system service.
 - [MCP server](@/api/mcp.md): the pointer into the canonical [Agents & MCP](@/agents/_index.md) reference for tools, resources, and prompts.
+- [Stability & versioning](@/api/stability.md): which of these interfaces semantic versioning freezes from 1.0 on, what stays internal, and how deprecation works.

@@ -20,7 +20,9 @@ The daemon prints its version on startup and in the status response:
 hypercolor status
 ```
 
-The REST API surfaces it in every response envelope under `meta.api_version`.
+The `/health` probe and `GET /api/v1/system` report it as `version`. The
+`meta.api_version` field in every REST response envelope is the REST contract
+version (`1.0`), not the release number.
 
 ## Version numbering
 
@@ -32,6 +34,11 @@ file schema, or the effect SDK surface without a deprecation window; the
 release notes call out every breaking change explicitly. Patch releases
 (`0.3.x`) are safe to apply: they contain bug fixes and security hardening
 only.
+
+From 1.0.0 on, breaking changes wait for a major release.
+[Stability & versioning](@/api/stability.md) lists the interfaces that promise
+covers, what stays internal, and how long old config files and backups keep
+loading.
 
 ## Where release notes live
 

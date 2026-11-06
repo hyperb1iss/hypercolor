@@ -343,6 +343,7 @@ without the runtime cliffs of unoptimized Servo.
 - **`tracing`** for all logging (never `println!` in library code)
 - **Serde** with `#[serde(rename_all = "snake_case")]` on enums, `#[serde(default)]` for compat
 - **Conventional commits**: `feat(scope):`, `fix(scope):`, `refactor(scope):`, etc.
+- **1.x stability**: `docs/content/api/stability.md` lists the interfaces semver covers from 1.0 (REST, WS frames and events, config schema, backups, effect SDK, Python client, CLI `--json` and exit codes, MCP tools). Changes to them are additive only; removals wait for 2.0. Config schemas 4 through current and backup schemas 1 through current must keep loading, and both have frozen release fixtures that prove it
 - **Apache-2.0** license
 
 ### Emoji
