@@ -31,6 +31,8 @@ use hypercolor_driver_nanoleaf::NanoleafDriverModule;
 use hypercolor_driver_openrgb::OpenRgbDriverModule;
 #[cfg(feature = "pixel")]
 use hypercolor_driver_pixel::PixelDriverModule;
+#[cfg(feature = "wiz")]
+use hypercolor_driver_wiz::WizDriverModule;
 #[cfg(feature = "twinkly")]
 use hypercolor_driver_twinkly::TwinklyDriverModule;
 
@@ -99,6 +101,10 @@ static BUILTIN_DRIVERS: &[BuiltinDriver] = &[
     #[cfg(feature = "twinkly")]
     BuiltinDriver::new(&hypercolor_driver_twinkly::DESCRIPTOR, |registry, _| {
         Ok(registry.register(TwinklyDriverModule::new())?)
+    }),
+    #[cfg(feature = "wiz")]
+    BuiltinDriver::new(&hypercolor_driver_wiz::DESCRIPTOR, |registry, _| {
+        Ok(registry.register(WizDriverModule::new())?)
     }),
 ];
 
