@@ -5,10 +5,10 @@
     "vendors": 33,
     "devices": 457,
     "byStatus": {
-      "supported": 227,
+      "supported": 228,
       "in_progress": 35,
       "planned": 0,
-      "researched": 65,
+      "researched": 64,
       "known": 128,
       "blocked": 2
     },
@@ -5018,6 +5018,19 @@
           "notes": null
         },
         {
+          "pid": 3871,
+          "pidHex": "0x0F1F",
+          "vid": null,
+          "vidHex": null,
+          "name": "Chroma Addressable RGB Controller",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 480,
+          "notes": "Six ARGB headers of 80 LEDs, driven by the 320-byte frame report on HID interface 1 (Spec 17 section 6.3). Bind fans or strips to each header in the attachment profile. The 90-byte brightness command on interface 0 is not used."
+        },
+        {
           "pid": 3849,
           "pidHex": "0x0F09",
           "vid": null,
@@ -5993,19 +6006,6 @@
           "notes": "Very old model, low priority"
         },
         {
-          "pid": 3871,
-          "pidHex": "0x0F1F",
-          "vid": null,
-          "vidHex": null,
-          "name": "Chroma Addressable RGB Controller",
-          "type": "argb_controller",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "Six ARGB channels of up to 80 LEDs. Frames travel as a separate 320-byte ARGB feature report on HID interface 1, not the 90-byte report (Spec 17 section 6.3)."
-        },
-        {
           "pid": 3884,
           "pidHex": "0x0F2C",
           "vid": null,
@@ -6254,10 +6254,10 @@
         }
       ],
       "counts": {
-        "supported": 97,
+        "supported": 98,
         "in_progress": 7,
         "planned": 0,
-        "researched": 23,
+        "researched": 22,
         "known": 0,
         "blocked": 0
       },
