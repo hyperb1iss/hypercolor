@@ -2,31 +2,136 @@
 name = "Wooting"
 vid = [0x03EB, 0x31E3]
 website = "https://wooting.io"
+notes = "Per-key RGB built from Spec 90 and not yet run on Wooting hardware. Each 0x31E3 board also enumerates at base PID + 1 (DirectInput gamepad) and + 2 (no gamepad); all three are driven."
+
+# ─── Keyboards on v1 firmware (Atmel VID) ────────────────────────────
 
 [[devices]]
 pid = 0xFF01
+vid = 0x03EB
+name = "Wooting One (v1 firmware)"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "Original analog keyboard on 2017-2019 firmware. Four CRC-protected PWM reports per frame. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0xFF02
+vid = 0x03EB
+name = "Wooting Two (v1 firmware)"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "Five CRC-protected PWM reports per frame, the fifth for the numpad. Awaiting hardware confirmation."
+
+# ─── AVR boards (v2 protocol, 0x1337 usage page) ─────────────────────
+
+[[devices]]
+pid = 0x1100
 name = "Wooting One"
 type = "keyboard"
-status = "known"
-notes = "VID 0x03EB, original analog keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "6 x 17 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x1200
+name = "Wooting Two"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x1210
+name = "Wooting Two Lekker Edition"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
 
 [[devices]]
 pid = 0x1220
 name = "Wooting Two HE"
 type = "keyboard"
-status = "known"
-notes = "VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "6 x 21 matrix, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x1300
+name = "Wooting 60HE"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "5 x 14 matrix on wire rows 1-5, one 257-byte RGB565 report per frame. Awaiting hardware confirmation."
+
+# ─── ARM boards (multi-report protocol, 0xFF55 usage page) ───────────
+
+[[devices]]
+pid = 0x1230
+name = "Wooting Two HE (ARM)"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "6 x 21 matrix. Needs firmware 2.12 or newer, which moved lighting to the multi-report collection. Awaiting hardware confirmation."
 
 [[devices]]
 pid = 0x1310
-name = "Wooting 60 HE"
+name = "Wooting 60HE (ARM)"
 type = "keyboard"
-status = "known"
-notes = "VID 0x31E3, multiple PIDs: 0x1310, 0x1312, 0x1300, 0x1302, 0x1322, 0x1320"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x1320
+name = "Wooting 60HE+"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x1340
+name = "Wooting 60HE v2"
+type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "5 x 14 matrix on wire rows 1-5. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
 
 [[devices]]
 pid = 0x1400
-name = "Wooting 80 HE"
+name = "Wooting 80HE"
 type = "keyboard"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "6 x 17 matrix. The lightbar keeps its own animation and is not host-addressable. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x1510
+name = "Wooting UwU RGB"
+type = "other"
+status = "in_progress"
+driver = "wooting"
+transport = "usb_hid"
+notes = "Three-key analog keypad; lightbar, keys, and buttons share a 5 x 7 matrix. Needs firmware 2.12 or newer. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x1500
+name = "Wooting UwU"
+type = "other"
 status = "known"
-notes = "VID 0x31E3, PIDs 0x1400, 0x1402"
+notes = "Keypad without RGB; nothing to drive."
