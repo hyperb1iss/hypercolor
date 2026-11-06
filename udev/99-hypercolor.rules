@@ -408,8 +408,11 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Dygma ────────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
+# Serial only. Hypercolor talks to Dygma keyboards over their serial port,
+# and their HID interface carries keyboard, mouse, consumer, and
+# system-control input, so it gets no grant. Neither does the USB device
+# node, since write access to it is enough to detach usbhid from that
+# interface.
 SUBSYSTEM=="tty", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── ASUS Aura ────────────────────────────────────────────────────────────────
