@@ -201,21 +201,6 @@ full API is served.
 | `software_adapter_reason` | string or null | no |
 | `texture_format` | string | yes |
 
-### GpuPassTimingsStatus {#GpuPassTimingsStatus}
-
-GPU timestamp coverage for SparkleFlinger's compute passes.
-
-Durations exclude Servo's separate GPU context, uploads, transfer commands,
-and queue latency. Counters belong to the current compositor instance.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `enabled` | boolean | yes |  |
-| `instance_id` | integer (int64) | no | Changes when the compositor is recreated; zero means no compositor. |
-| `stages` | array of [`GpuPassTimingStatus`](@/api/rest-schemas.md#GpuPassTimingStatus) | yes |  |
-| `supported` | boolean | yes |  |
-| `unavailable_reason` | string or null | no |  |
-
 ### GpuPassTimingStatus {#GpuPassTimingStatus}
 
 Cumulative GPU execution time for one class of compute passes.
@@ -234,6 +219,21 @@ passes. No duration is fabricated for passes without a completed timestamp.
 | `skipped` | integer (int64) | yes |
 | `stage` | string | yes |
 | `total_ns` | integer (int64) | yes |
+
+### GpuPassTimingsStatus {#GpuPassTimingsStatus}
+
+GPU timestamp coverage for SparkleFlinger's compute passes.
+
+Durations exclude Servo's separate GPU context, uploads, transfer commands,
+and queue latency. Counters belong to the current compositor instance.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | yes |  |
+| `instance_id` | integer (int64) | no | Changes when the compositor is recreated; zero means no compositor. |
+| `stages` | array of [`GpuPassTimingStatus`](@/api/rest-schemas.md#GpuPassTimingStatus) | yes |  |
+| `supported` | boolean | yes |  |
+| `unavailable_reason` | string or null | no |  |
 
 ### GpuTransferStatus {#GpuTransferStatus}
 
@@ -1097,18 +1097,6 @@ One of these variants, told apart by `status`:
 
 Used by [`POST /api/v1/devices/discover`](@/api/rest.md#discover_devices) response.
 
-### DiscoveryScannerResult {#DiscoveryScannerResult}
-
-Per-scanner diagnostics from a completed discovery scan.
-
-| Field | Type | Required |
-| --- | --- | --- |
-| `discovered` | integer | yes |
-| `duration_ms` | integer (int64) | yes |
-| `error` | string or null | no |
-| `scanner` | string | yes |
-| `status` | string | yes |
-
 ### DiscoveryScanResult {#DiscoveryScanResult}
 
 Detailed result from a completed discovery scan.
@@ -1123,6 +1111,18 @@ Detailed result from a completed discovery scan.
 | `timeout_ms` | integer (int64) | yes |
 | `total_known` | integer | yes |
 | `vanished_devices` | array of string | yes |
+
+### DiscoveryScannerResult {#DiscoveryScannerResult}
+
+Per-scanner diagnostics from a completed discovery scan.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `discovered` | integer | yes |
+| `duration_ms` | integer (int64) | yes |
+| `error` | string or null | no |
+| `scanner` | string | yes |
+| `status` | string | yes |
 
 ### ForgetDeviceRequest {#ForgetDeviceRequest}
 
@@ -1400,13 +1400,13 @@ One of these variants:
 
 | Variant | Fields | Description |
 | --- | --- | --- |
-| `"none"` | none | No operational impact. |
-| `"live"` | none | Apply directly to live runtime state. |
-| `"discovery_rescan"` | none | Trigger a discovery rescan. |
-| `"device_reconnect"` | none | Reconnect the affected device. |
-| `"backend_rebind"` | none | Rebind the affected output backend. |
-| `"topology_rebuild"` | none | Rebuild topology for affected devices. |
-| `"hardware_persist"` | none | Persist state into physical hardware. |
+| `"none"` |  | No operational impact. |
+| `"live"` |  | Apply directly to live runtime state. |
+| `"discovery_rescan"` |  | Trigger a discovery rescan. |
+| `"device_reconnect"` |  | Reconnect the affected device. |
+| `"backend_rebind"` |  | Rebind the affected output backend. |
+| `"topology_rebuild"` |  | Rebuild topology for affected devices. |
+| `"hardware_persist"` |  | Persist state into physical hardware. |
 | `{ "custom": … }` | `custom`: string | Driver-defined dynamic impact. |
 
 ### BTreeMap {#BTreeMap}
@@ -1943,11 +1943,11 @@ One of these variants:
 
 | Variant | Fields |
 | --- | --- |
-| `"pending"` | none |
-| `"ready"` | none |
+| `"pending"` |  |
+| `"ready"` |  |
 | `{ "unsupported": … }` | `unsupported`: object<br>`unsupported.reason`: string |
 | `{ "failed": … }` | `failed`: object<br>`failed.reason`: string |
-| `"unscanned"` | none |
+| `"unscanned"` |  |
 
 ### AssetUpdateRequest {#AssetUpdateRequest}
 
@@ -2519,15 +2519,6 @@ Used by [`GET /api/v1/output`](@/api/rest.md#get_output) response, [`PATCH /api/
 
 ## Scenes {#group-scenes}
 
-### ActivatedSceneRef {#ActivatedSceneRef}
-
-The scene an activation resolved to, by id and name.
-
-| Field | Type | Required |
-| --- | --- | --- |
-| `id` | string | yes |
-| `name` | string | yes |
-
 ### ActivateSceneRequest {#ActivateSceneRequest}
 
 Request for `POST /api/v1/scenes/{id}/activate`.
@@ -2550,6 +2541,15 @@ Response for `POST /api/v1/scenes/{id}/activate`.
 | `scene` | [`ActivatedSceneRef`](@/api/rest-schemas.md#ActivatedSceneRef) | yes |
 
 Used by [`POST /api/v1/scenes/{id}/activate`](@/api/rest.md#activate_scene) response.
+
+### ActivatedSceneRef {#ActivatedSceneRef}
+
+The scene an activation resolved to, by id and name.
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `id` | string | yes |
+| `name` | string | yes |
 
 ### AssignMembersRequest {#AssignMembersRequest}
 
@@ -3065,8 +3065,8 @@ positions of every connected device. All coordinates use normalized
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. |
-| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. |
+| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. Read-only. |
+| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. Read-only. |
 | `default_edge_behavior` | [`EdgeBehavior`](@/api/rest-schemas.md#EdgeBehavior) | no | Default edge behavior for zones that don't specify one. |
 | `default_sampling_mode` | [`SamplingMode`](@/api/rest-schemas.md#SamplingMode) | no | Default sampling mode for zones that don't specify one. |
 | `description` | string or null | no | Optional description for the layout editor UI. |
@@ -3844,16 +3844,16 @@ One of these variants:
 
 | Variant | Fields | Description |
 | --- | --- | --- |
-| `"Fan"` | none | Standard fan lighting ring or fan frame. |
-| `"Strip"` | none | Generic linear strip. |
-| `"Aio"` | none | AIO pump/block accent or halo. |
-| `"Strimer"` | none | Lian Li Strimer-style power cable sleeves. |
-| `"Case"` | none | Case accent lighting. |
-| `"Heatsink"` | none | CPU tower coolers with integrated lighting. |
-| `"Radiator"` | none | Radiator, case-edge, or other straight accessory strip. |
-| `"Matrix"` | none | Generic rectangular matrix or panel. |
-| `"Ring"` | none | Generic ring or halo. |
-| `"Bulb"` | none | Single-point bulb or indicator. |
+| `"Fan"` |  | Standard fan lighting ring or fan frame. |
+| `"Strip"` |  | Generic linear strip. |
+| `"Aio"` |  | AIO pump/block accent or halo. |
+| `"Strimer"` |  | Lian Li Strimer-style power cable sleeves. |
+| `"Case"` |  | Case accent lighting. |
+| `"Heatsink"` |  | CPU tower coolers with integrated lighting. |
+| `"Radiator"` |  | Radiator, case-edge, or other straight accessory strip. |
+| `"Matrix"` |  | Generic rectangular matrix or panel. |
+| `"Ring"` |  | Generic ring or halo. |
+| `"Bulb"` |  | Single-point bulb or indicator. |
 | `{ "Other": … }` | `Other`: string | Anything that does not fit a standard preset family. |
 
 ### ControlBinding {#ControlBinding}
@@ -3906,15 +3906,15 @@ One of these variants:
 
 | Variant | Fields | Description |
 | --- | --- | --- |
-| `"number"` | none | Generic numeric value. |
-| `"boolean"` | none | Boolean on/off value. |
-| `"color"` | none | Hex or structured color value. |
-| `"combobox"` | none | Named option from a fixed set. |
-| `"sensor"` | none | Sensor selector value (for example CPU/GPU metrics). |
-| `"hue"` | none | Hue wheel numeric value. |
-| `"area"` | none | Area/region scalar value. |
-| `"text"` | none | Free-form text value. |
-| `"rect"` | none | Normalized rectangular viewport value. |
+| `"number"` |  | Generic numeric value. |
+| `"boolean"` |  | Boolean on/off value. |
+| `"color"` |  | Hex or structured color value. |
+| `"combobox"` |  | Named option from a fixed set. |
+| `"sensor"` |  | Sensor selector value (for example CPU/GPU metrics). |
+| `"hue"` |  | Hue wheel numeric value. |
+| `"area"` |  | Area/region scalar value. |
+| `"text"` |  | Free-form text value. |
+| `"rect"` |  | Normalized rectangular viewport value. |
 | `{ "other": … }` | `other`: string | Unknown/unmapped kind from source metadata. |
 
 ### ControlType {#ControlType}
@@ -4044,6 +4044,8 @@ Host-owned wrapper around one driver's settings.
 | --- | --- | --- |
 | `enabled` | boolean | no |
 
+Other keys may hold any JSON value.
+
 ### DriverPresentation {#DriverPresentation}
 
 API and UI presentation metadata for a driver module.
@@ -4065,13 +4067,13 @@ One of these variants:
 
 | Variant | Fields | Description |
 | --- | --- | --- |
-| `"network"` | none | IP network transport. |
-| `"usb"` | none | USB HID, bulk, serial-over-USB, or vendor USB transport. |
-| `"smbus"` | none | Local I2C/SMBus transport. |
-| `"midi"` | none | MIDI transport. |
-| `"serial"` | none | Host serial transport. |
-| `"virtual"` | none | In-process or synthetic transport. |
-| `"bridge"` | none | Out-of-process bridge transport. |
+| `"network"` |  | IP network transport. |
+| `"usb"` |  | USB HID, bulk, serial-over-USB, or vendor USB transport. |
+| `"smbus"` |  | Local I2C/SMBus transport. |
+| `"midi"` |  | MIDI transport. |
+| `"serial"` |  | Host serial transport. |
+| `"virtual"` |  | In-process or synthetic transport. |
+| `"bridge"` |  | Out-of-process bridge transport. |
 | `{ "custom": … }` | `custom`: string | Driver-defined transport category. |
 
 ### EdgeBehavior {#EdgeBehavior}

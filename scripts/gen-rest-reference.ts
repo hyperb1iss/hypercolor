@@ -47,11 +47,49 @@ const ENVELOPE_GROUP = 'envelope'
 const UNREFERENCED_GROUP = 'unreferenced'
 const MAX_FIELD_DEPTH = 3
 
+// Every JSON Schema keyword the renderer understands. Anything else could
+// change what a type means without changing the page, so it fails
+// generation instead of being dropped.
+const SCHEMA_KEYWORDS = new Set([
+    '$ref',
+    'additionalProperties',
+    'allOf',
+    'anyOf',
+    'const',
+    'default',
+    'deprecated',
+    'description',
+    'enum',
+    'example',
+    'examples',
+    'exclusiveMaximum',
+    'exclusiveMinimum',
+    'format',
+    'items',
+    'maxItems',
+    'maxLength',
+    'maximum',
+    'minItems',
+    'minLength',
+    'minimum',
+    'oneOf',
+    'pattern',
+    'properties',
+    'propertyNames',
+    'readOnly',
+    'required',
+    'title',
+    'type',
+    'uniqueItems',
+    'writeOnly',
+])
+const SCHEMA_TYPES = new Set(['array', 'boolean', 'integer', 'null', 'number', 'object', 'string'])
+
 // ─── Types ──────────────────────────────────────────────────────────────
 
 // The OpenAPI document is JSON from a trusted generator; schemas are walked
 // structurally, so a loose record type is the honest description.
-type Schema = Record<string, any>
+export type Schema = Record<string, any>
 
 interface Parameter {
     name: string
@@ -97,7 +135,7 @@ interface Section {
     prose: string
 }
 
-interface Notes {
+export interface Notes {
     intro: string
     outro: string
     tagTitles: Map<string, string>
@@ -106,7 +144,7 @@ interface Notes {
     operations: Map<string, string>
 }
 
-interface Document {
+export interface Document {
     openapi: string
     paths: Record<string, Record<string, Schema>>
     tags?: Array<{ name: string; description?: string }>
@@ -122,7 +160,7 @@ interface Row {
 
 // ─── Failure ────────────────────────────────────────────────────────────
 
-class GenerationError extends Error {}
+export class GenerationError extends Error {}
 
 function fail(message: string): never {
     throw new GenerationError(message)
@@ -180,7 +218,7 @@ const NOTE_KEY = /^# (.+)$/
 const FENCE = /^\s*(```|~~~)/
 const OPERATION_KEY = /^(GET|POST|PUT|PATCH|DELETE) (\/\S*)$/
 
-function parseNotes(text: string): Notes {
+export function parseNotes(text: string): Notes {
     const notes: Notes = {
         intro: '',
         outro: '',
@@ -269,6 +307,15 @@ function slugify(text: string): string {
         .replace(/^-|-$/g, '')
 }
 
+/**
+ * Order strings by UTF-16 code unit. `localeCompare` follows the runtime's
+ * collation locale (Lithuanian sorts `y` with `i`), which would make the
+ * committed pages differ from machine to machine.
+ */
+export function compareCodeUnits(a: string, b: string): number {
+    return a < b ? -1 : a > b ? 1 : 0
+}
+
 function titleCase(word: string): string {
     return word.charAt(0).toUpperCase() + word.slice(1)
 }
@@ -280,30 +327,75 @@ function code(text: string): string {
     return `${fence}${pad}${text}${pad}${fence}`
 }
 
-/** Apply `transform` to the parts of `text` that sit outside code spans. */
-function outsideCode(text: string, transform: (segment: string) => string): string {
+/**
+ * Apply `transform` to the parts of `text` that sit outside code spans,
+ * finding spans exactly as CommonMark does: a span opens on a backtick run
+ * that no backslash escapes and closes only on the next run of the same
+ * length. A run with no partner is literal text and gets transformed. Any
+ * looser match would leave text unescaped that the renderer treats as
+ * markup, so this must not be approximated.
+ */
+export function outsideCode(text: string, transform: (segment: string) => string): string {
     let out = ''
+    let textStart = 0
     let index = 0
     while (index < text.length) {
-        const open = text.indexOf('`', index)
-        if (open === -1) {
-            out += transform(text.slice(index))
-            break
+        if (text[index] !== '`' || escapedAt(text, index)) {
+            index += 1
+            continue
         }
-        out += transform(text.slice(index, open))
-        let runEnd = open
-        while (text[runEnd] === '`') runEnd += 1
-        const run = text.slice(open, runEnd)
-        const close = text.indexOf(run, runEnd)
+        const runEnd = backtickRunEnd(text, index)
+        const close = closingRun(text, runEnd, runEnd - index)
         if (close === -1) {
-            out += transform(run)
             index = runEnd
             continue
         }
-        out += text.slice(open, close + run.length)
-        index = close + run.length
+        out += transform(text.slice(textStart, index)) + text.slice(index, close)
+        index = close
+        textStart = close
     }
-    return out
+    return out + transform(text.slice(textStart))
+}
+
+/** Whether an odd number of backslashes precedes `index`. */
+function escapedAt(text: string, index: number): boolean {
+    let backslashes = 0
+    for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) backslashes += 1
+    return backslashes % 2 === 1
+}
+
+function backtickRunEnd(text: string, start: number): number {
+    let end = start
+    while (text[end] === '`') end += 1
+    return end
+}
+
+/** End of the next backtick run of exactly `length` from `from`, or -1. */
+function closingRun(text: string, from: number, length: number): number {
+    let cursor = from
+    while (cursor < text.length) {
+        const open = text.indexOf('`', cursor)
+        if (open === -1) return -1
+        const end = backtickRunEnd(text, open)
+        if (end - open === length) return end
+        cursor = end
+    }
+    return -1
+}
+
+const SAFE_LINK_SCHEMES = new Set(['http', 'https', 'mailto'])
+
+/** Fail on a markdown link whose target uses a scheme other than http(s) or mailto. */
+function assertSafeLinks(segment: string): string {
+    const targets = [
+        ...[...segment.matchAll(/\]\(\s*<?([^\s)>]*)/g)].map((match) => match[1]),
+        ...[...segment.matchAll(/^\s{0,3}\[[^\]]+\]:\s*<?(\S*?)>?(?:\s|$)/gm)].map((match) => match[1]),
+    ]
+    for (const target of targets) {
+        const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(target)?.[1]?.toLowerCase()
+        if (scheme && !SAFE_LINK_SCHEMES.has(scheme)) fail(`description links to an unsafe target: ${target}`)
+    }
+    return segment
 }
 
 function escapeHtml(segment: string): string {
@@ -312,7 +404,7 @@ function escapeHtml(segment: string): string {
 
 // ─── Rendering context ──────────────────────────────────────────────────
 
-class Reference {
+export class Reference {
     readonly schemas: Record<string, Schema>
     readonly operations: Operation[]
     readonly tags: Tag[]
@@ -325,6 +417,7 @@ class Reference {
         this.schemas = document.components?.schemas ?? {}
         this.notes = notes
         this.operations = collectOperations(document)
+        this.validateSchemas()
         this.tags = collectTags(document, this.operations, notes)
         this.commonErrors = collectCommonErrors(this.operations)
         this.validateNotes()
@@ -347,7 +440,7 @@ class Reference {
             const name = span.slice(1, -1).split('::').pop() ?? ''
             return this.schemas[name] ? this.schemaLink(name) : span
         })
-        return outsideCode(linked, escapeHtml)
+        return outsideCode(linked, (segment) => escapeHtml(assertSafeLinks(segment)))
     }
 
     /** Description text for a single table cell. */
@@ -366,6 +459,49 @@ class Reference {
     }
 
     // ─── Validation ─────────────────────────────────────────────────────
+
+    private validateSchemas() {
+        for (const [name, schema] of Object.entries(this.schemas)) {
+            if (!/^[A-Za-z0-9_]+$/.test(name)) fail(`schema name \`${name}\` cannot serve as a page anchor`)
+            this.validateSchema(schema, `components.schemas.${name}`)
+        }
+        for (const operation of this.operations) {
+            for (const parameter of operation.parameters) {
+                if (parameter.schema) this.validateSchema(parameter.schema, `${operation.key} parameter ${parameter.name}`)
+            }
+            for (const { schema, role } of operationSchemas(operation)) {
+                if (role !== 'parameter') this.validateSchema(schema, `${operation.key} ${role}`)
+            }
+        }
+    }
+
+    private validateSchema(schema: unknown, path: string) {
+        if (typeof schema === 'boolean') return
+        if (!schema || typeof schema !== 'object' || Array.isArray(schema)) fail(`unsupported schema at ${path}`)
+        const node = schema as Schema
+        for (const key of Object.keys(node)) {
+            if (!SCHEMA_KEYWORDS.has(key)) fail(`unsupported schema keyword \`${key}\` at ${path}`)
+        }
+        const types = Array.isArray(node.type) ? node.type : node.type === undefined ? [] : [node.type]
+        for (const type of types) {
+            if (!SCHEMA_TYPES.has(type)) fail(`unsupported schema type \`${type}\` at ${path}`)
+        }
+        if (typeof node.$ref === 'string') this.schema(this.refName(node.$ref))
+        for (const [name, property] of Object.entries(node.properties ?? {})) {
+            this.validateSchema(property, `${path}.properties.${name}`)
+        }
+        for (const keyword of ['items', 'additionalProperties', 'propertyNames']) {
+            if (node[keyword] !== undefined) this.validateSchema(node[keyword], `${path}.${keyword}`)
+        }
+        for (const keyword of ['oneOf', 'anyOf', 'allOf']) {
+            if (node[keyword] === undefined) continue
+            if (!Array.isArray(node[keyword])) fail(`unsupported schema at ${path}.${keyword}: not a list`)
+            node[keyword].forEach((member: unknown, index: number) =>
+                this.validateSchema(member, `${path}.${keyword}[${index}]`),
+            )
+        }
+        unionOf(node)
+    }
 
     private validateNotes() {
         const keys = new Set(this.operations.map((operation) => operation.key))
@@ -457,13 +593,13 @@ class Reference {
         if (!schema) return 'any'
         if (typeof schema.$ref === 'string') return this.schemaLink(this.refName(schema.$ref))
         if (schema.const !== undefined) return code(JSON.stringify(schema.const))
-        const union = schema.oneOf ?? schema.anyOf
+        const union = unionOf(schema)
         if (Array.isArray(union)) {
             const nullable = union.some(isNullSchema)
             const variants = union.filter((variant: Schema) => !isNullSchema(variant))
             const values = enumValues({ oneOf: variants })
             const body = values
-                ? 'string'
+                ? unique(values.map((value) => (typeof value === 'string' ? 'string' : typeof value))).join(' or ')
                 : unique(variants.map((variant: Schema) => this.typeExpr(variant))).join(' or ')
             return nullable ? `${body} or null` : body
         }
@@ -520,6 +656,10 @@ class Reference {
         const informative = bounds.filter((bound) => bound !== 'at least 0' || target.type === 'number')
         if (informative.length) parts.push(`${titleCase(informative.join(', '))}.`)
         if (target.pattern) parts.push(`Matches ${code(target.pattern)}.`)
+        if (target.uniqueItems) parts.push('Items are unique.')
+        if (schema.readOnly) parts.push('Read-only.')
+        if (schema.writeOnly) parts.push('Write-only.')
+        if (schema.deprecated) parts.push('Deprecated.')
         if (schema.default !== undefined) parts.push(`Default ${code(JSON.stringify(schema.default))}.`)
         return parts.join(' ')
     }
@@ -572,6 +712,11 @@ class Reference {
         if (Array.isArray(schema.allOf)) {
             const bases = schema.allOf.filter((part: Schema) => part.$ref)
             const extra = schema.allOf.filter((part: Schema) => !part.$ref)
+            for (const part of extra) {
+                if (!part.properties || unionOf(part) || part.allOf) {
+                    fail('unsupported allOf member: only schema references and objects with properties render')
+                }
+            }
             if (bases.length) {
                 const links = bases.map((part: Schema) => this.typeExpr(part)).join(' and ')
                 blocks.push(extra.length ? `Every field of ${links}, plus:` : `Every field of ${links}.`)
@@ -581,7 +726,7 @@ class Reference {
             return blocks.join('\n\n')
         }
 
-        const union = schema.oneOf ?? schema.anyOf
+        const union = unionOf(schema)
         if (Array.isArray(union)) {
             const concrete = union.filter((variant: Schema) => !isNullSchema(variant))
             if (concrete.length === 1 && concrete.length < union.length) {
@@ -599,7 +744,12 @@ class Reference {
         if (schema.properties) {
             const rows = this.fieldRows(schema)
             blocks.push(rows.length ? this.fieldTable(rows) : 'An object with no fields.')
-            if (schema.additionalProperties === false) blocks.push('Unknown fields are rejected.')
+            const extra = schema.additionalProperties
+            if (extra === false) blocks.push('Unknown fields are rejected.')
+            else if (extra === true || (extra && typeof extra === 'object')) {
+                const type = extra === true ? 'any' : this.typeExpr(extra)
+                blocks.push(type === 'any' ? 'Other keys may hold any JSON value.' : `Other keys map to ${type}.`)
+            }
             return blocks.join('\n\n')
         }
 
@@ -615,7 +765,7 @@ class Reference {
     }
 
     private enumBody(schema: Schema, values: Array<string | number | boolean | null>): string {
-        const union: Schema[] = schema.oneOf ?? schema.anyOf ?? []
+        const union: Schema[] = unionOf(schema) ?? []
         const described = union.filter((variant) => variant.description && enumValues(variant))
         if (described.length === 0) {
             return `One of ${values.map((value) => code(String(value))).join(', ')}.`
@@ -650,7 +800,7 @@ class Reference {
         // with several fields, or fields that carry their own descriptions,
         // gets a block with a full field table instead.
         const compact = variants.every((variant) => {
-            if (variant.$ref || variant.allOf || variant.oneOf) return false
+            if (!variant.properties) return describedByType(variant)
             const rows = rowsOf(variant)
             return rows.length <= 3 && rows.every((row) => !row.description || row.description === variantNote(variant))
         })
@@ -661,13 +811,16 @@ class Reference {
                 `| --- | --- |${described ? ' --- |' : ''}`,
             ]
             variants.forEach((variant, index) => {
-                const label = discriminator
-                    ? code(JSON.stringify(enumValues(variant.properties?.[discriminator])?.[0]))
+                const tagged = discriminator && variant.properties?.[discriminator]
+                const label = tagged
+                    ? code(JSON.stringify(enumValues(variant.properties[discriminator])?.[0]))
                     : this.variantLabel(variant, null, index)
-                const fields = rowsOf(variant)
-                    .map((row) => `${code(row.name)}: ${row.type}${row.required ? '' : ' (optional)'}`)
-                    .join('<br>')
-                lines.push(`| ${label} | ${fields || 'none'} |${described ? ` ${variantNote(variant)} |` : ''}`)
+                const fields = variant.properties
+                    ? rowsOf(variant)
+                          .map((row) => `${code(row.name)}: ${row.type}${row.required ? '' : ' (optional)'}`)
+                          .join('<br>') || 'none'
+                    : ''
+                lines.push(`| ${label} | ${fields} |${described ? ` ${variantNote(variant)} |` : ''}`)
             })
             blocks.push(lines.join('\n'))
             return blocks.join('\n\n')
@@ -679,25 +832,20 @@ class Reference {
             blocks.push(description ? `**${label}**: ${description}` : `**${label}**`)
             const rows = rowsOf(variant)
             if (rows.length) blocks.push(this.fieldTable(rows))
-            else if (variant.$ref || variant.allOf || variant.oneOf) blocks.push(this.schemaBodyForVariant(variant))
+            else if (!variant.properties && !describedByType(variant)) blocks.push(this.schemaBody(variant))
         })
         return blocks.join('\n\n')
-    }
-
-    private schemaBodyForVariant(variant: Schema): string {
-        if (variant.$ref) return `The fields of ${this.typeExpr(variant)}.`
-        return this.schemaBody(variant)
     }
 
     private variantLabel(variant: Schema, discriminator: string | null, index: number): string {
         const values = enumValues(variant)
         if (values) return values.map((value) => code(JSON.stringify(value))).join(', ')
-        if (variant.$ref) return code(this.refName(variant.$ref))
-        if (discriminator) {
+        if (!variant.properties) return this.typeExpr(variant)
+        if (discriminator && variant.properties[discriminator]) {
             const tag = enumValues(variant.properties[discriminator])?.[0]
             return code(`${discriminator}: ${JSON.stringify(tag)}`)
         }
-        const keys = Object.keys(variant.properties ?? {})
+        const keys = Object.keys(variant.properties)
         if (keys.length === 1 && variant.required?.includes(keys[0])) return code(`{ "${keys[0]}": … }`)
         return `Variant ${index + 1}`
     }
@@ -705,12 +853,26 @@ class Reference {
 
 // ─── Schema predicates ──────────────────────────────────────────────────
 
+/** A schema's `oneOf` or `anyOf` members, which render the same way. */
+function unionOf(schema: Schema): Schema[] | null {
+    if (schema.oneOf && schema.anyOf) fail('unsupported schema: both `oneOf` and `anyOf` on one node')
+    const union = schema.oneOf ?? schema.anyOf
+    return Array.isArray(union) ? union : null
+}
+
+/** Whether `typeExpr` says everything about a schema, so it needs no field table. */
+function describedByType(schema: Schema): boolean {
+    if (schema.properties || schema.allOf) return false
+    if (schema.items && !describedByType(schema.items)) return false
+    return (unionOf(schema) ?? []).every(describedByType)
+}
+
 function isNullSchema(schema: Schema): boolean {
     return schema.type === 'null' && Object.keys(schema).every((key) => key === 'type' || key === 'description')
 }
 
 function unwrapNullable(schema: Schema): Schema {
-    const union = schema.oneOf ?? schema.anyOf
+    const union = unionOf(schema)
     if (Array.isArray(union)) {
         const concrete = union.filter((variant: Schema) => !isNullSchema(variant))
         if (concrete.length === 1) return concrete[0]
@@ -722,7 +884,7 @@ function unwrapNullable(schema: Schema): Schema {
 function enumValues(schema: Schema | undefined): Array<string | number | boolean | null> | null {
     if (!schema) return null
     if (Array.isArray(schema.enum)) return schema.enum.filter((value: unknown) => value !== null)
-    const union = schema.oneOf ?? schema.anyOf
+    const union = unionOf(schema)
     if (!Array.isArray(union) || union.length === 0) return null
     const values: Array<string | number | boolean | null> = []
     for (const variant of union as Schema[]) {
@@ -767,6 +929,9 @@ function collectOperations(document: Document): Operation[] {
             if (ids.has(raw.operationId)) fail(`duplicate operationId \`${raw.operationId}\``)
             ids.add(raw.operationId)
             if (!raw.summary) fail(`${key} has no summary`)
+            // The summary becomes a component argument, where Zola would read
+            // template syntax as markup.
+            if (/\{[{%]/.test(raw.summary)) fail(`${key} summary contains Zola template syntax`)
             operations.push({
                 method: method.toUpperCase(),
                 path,
@@ -787,7 +952,7 @@ function collectOperations(document: Document): Operation[] {
     return operations.sort(
         (a, b) =>
             rank(a) - rank(b) ||
-            (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) ||
+            compareCodeUnits(a.path, b.path) ||
             METHODS.indexOf(a.method.toLowerCase() as (typeof METHODS)[number]) -
                 METHODS.indexOf(b.method.toLowerCase() as (typeof METHODS)[number]),
     )
@@ -798,7 +963,7 @@ function collectTags(document: Document, operations: Operation[], notes: Notes):
     const declared = document.tags ?? []
     // A tag's title, description, and position come from its declaration in
     // ApiDoc (crates/hypercolor-daemon/src/api/openapi.rs).
-    for (const name of [...used].sort()) {
+    for (const name of [...used].sort(compareCodeUnits)) {
         if (!declared.some((tag) => tag.name === name)) {
             fail(`operations use tag \`${name}\`, which ApiDoc does not declare in api/openapi.rs`)
         }
@@ -831,7 +996,7 @@ function collectCommonErrors(operations: Operation[]): Array<[string, string]> {
         )
         if (shared) common.push([status, response.description ?? ''])
     }
-    return common.sort(([a], [b]) => a.localeCompare(b))
+    return common.sort(([a], [b]) => compareCodeUnits(a, b))
 }
 
 function operationSchemas(operation: Operation): Array<{ schema: Schema; role: string }> {
@@ -876,7 +1041,7 @@ hand: change the route's OperationDoc or the notes, then run
 \`just rest-reference\`.
 -->`
 
-function renderRest(ref: Reference): string {
+export function renderRest(ref: Reference): string {
     const operationCount = ref.operations.length
     const pathCount = new Set(ref.operations.map((operation) => operation.path)).size
     const out: string[] = [
@@ -1012,7 +1177,7 @@ function renderResponses(ref: Reference, operation: Operation): string {
     const headers = new Map<string, string>()
     let fields: { title: string; schema: Schema } | null = null
 
-    const statuses = Object.keys(operation.responses).sort()
+    const statuses = Object.keys(operation.responses).sort(compareCodeUnits)
     for (const status of statuses) {
         if (common.has(status)) continue
         const response = operation.responses[status]
@@ -1096,7 +1261,7 @@ function responseFields(ref: Reference, schema: Schema): { title: string; schema
 
 // ─── rest-schemas.md ────────────────────────────────────────────────────
 
-function renderSchemas(ref: Reference): string {
+export function renderSchemas(ref: Reference): string {
     const out: string[] = [
         '+++',
         'title = "REST schemas"',
@@ -1123,7 +1288,7 @@ function renderSchemas(ref: Reference): string {
     for (const group of groups) {
         const names = Object.keys(ref.schemas)
             .filter((name) => ref.schemaGroups.get(name) === group.id)
-            .sort((a, b) => a.localeCompare(b))
+            .sort(compareCodeUnits)
         if (names.length === 0) continue
         out.push(`## ${group.title} {#group-${group.id}}`, '')
         if (group.id === UNREFERENCED_GROUP) {
@@ -1212,12 +1377,16 @@ function main() {
     console.log(check ? '\n✓ The REST reference is current.' : '\n✓ The REST reference is generated.')
 }
 
-try {
-    main()
-} catch (error) {
-    if (error instanceof GenerationError) {
-        console.error(`\n✗ ${error.message}`)
-        process.exit(1)
+// Importing the module (scripts/tests/gen-rest-reference.test.ts) must not
+// run a generation.
+if (import.meta.main) {
+    try {
+        main()
+    } catch (error) {
+        if (error instanceof GenerationError) {
+            console.error(`\n✗ ${error.message}`)
+            process.exit(1)
+        }
+        throw error
     }
-    throw error
 }

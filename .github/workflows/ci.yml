@@ -189,6 +189,7 @@ jobs:
               - 'protocol/**'
               # The REST reference is generated from the same OpenAPI export.
               - 'scripts/gen-rest-reference.ts'
+              - 'scripts/tests/gen-rest-reference.test.ts'
               - 'docs/content/api/rest.md'
               - 'docs/content/api/rest-schemas.md'
               - 'docs/content/api/rest.notes.md'
@@ -1308,6 +1309,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+
+      - name: Test the REST reference generator
+        working-directory: .
+        run: bun test scripts/tests/gen-rest-reference.test.ts
 
       # Reuses the exporter the Python check just built.
       - name: Verify generated REST reference is current

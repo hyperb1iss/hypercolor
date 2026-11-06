@@ -428,6 +428,10 @@ rest-reference *args='':
 rest-reference-check:
     bun scripts/gen-rest-reference.ts --check
 
+# Test the REST reference generator's escaping, ordering, and schema rendering
+rest-reference-test:
+    bun test scripts/tests/gen-rest-reference.test.ts
+
 # ─── Running ──────────────────────────────────────────────
 
 # Run the daemon with the full renderer set enabled

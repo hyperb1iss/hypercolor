@@ -3598,8 +3598,8 @@ with `validation_error`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. |
-| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. |
+| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. Read-only. |
+| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. Read-only. |
 | `default_edge_behavior` | [`EdgeBehavior`](@/api/rest-schemas.md#EdgeBehavior) | no | Default edge behavior for zones that don't specify one. |
 | `default_sampling_mode` | [`SamplingMode`](@/api/rest-schemas.md#SamplingMode) | no | Default sampling mode for zones that don't specify one. |
 | `description` | string or null | no | Optional description for the layout editor UI. |
@@ -3619,8 +3619,8 @@ so a UI can render it visually.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. |
-| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. |
+| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. Read-only. |
+| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. Read-only. |
 | `default_edge_behavior` | [`EdgeBehavior`](@/api/rest-schemas.md#EdgeBehavior) | no | Default edge behavior for zones that don't specify one. |
 | `default_sampling_mode` | [`SamplingMode`](@/api/rest-schemas.md#SamplingMode) | no | Default sampling mode for zones that don't specify one. |
 | `description` | string or null | no | Optional description for the layout editor UI. |
@@ -3661,8 +3661,8 @@ Device outputs, positions, and LED mappings.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. |
-| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. |
+| `canvas_height` | integer (int32) | no | Canvas height in pixels; see `SpatialLayout::canvas_width`. Read-only. |
+| `canvas_width` | integer (int32) | no | Canvas width in pixels this layout is sampled against. The engine owns it: an LED layout always carries the configured render resolution (`daemon.canvas_width`), and a display zone carries its face's size. Nothing a client sends sets it. Read-only. |
 | `default_edge_behavior` | [`EdgeBehavior`](@/api/rest-schemas.md#EdgeBehavior) | no | Default edge behavior for zones that don't specify one. |
 | `default_sampling_mode` | [`SamplingMode`](@/api/rest-schemas.md#SamplingMode) | no | Default sampling mode for zones that don't specify one. |
 | `description` | string or null | no | Optional description for the layout editor UI. |
