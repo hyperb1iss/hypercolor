@@ -254,6 +254,58 @@ fn root_hub() -> SysDevice {
     usb_device(0x1d6b, 0x0002, "usb1")
 }
 
+/// Vendor IDs a rules file names in a hidraw or USB match, from
+/// `idVendor` keys and `usb:vXXXX` modalias patterns.
+pub fn named_vendor_ids(rules: &RuleSet) -> Vec<u16> {
+    let mut vendors = Vec::new();
+    for term in rules.rules.iter().flatten() {
+        let hex = match (term.key, term.attr) {
+            ("ATTR" | "ATTRS", Some("idVendor")) => Some(term.value),
+            ("ATTRS", Some("modalias")) => term
+                .value
+                .strip_prefix("usb:v")
+                .and_then(|rest| rest.get(..4)),
+            _ => None,
+        };
+        if let Some(vendor) = hex.and_then(|hex| u16::from_str_radix(hex, 16).ok())
+            && !vendors.contains(&vendor)
+        {
+            vendors.push(vendor);
+        }
+    }
+    vendors
+}
+
+/// Product IDs a rules file names for `vendor_id`, from `idProduct` keys
+/// next to that vendor and from `usb:vXXXXpYYYY` modalias patterns.
+pub fn named_product_ids(rules: &RuleSet, vendor_id: u16) -> Vec<u16> {
+    let vendor_hex = format!("{vendor_id:04x}");
+    let modalias_prefix = format!("usb:v{vendor_id:04X}p");
+    let mut products = Vec::new();
+    for terms in &rules.rules {
+        let names_vendor = terms.iter().any(|term| {
+            matches!((term.key, term.attr), ("ATTR" | "ATTRS", Some("idVendor")))
+                && term.value == vendor_hex
+        });
+        for term in terms {
+            let hex = match (term.key, term.attr) {
+                ("ATTR" | "ATTRS", Some("idProduct")) if names_vendor => Some(term.value),
+                ("ATTRS", Some("modalias")) => term
+                    .value
+                    .strip_prefix(modalias_prefix.as_str())
+                    .and_then(|rest| rest.get(..4)),
+                _ => None,
+            };
+            if let Some(product) = hex.and_then(|hex| u16::from_str_radix(hex, 16).ok())
+                && !products.contains(&product)
+            {
+                products.push(product);
+            }
+        }
+    }
+    products
+}
+
 /// The parsed main rules file, shared by every check.
 pub static HYPERCOLOR_RULES: LazyLock<RuleSet> =
     LazyLock::new(|| RuleSet::parse(include_str!("../../../../udev/99-hypercolor.rules")));

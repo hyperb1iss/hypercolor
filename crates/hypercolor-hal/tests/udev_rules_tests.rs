@@ -1,7 +1,7 @@
 #[path = "support/udev_model.rs"]
 mod udev_model;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::corsair::CORSAIR_VID;
@@ -14,7 +14,7 @@ use hypercolor_hal::drivers::lianli::wireless::transport::PID_WIRELESS_RX;
 use hypercolor_hal::registry::TransportType;
 use udev_model::{
     HYPERCOLOR_RULES, INTERFACE_SHAPES, InterfaceShape, PROBED_INTERFACES, RuleSet, hidraw_node,
-    tty_node, usb_device_node,
+    named_product_ids, named_vendor_ids, tty_node, usb_device_node,
 };
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
@@ -24,6 +24,41 @@ const UDEV_INPUT_ALL_RULES: &str = include_str!("../../../udev/70-hypercolor-inp
 /// granting its lighting-interface hidraw node.
 const CORSAIR_LIGHTING_IF_KEY: &str = "HYPERCOLOR_CORSAIR_LIGHTING_IF";
 const I2C_UDEV_RULE: &str = "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"";
+
+/// Vendor IDs whose products include keyboards, mice, or headsets. On these
+/// a hidraw node outside the lighting interface can carry keystrokes or
+/// pointer input, and write access to a USB device node is enough to detach
+/// usbhid from an input interface and read it directly.
+const INPUT_DEVICE_VENDORS: &[(u16, &str)] = &[
+    (0x1532, "Razer"),
+    (0x1b1c, "Corsair"),
+    (0x0b05, "ASUS"),
+    (0x35ef, "Dygma"),
+    (0x3434, "Keychron"),
+    (0x3297, "ZSA"),
+    (0xfeed, "QMK's default vendor ID"),
+    (0x320f, "Glorious"),
+];
+
+/// Input-vendor products whose descriptor does not pin the lighting
+/// interface and whose rule grants every HID interface of the product's own
+/// USB device. Each entry needs a reason that holds for the hardware: no
+/// keys, no pointer, and a rule that never reaches devices plugged in
+/// behind it.
+const WHOLE_DEVICE_HIDRAW_GRANTS: &[(u16, u16, &str)] = &[
+    (
+        0x1532,
+        0x0f21,
+        "Razer Thunderbolt 4 Dock Chroma: a dock without keys or pointer; no \
+         descriptor dump pins its lighting interface, and the modalias rule \
+         never matches the devices plugged into the dock",
+    ),
+    (
+        0x1532,
+        0x0f52,
+        "Razer Thunderbolt 5 Dock Chroma: same as the Thunderbolt 4 dock",
+    ),
+];
 
 fn input_rule_lines(rules: &str) -> Vec<&str> {
     rules
@@ -74,6 +109,57 @@ fn opens_usb_device_node(transport: TransportType) -> bool {
             | TransportType::DriverUsb { .. }
             | TransportType::UsbVendor
     )
+}
+
+/// Which device nodes Hypercolor opens for one product, across every
+/// descriptor registered for it.
+#[derive(Debug, Default)]
+struct ProductAccess {
+    names: Vec<&'static str>,
+    hidraw_interfaces: BTreeSet<u8>,
+    unpinned_hidraw: bool,
+    usb_device: bool,
+    claims_hid_over_usb: bool,
+}
+
+fn product_access() -> BTreeMap<(u16, u16), ProductAccess> {
+    let mut products: BTreeMap<(u16, u16), ProductAccess> = BTreeMap::new();
+    for descriptor in ProtocolDatabase::all() {
+        let access = products
+            .entry((descriptor.vendor_id, descriptor.product_id))
+            .or_default();
+        access.names.push(descriptor.name);
+        match hidraw_target(descriptor.transport) {
+            Some(HidrawTarget::Interface(interface)) => {
+                access.hidraw_interfaces.insert(interface);
+            }
+            Some(HidrawTarget::Unpinned) => access.unpinned_hidraw = true,
+            None => {}
+        }
+        access.usb_device |= opens_usb_device_node(descriptor.transport);
+        access.claims_hid_over_usb |= matches!(descriptor.transport, TransportType::UsbHid { .. });
+    }
+    products
+}
+
+fn is_input_device_vendor(vendor_id: u16) -> bool {
+    INPUT_DEVICE_VENDORS
+        .iter()
+        .any(|&(vendor, _)| vendor == vendor_id)
+}
+
+/// A product ID of `vendor_id` that no rule names and no descriptor
+/// registers, for probing whether a rule matches more than it names.
+fn unnamed_product(rules: &RuleSet, vendor_id: u16) -> u16 {
+    let named = named_product_ids(rules, vendor_id);
+    let registered: Vec<u16> = ProtocolDatabase::by_vendor(vendor_id)
+        .iter()
+        .map(|descriptor| descriptor.product_id)
+        .collect();
+    (0..=u16::MAX)
+        .rev()
+        .find(|product| !named.contains(product) && !registered.contains(product))
+        .expect("some product ID is neither named nor registered")
 }
 
 fn suggested_hidraw_rule(vendor_id: u16, product_id: u16, interface: Option<u8>) -> String {
@@ -158,6 +244,136 @@ fn udev_rules_include_i2c_access_for_smbus_devices() {
         UDEV_RULES.contains(I2C_UDEV_RULE),
         "missing SMBus i2c-dev udev rule: {I2C_UDEV_RULE}"
     );
+}
+
+/// A hidraw rule that matches a product it does not name reaches every
+/// keyboard and mouse that shares the vendor ID, and a vendor-wide
+/// `ATTRS{idVendor}` match also reaches devices plugged in behind a hub
+/// that reports that vendor.
+#[test]
+fn hidraw_grants_are_never_vendor_wide() {
+    let rules = &*HYPERCOLOR_RULES;
+    let mut vendors = named_vendor_ids(rules);
+    // A vendor no rule names catches a grant with no vendor match at all.
+    vendors.push(
+        (0..=u16::MAX)
+            .rev()
+            .find(|vendor| !vendors.contains(vendor))
+            .expect("some vendor ID is unnamed"),
+    );
+    for vendor in vendors {
+        let probe = unnamed_product(rules, vendor);
+        for interface in PROBED_INTERFACES {
+            for shape in INTERFACE_SHAPES {
+                assert!(
+                    !rules.grants(&hidraw_node(vendor, probe, interface, shape)),
+                    "a hidraw rule grants product {probe:04x} of vendor {vendor:04x}, which no \
+                     rule names (interface {interface}, {shape:?}); scope the grant to the \
+                     products and interfaces Hypercolor opens"
+                );
+            }
+        }
+    }
+}
+
+/// On an input-device vendor, each product's hidraw grant admits only the
+/// interfaces its descriptors open. Controllers that claim their HID
+/// interface through the USB device node (`TransportType::UsbHid`) keep a
+/// whole-product grant: Corsair's fan, LCD, and Lighting Node controllers
+/// have no input collections.
+#[test]
+fn input_device_hidraw_grants_stop_at_the_interfaces_hypercolor_opens() {
+    for ((vendor, product), access) in product_access() {
+        if !is_input_device_vendor(vendor) || access.unpinned_hidraw || access.claims_hid_over_usb {
+            continue;
+        }
+        for interface in PROBED_INTERFACES {
+            if access.hidraw_interfaces.contains(&interface) {
+                continue;
+            }
+            for shape in INTERFACE_SHAPES {
+                assert!(
+                    !HYPERCOLOR_RULES.grants(&hidraw_node(vendor, product, interface, shape)),
+                    "{:?} ({vendor:04x}:{product:04x}) has interface {interface} ({shape:?}) \
+                     granted, but Hypercolor opens hidraw only on {:?}; that interface can \
+                     carry keystrokes or pointer input",
+                    access.names,
+                    access.hidraw_interfaces
+                );
+            }
+        }
+    }
+}
+
+/// Without an interface number, a rule has to pick the lighting interface
+/// out by its shape. An IN and an OUT endpoint on a non-boot interface is
+/// the only shape udev can see that keyboard, NKRO, mouse, and media-key
+/// interfaces do not share, so an unpinned grant must require it.
+#[test]
+fn unpinned_input_device_grants_never_reach_an_input_only_interface() {
+    for ((vendor, product), access) in product_access() {
+        let whole_device = WHOLE_DEVICE_HIDRAW_GRANTS
+            .iter()
+            .any(|&(v, p, _)| (v, p) == (vendor, product));
+        if !is_input_device_vendor(vendor) || !access.unpinned_hidraw || whole_device {
+            continue;
+        }
+        for interface in PROBED_INTERFACES {
+            for shape in INTERFACE_SHAPES {
+                let input_shaped = shape.endpoints < 2 || shape.subclass == 1;
+                if !input_shaped {
+                    continue;
+                }
+                assert!(
+                    !HYPERCOLOR_RULES.grants(&hidraw_node(vendor, product, interface, shape)),
+                    "{:?} ({vendor:04x}:{product:04x}) does not pin its lighting interface, \
+                     and its rule grants interface {interface} with {shape:?}, which keyboard \
+                     and mouse interfaces share",
+                    access.names
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn whole_device_hidraw_grants_name_unpinned_input_device_products() {
+    let products = product_access();
+    for &(vendor, product, reason) in WHOLE_DEVICE_HIDRAW_GRANTS {
+        let access = products
+            .get(&(vendor, product))
+            .unwrap_or_else(|| panic!("{vendor:04x}:{product:04x} is not registered ({reason})"));
+        assert!(
+            is_input_device_vendor(vendor) && access.unpinned_hidraw,
+            "{vendor:04x}:{product:04x} pins its interface or is not an input-device vendor, \
+             so it needs no whole-device entry ({reason})"
+        );
+    }
+}
+
+/// Write access to a keyboard's or mouse's USB device node is enough to
+/// detach usbhid and read its input interfaces, so input-device vendors get
+/// a usb_device grant only for products whose transport opens that node.
+#[test]
+fn input_device_products_get_a_usb_device_grant_only_when_it_is_opened() {
+    for ((vendor, product), access) in product_access() {
+        if !is_input_device_vendor(vendor) || access.usb_device {
+            continue;
+        }
+        assert!(
+            !HYPERCOLOR_RULES.grants(&usb_device_node(vendor, product)),
+            "{:?} ({vendor:04x}:{product:04x}) gets a usb_device grant, but Hypercolor \
+             reaches it without opening the USB device node",
+            access.names
+        );
+    }
+    for &(vendor, name) in INPUT_DEVICE_VENDORS {
+        let probe = unnamed_product(&HYPERCOLOR_RULES, vendor);
+        assert!(
+            !HYPERCOLOR_RULES.grants(&usb_device_node(vendor, probe)),
+            "{name} ({vendor:04x}) has a vendor-wide usb_device grant"
+        );
+    }
 }
 
 #[test]
