@@ -6,6 +6,8 @@
 //! triggers a reconnect to reload the layout on demand.
 
 pub mod backend;
+#[cfg(test)]
+mod bounds_tests;
 mod scanner;
 mod streaming;
 mod topology;
@@ -27,6 +29,7 @@ use hypercolor_driver_api::{
     DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget, StatusCode};
 use hypercolor_driver_support::network::{
     metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
 };
@@ -46,7 +49,6 @@ use hypercolor_types::pairing::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
     PairDeviceStatus, PairingDescriptor, PairingFlowKind,
 };
-use reqwest::StatusCode;
 use serde::Deserialize;
 
 use self::types::NanoleafPanelLayoutResponse;
@@ -88,14 +90,25 @@ const DEVICE_FIELD_MAX_FPS: &str = "max_fps";
 const DEVICE_FIELD_STATE: &str = "state";
 const DEVICE_ACTION_REFRESH_TOPOLOGY: &str = "refresh_topology";
 
-static NANOLEAF_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())
-});
+const NANOLEAF_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn nanoleaf_http_client() -> Result<&'static reqwest::Client> {
+/// Largest `GET /api/v1/{token}` reply read. It embeds the panel layout
+/// and every effect name saved on the controller, so it has to cover a
+/// full 500-panel install plus a long effect list.
+const NANOLEAF_DEVICE_INFO_REPLY_BYTES: usize = 1024 * 1024;
+
+/// Largest panel layout read. A controller drives at most 500 panels and a
+/// `positionData` entry is about 60 bytes, so a full install is near 30 KiB.
+const NANOLEAF_LAYOUT_REPLY_BYTES: usize = 256 * 1024;
+
+/// Largest reply read from the endpoints that answer with one small
+/// object: pairing and the external-control request.
+const NANOLEAF_SMALL_REPLY_BYTES: usize = 64 * 1024;
+
+static NANOLEAF_HTTP_CLIENT: LazyLock<Result<BoundedHttpClient, String>> =
+    LazyLock::new(|| BoundedHttpClient::new().map_err(|error| error.to_string()));
+
+fn nanoleaf_http_client() -> Result<&'static BoundedHttpClient> {
     NANOLEAF_HTTP_CLIENT
         .as_ref()
         .map_err(|error| anyhow!("failed to build shared Nanoleaf HTTP client: {error}"))
@@ -128,7 +141,10 @@ pub async fn pair_device_with_status(
     let client = nanoleaf_http_client()?;
     let response = client
         .post(&url)
-        .send()
+        .send(ReadBudget::new(
+            NANOLEAF_SMALL_REPLY_BYTES,
+            NANOLEAF_HTTP_TIMEOUT,
+        ))
         .await
         .with_context(|| format!("Nanoleaf pairing request to {url} failed"))?;
     if matches!(
@@ -184,9 +200,12 @@ async fn fetch_device_info(
     let client = nanoleaf_http_client()?;
     let response = client
         .get(&url)
-        .send()
+        .send(ReadBudget::new(
+            NANOLEAF_DEVICE_INFO_REPLY_BYTES,
+            NANOLEAF_HTTP_TIMEOUT,
+        ))
         .await
-        .and_then(reqwest::Response::error_for_status)
+        .and_then(BoundedResponse::error_for_status)
         .with_context(|| format!("Nanoleaf device-info request to {url} failed"))?;
 
     response
@@ -204,9 +223,12 @@ async fn fetch_panel_layout(
     let client = nanoleaf_http_client()?;
     let response = client
         .get(&url)
-        .send()
+        .send(ReadBudget::new(
+            NANOLEAF_LAYOUT_REPLY_BYTES,
+            NANOLEAF_HTTP_TIMEOUT,
+        ))
         .await
-        .and_then(reqwest::Response::error_for_status)
+        .and_then(BoundedResponse::error_for_status)
         .with_context(|| format!("Nanoleaf panel-layout request to {url} failed"))?;
     let decoded: NanoleafPanelLayoutResponse = response
         .json()

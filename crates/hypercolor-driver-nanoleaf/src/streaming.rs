@@ -3,10 +3,11 @@
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{Context, Result, bail};
+use hypercolor_driver_support::http::{BoundedResponse, ReadBudget};
 use serde::Serialize;
 use tokio::net::UdpSocket;
 
-use super::nanoleaf_http_client;
+use super::{NANOLEAF_HTTP_TIMEOUT, NANOLEAF_SMALL_REPLY_BYTES, nanoleaf_http_client};
 
 pub const DEFAULT_NANOLEAF_API_PORT: u16 = 16_021;
 pub const DEFAULT_NANOLEAF_STREAM_PORT: u16 = 60_222;
@@ -143,12 +144,16 @@ async fn enable_external_control(device_ip: IpAddr, api_port: u16, auth_token: &
         },
     };
 
+    // The reply is never read: the status is all that matters.
     client
         .put(&url)
         .json(&body)
-        .send()
+        .send(ReadBudget::new(
+            NANOLEAF_SMALL_REPLY_BYTES,
+            NANOLEAF_HTTP_TIMEOUT,
+        ))
         .await
-        .and_then(reqwest::Response::error_for_status)
+        .and_then(BoundedResponse::error_for_status)
         .with_context(|| format!("failed to enable Nanoleaf external control via {url}"))?;
 
     Ok(())

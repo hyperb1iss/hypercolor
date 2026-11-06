@@ -14,7 +14,7 @@ the layout on demand.
 ## Position in the Workspace
 
 - Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
-  `hypercolor-color`, `hypercolor-types`, `anyhow`, `async-trait`, `reqwest`, `serde`,
+  `hypercolor-color`, `hypercolor-types`, `anyhow`, `async-trait`, `serde`,
   `serde_json`, `tokio`, `tracing`
 - Consumed by: `hypercolor-driver-builtin` (via the `nanoleaf` feature)
 
