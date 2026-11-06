@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
-    "vendors": 33,
-    "devices": 427,
+    "vendors": 34,
+    "devices": 431,
     "byStatus": {
-      "supported": 189,
+      "supported": 193,
       "in_progress": 1,
       "planned": 0,
       "researched": 95,
@@ -25,6 +25,7 @@
       "qmk",
       "razer",
       "twinkly",
+      "wiz",
       "wled"
     ]
   },
@@ -6577,6 +6578,88 @@
         "strip"
       ],
       "sourceFile": "data/drivers/vendors/twinkly.toml"
+    },
+    {
+      "slug": "wiz",
+      "name": "WiZ",
+      "website": "https://www.wizconnected.com",
+      "vids": [],
+      "vidsHex": [],
+      "notes": "Driven over the local WiZ UDP JSON API on port 38899: discovered by a registration broadcast or configured IPs, classified from the module name, and streamed one setPilot per frame. Every WiZ device is one color. Homes set to Only verified controls need the home signing key from the WiZ app. Experimental: tested against an in-repo fake device, not yet verified on real WiZ hardware.",
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "WiZ Color Bulbs and Spots",
+          "type": "other",
+          "status": "supported",
+          "driver": "wiz",
+          "transport": "network_udp",
+          "leds": 1,
+          "notes": "Color A19/A60, BR30, GU10, filament color, and similar bulbs, one color per frame with brightness as the dimming level. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "WiZ Fixtures",
+          "type": "other",
+          "status": "supported",
+          "driver": "wiz",
+          "transport": "network_udp",
+          "leds": 1,
+          "notes": "Ceiling, wall, and dual-head fixtures, driven as one light. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "WiZ Light Strips",
+          "type": "strip",
+          "status": "supported",
+          "driver": "wiz",
+          "transport": "network_udp",
+          "leds": 1,
+          "notes": "Single color over the local API, including RGBIC strips. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "WiZ Tunable and Dimmable White",
+          "type": "other",
+          "status": "supported",
+          "driver": "wiz",
+          "transport": "network_udp",
+          "leds": 1,
+          "notes": "White-only bulbs and fan lights follow the effect's brightness; color temperature stays where the WiZ app left it. Experimental, unverified on hardware."
+        }
+      ],
+      "counts": {
+        "supported": 4,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 4,
+      "drivers": [
+        "wiz"
+      ],
+      "transports": [
+        "network_udp"
+      ],
+      "deviceTypes": [
+        "other",
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/wiz.toml"
     },
     {
       "slug": "wled",
