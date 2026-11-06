@@ -413,8 +413,21 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="35ef", MODE="0660
 SUBSYSTEM=="tty", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── ASUS Aura ────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0b05", MODE="0660", GROUP="users", TAG+="uaccess"
+# Scoped to the Aura USB controllers' lighting interface. ROG keyboards and
+# mice share vendor ID 0b05 and expose keystroke and pointer collections as
+# hidraw nodes, and motherboards hang other HID functions (USB audio
+# controls) off it too. Hypercolor reaches the controllers through hidraw
+# only, so they get no usb_device grant.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1867d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1872d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1889d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p18A3d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p18A5d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p18F3d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1939d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p19AFd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1AA6d*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1BEDd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Lian Li ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", MODE="0660", GROUP="users", TAG+="uaccess"
