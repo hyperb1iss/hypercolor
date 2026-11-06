@@ -82,6 +82,7 @@ const TRANSPORT_LABELS: Record<string, string> = {
     i2c_smbus: 'I²C / SMBus',
     network_http: 'HTTP',
     network_udp: 'UDP',
+    network_tcp: 'TCP',
     network_mdns: 'mDNS',
 }
 
