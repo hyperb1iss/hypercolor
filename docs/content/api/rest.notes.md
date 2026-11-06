@@ -29,7 +29,7 @@ default. The same daemon also speaks [WebSocket](@/api/websocket.md), the
 [CLI](@/api/cli.md), and an [MCP server](@/agents/_index.md); this page
 covers HTTP only.
 
-## Base URL and surfaces 🎯 {#base-url}
+## Base URL and surfaces 🎯
 
 ```
 http://localhost:9420
@@ -45,7 +45,7 @@ Two paths sit outside the `/api/v1` tree:
 Everything else lives under `/api/v1`. Path parameters use brace syntax, so a
 device route is `/api/v1/devices/{id}`, not `:id`.
 
-## Conventions {#conventions}
+## Conventions
 
 - **Envelope.** A JSON success wraps its payload as `{ data, meta }` and an
   error as `{ error, meta }`. [Envelope & errors](@/api/rest-envelope-and-errors.md)
