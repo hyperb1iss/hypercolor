@@ -81,10 +81,6 @@ const READ_RIGHTS: u32 = FILE_READ_DATA | FILE_READ_ATTRIBUTES;
 const READ_CONTROL: u32 = 0x0002_0000;
 const ENUMERATION_BUFFER_BYTES: usize = 64 * 1024;
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-const RESERVED_DEVICE_NAMES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
 
 /// Which operations a retained directory handle permits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1347,40 +1343,14 @@ pub fn windows_child_name_is_valid(name: &OsStr) -> bool {
 
 /// Accept only one plain child name the Win32 layer reads the same way.
 fn validate_name(name: &OsStr) -> io::Result<Vec<u16>> {
-    let invalid = |reason: &str| {
-        io::Error::new(
+    let wide = name.encode_wide().collect::<Vec<_>>();
+    match crate::windows_names::name_refusal(&wide, name.to_str()) {
+        None => Ok(wide),
+        Some(reason) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("invalid child name {name:?}: {reason}"),
-        )
-    };
-    let wide = name.encode_wide().collect::<Vec<_>>();
-    if wide.is_empty() || wide.len() > 255 {
-        return Err(invalid("it must hold 1 to 255 UTF-16 units"));
+        )),
     }
-    if wide.iter().any(|&unit| {
-        unit < 0x20
-            || matches!(
-                unit,
-                0x22 | 0x2A | 0x2F | 0x3A | 0x3C | 0x3E | 0x3F | 0x5C | 0x7C
-            )
-    }) {
-        return Err(invalid(
-            "it holds a separator, stream marker or reserved character",
-        ));
-    }
-    if matches!(wide.last(), Some(0x20 | 0x2E)) {
-        return Err(invalid("Win32 drops a trailing dot or space"));
-    }
-    if let Some(text) = name.to_str() {
-        let stem = text.split('.').next().unwrap_or(text);
-        if RESERVED_DEVICE_NAMES
-            .iter()
-            .any(|reserved| stem.eq_ignore_ascii_case(reserved))
-        {
-            return Err(invalid("it is a reserved device name"));
-        }
-    }
-    Ok(wide)
 }
 
 fn require_normal_absolute(path: &Path) -> io::Result<()> {

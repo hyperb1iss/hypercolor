@@ -15,6 +15,7 @@ pub mod user_dirs;
 
 #[cfg(target_os = "windows")]
 mod windows;
+mod windows_names;
 
 #[cfg(unix)]
 pub use unix::{
@@ -29,6 +30,7 @@ pub use windows::{
     WindowsEntryKind, WindowsEntryMetadata, WindowsFileLock, WindowsSecurity, WindowsSid,
     windows_child_name_is_valid, windows_file_security,
 };
+pub use windows_names::windows_file_name_is_valid;
 
 /// Atomically replace `destination` with `source` and make the replacement
 /// durable.
