@@ -87,6 +87,13 @@ To move to a newer tauri-cli:
    `nsis_template_fork_builds_with_its_pinned_tauri_cli`.
 4. Build an installer and run the upgrade check below.
 
+The fork's `!uninstfinalize` line compares the signing command's exit
+code, which upstream's does not, so a release with
+[Windows signing](RELEASING.md#windows-signing) turned on fails instead of
+shipping an unsigned uninstaller. A new NSIS plugin call in the template or
+hooks also needs its DLL added to `$ExtraNsisPlugins` in
+`scripts/sign-windows-artifacts.ps1` unless Tauri already signs it.
+
 When editing the hooks, keep two NSIS limits in mind. Every string,
 command lines included, is capped at 1024 characters and silently
 truncated past that, so logic longer than a one-liner belongs in a
