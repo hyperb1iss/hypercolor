@@ -1,0 +1,41 @@
+[vendor]
+name = "WiZ"
+vid = []
+website = "https://www.wizconnected.com"
+notes = "Driven over the local WiZ UDP JSON API on port 38899: discovered by a registration broadcast or configured IPs, classified from the module name, and streamed one setPilot per frame. Every WiZ device is one color. Homes set to Only verified controls need the home signing key from the WiZ app. Experimental: tested against an in-repo fake device, not yet verified on real WiZ hardware."
+
+[[devices]]
+name = "WiZ Color Bulbs and Spots"
+type = "other"
+status = "supported"
+driver = "wiz"
+transport = "network_udp"
+leds = 1
+notes = "Color A19/A60, BR30, GU10, filament color, and similar bulbs, one color per frame with brightness as the dimming level. Experimental, unverified on hardware."
+
+[[devices]]
+name = "WiZ Light Strips"
+type = "strip"
+status = "supported"
+driver = "wiz"
+transport = "network_udp"
+leds = 1
+notes = "Single color over the local API, including RGBIC strips. Experimental, unverified on hardware."
+
+[[devices]]
+name = "WiZ Tunable and Dimmable White"
+type = "other"
+status = "supported"
+driver = "wiz"
+transport = "network_udp"
+leds = 1
+notes = "White-only bulbs and fan lights follow the effect's brightness; color temperature stays where the WiZ app left it. Experimental, unverified on hardware."
+
+[[devices]]
+name = "WiZ Fixtures"
+type = "other"
+status = "supported"
+driver = "wiz"
+transport = "network_udp"
+leds = 1
+notes = "Ceiling, wall, and dual-head fixtures, driven as one light. Experimental, unverified on hardware."
