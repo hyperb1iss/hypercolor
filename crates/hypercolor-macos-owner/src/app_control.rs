@@ -39,10 +39,16 @@ const RELAUNCH_RECORD: &str = "macOS app relaunch record";
 const MAX_CONTROL_LINE_BYTES: u64 = 8 * 1024;
 const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The update state root of one account's installation.
+/// The update state root below an account's Application Support directory.
 #[must_use]
-pub fn macos_update_state_root(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/Hypercolor/update")
+pub fn macos_update_state_root(application_support: &Path) -> PathBuf {
+    application_support.join("Hypercolor/update")
+}
+
+/// The update state root of the account running this process.
+#[must_use]
+pub fn macos_user_update_state_root() -> Option<PathBuf> {
+    hypercolor_platform_fs::user_dirs::data_base_dir().map(|base| macos_update_state_root(&base))
 }
 
 /// The `.app` an executable belongs to, when it runs from one.
@@ -59,19 +65,19 @@ pub fn macos_app_bundle_of(executable: &Path) -> Option<PathBuf> {
 /// Why an app that just started must not touch a daemon, if it must not.
 ///
 /// A translocated app can never proceed, since nothing it recorded would
-/// outlive it, so that wins over an update, which ends on its own.
+/// outlive it, so that wins over an update, which ends on its own, and holds
+/// whether or not the account's update state root can be resolved.
 #[must_use]
 pub fn macos_app_startup_hold(
     executable: &Path,
-    update_root: &Path,
+    update_root: Option<&Path>,
 ) -> Option<MacosAppStartupHold> {
     if is_macos_translocated_path(executable) {
-        Some(MacosAppStartupHold::MoveToApplications)
-    } else if update_root.join(MACOS_UPDATE_PENDING_FILE_NAME).exists() {
-        Some(MacosAppStartupHold::UpdateInProgress)
-    } else {
-        None
+        return Some(MacosAppStartupHold::MoveToApplications);
     }
+    update_root
+        .is_some_and(|root| root.join(MACOS_UPDATE_PENDING_FILE_NAME).exists())
+        .then_some(MacosAppStartupHold::UpdateInProgress)
 }
 
 /// Block until no update transaction is open.

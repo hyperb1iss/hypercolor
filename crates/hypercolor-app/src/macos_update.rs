@@ -43,12 +43,9 @@ pub use macos::{hold_startup, serve_app_control};
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::path::{Path, PathBuf};
-
-    use anyhow::Context as _;
     use hypercolor_macos_owner::{
         MacosAppControlServer, MacosAppStartupHold, MacosRunningApp, macos_app_bundle_of,
-        macos_app_startup_hold, macos_update_state_root, wait_for_macos_update_end,
+        macos_app_startup_hold, macos_user_update_state_root, wait_for_macos_update_end,
     };
     use tauri::{AppHandle, Emitter as _, Manager as _, Runtime};
     use url::Url;
@@ -56,37 +53,23 @@ mod macos {
     use super::MACOS_APP_STARTUP_HOLD_EVENT;
     use crate::supervisor::SupervisorState;
 
-    fn update_root() -> anyhow::Result<PathBuf> {
-        let home = std::env::var_os("HOME").context("HOME is not set")?;
-        Ok(macos_update_state_root(Path::new(&home)))
-    }
-
     /// Serve the update control socket for the life of this app.
     ///
     /// A build with no managed installation has no update state root and
     /// serves nothing. Neither does an app that does not run from a bundle.
     pub fn serve_app_control<R: Runtime>(app: &AppHandle<R>) {
-        let target = (|| -> anyhow::Result<Option<(PathBuf, MacosRunningApp)>> {
-            let root = update_root()?;
-            let executable = std::env::current_exe().context("resolve the app executable")?;
-            let bundle = macos_app_bundle_of(&executable);
-            Ok(bundle.filter(|_| root.is_dir()).map(|bundle| {
-                (
-                    root,
-                    MacosRunningApp {
-                        pid: std::process::id(),
-                        bundle,
-                    },
-                )
-            }))
-        })();
-        let (root, running) = match target {
-            Ok(Some(target)) => target,
-            Ok(None) => return,
-            Err(error) => {
-                tracing::warn!(%error, "update control socket unavailable");
-                return;
-            }
+        let Some(root) = macos_user_update_state_root().filter(|root| root.is_dir()) else {
+            return;
+        };
+        let bundle = std::env::current_exe()
+            .ok()
+            .and_then(|executable| macos_app_bundle_of(&executable));
+        let Some(bundle) = bundle else {
+            return;
+        };
+        let running = MacosRunningApp {
+            pid: std::process::id(),
+            bundle,
         };
         let server = match MacosAppControlServer::bind(&root) {
             Ok(server) => server,
@@ -115,19 +98,17 @@ mod macos {
     /// update ends, through [`crate::supervisor::start`]; a translocated app
     /// holds until it exits.
     pub fn hold_startup<R: Runtime>(app: &AppHandle<R>, daemon_url: &Url) -> bool {
-        let hold = match (std::env::current_exe(), update_root()) {
-            (Ok(executable), Ok(root)) => {
-                macos_app_startup_hold(&executable, &root).map(|hold| (hold, root))
-            }
-            _ => None,
-        };
-        let Some((hold, root)) = hold else {
+        let root = macos_user_update_state_root();
+        let hold = std::env::current_exe()
+            .ok()
+            .and_then(|executable| macos_app_startup_hold(&executable, root.as_deref()));
+        let Some(hold) = hold else {
             publish(app, None);
             return false;
         };
         tracing::info!(?hold, "holding daemon startup");
         publish(app, Some(hold));
-        if hold == MacosAppStartupHold::UpdateInProgress {
+        if let (MacosAppStartupHold::UpdateInProgress, Some(root)) = (hold, root) {
             let app = app.clone();
             let daemon_url = daemon_url.clone();
             tauri::async_runtime::spawn_blocking(move || match wait_for_macos_update_end(&root) {
