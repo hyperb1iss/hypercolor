@@ -12,7 +12,7 @@ lands once.
 ## Position in the Workspace
 
 - Depends on: `uuid`
-- Consumed by: `hypercolor-driver-wled`
+- Consumed by: `hypercolor-driver-wled`, `hypercolor-driver-pixel`
 
 ## Key Public Surface
 

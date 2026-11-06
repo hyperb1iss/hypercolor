@@ -4692,6 +4692,7 @@ dependencies = [
  "hypercolor-driver-hue",
  "hypercolor-driver-nanoleaf",
  "hypercolor-driver-openrgb",
+ "hypercolor-driver-pixel",
  "hypercolor-driver-support",
  "hypercolor-driver-wled",
  "hypercolor-hal",
@@ -4769,6 +4770,25 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "hypercolor-driver-pixel"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hypercolor-driver-api",
+ "hypercolor-driver-support",
+ "hypercolor-pixel-protocols",
+ "hypercolor-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "uuid 1.28.0",
 ]
 
 [[package]]
