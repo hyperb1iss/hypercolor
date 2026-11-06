@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ControlType(StrEnum):
+class ControlType(TolerantStrEnum):
     ASSET = "asset"
     COLOR_PICKER = "color_picker"
     DROPDOWN = "dropdown"

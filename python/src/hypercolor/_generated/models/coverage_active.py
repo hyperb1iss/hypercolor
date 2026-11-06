@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class CoverageActive(StrEnum):
+class CoverageActive(TolerantStrEnum):
     BRIDGE = "bridge"
     CONFLICT = "conflict"
     NATIVE = "native"

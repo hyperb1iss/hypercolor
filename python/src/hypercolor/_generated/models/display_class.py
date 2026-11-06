@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DisplayClass(StrEnum):
+class DisplayClass(TolerantStrEnum):
     PANEL = "panel"
     PUMP_LCD = "pump_lcd"
     STRIP = "strip"

@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class Protection(StrEnum):
+class Protection(TolerantStrEnum):
     OPEN = "open"
     SECTION_ROOT = "section_root"
     TREE = "tree"

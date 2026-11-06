@@ -12,6 +12,7 @@ import msgspec
 import pytest
 import respx
 
+from hypercolor._generated.models import EffectCategory
 from hypercolor._generated.types import Unset
 from hypercolor.client import HypercolorClient
 from hypercolor.exceptions import (
@@ -1005,6 +1006,45 @@ async def test_patch_layer_controls_addresses_real_layer(client: HypercolorClien
         }
     )
     assert str(result.layers[0].id) == layer
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_effects_from_a_newer_daemon_keep_unknown_categories(
+    client: HypercolorClient,
+) -> None:
+    def summary(effect_id: str, category: str) -> dict[str, object]:
+        return {
+            "id": effect_id,
+            "name": effect_id.title(),
+            "description": "",
+            "author": "Hypercolor",
+            "category": category,
+            "source": "native",
+            "runnable": True,
+            "tags": [],
+            "version": "1.0.0",
+        }
+
+    respx.get("http://hyperia.test:9420/api/v1/effects").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [summary("aurora", "audio"), summary("prism", "holographic")],
+                    "total": 2,
+                }
+            ),
+        )
+    )
+
+    effects = await client.get_effects()
+
+    assert [effect.id for effect in effects] == ["aurora", "prism"]
+    assert effects[0].category is EffectCategory.AUDIO
+    assert effects[1].category == "holographic"
+    assert effects[1].category not in list(EffectCategory)
+    assert effects[1].to_dict()["category"] == "holographic"
 
 
 @respx.mock

@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DeviceAuthState(StrEnum):
+class DeviceAuthState(TolerantStrEnum):
     CONFIGURED = "configured"
     ERROR = "error"
     OPEN = "open"

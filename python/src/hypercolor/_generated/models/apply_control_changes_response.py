@@ -8,19 +8,13 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.apply_impact_type_0 import ApplyImpactType0
-from ..models.apply_impact_type_1 import ApplyImpactType1
-from ..models.apply_impact_type_2 import ApplyImpactType2
-from ..models.apply_impact_type_3 import ApplyImpactType3
-from ..models.apply_impact_type_4 import ApplyImpactType4
-from ..models.apply_impact_type_5 import ApplyImpactType5
-from ..models.apply_impact_type_6 import ApplyImpactType6
 
 if TYPE_CHECKING:
     from ..models.applied_control_change import AppliedControlChange
     from ..models.apply_control_changes_response_values import (
         ApplyControlChangesResponseValues,
     )
-    from ..models.apply_impact_type_7 import ApplyImpactType7
+    from ..models.apply_impact_type_1 import ApplyImpactType1
     from ..models.rejected_control_change import RejectedControlChange
 
 
@@ -33,8 +27,7 @@ class ApplyControlChangesResponse:
 
     Attributes:
         accepted (list[AppliedControlChange]): Accepted changes after driver normalization.
-        impacts (list[ApplyImpactType0 | ApplyImpactType1 | ApplyImpactType2 | ApplyImpactType3 | ApplyImpactType4 |
-            ApplyImpactType5 | ApplyImpactType6 | ApplyImpactType7]): Dynamic impacts produced by the transaction.
+        impacts (list[ApplyImpactType0 | ApplyImpactType1]): Dynamic impacts produced by the transaction.
         previous_revision (int):
         rejected (list[RejectedControlChange]): Rejected changes.
         revision (int):
@@ -43,16 +36,7 @@ class ApplyControlChangesResponse:
     """
 
     accepted: list[AppliedControlChange]
-    impacts: list[
-        ApplyImpactType0
-        | ApplyImpactType1
-        | ApplyImpactType2
-        | ApplyImpactType3
-        | ApplyImpactType4
-        | ApplyImpactType5
-        | ApplyImpactType6
-        | ApplyImpactType7
-    ]
+    impacts: list[ApplyImpactType0 | ApplyImpactType1]
     previous_revision: int
     rejected: list[RejectedControlChange]
     revision: int
@@ -69,15 +53,7 @@ class ApplyControlChangesResponse:
         impacts = []
         for impacts_item_data in self.impacts:
             impacts_item: dict[str, Any] | str
-            if (
-                isinstance(impacts_item_data, ApplyImpactType0)
-                or isinstance(impacts_item_data, ApplyImpactType1)
-                or isinstance(impacts_item_data, ApplyImpactType2)
-                or isinstance(impacts_item_data, ApplyImpactType3)
-                or isinstance(impacts_item_data, ApplyImpactType4)
-                or isinstance(impacts_item_data, ApplyImpactType5)
-                or isinstance(impacts_item_data, ApplyImpactType6)
-            ):
+            if isinstance(impacts_item_data, ApplyImpactType0):
                 impacts_item = impacts_item_data.value
             else:
                 impacts_item = impacts_item_data.to_dict()
@@ -121,7 +97,7 @@ class ApplyControlChangesResponse:
         from ..models.apply_control_changes_response_values import (
             ApplyControlChangesResponseValues,
         )
-        from ..models.apply_impact_type_7 import ApplyImpactType7
+        from ..models.apply_impact_type_1 import ApplyImpactType1
         from ..models.rejected_control_change import (
             RejectedControlChange,
         )
@@ -140,16 +116,7 @@ class ApplyControlChangesResponse:
 
             def _parse_impacts_item(
                 data: object,
-            ) -> (
-                ApplyImpactType0
-                | ApplyImpactType1
-                | ApplyImpactType2
-                | ApplyImpactType3
-                | ApplyImpactType4
-                | ApplyImpactType5
-                | ApplyImpactType6
-                | ApplyImpactType7
-            ):
+            ) -> ApplyImpactType0 | ApplyImpactType1:
                 try:
                     if not isinstance(data, str):
                         raise TypeError()
@@ -158,59 +125,11 @@ class ApplyControlChangesResponse:
                     return componentsschemas_apply_impact_type_0
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
-                try:
-                    if not isinstance(data, str):
-                        raise TypeError()
-                    componentsschemas_apply_impact_type_1 = ApplyImpactType1(data)
-
-                    return componentsschemas_apply_impact_type_1
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, str):
-                        raise TypeError()
-                    componentsschemas_apply_impact_type_2 = ApplyImpactType2(data)
-
-                    return componentsschemas_apply_impact_type_2
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, str):
-                        raise TypeError()
-                    componentsschemas_apply_impact_type_3 = ApplyImpactType3(data)
-
-                    return componentsschemas_apply_impact_type_3
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, str):
-                        raise TypeError()
-                    componentsschemas_apply_impact_type_4 = ApplyImpactType4(data)
-
-                    return componentsschemas_apply_impact_type_4
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, str):
-                        raise TypeError()
-                    componentsschemas_apply_impact_type_5 = ApplyImpactType5(data)
-
-                    return componentsschemas_apply_impact_type_5
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
-                try:
-                    if not isinstance(data, str):
-                        raise TypeError()
-                    componentsschemas_apply_impact_type_6 = ApplyImpactType6(data)
-
-                    return componentsschemas_apply_impact_type_6
-                except (TypeError, ValueError, AttributeError, KeyError):
-                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_apply_impact_type_7 = ApplyImpactType7.from_dict(data)
+                componentsschemas_apply_impact_type_1 = ApplyImpactType1.from_dict(data)
 
-                return componentsschemas_apply_impact_type_7
+                return componentsschemas_apply_impact_type_1
 
             impacts_item = _parse_impacts_item(impacts_item_data)
 

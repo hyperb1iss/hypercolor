@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class FitMode(StrEnum):
+class FitMode(TolerantStrEnum):
     CONTAIN = "contain"
     COVER = "cover"
     MIRROR = "mirror"

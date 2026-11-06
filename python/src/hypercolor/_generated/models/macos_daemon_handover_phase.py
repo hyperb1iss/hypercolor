@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class MacosDaemonHandoverPhase(StrEnum):
+class MacosDaemonHandoverPhase(TolerantStrEnum):
     AUTOSTARTS_CONFIGURED = "autostarts_configured"
     AWAITING_GUARD_RELEASE = "awaiting_guard_release"
     COMMITTED = "committed"

@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class EffectConsoleLevel(StrEnum):
+class EffectConsoleLevel(TolerantStrEnum):
     DEBUG = "debug"
     ERROR = "error"
     LOG = "log"

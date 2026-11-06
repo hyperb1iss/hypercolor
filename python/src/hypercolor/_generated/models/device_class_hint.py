@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DeviceClassHint(StrEnum):
+class DeviceClassHint(TolerantStrEnum):
     AUDIO = "audio"
     CONTROLLER = "controller"
     DISPLAY = "display"

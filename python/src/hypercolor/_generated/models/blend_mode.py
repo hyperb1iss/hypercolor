@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class BlendMode(StrEnum):
+class BlendMode(TolerantStrEnum):
     ADD = "add"
     ALPHA = "alpha"
     COLOR_DODGE = "color_dodge"

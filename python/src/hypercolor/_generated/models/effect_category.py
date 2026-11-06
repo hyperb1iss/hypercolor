@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class EffectCategory(StrEnum):
+class EffectCategory(TolerantStrEnum):
     AMBIENT = "ambient"
     AUDIO = "audio"
     DISPLAY = "display"

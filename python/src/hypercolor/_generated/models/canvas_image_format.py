@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class CanvasImageFormat(StrEnum):
+class CanvasImageFormat(TolerantStrEnum):
     JPEG = "jpeg"
     PNG = "png"
 

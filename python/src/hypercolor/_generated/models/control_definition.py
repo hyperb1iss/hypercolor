@@ -8,21 +8,13 @@ from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.control_kind_type_0 import ControlKindType0
-from ..models.control_kind_type_1 import ControlKindType1
-from ..models.control_kind_type_2 import ControlKindType2
-from ..models.control_kind_type_3 import ControlKindType3
-from ..models.control_kind_type_4 import ControlKindType4
-from ..models.control_kind_type_5 import ControlKindType5
-from ..models.control_kind_type_6 import ControlKindType6
-from ..models.control_kind_type_7 import ControlKindType7
-from ..models.control_kind_type_8 import ControlKindType8
 from ..models.control_type import ControlType
 from ..models.preview_source import PreviewSource
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.control_binding import ControlBinding
-    from ..models.control_kind_type_9 import ControlKindType9
+    from ..models.control_kind_type_1 import ControlKindType1
     from ..models.control_value import ControlValue
 
 
@@ -47,9 +39,7 @@ class ControlDefinition:
             binding (ControlBinding | None | Unset):
             group (None | str | Unset): Optional grouping for the control panel UI.
             id (str | Unset): Stable control identifier used in API payloads and renderer globals.
-            kind (ControlKindType0 | ControlKindType1 | ControlKindType2 | ControlKindType3 | ControlKindType4 |
-                ControlKindType5 | ControlKindType6 | ControlKindType7 | ControlKindType8 | ControlKindType9 | Unset): Semantic
-                control kind declared by an effect source.
+            kind (ControlKindType0 | ControlKindType1 | Unset): Semantic control kind declared by an effect source.
 
                 This keeps `LightScript` metadata semantics intact even when
                 multiple kinds map to the same UI widget type.
@@ -68,19 +58,7 @@ class ControlDefinition:
     binding: ControlBinding | None | Unset = UNSET
     group: None | str | Unset = UNSET
     id: str | Unset = UNSET
-    kind: (
-        ControlKindType0
-        | ControlKindType1
-        | ControlKindType2
-        | ControlKindType3
-        | ControlKindType4
-        | ControlKindType5
-        | ControlKindType6
-        | ControlKindType7
-        | ControlKindType8
-        | ControlKindType9
-        | Unset
-    ) = UNSET
+    kind: ControlKindType0 | ControlKindType1 | Unset = UNSET
     labels: list[str] | Unset = UNSET
     max_: float | None | Unset = UNSET
     min_: float | None | Unset = UNSET
@@ -123,17 +101,7 @@ class ControlDefinition:
         kind: dict[str, Any] | str | Unset
         if isinstance(self.kind, Unset):
             kind = UNSET
-        elif (
-            isinstance(self.kind, ControlKindType0)
-            or isinstance(self.kind, ControlKindType1)
-            or isinstance(self.kind, ControlKindType2)
-            or isinstance(self.kind, ControlKindType3)
-            or isinstance(self.kind, ControlKindType4)
-            or isinstance(self.kind, ControlKindType5)
-            or isinstance(self.kind, ControlKindType6)
-            or isinstance(self.kind, ControlKindType7)
-            or isinstance(self.kind, ControlKindType8)
-        ):
+        elif isinstance(self.kind, ControlKindType0):
             kind = self.kind.value
         else:
             kind = self.kind.to_dict()
@@ -211,7 +179,7 @@ class ControlDefinition:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.control_binding import ControlBinding
-        from ..models.control_kind_type_9 import ControlKindType9
+        from ..models.control_kind_type_1 import ControlKindType1
         from ..models.control_value import ControlValue
 
         d = dict(src_dict)
@@ -258,21 +226,7 @@ class ControlDefinition:
 
         id = d.pop("id", UNSET)
 
-        def _parse_kind(
-            data: object,
-        ) -> (
-            ControlKindType0
-            | ControlKindType1
-            | ControlKindType2
-            | ControlKindType3
-            | ControlKindType4
-            | ControlKindType5
-            | ControlKindType6
-            | ControlKindType7
-            | ControlKindType8
-            | ControlKindType9
-            | Unset
-        ):
+        def _parse_kind(data: object) -> ControlKindType0 | ControlKindType1 | Unset:
             if isinstance(data, Unset):
                 return data
             try:
@@ -283,75 +237,11 @@ class ControlDefinition:
                 return componentsschemas_control_kind_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_1 = ControlKindType1(data)
-
-                return componentsschemas_control_kind_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_2 = ControlKindType2(data)
-
-                return componentsschemas_control_kind_type_2
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_3 = ControlKindType3(data)
-
-                return componentsschemas_control_kind_type_3
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_4 = ControlKindType4(data)
-
-                return componentsschemas_control_kind_type_4
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_5 = ControlKindType5(data)
-
-                return componentsschemas_control_kind_type_5
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_6 = ControlKindType6(data)
-
-                return componentsschemas_control_kind_type_6
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_7 = ControlKindType7(data)
-
-                return componentsschemas_control_kind_type_7
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                componentsschemas_control_kind_type_8 = ControlKindType8(data)
-
-                return componentsschemas_control_kind_type_8
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_control_kind_type_9 = ControlKindType9.from_dict(data)
+            componentsschemas_control_kind_type_1 = ControlKindType1.from_dict(data)
 
-            return componentsschemas_control_kind_type_9
+            return componentsschemas_control_kind_type_1
 
         kind = _parse_kind(d.pop("kind", UNSET))
 

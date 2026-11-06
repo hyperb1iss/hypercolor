@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ControlPersistence(StrEnum):
+class ControlPersistence(TolerantStrEnum):
     DEVICE_CONFIG = "device_config"
     DRIVER_CONFIG = "driver_config"
     HARDWARE_STORED = "hardware_stored"

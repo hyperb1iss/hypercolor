@@ -56,7 +56,26 @@ Additive changes ship in minor releases:
 - new values in an existing enum, such as a new effect category or error code
 
 A client stays compatible by ignoring fields it does not know and treating an
-unknown event type or enum value as something to skip rather than an error.
+unknown event type or enum value as something to keep or skip rather than an
+error.
+
+## Which clients follow that rule
+
+- **The Python client** does. It ignores fields it does not model, passes
+  unknown WebSocket messages through as events, and decodes an enum value it
+  predates as an unlisted member that keeps the wire string (a new effect
+  category arrives as `EffectCategory("holographic")`, equal to
+  `"holographic"` and not one of the listed members). An older 1.x Python
+  client keeps working against a newer 1.x daemon.
+- **Hypercolor's own Rust clients** (the CLI, the TUI, the web UI, and the
+  desktop app) decode with the types of the release they ship in, and they
+  refuse an enum value or envelope field they predate. They support a daemon
+  from their own release or an earlier 1.x release. The web UI and the
+  desktop app always run against the daemon they ship with. When the CLI or
+  TUI talks to a remote daemon from a newer release, upgrade the CLI or TUI
+  to match it.
+- **Your own clients** should follow the rule above, so a daemon upgrade
+  never requires a client upgrade.
 
 ## Deprecation
 

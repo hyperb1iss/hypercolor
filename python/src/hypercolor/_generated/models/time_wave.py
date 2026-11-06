@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class TimeWave(StrEnum):
+class TimeWave(TolerantStrEnum):
     SAW = "saw"
     SINE = "sine"
     SQUARE = "square"

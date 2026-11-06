@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class Corner(StrEnum):
+class Corner(TolerantStrEnum):
     BOTTOM_LEFT = "bottom_left"
     BOTTOM_RIGHT = "bottom_right"
     TOP_LEFT = "top_left"

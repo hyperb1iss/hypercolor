@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class SensorUnit(StrEnum):
+class SensorUnit(TolerantStrEnum):
     CELSIUS = "celsius"
     MEGABYTES = "megabytes"
     MHZ = "mhz"

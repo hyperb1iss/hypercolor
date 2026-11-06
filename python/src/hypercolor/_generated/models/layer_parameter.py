@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class LayerParameter(StrEnum):
+class LayerParameter(TolerantStrEnum):
     BRIGHTNESS = "brightness"
     CONTRAST = "contrast"
     HUE_SHIFT = "hue_shift"

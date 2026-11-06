@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DaemonStartupPhase(StrEnum):
+class DaemonStartupPhase(TolerantStrEnum):
     INITIALIZING = "initializing"
     LOADING_STORES = "loading_stores"
     OPENING_ASSET_LIBRARY = "opening_asset_library"

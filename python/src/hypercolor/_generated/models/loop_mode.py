@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class LoopMode(StrEnum):
+class LoopMode(TolerantStrEnum):
     LOOP = "loop"
     NONE = "none"
     PING_PONG = "ping_pong"

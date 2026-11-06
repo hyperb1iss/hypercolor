@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class ProtectedSourceGrantOwner(StrEnum):
+class ProtectedSourceGrantOwner(TolerantStrEnum):
     APP = "app"
     APP_SIDECAR = "app_sidecar"
     BROKER = "broker"
