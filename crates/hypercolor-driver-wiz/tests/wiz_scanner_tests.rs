@@ -55,7 +55,7 @@ async fn registration_finds_the_device_and_probes_it() -> TestResult {
 #[tokio::test]
 async fn registration_replies_report_the_device_port() -> TestResult {
     let fake = FakeWiz::spawn(FakeSpec::color_bulb()).await?;
-    let found = collect_registrations(&[fake.addr()], Duration::from_millis(300)).await?;
+    let found = collect_registrations(&[fake.addr()], Duration::from_millis(300), 8).await?;
     assert_eq!(found, [fake.addr()]);
     Ok(())
 }
