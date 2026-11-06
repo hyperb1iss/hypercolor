@@ -1,4 +1,5 @@
 mod directory;
+mod pipe;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
@@ -26,6 +27,7 @@ pub use directory::{
     WindowsEntryMetadata, WindowsFileLock, WindowsSecurity, WindowsSid,
     windows_child_name_is_valid, windows_file_security,
 };
+pub use pipe::windows_named_pipe_server_process_id;
 
 const REPLACE_FLAGS: u32 = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
 const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
