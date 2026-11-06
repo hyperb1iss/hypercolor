@@ -19,7 +19,11 @@ use sha2::{Digest as _, Sha256};
 use super::error::ReleasePayloadError;
 use super::manifest::{
     MANIFEST_NAME, MAX_RELEASE_MANIFEST_BYTES, Member, PermissionClass, ValidatedManifest,
-    fold_case,
+    fold_case, split_parent,
+};
+use super::model::{
+    WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsFileIdentity,
+    WindowsUnitBinding,
 };
 use super::store::{InstallLock, InstallStore};
 use crate::model::{UnitId, UnitRecord};
@@ -118,6 +122,62 @@ pub fn retain_installed_release_unit(
     let manifest = read_manifest(&directory, expected_unit)?;
     validate_installed(store, &directory, &manifest)?;
     unit_record(store, expected_unit, directory)
+}
+
+/// What a retained unit's manifest and files state about the programs a
+/// transaction proves: the manifest's digests, and the file IDs those
+/// members hold on their volume.
+///
+/// # Errors
+///
+/// Returns an error when the manifest does not hash to the unit's digest
+/// or a program is missing.
+pub(super) fn bind_windows_unit(
+    unit: &UnitRecord,
+) -> Result<WindowsUnitBinding, ReleasePayloadError> {
+    let directory = unit.directory();
+    let manifest = read_manifest(directory, unit.id())?;
+    let identity = |member| member_identity(directory, &manifest, member);
+    Ok(WindowsUnitBinding {
+        unit: unit.id().clone(),
+        version: manifest.version.clone(),
+        app: identity(WINDOWS_APP_MEMBER)?,
+        daemon: identity(WINDOWS_DAEMON_MEMBER)?,
+        broker: identity(WINDOWS_BROKER_MEMBER)?,
+    })
+}
+
+fn member_identity(
+    root: &WindowsDirectory,
+    manifest: &ValidatedManifest,
+    member: &str,
+) -> Result<WindowsFileIdentity, ReleasePayloadError> {
+    let Some(Member::File { sha256, .. }) = manifest.members.get(member) else {
+        return Err(ReleasePayloadError::InvalidUnit(format!(
+            "the unit has no program {member}"
+        )));
+    };
+    let (parent, name) = split_parent(member);
+    let mut holder = None;
+    for component in parent.split('/').filter(|part| !part.is_empty()) {
+        let opened = holder
+            .as_ref()
+            .unwrap_or(root)
+            .open_child_directory(OsStr::new(component), WindowsDirectoryAccess::Read)
+            .map_err(filesystem("open a unit directory"))?;
+        holder = Some(opened);
+    }
+    let metadata = holder
+        .as_ref()
+        .unwrap_or(root)
+        .entry_metadata(OsStr::new(name))
+        .map_err(filesystem("inspect a unit program"))?
+        .ok_or_else(|| ReleasePayloadError::InvalidUnit(format!("{member} is missing")))?;
+    Ok(WindowsFileIdentity {
+        volume_serial: metadata.volume_serial(),
+        file_id: format!("{:032x}", metadata.file_id()),
+        sha256: sha256.clone(),
+    })
 }
 
 fn read_manifest(
