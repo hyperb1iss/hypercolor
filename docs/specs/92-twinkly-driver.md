@@ -144,12 +144,25 @@ There is no mDNS advertisement (Home Assistant matches only DHCP hostnames
 Every address found by the datagram, every configured `device_ips` entry, and
 every previously tracked device (at its recorded endpoint) is probed with two
 unauthenticated REST reads, `GET /xled/v1/gestalt` and
-`GET /xled/v1/fw/version`. Probes run concurrently; results are deduplicated by
-MAC address.
+`GET /xled/v1/fw/version`. Results are deduplicated by MAC address.
 
 **Discovery never logs in.** A login invalidates every earlier token (section
 5.2), so a login during a periodic scan would cut off an active Hypercolor
 stream or the Twinkly app. Authentication waits for connect.
+
+### 3.3 Bounds on discovery
+
+Discovery replies are unauthenticated and anyone on the LAN can send them, so
+a scan bounds what they can make it do:
+
+| Bound | Value | Why |
+|-------|-------|-----|
+| Addresses admitted from replies | 128 per scan, one per source IP | A large holiday display runs a few dozen controllers; further replies are dropped with a warning that names `device_ips` |
+| Probes in flight | 16 | Each probe is two short HTTP requests on its own client; 128 candidates finish in eight rounds |
+| Probe phase | the host's scan budget (at least one full probe round) | Unfinished probes are aborted with a warning |
+| LED count | 1 to 4096, at most 255 on version 1, and a version 2 frame within one 65 507-byte datagram | Section 6.5; a device outside these is refused before it is published or anything is allocated |
+
+Configured and tracked addresses are probed regardless of the reply cap.
 
 ---
 
@@ -177,6 +190,17 @@ Replies carry an application `code` that does not track the HTTP status:
 The driver treats any code other than 1000 as an error, and HTTP 401 as a
 distinct "token rejected" error that the upkeep loop answers with a fresh
 login (section 5.3).
+
+Two client rules protect against a misbehaving peer at a device address:
+
+- **Reply size.** Bodies are read in chunks and refused past 256 KiB (a
+  declared `Content-Length` over the cap is refused before reading). The
+  largest legitimate reply is a layout of at most 4096 coordinates, about
+  200 KiB. A layout listing more coordinates than 4096 is refused before the
+  typed coordinate list is built.
+- **No redirects.** The API lives at one fixed address, so redirects are never
+  followed. reqwest strips standard credentials on cross-origin redirects but
+  would forward the custom `X-Auth-Token` header.
 
 ### 4.2 Endpoints used
 
@@ -251,13 +275,34 @@ While connected, a background task runs every 5 s:
 | Condition | Action |
 |-----------|--------|
 | Token within 5 minutes (or half its lifetime, whichever is less) of expiry | Log in, verify, hand the new token to the frame encoder, `POST led/mode rt` |
-| `GET led/mode` returns 401 | Same as above |
+| `GET led/mode` returns 401 | Log in again, unless the contention rule in section 5.4 applies |
 | `GET led/mode` returns a mode other than `rt` | `POST led/mode rt` |
 | Any other failure | Count it; after 3 consecutive failures the session reports a write error, and the host's lifecycle reconnects the device |
 
-The 5 s interval bounds the dark period after another client steals the
-token. Running Home Assistant's Twinkly integration against the same device
-makes the two clients take turns; the docs page says to choose one.
+The 5 s interval bounds the dark period after another client signs
+Hypercolor out once.
+
+### 5.4 Contention
+
+When another client keeps logging in (the Twinkly app in use, or Home
+Assistant's integration polling every 30 s), re-logging in on every 401 would
+fight it forever: each login signs the other client out. The session instead
+counts lost logins, including a 401 in the middle of its own re-login:
+
+| Rule | Default |
+|------|---------|
+| Lost logins that count as contention | 3 within 2 minutes |
+| First pause | 30 s |
+| Each later pause | doubled, up to 10 minutes |
+| Pause reset | after 2 minutes without a lost login |
+
+During a pause the session sends nothing to the device, answers frames with
+`Declined` (the device keeps showing what the other app set), reports
+`control_state = yielded_to_another_app` in its metadata, and logs a warning
+that another app is controlling the lights. When the pause ends it logs in
+once to take the lights back; if the other client signs it out again, the
+next pause is longer. A user action that reconnects the device (Refresh
+Layout, or disabling and enabling it) starts a fresh session with no pause.
 
 ---
 
@@ -332,6 +377,21 @@ No firmware is known between 2.4.6 (documented as version 2) and 2.4.14
 Firmware versions are dotted numbers compared part by part (`2.10.0` is newer
 than `2.9.99`); missing parts are zero. A version with a suffix such as
 `2.0.22-mqtt` does not parse and fails the probe.
+
+### 6.5 LED count limits
+
+The LED count comes from an unauthenticated gestalt, so it is validated
+before discovery publishes the device and before any buffer is sized:
+
+| Limit | Value |
+|-------|-------|
+| Any device | 1 to 4096 LEDs (generation II reports at most 1200, Pro controllers 1500) |
+| Version 1 | at most 255, the one-byte count |
+| Version 2 | the whole frame plus its 10-byte header within one 65 507-byte UDP datagram |
+| Version 3 | covered by the 4096 cap: at most 19 fragments |
+
+A device outside the limits fails its probe with a warning and is never
+published.
 
 ---
 
@@ -454,9 +514,14 @@ max_fps = 60                # real-time frames per second, 1 to 120
 
 `TwinklyBackend` adopts the endpoint from metadata, opens a session on
 connect (section 5.1 plus layout and `rt`), and hands the host a
-`DeviceFrameSink` that encodes and sends datagrams. Disconnect stops the
-upkeep task and closes the sink; it does not change the LED mode, because the
-device returns to its movie by itself.
+`DeviceFrameSink` that encodes and sends datagrams.
+
+Connect reads `GET led/mode` right after login and remembers the mode unless
+it is already `rt`. Disconnect stops the upkeep task, closes the sink, and
+puts that mode back with `POST led/mode`, bounded to 2 s and best effort (a
+failure is logged at debug level). The restore is skipped when the session
+is paused for contention, so Hypercolor never takes the lights from another
+app on the way out, and when the session already failed.
 
 ### 10.6 Controls
 
@@ -508,8 +573,9 @@ Nothing touches the LAN. Every test binds 127.0.0.1.
    frames, far beyond any device.
 4. **Maximum real-time rate** is unknown (section 8.1); the configurable
    `max_fps` is the escape hatch.
-5. **Token contention** with the Twinkly app or Home Assistant makes clients
-   take turns (section 5.3).
+5. **Token contention** with the Twinkly app or Home Assistant pauses
+   streaming for a growing interval (section 5.4); the two cannot share a
+   device.
 6. **Sync groups**: a group master's layout covers its members; streaming to
    a grouped device is untested in every source.
 7. **AWW profile and the `/xled/v2` Pro API** are unsupported (section 2).
