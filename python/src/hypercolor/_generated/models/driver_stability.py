@@ -1,7 +1,7 @@
-from enum import StrEnum
+from ..tolerant_enum import TolerantStrEnum
 
 
-class DriverStability(StrEnum):
+class DriverStability(TolerantStrEnum):
     EXPERIMENTAL = "experimental"
     STABLE = "stable"
 
