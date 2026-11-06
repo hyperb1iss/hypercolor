@@ -202,6 +202,96 @@ async fn a_started_line_must_finish_within_the_completion_bound() {
 }
 
 #[tokio::test]
+async fn cancelling_an_idle_read_does_not_renew_the_completion_bound() {
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    let mut lines = lines(reader);
+    writer.write_all(b"started").await.expect("write");
+    let completion = Duration::from_millis(200);
+    let started = Instant::now();
+    let error = loop {
+        let attempt = tokio::time::timeout(completion / 4, lines.next_after_idle(completion));
+        match attempt.await {
+            Ok(result) => break result.expect_err("stalled line"),
+            Err(_) => assert!(
+                started.elapsed() < completion * 4,
+                "a cancelled call renewed the bound: {:?}",
+                started.elapsed()
+            ),
+        }
+    };
+    assert!(matches!(error, LineError::TimedOut), "{error}");
+}
+
+#[tokio::test]
+async fn a_line_started_by_next_keeps_its_first_byte_clock() {
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    let mut lines = lines(reader);
+    writer.write_all(b"started").await.expect("write");
+    let error = lines.next(after(60)).await.expect_err("stalled line");
+    assert!(matches!(error, LineError::TimedOut));
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    let started = Instant::now();
+    let error = lines
+        .next_after_idle(Duration::from_millis(100))
+        .await
+        .expect_err("past its bound already");
+    assert!(matches!(error, LineError::TimedOut));
+    assert!(
+        started.elapsed() < Duration::from_millis(50),
+        "the bound runs from the first byte, not from this call"
+    );
+}
+
+#[tokio::test]
+async fn each_line_gets_its_own_completion_bound() {
+    let (mut writer, reader) = tokio::io::duplex(1024);
+    let mut lines = lines(reader);
+    let completion = Duration::from_millis(100);
+    writer.write_all(b"first\n").await.expect("write");
+    let line = lines.next_after_idle(completion).await.expect("first line");
+    assert_eq!(line.as_deref(), Some(b"first".as_slice()));
+
+    tokio::time::sleep(completion * 2).await;
+    writer.write_all(b"second\n").await.expect("write");
+    let line = lines
+        .next_after_idle(completion)
+        .await
+        .expect("a quiet gap is not a stalled line");
+    assert_eq!(line.as_deref(), Some(b"second".as_slice()));
+}
+
+/// Pends until `ready_at`, then has a whole line ready. It registers no
+/// waker: the caller's deadline timer is what polls it again.
+struct LateLine {
+    ready_at: Instant,
+}
+
+impl AsyncRead for LateLine {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if Instant::now() < self.ready_at {
+            return Poll::Pending;
+        }
+        buffer.put_slice(b"late\n");
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_read_that_finishes_after_the_deadline_missed_it_and_keeps_its_data() {
+    let deadline = after(50);
+    let mut lines = BoundedLines::new(LateLine { ready_at: deadline }, LIMIT);
+    let error = lines.next(deadline).await.expect_err("late line");
+    assert!(matches!(error, LineError::TimedOut), "{error}");
+    let line = lines.next(soon()).await.expect("buffered line");
+    assert_eq!(line.as_deref(), Some(b"late".as_slice()));
+}
+
+#[tokio::test]
 async fn an_idle_read_sees_end_of_stream() {
     let (writer, reader) = tokio::io::duplex(1024);
     drop(writer);
@@ -342,6 +432,101 @@ async fn an_abandoned_write_invalidates_the_stream() {
         .expect_err("the stream is gone");
     assert!(matches!(error, FrameWriteError::Closed), "{error}");
     assert_eq!(polls.load(Ordering::SeqCst), polls_at_failure);
+}
+
+/// Always ready, but takes one byte per write and `delay` of wall clock
+/// for it, so a frame can outlast its deadline without ever pending.
+struct ReadyShortWrites {
+    delay: Duration,
+    received: Arc<AtomicUsize>,
+    polls: Arc<AtomicUsize>,
+}
+
+impl AsyncWrite for ReadyShortWrites {
+    fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<io::Result<usize>> {
+        std::thread::sleep(self.delay);
+        self.polls.fetch_add(1, Ordering::SeqCst);
+        self.received.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Ok(1))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn ready_short_writes_cannot_cross_the_deadline() {
+    let stream = ReadyShortWrites {
+        delay: Duration::from_millis(10),
+        received: Arc::default(),
+        polls: Arc::default(),
+    };
+    let (received, polls) = (Arc::clone(&stream.received), Arc::clone(&stream.polls));
+    let mut writer = FramedWriter::new(stream);
+
+    let error = writer
+        .write(&[b'x'; 64], after(80))
+        .await
+        .expect_err("the frame outlasts its deadline");
+    assert!(matches!(error, FrameWriteError::TimedOut), "{error}");
+    let landed = received.load(Ordering::SeqCst);
+    assert!(landed < 64, "stopped between writes, took {landed} bytes");
+
+    let polls_at_failure = polls.load(Ordering::SeqCst);
+    let error = writer
+        .write(b"next frame\n", soon())
+        .await
+        .expect_err("the stream is gone");
+    assert!(matches!(error, FrameWriteError::Closed), "{error}");
+    assert_eq!(polls.load(Ordering::SeqCst), polls_at_failure);
+}
+
+/// Pends until `ready_at`, then takes everything at once. It registers no
+/// waker: the caller's deadline timer is what polls it again.
+struct LateStream {
+    ready_at: Instant,
+}
+
+impl AsyncWrite for LateStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if Instant::now() < self.ready_at {
+            return Poll::Pending;
+        }
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_write_that_finishes_after_the_deadline_missed_it() {
+    let deadline = after(50);
+    let mut writer = FramedWriter::new(LateStream { ready_at: deadline });
+    let error = writer
+        .write(b"late frame\n", deadline)
+        .await
+        .expect_err("completion past the deadline does not count");
+    assert!(matches!(error, FrameWriteError::TimedOut), "{error}");
+    let error = writer
+        .write(b"next frame\n", soon())
+        .await
+        .expect_err("the stream is gone");
+    assert!(matches!(error, FrameWriteError::Closed), "{error}");
 }
 
 #[tokio::test]

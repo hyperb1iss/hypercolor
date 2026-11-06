@@ -35,6 +35,9 @@ pub enum LineError {
 pub struct BoundedLines<R> {
     reader: BufReader<R>,
     line: Vec<u8>,
+    /// When the line in progress took its first byte. It lives with the
+    /// partial line so that a cancelled call cannot renew the line's bound.
+    line_started: Option<Instant>,
     max_line_bytes: usize,
     overflowed: bool,
 }
@@ -46,6 +49,7 @@ impl<R: AsyncRead + Unpin> BoundedLines<R> {
         Self {
             reader: BufReader::new(reader),
             line: Vec::new(),
+            line_started: None,
             max_line_bytes,
             overflowed: false,
         }
@@ -86,6 +90,7 @@ impl<R: AsyncRead + Unpin> BoundedLines<R> {
                 return Err(too_long);
             }
             self.line.extend_from_slice(chunk);
+            self.line_started.get_or_insert_with(Instant::now);
             let consumed = chunk.len();
             self.reader.consume(consumed);
             if complete {
@@ -96,6 +101,7 @@ impl<R: AsyncRead + Unpin> BoundedLines<R> {
                     self.overflowed = true;
                     return Err(too_long);
                 }
+                self.line_started = None;
                 return Ok(Some(std::mem::take(&mut self.line)));
             }
         }
@@ -103,7 +109,9 @@ impl<R: AsyncRead + Unpin> BoundedLines<R> {
 
     /// The next line of a connection that may legitimately stay silent:
     /// wait as long as the peer does, then hold the line it starts to
-    /// `completion` from its first byte.
+    /// `completion` from its first byte. That clock stays with the partial
+    /// line, so calling again after a cancelled or missed read never
+    /// renews it.
     ///
     /// # Errors
     ///
@@ -112,13 +120,21 @@ impl<R: AsyncRead + Unpin> BoundedLines<R> {
         &mut self,
         completion: Duration,
     ) -> Result<Option<Vec<u8>>, LineError> {
-        if self.line.is_empty() && !self.overflowed {
+        if self.overflowed {
+            return Err(LineError::TooLong {
+                limit: self.max_line_bytes,
+            });
+        }
+        let started = if let Some(started) = self.line_started {
+            started
+        } else {
             let available = self.reader.fill_buf().await.map_err(LineError::Read)?;
             if available.is_empty() {
                 return Ok(None);
             }
-        }
-        self.next(Instant::now() + completion).await
+            *self.line_started.insert(Instant::now())
+        };
+        self.next(started + completion).await
     }
 }
 
@@ -167,23 +183,38 @@ impl<W: AsyncWrite + Unpin> FramedWriter<W> {
     /// deadline, or [`FrameWriteError::Write`].
     pub async fn write(&mut self, frame: &[u8], deadline: Instant) -> Result<(), FrameWriteError> {
         let mut stream = self.stream.take().ok_or(FrameWriteError::Closed)?;
-        let written = until_deadline(deadline, async {
-            stream.write_all(frame).await?;
-            stream.flush().await
-        })
-        .await;
-        match written {
-            Some(Ok(())) => {
-                self.stream = Some(stream);
-                Ok(())
-            }
-            Some(Err(error)) => Err(FrameWriteError::Write(error)),
-            None => Err(FrameWriteError::TimedOut),
-        }
+        write_frame(&mut stream, frame, deadline).await?;
+        self.stream = Some(stream);
+        Ok(())
     }
 
     /// Drop the stream. Later writes report [`FrameWriteError::Closed`].
     pub fn close(&mut self) {
         self.stream = None;
     }
+}
+
+/// Drive one write at a time so the clock is read between them: a stream
+/// that keeps taking short writes never pends, so nothing else would stop
+/// it crossing the deadline.
+async fn write_frame<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    frame: &[u8],
+    deadline: Instant,
+) -> Result<(), FrameWriteError> {
+    let mut remaining = frame;
+    while !remaining.is_empty() {
+        let written = until_deadline(deadline, stream.write(remaining))
+            .await
+            .ok_or(FrameWriteError::TimedOut)?
+            .map_err(FrameWriteError::Write)?;
+        if written == 0 {
+            return Err(FrameWriteError::Write(io::ErrorKind::WriteZero.into()));
+        }
+        remaining = &remaining[written..];
+    }
+    until_deadline(deadline, stream.flush())
+        .await
+        .ok_or(FrameWriteError::TimedOut)?
+        .map_err(FrameWriteError::Write)
 }
