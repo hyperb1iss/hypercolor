@@ -22,7 +22,8 @@ pub(super) struct BundleRecord {
     /// The daemon that ran when the transaction was prepared.
     pub(super) baseline: Option<MacosBundleRunningDaemon>,
     /// Whether launchd could load the agent when the transaction was
-    /// prepared. A transaction closes that gate around each swap.
+    /// prepared. A transaction closes that gate around each swap and ends
+    /// with it back here.
     pub(super) autostart: bool,
 }
 

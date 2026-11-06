@@ -538,6 +538,60 @@ fn a_stopped_prior_gets_its_open_gate_back_at_every_crash_with_nothing_to_start(
 }
 
 #[test]
+fn a_crashed_priors_job_is_unloaded_before_the_swap() {
+    let harness = Harness::new();
+    {
+        let mut world = lock(&harness.world);
+        world.running = None;
+        world.idle = true;
+    }
+    let outcome = harness.finish(|| {
+        harness
+            .install(InstallTargetPolicy::Preserve)
+            .map(|result| Some(result.expect("install")))
+    });
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    let log = lock(&harness.boundaries).log.clone();
+    let position = |label: &str| log.iter().position(|entry| entry == label);
+    assert!(
+        position("stop:after") < position("materialize:before"),
+        "launchd must not be able to restart it around the swap: {log:?}"
+    );
+    assert!(!lock(&harness.world).idle);
+}
+
+#[test]
+fn a_daemon_that_runs_with_a_closed_gate_keeps_it_closed_at_every_crash() {
+    for failing in [false, true] {
+        let run = |harness: &Harness| {
+            let mut world = lock(&harness.world);
+            world.enabled = false;
+            if failing {
+                world.failing_proof = Some(harness.candidate.daemon.clone());
+            }
+            drop(world);
+            committed_run(harness)
+        };
+        let probe = Harness::new();
+        run(&probe);
+        let total = lock(&probe.boundaries).passed;
+        for crash in 0..=total {
+            let harness = Harness::new();
+            harness.crash_at((crash > 0).then_some(crash));
+            let outcome = run(&harness);
+            assert_eq!(
+                matches!(outcome, InstallOutcome::Committed { .. }),
+                !failing,
+                "{outcome:?}"
+            );
+            let world = lock(&harness.world);
+            assert!(!world.enabled, "crash at {crash} left the gate open");
+            assert!(world.running.is_some(), "disabling never stops a daemon");
+        }
+    }
+}
+
+#[test]
 fn a_crashed_daemons_job_is_unloaded_before_the_swap_back() {
     let harness = Harness::new();
     lock(&harness.world).failing_proof = Some(harness.candidate.daemon.clone());
