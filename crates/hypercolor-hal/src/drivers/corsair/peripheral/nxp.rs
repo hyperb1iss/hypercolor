@@ -13,7 +13,8 @@ use std::cmp::min;
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFeatures, SegmentInfo,
+    DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFeatures, DeviceTopologyHint,
+    SegmentInfo,
 };
 use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
@@ -24,8 +25,9 @@ use crate::protocol::{
 };
 
 use super::types::{
-    NXP_KEYBOARD_LED_SLOTS, NXP_PACKET_SIZE, NXP_PAYLOAD_LEN, NXP_RESPONSE_TIMEOUT,
-    NxpColorSelector, NxpCommand, NxpDeviceConfig, NxpField, NxpLightingKind, NxpLightingMode,
+    NXP_FULL_RANGE_PLANE_LEN, NXP_KEYBOARD_LED_SLOTS, NXP_PACKET_SIZE, NXP_PAYLOAD_LEN,
+    NXP_RESPONSE_TIMEOUT, NxpColorSelector, NxpCommand, NxpDeviceConfig, NxpField, NxpLightingKind,
+    NxpLightingMode,
 };
 
 /// Bulk chunks of one full-range color plane: `(chunk index, declared length)`.
@@ -44,6 +46,14 @@ const MOUSE_PACKET_MAX_ZONES: usize = NXP_PAYLOAD_LEN / 4;
 const MOUSEPAD_PACKET_MAX_ZONES: usize = NXP_PAYLOAD_LEN / 3;
 /// Zones in the K55 zoned keyboard packet.
 const ZONED_KEYBOARD_ZONES: usize = 3;
+/// Zone name for a keyboard light bar.
+const LIGHT_BAR_ZONE_NAME: &str = "Light Bar";
+
+const _: () = assert!(
+    FULL_RANGE_CHUNKS[0].1 + FULL_RANGE_CHUNKS[1].1 + FULL_RANGE_CHUNKS[2].1
+        == NXP_FULL_RANGE_PLANE_LEN,
+    "full-range chunks must cover the declared plane"
+);
 
 const _: () = assert!(
     std::mem::size_of::<NxpPacket>() == NXP_PACKET_SIZE,
@@ -136,23 +146,38 @@ impl CorsairNxpProtocol {
         }
     }
 
-    fn append_full_range_keyboard(colors: &[[u8; 3]], commands: &mut CommandBuffer<'_>) {
+    /// Color of one full-range plane slot. Key slots map straight to frame
+    /// positions; light bar slots map to the bar positions that follow them.
+    fn plane_slot_color(&self, colors: &[[u8; 3]], slot: usize) -> Option<[u8; 3]> {
+        let key_slots = self.config.key_slots();
+        if slot < key_slots {
+            return colors.get(slot).copied();
+        }
+        let position = self
+            .config
+            .light_bar
+            .iter()
+            .position(|&bar_slot| usize::from(bar_slot) == slot)?;
+        colors.get(key_slots + position).copied()
+    }
+
+    fn append_full_range_keyboard(&self, colors: &[[u8; 3]], commands: &mut CommandBuffer<'_>) {
         for (component, selector) in [
             (0_usize, NxpColorSelector::Red),
             (1, NxpColorSelector::Green),
             (2, NxpColorSelector::Blue),
         ] {
-            append_plane_chunks(commands, &FULL_RANGE_CHUNKS, |offset| {
-                colors.get(offset).map_or(0, |color| color[component])
+            append_plane_chunks(commands, &FULL_RANGE_CHUNKS, |slot| {
+                self.plane_slot_color(colors, slot)
+                    .map_or(0, |color| color[component])
             });
             Self::push(commands, &component_commit(selector));
         }
     }
 
-    fn append_monochrome_keyboard(colors: &[[u8; 3]], commands: &mut CommandBuffer<'_>) {
-        append_plane_chunks(commands, &FULL_RANGE_CHUNKS, |offset| {
-            colors
-                .get(offset)
+    fn append_monochrome_keyboard(&self, colors: &[[u8; 3]], commands: &mut CommandBuffer<'_>) {
+        append_plane_chunks(commands, &FULL_RANGE_CHUNKS, |slot| {
+            self.plane_slot_color(colors, slot)
                 .map_or(0, |color| color[0].max(color[1]).max(color[2]))
         });
         Self::push(commands, &component_commit(NxpColorSelector::Red));
@@ -243,12 +268,12 @@ impl Protocol for CorsairNxpProtocol {
         let mut buffer = CommandBuffer::new(commands);
         match self.config.lighting_kind {
             NxpLightingKind::FullRangeKeyboard => {
-                Self::append_full_range_keyboard(colors, &mut buffer);
+                self.append_full_range_keyboard(colors, &mut buffer);
             }
             NxpLightingKind::Packed512Keyboard => Self::append_packed_keyboard(colors, &mut buffer),
             NxpLightingKind::ZonedKeyboard => Self::append_zoned_keyboard(colors, &mut buffer),
             NxpLightingKind::MonochromeKeyboard => {
-                Self::append_monochrome_keyboard(colors, &mut buffer);
+                self.append_monochrome_keyboard(colors, &mut buffer);
             }
             NxpLightingKind::Mouse => Self::append_mouse(colors, &mut buffer),
             NxpLightingKind::Mousepad => Self::append_mousepad(colors, &mut buffer),
@@ -279,13 +304,27 @@ impl Protocol for CorsairNxpProtocol {
             return Vec::new();
         }
 
-        vec![SegmentInfo {
+        let mut zones = vec![SegmentInfo {
             name: self.config.class.zone_name().to_owned(),
-            led_count: u32::try_from(self.config.led_count).unwrap_or(u32::MAX),
+            led_count: u32::try_from(self.config.key_slots()).unwrap_or(u32::MAX),
             topology: self.config.topology.hint(),
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
-        }]
+        }];
+        if !self.config.light_bar.is_empty() {
+            let bar_leds = u32::try_from(self.config.light_bar.len()).unwrap_or(u32::MAX);
+            zones.push(SegmentInfo {
+                name: LIGHT_BAR_ZONE_NAME.to_owned(),
+                led_count: bar_leds,
+                topology: DeviceTopologyHint::Matrix {
+                    rows: 1,
+                    cols: bar_leds,
+                },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            });
+        }
+        zones
     }
 
     fn capabilities(&self) -> DeviceCapabilities {

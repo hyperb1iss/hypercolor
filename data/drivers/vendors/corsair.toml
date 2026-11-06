@@ -613,8 +613,8 @@ type = "keyboard"
 status = "supported"
 driver = "corsair"
 transport = "usb_hid"
-leds = 144
-notes = "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Light bar slots beyond 144 not driven"
+leds = 163
+notes = "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. 144 key slots plus the 19-LED light bar as its own zone"
 
 [[devices]]
 pid = 0x1B20

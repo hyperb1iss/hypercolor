@@ -126,10 +126,18 @@ const K70_RGB_MK2: NxpDeviceConfig =
     keyboard("Corsair K70 RGB MK.2", NxpLightingKind::FullRangeKeyboard);
 const K95_RGB: NxpDeviceConfig =
     keyboard("Corsair K95 RGB", NxpLightingKind::Packed512Keyboard).with_unclean_exit();
+/// K95 Platinum light bar: the full-range plane slot of each bar LED, from
+/// the leftmost LED to the rightmost (Spec 53 section 7.4).
+pub const K95_PLATINUM_LIGHT_BAR_SLOTS: [u8; 19] = [
+    0x90, 0x91, 0x92, 0x9E, 0xA0, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B, 0x9F, 0xA2,
+    0xA1, 0x9C, 0x9D,
+];
+
 const K95_RGB_PLATINUM: NxpDeviceConfig = keyboard(
     "Corsair K95 RGB Platinum",
     NxpLightingKind::FullRangeKeyboard,
-);
+)
+.with_light_bar(&K95_PLATINUM_LIGHT_BAR_SLOTS);
 const STRAFE_RGB: NxpDeviceConfig =
     keyboard("Corsair Strafe RGB", NxpLightingKind::FullRangeKeyboard);
 const M65_RGB: NxpDeviceConfig = mouse("Corsair M65 RGB");

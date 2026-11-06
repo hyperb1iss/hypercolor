@@ -112,7 +112,7 @@ Hypercolor tracks **438 devices** across **32 vendors** in `data/drivers/vendors
 | Corsair | K70 RGB Pro V2 | 0x1BB3 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, per-key RGB |
 | Corsair | K70 TKL | 0x1B73 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, per-key RGB |
 | Corsair | K70 TKL Champion Optical | 0x1BB9 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, per-key RGB |
-| Corsair | K95 Platinum | 0x1B2D | Keyboard | `corsair` | USB HID | 144 | NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Light bar slots beyond 144 not driven |
+| Corsair | K95 Platinum | 0x1B2D | Keyboard | `corsair` | USB HID | 163 | NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. 144 key slots plus the 19-LED light bar as its own zone |
 | Corsair | K95 Platinum XT | 0x1B89 | Keyboard | `corsair` | USB HID | 156 | Bragi 64-byte HID reports, top-bar keyboard topology |
 | Corsair | K95 RGB | 0x1B11 | Keyboard | `corsair` | USB HID | 144 | NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Skips the hardware-mode handover on exit |
 | Corsair | Katar Pro | 0x1B93 | Mouse | `corsair` | USB HID | 2 | Bragi 64-byte HID reports |
@@ -721,7 +721,7 @@ VID 0x1B1C · Driver `corsair`
 | K70 RGB Pro V2 | 0x1BB3 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, per-key RGB |
 | K70 TKL | 0x1B73 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, per-key RGB |
 | K70 TKL Champion Optical | 0x1BB9 | Keyboard | `corsair` | USB HID | 193 | Bragi 1024-byte HID reports, per-key RGB |
-| K95 Platinum | 0x1B2D | Keyboard | `corsair` | USB HID | 144 | NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Light bar slots beyond 144 not driven |
+| K95 Platinum | 0x1B2D | Keyboard | `corsair` | USB HID | 163 | NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. 144 key slots plus the 19-LED light bar as its own zone |
 | K95 Platinum XT | 0x1B89 | Keyboard | `corsair` | USB HID | 156 | Bragi 64-byte HID reports, top-bar keyboard topology |
 | K95 RGB | 0x1B11 | Keyboard | `corsair` | USB HID | 144 | NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Skips the hardware-mode handover on exit |
 | Katar Pro | 0x1B93 | Mouse | `corsair` | USB HID | 2 | Bragi 64-byte HID reports |

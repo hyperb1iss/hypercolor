@@ -20,6 +20,10 @@ pub const NXP_PAYLOAD_LEN: usize = NXP_PACKET_SIZE - 4;
 /// The packed 512-color frame carries 216 bytes (three planes of 72 bytes,
 /// two LEDs per byte), so every NXP keyboard addresses 144 LED slots.
 pub const NXP_KEYBOARD_LED_SLOTS: usize = 144;
+/// Bytes in one full-range color plane: the declared bulk chunk lengths
+/// (60 + 60 + 48). Slots past [`NXP_KEYBOARD_LED_SLOTS`] carry extras such
+/// as the K95 Platinum light bar.
+pub const NXP_FULL_RANGE_PLANE_LEN: usize = 168;
 /// Software zone IDs the NXP mouse color packet can address (one-based).
 pub const NXP_MOUSE_ZONE_SLOTS: usize = 6;
 /// RGB slots in the NXP mousepad and headset-stand color packet.
@@ -272,6 +276,9 @@ pub struct NxpDeviceConfig {
     pub topology: CorsairPeripheralTopology,
     pub max_fps: u32,
     pub requires_unclean_exit: bool,
+    /// Hardware slots of a light bar, in left-to-right order. Bar LEDs follow
+    /// the key slots in frame order and get their own zone.
+    pub light_bar: &'static [u8],
 }
 
 impl NxpDeviceConfig {
@@ -291,6 +298,7 @@ impl NxpDeviceConfig {
             topology,
             max_fps: class.default_max_fps(),
             requires_unclean_exit: false,
+            light_bar: &[],
         }
     }
 
@@ -298,6 +306,53 @@ impl NxpDeviceConfig {
     pub const fn with_max_fps(mut self, max_fps: u32) -> Self {
         self.max_fps = max_fps;
         self
+    }
+
+    /// Add a light bar addressed through the full-range plane slots past the
+    /// key slots. `hardware_slots` lists each bar LED's plane slot from left
+    /// to right.
+    ///
+    /// # Panics
+    ///
+    /// Panics (at compile time for a `const` config) unless the config is a
+    /// full-range or monochrome keyboard, every slot lies past the key slots
+    /// and inside the full-range plane, and no slot repeats.
+    #[must_use]
+    pub const fn with_light_bar(mut self, hardware_slots: &'static [u8]) -> Self {
+        assert!(
+            matches!(
+                self.lighting_kind,
+                NxpLightingKind::FullRangeKeyboard | NxpLightingKind::MonochromeKeyboard
+            ),
+            "only full-range planes have room for a light bar"
+        );
+        let mut index = 0;
+        while index < hardware_slots.len() {
+            let slot = hardware_slots[index] as usize;
+            assert!(
+                slot >= self.led_count && slot < NXP_FULL_RANGE_PLANE_LEN,
+                "light bar slots must follow the key slots inside the plane"
+            );
+            let mut other = index + 1;
+            while other < hardware_slots.len() {
+                assert!(
+                    hardware_slots[other] != hardware_slots[index],
+                    "light bar slots must be distinct"
+                );
+                other += 1;
+            }
+            index += 1;
+        }
+        self.led_count += hardware_slots.len();
+        self.light_bar = hardware_slots;
+        self
+    }
+
+    /// Frame positions before the light bar: the key slots, in hardware
+    /// order.
+    #[must_use]
+    pub const fn key_slots(self) -> usize {
+        self.led_count - self.light_bar.len()
     }
 
     #[must_use]
