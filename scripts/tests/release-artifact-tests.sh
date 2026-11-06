@@ -416,6 +416,15 @@ class ReleaseArtifactTests(unittest.TestCase):
         for relative in self.NOTICES:
             self.assertIn(f"./usr/share/doc/hypercolor/third-party/{relative}", contents)
 
+    def test_the_desktop_entry_names_its_launcher_by_command(self):
+        # The managed installer links this file into the user's own
+        # applications directory from an immutable unit, so no absolute
+        # launcher path can be right for every prefix the tree lands under.
+        entry = (self.payload / "share/applications/hypercolor.desktop").read_text()
+        executables = [line for line in entry.splitlines() if line.startswith("Exec=")]
+        self.assertEqual(executables, ["Exec=hypercolor-open"])
+        self.assertNotIn("@BIN_DIR@", entry)
+
     def test_both_packaged_user_units_declare_user_service_identity(self):
         declaration = "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service"
         for name in ("hypercolor.service", "hypercolor.service.system"):

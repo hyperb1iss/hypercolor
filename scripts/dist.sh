@@ -362,7 +362,12 @@ if [[ -n "${SITE_BUILD_DIR}" ]]; then
   cp -R "${SITE_BUILD_DIR}/." "${DIST_DIR}/share/hypercolor/site/"
 fi
 
-sed "s|@BIN_DIR@|/usr/bin|g" packaging/desktop/hypercolor.desktop.in \
+# One release tree lands under different prefixes: the managed installer
+# links this entry into ~/.local/share/applications straight from an
+# immutable unit, while system packages install it under /usr. Each of them
+# puts hypercolor-open on PATH, so the entry names the command rather than
+# one absolute path that would be wrong for every other layout.
+sed "s|@BIN_DIR@/||g" packaging/desktop/hypercolor.desktop.in \
   > "${DIST_DIR}/share/applications/hypercolor.desktop"
 
 # The brand mark ships as pre-rendered PNGs; the traced SVG is still TBD
