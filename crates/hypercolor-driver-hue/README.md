@@ -13,7 +13,7 @@ most accurate color reproduction across Hue bulb gamuts. Per-bridge credentials
 ## Position in the Workspace
 
 - Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
-  `hypercolor-color`, `hypercolor-types`, `anyhow`, `async-trait`, `reqwest`, `serde`,
+  `hypercolor-color`, `hypercolor-types`, `anyhow`, `async-trait`, `serde`,
   `serde_json`, `tokio`, `tracing`, `webrtc-dtls`, `webrtc-util`, `rustls`
   (aws_lc_rs backend)
 - Consumed by: `hypercolor-driver-builtin` (via the `hue` feature)

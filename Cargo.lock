@@ -4754,7 +4754,6 @@ dependencies = [
  "hypercolor-driver-api",
  "hypercolor-driver-support",
  "hypercolor-types",
- "reqwest",
  "rustls",
  "serde",
  "serde_json",
