@@ -182,8 +182,8 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> MacosBundleInstallPlatform<E
     ///
     /// Autostart reads as the agent's registration, which no transaction
     /// changes. launchd's own gate is closed in the guard step before each
-    /// swap and opened by the start that follows it, or by the final proof
-    /// when nothing starts, so it moves inside journaled steps and never
+    /// swap, opened by the start that follows it, and left as it was found
+    /// by the final proof, so it moves inside journaled steps and never
     /// changes a checkpoint.
     fn state_from(inspection: &Inspection) -> Result<PlatformState, InstallPlatformError> {
         let service = &inspection.service;
@@ -319,6 +319,20 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> MacosBundleInstallPlatform<E
             prior_autostart: prior_manager.clone(),
             prior_manager,
         }
+    }
+
+    /// End a transaction with launchd's gate where it found it. A disabled
+    /// agent can run, so this holds after a start that had to open the gate
+    /// and after a transaction with nothing to start.
+    fn leave_gate_as_found(
+        &mut self,
+        record: &BundleRecord,
+        service: &MacosBundleServiceObservation,
+    ) -> Result<(), InstallPlatformError> {
+        if service.registered && service.enabled != record.autostart {
+            self.service.set_enabled(record.autostart)?;
+        }
+        Ok(())
     }
 
     fn require_quiescent(expected: &PlatformState) -> Result<(), InstallPlatformError> {
@@ -548,12 +562,15 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
         self.record(platform_record)?;
         Self::require_quiescent(unloaded)?;
         // Both swaps follow this step, so an interrupted one never starts a
-        // half-finished change at the next login. launchd keeps the closed
-        // gate across a restart.
+        // half-finished change at the next login: launchd keeps the closed
+        // gate across a restart. The gate does nothing to a loaded job, so
+        // a crashed daemon's job goes too, before launchd can restart it
+        // around the swap.
         let service = self.service.observe()?;
         if service.registered && service.enabled {
             self.service.set_enabled(false)?;
         }
+        self.service.stop(None)?;
         self.service.wait_for_release()?;
         self.last = None;
         Ok(())
@@ -630,13 +647,10 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
         expected: &PlatformState,
         platform_record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        // launchd reads an agent's definition when it bootstraps it, so
-        // there is no reload to run. Unloading here removes a crashed
-        // daemon's job, which launchd would otherwise restart on its own
-        // around the swap.
+        // launchd reads an agent's definition when it bootstraps it; there
+        // is no separate reload to run.
         self.record(platform_record)?;
         Self::require_quiescent(expected)?;
-        self.service.stop(None)?;
         self.last = None;
         Ok(())
     }
@@ -709,12 +723,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
             if inspection.service.running.is_some() {
                 return Err(error("a macOS daemon runs where none is expected"));
             }
-            // Nothing starts here, so nothing else reopens what this
-            // transaction closed.
-            if record.autostart && inspection.service.registered && !inspection.service.enabled {
-                self.service.set_enabled(true)?;
-            }
-            return Ok(());
+            return self.leave_gate_as_found(&record, &inspection.service);
         };
         let running = inspection
             .service
@@ -746,6 +755,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
         if after.service.running.as_ref() != Some(&running) {
             return Err(error("the macOS daemon changed during its proof"));
         }
+        self.leave_gate_as_found(&record, &after.service)?;
         if checkpoint == PlatformCheckpoint::PriorRestored {
             self.restored = Some(RestoredRelease {
                 unit: binding.unit,
