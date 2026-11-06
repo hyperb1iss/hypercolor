@@ -546,6 +546,19 @@ jobs:
           -p hypercolor-daemon --no-default-features --features wgpu --lib
           -E 'test(/api::system::tests::(input_source_status|macos_)/)'
 
+      # The app bundle platform's swaps, clones and full syncs run for real
+      # on the runner's APFS temporary directory.
+      - name: Run macOS app bundle install fixtures
+        if: matrix.lane == 'capabilities'
+        run: |
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked -p hypercolor-install --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked --no-tests=fail \
+            -p hypercolor-install --lib \
+            -E 'test(/^(macos_bundle|macho_cdhash)::/)'
+
       - name: Build deployment and Sequoia availability fixtures
         if: matrix.lane == 'workspace'
         run: |

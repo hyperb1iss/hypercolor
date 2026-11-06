@@ -7,12 +7,14 @@
 //! launch is always a complete signed bundle.
 //!
 //! Every decision lives here and compiles on every unix host, so it is
-//! tested against fakes anywhere. The filesystem effects live behind
-//! [`MacosBundleExecutor`], and the daemon's service manager behind
-//! [`MacosBundleService`].
+//! tested against fakes anywhere. The macOS system calls live behind
+//! [`MacosBundleExecutor`] in `native`, and the daemon's service manager
+//! behind [`MacosBundleService`].
 
 mod executor;
 mod model;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+mod native;
 mod platform;
 mod record;
 mod service;
@@ -29,5 +31,7 @@ pub use model::{
     MacosBundleObservation, MacosBundleRunningDaemon, MacosBundleServiceObservation,
     MacosBundleSlot, MacosBundleUnit,
 };
+#[cfg(target_os = "macos")]
+pub use native::MacosBundleNativeExecutor;
 pub use platform::MacosBundleInstallPlatform;
 pub use service::MacosBundleService;

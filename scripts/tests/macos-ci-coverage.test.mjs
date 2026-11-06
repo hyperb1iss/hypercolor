@@ -35,7 +35,7 @@ test('workspace artifacts and capability fixtures run in separate lanes', () => 
     'Install nextest', 'Clippy macOS interop', 'Clippy macOS capture fixtures',
     'Clippy macOS host input and ownership', 'Run macOS interop fixtures',
     'Run macOS capture fixtures', 'Run macOS host input and ownership fixtures',
-    'Run macOS status API fixtures',
+    'Run macOS status API fixtures', 'Run macOS app bundle install fixtures',
   ]) assert.equal(condition(name), "matrix.lane == 'capabilities'");
   assert.equal(condition('Qualify macOS runner and SDK'), undefined);
   assert.equal(condition('Verify macOS signing secret transport'), undefined);
