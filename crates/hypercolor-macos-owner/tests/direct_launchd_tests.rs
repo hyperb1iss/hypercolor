@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use hypercolor_macos_owner::{
     MacosDaemonOwner, MacosDirectLaunchdExecutableExpectation, MacosDirectLaunchdInspector,
-    MacosDirectLaunchdPublicationExpectation, MacosDirectLaunchdState, MacosOwnerExecutionError,
-    MacosOwnerIdentity, MacosOwnerRecord, MacosOwnerStore, corroborate_direct_launchd_owner,
-    corroborate_newer_direct_launchd_owner, parse_direct_launchd_service_state,
+    MacosDirectLaunchdPublicationExpectation, MacosDirectLaunchdState, MacosLaunchdJob,
+    MacosOwnerExecutionError, MacosOwnerIdentity, MacosOwnerRecord, MacosOwnerStore,
+    corroborate_direct_launchd_owner, corroborate_newer_direct_launchd_owner,
+    parse_direct_launchd_service_state, parse_launchd_job,
     wait_for_exact_direct_launchd_publication,
 };
 use sha2::{Digest as _, Sha256};
@@ -164,6 +165,91 @@ fn launchctl_parser_rejects_missing_malformed_zero_multiple_and_oversized_pids()
     assert!(parse_direct_launchd_service_state(UID, Some(0), &oversized, b"").is_err());
     assert!(parse_direct_launchd_service_state(UID, Some(0), &[0xff], b"").is_err());
     assert!(parse_direct_launchd_service_state(UID, Some(78), b"", b"failure").is_err());
+}
+
+#[test]
+fn launchctl_job_parser_tells_an_idle_job_from_a_missing_or_running_one() {
+    const LABEL: &str = "tech.hyperbliss.fixture";
+    assert_eq!(
+        parse_launchd_job(
+            LABEL,
+            UID,
+            Some(113),
+            b"",
+            b"Could not find service \"tech.hyperbliss.fixture\" in domain for user gui: 501\n",
+        )
+        .expect("missing service"),
+        MacosLaunchdJob::NotLoaded
+    );
+    assert_eq!(
+        parse_launchd_job(LABEL, UID, Some(0), b"state = not running\n", b"").expect("idle job"),
+        MacosLaunchdJob::Idle
+    );
+    assert_eq!(
+        parse_launchd_job(LABEL, UID, Some(0), b"\tpid = 77\n", b"").expect("running job"),
+        MacosLaunchdJob::Running { pid: 77 }
+    );
+    assert!(
+        parse_launchd_job(LABEL, UID, Some(113), b"", b"another service").is_err(),
+        "status 113 needs launchctl's exact line for this label"
+    );
+    let idle = parse_direct_launchd_service_state(UID, Some(0), b"state = not running\n", b"")
+        .expect_err("the exact owner proof still needs a process");
+    assert!(idle.to_string().contains("no process pid"));
+}
+
+#[test]
+fn a_bundled_publication_is_keyed_on_path_and_cdhash_alone() {
+    const BUNDLE_DAEMON: &str = "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon";
+    let expectation = MacosDirectLaunchdPublicationExpectation::new(
+        7,
+        MacosDirectLaunchdExecutableExpectation::bundled(BUNDLE_DAEMON, CANDIDATE_CDHASH)
+            .expect("bundled expectation"),
+    )
+    .expect("publication expectation");
+    assert!(expectation.executable().retained().is_none());
+    assert_eq!(expectation.executable().cdhash(), CANDIDATE_CDHASH);
+
+    // The record's designated requirement is the daemon's own and is not
+    // compared: only the running code's cdhash identifies the release.
+    let published = record(
+        MacosDaemonOwner::DirectLaunchd,
+        8,
+        BUNDLE_DAEMON,
+        "any-signature",
+        91,
+    );
+    let mut inspector = FakeInspector::loaded(91);
+    let proof = corroborate_newer_direct_launchd_owner(&published, &expectation, &mut inspector)
+        .expect("corroborate")
+        .expect("a newer publication");
+    assert_eq!(proof.record(), &published);
+    assert_eq!(inspector.digest_inspections, 1, "the running code is read");
+
+    let mut inspector = FakeInspector::loaded(91);
+    inspector.publication_identity_matches = false;
+    let mismatch = corroborate_newer_direct_launchd_owner(&published, &expectation, &mut inspector)
+        .expect_err("another cdhash at the bundle path");
+    assert!(mismatch.to_string().contains("expected executable"));
+
+    let elsewhere = record(
+        MacosDaemonOwner::DirectLaunchd,
+        8,
+        "/private/unit/bin/hypercolor-daemon",
+        "any-signature",
+        91,
+    );
+    let mut inspector = FakeInspector::loaded(91);
+    assert!(
+        corroborate_newer_direct_launchd_owner(&elsewhere, &expectation, &mut inspector).is_err(),
+        "the same code running anywhere else is not the bundled daemon"
+    );
+
+    assert!(
+        MacosDirectLaunchdExecutableExpectation::bundled("relative/daemon", CANDIDATE_CDHASH)
+            .is_err()
+    );
+    assert!(MacosDirectLaunchdExecutableExpectation::bundled(BUNDLE_DAEMON, "short").is_err());
 }
 
 #[test]

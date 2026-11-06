@@ -51,6 +51,19 @@ impl NativeMacosDirectLaunchdMutator {
         }
     }
 
+    /// Unload the fixed label whatever it runs, for a caller that has proven
+    /// the running code itself and may hold no owner record for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the unload cannot be submitted.
+    pub fn bootout_unconditional(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        self.controller().bootout_unconditional(timeout)
+    }
+
     fn controller(
         &mut self,
     ) -> MutationController<'_, DeadlineNativeMacosDirectLaunchdInspector, NativeLaunchctlBoundary>

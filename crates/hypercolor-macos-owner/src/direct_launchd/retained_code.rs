@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
 
-use super::MacosDirectLaunchdExecutableExpectation;
 use super::mutation::run_deadline_read;
+use super::{MacosDirectLaunchdExecutableExpectation, MacosDirectLaunchdRetainedExecutable};
 use crate::MacosOwnerExecutionError;
 
 mod native;
@@ -54,39 +54,42 @@ fn validate_retained_with(
     deadline: Instant,
     proof: &mut impl AcceptedImageProof,
 ) -> Result<bool, MacosOwnerExecutionError> {
+    let Some(retained) = expected.retained() else {
+        return Ok(false);
+    };
     require_time(deadline)?;
     let before = file
         .metadata()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    if !metadata_matches(&before, expected) || !exact_hash_matches(file, expected, deadline)? {
+    if !metadata_matches(&before, retained) || !exact_hash_matches(file, retained, deadline)? {
         return Ok(false);
     }
     let after_hash = file
         .metadata()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    if !same_exact_metadata(&before, &after_hash) || !metadata_matches(&after_hash, expected) {
+    if !same_exact_metadata(&before, &after_hash) || !metadata_matches(&after_hash, retained) {
         return Ok(false);
     }
     if !proof.prove(
         expected.path(),
-        expected.designated_requirement(),
+        retained.designated_requirement(),
         expected.cdhash(),
         deadline,
     )? {
         return Ok(false);
     }
-    if !exact_hash_matches(file, expected, deadline)? {
+    if !exact_hash_matches(file, retained, deadline)? {
         return Ok(false);
     }
     let after_proof = file
         .metadata()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    Ok(same_exact_metadata(&before, &after_proof) && metadata_matches(&after_proof, expected))
+    Ok(same_exact_metadata(&before, &after_proof) && metadata_matches(&after_proof, retained))
 }
 
 fn exact_hash_matches(
     file: &File,
-    expected: &MacosDirectLaunchdExecutableExpectation,
+    expected: &MacosDirectLaunchdRetainedExecutable,
     deadline: Instant,
 ) -> Result<bool, MacosOwnerExecutionError> {
     let mut hasher = Sha256::new();
@@ -111,7 +114,7 @@ fn exact_hash_matches(
 
 fn metadata_matches(
     metadata: &std::fs::Metadata,
-    expected: &MacosDirectLaunchdExecutableExpectation,
+    expected: &MacosDirectLaunchdRetainedExecutable,
 ) -> bool {
     metadata.is_file()
         && metadata.mode() & 0o7777 == expected.mode()

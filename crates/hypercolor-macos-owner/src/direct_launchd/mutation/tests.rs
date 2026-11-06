@@ -516,6 +516,53 @@ fn bootout_revalidates_proof_and_requires_two_terminal_observations() {
 }
 
 #[test]
+fn unconditional_bootout_needs_no_owner_record_and_a_terminal_proof() {
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    commands.push_effect(
+        LaunchctlAction::Bootout,
+        SubmittedCommand::Unknown,
+        Some(MacosDirectLaunchdState::NotLoaded),
+        false,
+    );
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+    assert_eq!(
+        controller
+            .bootout_unconditional(fixture_deadline())
+            .expect("a daemon with no owner record still unloads"),
+        MacosDirectLaunchdMutationOutcome::Complete(())
+    );
+    assert_eq!(
+        controller
+            .bootout_unconditional(fixture_deadline())
+            .expect("already unloaded"),
+        MacosDirectLaunchdMutationOutcome::Complete(()),
+        "repeating it submits nothing"
+    );
+    assert_eq!(commands.actions, vec![LaunchctlAction::Bootout]);
+
+    let (_directory, store, mut inspector, mut commands) =
+        fixture(MacosDirectLaunchdState::Loaded { pid: 42 });
+    commands.push(LaunchctlAction::Bootout, SubmittedCommand::Unknown);
+    let mut controller = MutationController {
+        store: &store,
+        inspector: &mut inspector,
+        commands: &mut commands,
+    };
+    assert_eq!(
+        controller
+            .bootout_unconditional(fixture_deadline())
+            .expect("submitted"),
+        MacosDirectLaunchdMutationOutcome::SubmittedUnknown,
+        "a job that stays loaded is reported, never assumed gone"
+    );
+}
+
+#[test]
 fn proof_drift_prevents_bootout_submission() {
     let (_directory, store, mut inspector, mut commands) =
         fixture(MacosDirectLaunchdState::Loaded { pid: 42 });

@@ -211,6 +211,17 @@ pub trait MacosDirectLaunchdMutator {
 pub fn parse_direct_launchd_autostart_state(
     stdout: &[u8],
 ) -> Result<bool, MacosOwnerExecutionError> {
+    parse_launchd_autostart_state(MACOS_DIRECT_LAUNCHD_LABEL, stdout)
+}
+
+/// Parse bounded `launchctl print-disabled` output for one agent label.
+///
+/// A missing label has launchd's default enabled state. Current symbolic values
+/// and the legacy boolean representation are accepted with identical meaning.
+pub fn parse_launchd_autostart_state(
+    target_label: &str,
+    stdout: &[u8],
+) -> Result<bool, MacosOwnerExecutionError> {
     if stdout.len() > MAX_LAUNCHCTL_OUTPUT_BYTES {
         return Err(MacosOwnerExecutionError::new(
             "launchctl disabled-state output exceeds 64 KiB",
@@ -271,9 +282,9 @@ pub fn parse_direct_launchd_autostart_state(
                 ));
             }
         };
-        if label == MACOS_DIRECT_LAUNCHD_LABEL && target.replace(enabled).is_some() {
+        if label == target_label && target.replace(enabled).is_some() {
             return Err(MacosOwnerExecutionError::new(
-                "launchctl disabled-state output repeats the direct service label",
+                "launchctl disabled-state output repeats the service label",
             ));
         }
     }
@@ -504,6 +515,25 @@ where
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Unload the fixed label whatever it runs. An installation that swaps
+    /// its bundle uses this where an owner record may not exist yet: a
+    /// candidate can hang or crash before it ever publishes one.
+    fn bootout_unconditional(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<MacosDirectLaunchdMutationOutcome<()>, MacosOwnerExecutionError> {
+        let deadline = Self::deadline(timeout)?;
+        if self.exact_not_loaded(deadline) {
+            return Ok(MacosDirectLaunchdMutationOutcome::Complete(()));
+        }
+        let _outcome = self.commands.run(&LaunchctlAction::Bootout, deadline)?;
+        Ok(if self.exact_not_loaded(deadline) {
+            MacosDirectLaunchdMutationOutcome::Complete(())
+        } else {
+            MacosDirectLaunchdMutationOutcome::SubmittedUnknown
+        })
     }
 
     fn exact_not_loaded(&mut self, deadline: Instant) -> bool {

@@ -1895,13 +1895,15 @@ impl MacosDirectLaunchdMutator for CaptureStartMutator {
         MacosDirectLaunchdMutationOutcome<MacosDirectLaunchdOwnerProof>,
         MacosOwnerExecutionError,
     > {
+        let executable = expected.executable();
+        let retained = executable.retained().expect("a retained unit expectation");
         *self
             .observed_executable
             .lock()
             .expect("capture start expectation") = Some((
-            expected.executable().device(),
-            expected.executable().inode(),
-            expected.executable().cdhash().to_owned(),
+            retained.device(),
+            retained.inode(),
+            executable.cdhash().to_owned(),
         ));
         Ok(MacosDirectLaunchdMutationOutcome::SubmittedUnknown)
     }
