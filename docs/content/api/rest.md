@@ -1008,14 +1008,23 @@ UI reads these to render device-specific settings panels.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| `200` | `data`: [`ControlSurfaceListResponse`](@/api/rest-schemas.md#ControlSurfaceListResponse) | Success |
+| `200` | `data`: [`ControlSurfaceDocumentListResponse`](@/api/rest-schemas.md#ControlSurfaceDocumentListResponse) | Success |
 
 <details>
-<summary>Fields: <code>ControlSurfaceListResponse</code></summary>
+<summary>Item fields: <code>ControlSurfaceDocument</code></summary>
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `surfaces` | array of [`ControlSurfaceDocument`](@/api/rest-schemas.md#ControlSurfaceDocument) | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action_availability` | [`BTreeMap`](@/api/rest-schemas.md#BTreeMap) | yes | Resolved availability keyed by action ID. |
+| `actions` | array of [`ControlActionDescriptor`](@/api/rest-schemas.md#ControlActionDescriptor) | yes | Action descriptors. |
+| `availability` | [`BTreeMap`](@/api/rest-schemas.md#BTreeMap) | yes | Resolved availability keyed by field ID. |
+| `fields` | array of [`ControlFieldDescriptor`](@/api/rest-schemas.md#ControlFieldDescriptor) | yes | Field descriptors. |
+| `groups` | array of [`ControlGroupDescriptor`](@/api/rest-schemas.md#ControlGroupDescriptor) | yes | Semantic groups for fields and actions. |
+| `revision` | [`u64`](@/api/rest-schemas.md#u64) | yes | Current descriptor/value revision. |
+| `schema_version` | integer (int32) | yes | Control-surface schema version. |
+| `scope` | [`ControlSurfaceScope`](@/api/rest-schemas.md#ControlSurfaceScope) | yes | Scope represented by this document. |
+| `surface_id` | [`String`](@/api/rest-schemas.md#String) | yes | Stable surface identifier. |
+| `values` | object | yes | Current field values keyed by field ID. |
 
 </details>
 {% </api_endpoint> %}
@@ -1841,10 +1850,10 @@ for the authoring contract.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| `200` | `data`: [`DisplaySummaryList`](@/api/rest-schemas.md#DisplaySummaryList) | Success |
+| `200` | `data`: [`DisplaySummaryListResponse`](@/api/rest-schemas.md#DisplaySummaryListResponse) | Success |
 
 <details>
-<summary>Item fields</summary>
+<summary>Item fields: <code>DisplaySummary</code></summary>
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2027,10 +2036,10 @@ display attached.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| `200` | `data`: [`SimulatedDisplayList`](@/api/rest-schemas.md#SimulatedDisplayList) | Success |
+| `200` | `data`: [`SimulatedDisplayListResponse`](@/api/rest-schemas.md#SimulatedDisplayListResponse) | Success |
 
 <details>
-<summary>Item fields</summary>
+<summary>Item fields: <code>SimulatedDisplay</code></summary>
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -4243,10 +4252,10 @@ and the portal picker button.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| `200` | `data`: [`CaptureMonitorList`](@/api/rest-schemas.md#CaptureMonitorList) | Success |
+| `200` | `data`: [`CaptureMonitorListResponse`](@/api/rest-schemas.md#CaptureMonitorListResponse) | Success |
 
 <details>
-<summary>Item fields</summary>
+<summary>Item fields: <code>CaptureMonitor</code></summary>
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -4520,10 +4529,10 @@ from this table.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| `200` | `data`: [`ConfigKeySchemaEntryList`](@/api/rest-schemas.md#ConfigKeySchemaEntryList) | Success |
+| `200` | `data`: [`ConfigKeySchemaEntryListResponse`](@/api/rest-schemas.md#ConfigKeySchemaEntryListResponse) | Success |
 
 <details>
-<summary>Item fields</summary>
+<summary>Item fields: <code>ConfigKeySchemaEntry</code></summary>
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

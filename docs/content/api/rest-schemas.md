@@ -1813,15 +1813,21 @@ Complete API document for a driver or device control surface.
 
 Used by [`GET /api/v1/control-surfaces/{id}`](@/api/rest.md#get_control_surface) response, [`GET /api/v1/devices/{id}/controls`](@/api/rest.md#get_device_control_surface) response, [`GET /api/v1/drivers/{id}/controls`](@/api/rest.md#get_driver_control_surface) response.
 
-<div class="schema-anchor" id="ControlSurfaceListResponse"></div>
+<div class="schema-anchor" id="ControlSurfaceDocumentListResponse"></div>
 
-### ControlSurfaceListResponse
+### ControlSurfaceDocumentListResponse
 
-Response body for `GET /api/v1/control-surfaces`.
+Canonical list payload: honest pagination or none at all.
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `surfaces` | array of [`ControlSurfaceDocument`](@/api/rest-schemas.md#ControlSurfaceDocument) | yes |
+`page: None` means the response is complete — no fabricated
+`limit`/`has_more` block pretending a paging contract that doesn't
+exist. `page: Some` means the endpoint genuinely pages.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | array of [`ControlSurfaceDocument`](@/api/rest-schemas.md#ControlSurfaceDocument) | yes | The items. |
+| `page` | [`PageInfo`](@/api/rest-schemas.md#PageInfo) or null | no |  |
+| `total` | integer (int64) | yes | Total matching items (across all pages when paged). |
 
 Used by [`GET /api/v1/control-surfaces`](@/api/rest.md#list_control_surfaces) response.
 
@@ -2526,11 +2532,11 @@ Broad shape classification a face adapts its layout to.
 
 One of `round`, `square`, `wide`, `tall`.
 
-<div class="schema-anchor" id="DisplaySummaryList"></div>
+<div class="schema-anchor" id="DisplaySummary"></div>
 
-### DisplaySummaryList
+### DisplaySummary
 
-An array of objects with these fields:
+Summary row from `GET /api/v1/displays`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2543,6 +2549,22 @@ An array of objects with these fields:
 | `rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) | no | How the panel is mounted; everything drawn on it turns to match. |
 | `vendor` | string | yes |  |
 | `width` | integer (int32) | yes |  |
+
+<div class="schema-anchor" id="DisplaySummaryListResponse"></div>
+
+### DisplaySummaryListResponse
+
+Canonical list payload: honest pagination or none at all.
+
+`page: None` means the response is complete — no fabricated
+`limit`/`has_more` block pretending a paging contract that doesn't
+exist. `page: Some` means the endpoint genuinely pages.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | array of [`DisplaySummary`](@/api/rest-schemas.md#DisplaySummary) | yes | The items. |
+| `page` | [`PageInfo`](@/api/rest-schemas.md#PageInfo) or null | no |  |
+| `total` | integer (int64) | yes | Total matching items (across all pages when paged). |
 
 Used by [`GET /api/v1/displays`](@/api/rest.md#list_displays) response.
 
@@ -2641,20 +2663,21 @@ in the family returns.
 
 Used by [`POST /api/v1/simulators/displays`](@/api/rest.md#create_simulated_display) response, [`GET /api/v1/simulators/displays/{id}`](@/api/rest.md#get_simulated_display) response, [`PATCH /api/v1/simulators/displays/{id}`](@/api/rest.md#patch_simulated_display) response.
 
-<div class="schema-anchor" id="SimulatedDisplayList"></div>
+<div class="schema-anchor" id="SimulatedDisplayListResponse"></div>
 
-### SimulatedDisplayList
+### SimulatedDisplayListResponse
 
-An array of objects with these fields:
+Canonical list payload: honest pagination or none at all.
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `circular` | boolean | no |
-| `enabled` | boolean | no |
-| `height` | integer (int32) | yes |
-| `id` | [`DeviceId`](@/api/rest-schemas.md#DeviceId) | yes |
-| `name` | string | yes |
-| `width` | integer (int32) | yes |
+`page: None` means the response is complete — no fabricated
+`limit`/`has_more` block pretending a paging contract that doesn't
+exist. `page: Some` means the endpoint genuinely pages.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | array of [`SimulatedDisplay`](@/api/rest-schemas.md#SimulatedDisplay) | yes | The items. |
+| `page` | [`PageInfo`](@/api/rest-schemas.md#PageInfo) or null | no |  |
+| `total` | integer (int64) | yes | Total matching items (across all pages when paged). |
 
 Used by [`GET /api/v1/simulators/displays`](@/api/rest.md#list_simulated_displays) response.
 
@@ -3863,11 +3886,9 @@ Used by [`POST /api/v1/library/presets`](@/api/rest.md#create_preset) request, [
 
 Used by [`POST /api/v1/capture/authorize`](@/api/rest.md#authorize_screen_recording) response, [`POST /api/v1/input/authorize`](@/api/rest.md#authorize_input_monitoring) response.
 
-<div class="schema-anchor" id="CaptureMonitorList"></div>
+<div class="schema-anchor" id="CaptureMonitor"></div>
 
-### CaptureMonitorList
-
-An array of objects with these fields:
+### CaptureMonitor
 
 | Field | Type | Required |
 | --- | --- | --- |
@@ -3878,6 +3899,22 @@ An array of objects with these fields:
 | `primary` | boolean | yes |
 | `value` | string | yes |
 | `width` | integer (int32) | yes |
+
+<div class="schema-anchor" id="CaptureMonitorListResponse"></div>
+
+### CaptureMonitorListResponse
+
+Canonical list payload: honest pagination or none at all.
+
+`page: None` means the response is complete — no fabricated
+`limit`/`has_more` block pretending a paging contract that doesn't
+exist. `page: Some` means the endpoint genuinely pages.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | array of [`CaptureMonitor`](@/api/rest-schemas.md#CaptureMonitor) | yes | The items. |
+| `page` | [`PageInfo`](@/api/rest-schemas.md#PageInfo) or null | no |  |
+| `total` | integer (int64) | yes | Total matching items (across all pages when paged). |
 
 Used by [`GET /api/v1/capture/monitors`](@/api/rest.md#list_capture_monitors) response.
 
@@ -3943,11 +3980,12 @@ Response from `GET /api/v1/config/keys/{key}`.
 
 Used by [`GET /api/v1/config/keys/{key}`](@/api/rest.md#get_config_key) response.
 
-<div class="schema-anchor" id="ConfigKeySchemaEntryList"></div>
+<div class="schema-anchor" id="ConfigKeySchemaEntry"></div>
 
-### ConfigKeySchemaEntryList
+### ConfigKeySchemaEntry
 
-An array of objects with these fields:
+One schema row as served to clients (`GET /config/schema`,
+wave 4.3) — the wire projection of a descriptor.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3956,6 +3994,22 @@ An array of objects with these fields:
 | `pattern` | string | yes | The pattern text: an exact key, a section root, a namespace root suffixed `.*`, or `*` for the extensions catch-all. |
 | `protection` | [`Protection`](@/api/rest-schemas.md#Protection) | no | Which writes need a protected-control credential. |
 | `redaction` | [`Redaction`](@/api/rest-schemas.md#Redaction) | yes | Read-surface rendering. |
+
+<div class="schema-anchor" id="ConfigKeySchemaEntryListResponse"></div>
+
+### ConfigKeySchemaEntryListResponse
+
+Canonical list payload: honest pagination or none at all.
+
+`page: None` means the response is complete — no fabricated
+`limit`/`has_more` block pretending a paging contract that doesn't
+exist. `page: Some` means the endpoint genuinely pages.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | array of [`ConfigKeySchemaEntry`](@/api/rest-schemas.md#ConfigKeySchemaEntry) | yes | The items. |
+| `page` | [`PageInfo`](@/api/rest-schemas.md#PageInfo) or null | no |  |
+| `total` | integer (int64) | yes | Total matching items (across all pages when paged). |
 
 Used by [`GET /api/v1/config/schema`](@/api/rest.md#get_config_schema) response.
 
@@ -5538,35 +5592,6 @@ Unknown fields are rejected.
 
 The document declares these types, but no operation references them.
 
-<div class="schema-anchor" id="CaptureMonitor"></div>
-
-### CaptureMonitor
-
-| Field | Type | Required |
-| --- | --- | --- |
-| `height` | integer (int32) | yes |
-| `id` | string | yes |
-| `index` | integer | yes |
-| `name` | string | yes |
-| `primary` | boolean | yes |
-| `value` | string | yes |
-| `width` | integer (int32) | yes |
-
-<div class="schema-anchor" id="ConfigKeySchemaEntry"></div>
-
-### ConfigKeySchemaEntry
-
-One schema row as served to clients (`GET /config/schema`,
-wave 4.3) — the wire projection of a descriptor.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `apply` | [`ApplyPolicy`](@/api/rest-schemas.md#ApplyPolicy) | yes | How changes take effect. |
-| `has_validator` | boolean | yes | Whether the daemon runs extra validation beyond type checking. |
-| `pattern` | string | yes | The pattern text: an exact key, a section root, a namespace root suffixed `.*`, or `*` for the extensions catch-all. |
-| `protection` | [`Protection`](@/api/rest-schemas.md#Protection) | no | Which writes need a protected-control credential. |
-| `redaction` | [`Redaction`](@/api/rest-schemas.md#Redaction) | yes | Read-surface rendering. |
-
 <div class="schema-anchor" id="ControlAvailabilityState"></div>
 
 ### ControlAvailabilityState
@@ -5574,21 +5599,3 @@ wave 4.3) — the wire projection of a descriptor.
 Resolved availability state.
 
 One of `available`, `disabled`, `read_only`, `unsupported`, `hidden`.
-
-<div class="schema-anchor" id="DisplaySummary"></div>
-
-### DisplaySummary
-
-Summary row from `GET /api/v1/displays`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `circular` | boolean | yes |  |
-| `descriptor` | [`DisplayDescriptor`](@/api/rest-schemas.md#DisplayDescriptor) | yes | Full surface description (shape, safe area, fps, pixel format) — the same descriptor injected into face pages. |
-| `family` | string | yes |  |
-| `height` | integer (int32) | yes |  |
-| `id` | string | yes |  |
-| `name` | string | yes |  |
-| `rotation` | [`DisplayRotation`](@/api/rest-schemas.md#DisplayRotation) | no | How the panel is mounted; everything drawn on it turns to match. |
-| `vendor` | string | yes |  |
-| `width` | integer (int32) | yes |  |

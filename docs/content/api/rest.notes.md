@@ -936,17 +936,20 @@ Builds a monitor picker. Each entry carries a ready-to-store `value` for the
 `capture.source` config key.
 
 ```json
-[
-  {
-    "index": 0,
-    "id": "DP-1",
-    "name": "\\\\.\\DISPLAY1",
-    "width": 2560,
-    "height": 1440,
-    "primary": true,
-    "value": "monitor:DP-1"
-  }
-]
+{
+  "items": [
+    {
+      "index": 0,
+      "id": "DP-1",
+      "name": "\\\\.\\DISPLAY1",
+      "width": 2560,
+      "height": 1440,
+      "primary": true,
+      "value": "monitor:DP-1"
+    }
+  ],
+  "total": 1
+}
 ```
 
 The list is empty on platforms where the backend picks its own source (the XDG
