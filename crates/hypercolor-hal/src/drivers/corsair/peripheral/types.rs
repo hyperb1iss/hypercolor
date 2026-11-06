@@ -79,9 +79,60 @@ pub enum BragiCommand {
 pub enum BragiProperty {
     Brightness = 0x02,
     Mode = 0x03,
+    /// Vendor ID of the device a request is routed to (receiver children).
+    VendorId = 0x11,
+    /// Product ID of the device a request is routed to (receiver children).
+    ProductId = 0x12,
     AppVersion = 0x13,
     BootloaderVersion = 0x14,
+    /// Receiver bitmap of paired child slots that are present.
+    SubdeviceBitfield = 0x36,
     BrightnessCoarse = 0x44,
+}
+
+/// One paired-device slot behind a Bragi wireless receiver.
+///
+/// Slots are numbered 1 through 7. A request reaches the child in a slot
+/// when the slot number is ORed into the Bragi magic byte, so slot 1 is
+/// addressed with `0x09` and slot 7 with `0x0F`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BragiChildSlot(u8);
+
+impl BragiChildSlot {
+    /// Highest slot a receiver bitmap can report.
+    pub const MAX: u8 = 7;
+
+    /// Wrap a slot number, refusing 0 (the receiver itself) and anything
+    /// above [`Self::MAX`].
+    #[must_use]
+    pub const fn new(slot: u8) -> Option<Self> {
+        if slot >= 1 && slot <= Self::MAX {
+            Some(Self(slot))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// Magic byte that routes a request through the receiver to this slot.
+    #[must_use]
+    pub const fn magic(self) -> u8 {
+        BRAGI_MAGIC | self.0
+    }
+
+    /// Slots a receiver reports present in its `SubdeviceBitfield` value.
+    ///
+    /// Only bits 1 through 7 name slots; bit 0 and every higher bit are
+    /// ignored.
+    pub fn present_in(bitfield: u32) -> impl Iterator<Item = Self> {
+        (1..=Self::MAX)
+            .filter(move |slot| bitfield & (1_u32 << slot) != 0)
+            .map(Self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +184,9 @@ pub struct BragiDeviceConfig {
     pub topology: CorsairPeripheralTopology,
     pub lighting_format: BragiLightingFormat,
     pub max_fps: u32,
+    /// Receiver slot every request is routed to, or `None` for a device
+    /// addressed directly.
+    pub child_slot: Option<BragiChildSlot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +319,23 @@ impl BragiDeviceConfig {
             topology,
             lighting_format: BragiLightingFormat::RgbPlanar,
             max_fps: class.default_max_fps(),
+            child_slot: None,
+        }
+    }
+
+    /// Route every request through a wireless receiver to one child slot.
+    #[must_use]
+    pub const fn routed_to(mut self, slot: BragiChildSlot) -> Self {
+        self.child_slot = Some(slot);
+        self
+    }
+
+    /// Magic byte that opens every request this config emits.
+    #[must_use]
+    pub const fn magic(self) -> u8 {
+        match self.child_slot {
+            Some(slot) => slot.magic(),
+            None => BRAGI_MAGIC,
         }
     }
 
