@@ -31,6 +31,8 @@ use hypercolor_driver_nanoleaf::NanoleafDriverModule;
 use hypercolor_driver_openrgb::OpenRgbDriverModule;
 #[cfg(feature = "pixel")]
 use hypercolor_driver_pixel::PixelDriverModule;
+#[cfg(feature = "twinkly")]
+use hypercolor_driver_twinkly::TwinklyDriverModule;
 
 /// One compiled-in standalone driver.
 struct BuiltinDriver {
@@ -93,6 +95,10 @@ static BUILTIN_DRIVERS: &[BuiltinDriver] = &[
     #[cfg(feature = "pixel")]
     BuiltinDriver::new(&hypercolor_driver_pixel::DESCRIPTOR, |registry, _| {
         Ok(registry.register(PixelDriverModule::new())?)
+    }),
+    #[cfg(feature = "twinkly")]
+    BuiltinDriver::new(&hypercolor_driver_twinkly::DESCRIPTOR, |registry, _| {
+        Ok(registry.register(TwinklyDriverModule::new())?)
     }),
 ];
 

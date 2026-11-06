@@ -59,6 +59,9 @@ enabled = false
 [drivers.smbus]
 enabled = false
 
+[drivers.twinkly]
+enabled = false
+
 [drivers.usb]
 enabled = false
 
