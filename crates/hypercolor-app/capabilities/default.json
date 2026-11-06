@@ -19,6 +19,7 @@
     "allow-choose-daemon-owner",
     "allow-execute-macos-daemon-owner-offline-remedy",
     "allow-macos-daemon-owner-offline-status",
+    "allow-macos-app-startup-hold",
     "allow-restart-macos-capture-owner",
     "allow-detect-pawnio-support",
     "allow-detect-daemon-launcher",

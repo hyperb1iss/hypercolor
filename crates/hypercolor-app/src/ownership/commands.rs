@@ -6,6 +6,14 @@ use hypercolor_types::service::ServiceIdentity;
 use super::model::{MacosCaptureOwnerRestartOutcome, MacosDaemonOwnerRemedyOutcome};
 use crate::supervisor::{MacosDaemonOwnerOfflineStatus, SupervisorState};
 
+/// An app holding at startup leaves every daemon alone, however it is asked.
+#[cfg(target_os = "macos")]
+fn require_no_startup_hold(state: &SupervisorState) -> Result<(), String> {
+    state.macos_startup_hold().map_or(Ok(()), |hold| {
+        Err(format!("Hypercolor is holding at startup: {hold:?}"))
+    })
+}
+
 /// Select one local macOS daemon topology through the durable coordinator.
 #[tauri::command]
 pub async fn choose_daemon_owner(
@@ -15,6 +23,7 @@ pub async fn choose_daemon_owner(
 ) -> Result<MacosOwnerCoordinatorOutcome, String> {
     #[cfg(target_os = "macos")]
     {
+        require_no_startup_hold(&state)?;
         let requested_owner = super::model::require_macos_owner(&requested_owner)?;
         let state = state.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -49,6 +58,7 @@ pub async fn execute_macos_daemon_owner_offline_remedy(
 ) -> Result<MacosDaemonOwnerRemedyOutcome, String> {
     #[cfg(target_os = "macos")]
     {
+        require_no_startup_hold(&state)?;
         let state = state.inner().clone();
         let start_state = state.clone();
         let (pending, daemon_url) = tauri::async_runtime::spawn_blocking(move || {
@@ -86,6 +96,7 @@ pub async fn restart_macos_capture_owner(
 ) -> Result<MacosCaptureOwnerRestartOutcome, String> {
     #[cfg(target_os = "macos")]
     {
+        require_no_startup_hold(&state)?;
         let active_owner = super::model::require_macos_owner(&active_owner)?;
         let state = state.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {

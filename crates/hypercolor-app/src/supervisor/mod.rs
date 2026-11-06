@@ -10,7 +10,9 @@ use std::{
 use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
 use hypercolor_core::config::paths::data_dir;
-use hypercolor_macos_owner::{MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy};
+use hypercolor_macos_owner::{
+    MacosAppStartupHold, MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy,
+};
 #[cfg(target_os = "macos")]
 use hypercolor_macos_owner::{
     MacosDaemonSessionAttestation, MacosOwnerExecutionError, MacosOwnerIncarnation,
@@ -223,6 +225,7 @@ pub struct SupervisorState {
     owner_handover_stop: Arc<std::sync::atomic::AtomicBool>,
     macos_external_owner: Arc<Mutex<Option<MacosExternalOwnerMode>>>,
     macos_owner_offline: Arc<Mutex<Option<MacosDaemonOwnerOfflineStatus>>>,
+    macos_startup_hold: Arc<Mutex<Option<MacosAppStartupHold>>>,
     verified_connection: Arc<Mutex<VerifiedDaemonConnectionSnapshot>>,
     verified_connection_emitter: Arc<Mutex<Option<VerifiedConnectionEmitter>>>,
 }
@@ -353,6 +356,23 @@ impl SupervisorState {
             .macos_external_owner
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Why this app leaves every daemon alone right now, for the app bridge.
+    #[must_use]
+    pub fn macos_startup_hold(&self) -> Option<MacosAppStartupHold> {
+        *self
+            .macos_startup_hold
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Record why this app leaves every daemon alone.
+    pub fn set_macos_startup_hold(&self, hold: Option<MacosAppStartupHold>) {
+        *self
+            .macos_startup_hold
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = hold;
     }
 
     /// Return the topology-specific offline status for the app bridge.
@@ -1499,6 +1519,9 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
         .remember_daemon_url(daemon_url.clone());
     #[cfg(target_os = "macos")]
     {
+        if crate::macos_update::hold_startup(app, &daemon_url) {
+            return Ok(());
+        }
         let store = MacosOwnerStore::new(data_dir());
         let state = app.state::<SupervisorState>().inner().clone();
         match crate::ownership::recover_daemon_owner_before_supervisor(
