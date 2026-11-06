@@ -33,6 +33,10 @@ pub struct FakeSpec {
     pub frame_rate: f64,
     /// Layout JSON body, or `None` to answer the layout with HTTP 404.
     pub layout: Option<serde_json::Value>,
+    /// Token lifetime reported by login, in seconds.
+    pub token_lifetime: u64,
+    /// Issue the same token text on every login.
+    pub reuse_tokens: bool,
 }
 
 impl FakeSpec {
@@ -48,6 +52,8 @@ impl FakeSpec {
             led_profile: "RGB".to_owned(),
             frame_rate: 23.81,
             layout: None,
+            token_lifetime: 14_400,
+            reuse_tokens: false,
         }
     }
 
@@ -76,6 +82,7 @@ struct State {
     requests: Vec<HttpRecord>,
     datagrams: Vec<Vec<u8>>,
     discovery_requests: Vec<Vec<u8>>,
+    failing_mode_posts: usize,
 }
 
 /// A running fake device.
@@ -113,6 +120,7 @@ impl FakeTwinkly {
             requests: Vec::new(),
             datagrams: Vec::new(),
             discovery_requests: Vec::new(),
+            failing_mode_posts: 0,
         }));
 
         let http_state = Arc::clone(&state);
@@ -216,6 +224,11 @@ impl FakeTwinkly {
         let mut state = self.state.lock().expect("state lock");
         state.issued = state.issued.wrapping_add(1);
         state.valid_token = Some(token_text(0xee, state.issued));
+    }
+
+    /// Answer the next `count` mode changes with HTTP 500.
+    pub fn fail_mode_posts(&self, count: usize) {
+        self.state.lock().expect("state lock").failing_mode_posts = count;
     }
 
     /// Simulate the Twinkly app switching to a movie.
@@ -366,14 +379,23 @@ fn respond(
             }) {
                 return ("200 OK", serde_json::json!({ "code": 1101 }).to_string());
             }
-            state.issued = state.issued.wrapping_add(1);
-            let token = token_text(0x5a, state.issued);
+            if !state.spec.reuse_tokens {
+                state.issued = state.issued.wrapping_add(1);
+            }
+            let token = token_text(
+                0x5a,
+                if state.spec.reuse_tokens {
+                    1
+                } else {
+                    state.issued
+                },
+            );
             state.pending_token = Some(token.clone());
             // Logging in signs out the previous token right away.
             state.valid_token = None;
             ok(serde_json::json!({
                 "authentication_token": token,
-                "authentication_token_expires_in": 14_400,
+                "authentication_token_expires_in": state.spec.token_lifetime,
                 "challenge-response": "0123456789abcdef0123456789abcdef01234567",
                 "code": 1000,
             }))
@@ -401,6 +423,10 @@ fn respond(
         ("POST", "/xled/v1/led/mode") => {
             if !authorized {
                 return unauthorized;
+            }
+            if state.failing_mode_posts > 0 {
+                state.failing_mode_posts -= 1;
+                return ("500 Internal Server Error", "busy".to_owned());
             }
             let mode = serde_json::from_str::<serde_json::Value>(body)
                 .ok()

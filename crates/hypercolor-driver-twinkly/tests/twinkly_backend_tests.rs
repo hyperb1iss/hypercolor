@@ -186,40 +186,55 @@ async fn brightness_scales_every_led() -> TestResult {
     Ok(())
 }
 
+fn quick_policy(initial_ms: u64) -> ContentionPolicy {
+    ContentionPolicy {
+        initial_backoff: Duration::from_millis(initial_ms),
+        max_backoff: Duration::from_millis(initial_ms * 4),
+        quiet_period: Duration::from_secs(60),
+    }
+}
+
+async fn wait_for_state(
+    backend: &TwinklyBackend,
+    id: &hypercolor_types::device::DeviceId,
+    wanted: &str,
+) -> bool {
+    for _ in 0..300 {
+        if control_state(backend, id).await == wanted {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
 #[tokio::test]
-async fn upkeep_logs_in_again_after_another_client_takes_the_token() -> TestResult {
+async fn the_first_lost_login_yields_then_resumes_with_a_fresh_token() -> TestResult {
     let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(3)).await?;
     let discovered = discover(fake.endpoint()).await?;
     let device_id = discovered.info.id;
-    let backend = backend().with_upkeep_interval(Duration::from_millis(50));
+    let backend = backend()
+        .with_upkeep_interval(Duration::from_millis(20))
+        .with_contention_policy(quick_policy(300));
     backend.adopt_device(&discovered)?;
     backend.connect(&device_id).await?;
     let first_token = fake.valid_token_bytes().ok_or("first token")?;
 
     fake.revoke_token();
-    fake.set_mode("movie");
-    let requests = fake
-        .wait_for_requests(|requests| {
-            requests
-                .iter()
-                .filter(|request| request.path == "/xled/v1/login")
-                .count()
-                >= 2
-                && requests.last().is_some_and(|request| {
-                    request.path == "/xled/v1/led/mode" && request.method == "POST"
-                })
-        })
-        .await;
-    assert!(
-        requests
-            .iter()
-            .any(|request| request.method == "GET" && request.path == "/xled/v1/led/mode"),
-        "upkeep polls the mode with its token"
+    assert!(wait_for_state(&backend, &device_id, "yielded_to_another_app").await);
+    assert_eq!(logins(&fake), 1, "no re-login on the first loss");
+    assert_eq!(
+        backend
+            .write_colors_shared_outcome(&device_id, std::sync::Arc::new(vec![[9, 9, 9]; 3]))
+            .await?,
+        DeviceWriteOutcome::Declined
     );
+
+    assert!(wait_for_state(&backend, &device_id, "streaming").await);
+    assert_eq!(logins(&fake), 2, "one resume after the pause");
     assert_eq!(fake.mode(), "rt");
     let second_token = fake.valid_token_bytes().ok_or("second token")?;
     assert_ne!(first_token, second_token);
-
     backend.write_colors(&device_id, &[[9, 9, 9]; 3]).await?;
     let datagrams = fake.wait_for_datagrams(1).await;
     assert_eq!(&datagrams.last().ok_or("datagram")?[1..9], &second_token);
@@ -362,76 +377,118 @@ async fn control_state(
         .unwrap_or_default()
 }
 
+/// A rival that logs in now and then (every 90 s in a real home, every
+/// 250 ms here) never trips a rate threshold; every single loss must still
+/// yield, and the pauses must grow instead of retaking the lights at once.
 #[tokio::test]
-async fn repeated_takeovers_pause_instead_of_fighting_then_resume() -> TestResult {
+async fn a_slow_rival_is_never_fought() -> TestResult {
     let fake = std::sync::Arc::new(FakeTwinkly::spawn(FakeSpec::gen2_rgb(3)).await?);
     let discovered = discover(fake.endpoint()).await?;
     let device_id = discovered.info.id;
     let backend = backend()
         .with_upkeep_interval(Duration::from_millis(20))
-        .with_contention_policy(ContentionPolicy {
-            max_takeovers: 2,
-            window: Duration::from_secs(10),
-            initial_backoff: Duration::from_millis(400),
-            max_backoff: Duration::from_secs(2),
-        });
+        .with_contention_policy(quick_policy(200));
     backend.adopt_device(&discovered)?;
     backend.connect(&device_id).await?;
-    assert_eq!(control_state(&backend, &device_id).await, "streaming");
 
-    // A rival client keeps logging in, which signs Hypercolor out.
     let rival_fake = std::sync::Arc::clone(&fake);
     let rival = tokio::spawn(async move {
         loop {
             rival_fake.revoke_token();
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
     });
-    let mut yielded = false;
-    for _ in 0..200 {
-        if control_state(&backend, &device_id).await == "yielded_to_another_app" {
-            yielded = true;
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
+    rival.abort();
+    // Fighting back after every loss would mean a login per rival login
+    // (about nine). Pauses of 200, 400, then 800 ms allow at most three
+    // resumes in two seconds.
+    let resumes = logins(&fake) - 1;
+    assert!(
+        (1..=4).contains(&resumes),
+        "expected a few spaced resumes, saw {resumes}"
+    );
+    Ok(())
+}
+
+/// The pause ends, the login succeeds (with the same token as before), and
+/// the switch to real-time mode fails once. The session must stay paused,
+/// re-arm, and come back on the next attempt rather than staying yielded
+/// forever.
+#[tokio::test]
+async fn a_resume_whose_mode_switch_fails_rearms_and_recovers() -> TestResult {
+    let fake = FakeTwinkly::spawn(FakeSpec {
+        reuse_tokens: true,
+        ..FakeSpec::gen2_rgb(3)
+    })
+    .await?;
+    let discovered = discover(fake.endpoint()).await?;
+    let device_id = discovered.info.id;
+    let backend = backend()
+        .with_upkeep_interval(Duration::from_millis(20))
+        .with_contention_policy(quick_policy(150));
+    backend.adopt_device(&discovered)?;
+    backend.connect(&device_id).await?;
+
+    fake.revoke_token();
+    assert!(wait_for_state(&backend, &device_id, "yielded_to_another_app").await);
+    fake.fail_mode_posts(1);
+    // First resume: login succeeds, the mode switch fails.
+    for _ in 0..300 {
+        if logins(&fake) >= 2 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    rival.abort();
-    assert!(yielded, "the session steps back after repeated takeovers");
-    let logins_while_paused = logins(&fake);
+    tokio::time::sleep(Duration::from_millis(40)).await;
     assert_eq!(
-        logins_while_paused, 2,
-        "one re-login, then no more fighting"
+        control_state(&backend, &device_id).await,
+        "yielded_to_another_app"
     );
-    assert_eq!(
-        backend
-            .write_colors_shared_outcome(&device_id, std::sync::Arc::new(vec![[1, 2, 3]; 3]))
-            .await?,
-        DeviceWriteOutcome::Declined
-    );
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(
-        logins(&fake),
-        logins_while_paused,
-        "no logins during the pause"
-    );
-
-    // The rival went quiet; after the pause the session takes the lights back.
-    let mut resumed = false;
-    for _ in 0..200 {
-        if control_state(&backend, &device_id).await == "streaming" {
-            resumed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(resumed, "the session resumes after a quiet period");
-    assert_eq!(logins(&fake), logins_while_paused + 1);
+    // Second resume succeeds and clears the pause.
+    assert!(wait_for_state(&backend, &device_id, "streaming").await);
+    assert_eq!(logins(&fake), 3);
     assert_eq!(fake.mode(), "rt");
     assert_eq!(
         backend
             .write_colors_shared_outcome(&device_id, std::sync::Arc::new(vec![[1, 2, 3]; 3]))
             .await?,
         DeviceWriteOutcome::Sent
+    );
+    Ok(())
+}
+
+/// With a short token lifetime every few cycles refresh the token; the
+/// ownership check must still run first, so a refresh never steals the
+/// lights back from a rival.
+#[tokio::test]
+async fn a_refresh_never_steals_from_a_rival() -> TestResult {
+    let fake = FakeTwinkly::spawn(FakeSpec {
+        token_lifetime: 1,
+        ..FakeSpec::gen2_rgb(3)
+    })
+    .await?;
+    let discovered = discover(fake.endpoint()).await?;
+    let device_id = discovered.info.id;
+    let backend = backend()
+        .with_upkeep_interval(Duration::from_millis(20))
+        .with_contention_policy(quick_policy(10_000));
+    backend.adopt_device(&discovered)?;
+    backend.connect(&device_id).await?;
+
+    // Without a rival, the token is refreshed proactively.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(logins(&fake), 2, "one proactive refresh");
+    assert_eq!(control_state(&backend, &device_id).await, "streaming");
+
+    fake.revoke_token();
+    assert!(wait_for_state(&backend, &device_id, "yielded_to_another_app").await);
+    let paused_logins = logins(&fake);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        logins(&fake),
+        paused_logins,
+        "no refresh while another app holds the lights"
     );
     Ok(())
 }

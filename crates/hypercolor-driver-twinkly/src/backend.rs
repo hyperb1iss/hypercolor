@@ -1,7 +1,7 @@
 //! Twinkly output backend: login, real-time sessions, the frame sink, and
 //! session upkeep (Spec 92 §8 and §10.5).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
@@ -45,32 +45,35 @@ pub const RESTORE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Metadata key reporting whether Hypercolor holds the lights.
 pub const CONTROL_STATE_KEY: &str = "control_state";
 
-/// How the session reacts when another client keeps taking the device's
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
+/// Longest single pause, whatever a policy asks for; keeps deadline
+/// arithmetic far from overflow.
+const MAX_PAUSE: Duration = Duration::from_hours(24);
+
+/// How the session steps back when another client takes the device's
 /// single login (Spec 92 §5.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentionPolicy {
-    /// Takeovers inside `window` that make the session step back.
-    pub max_takeovers: usize,
-    /// Window the takeovers are counted in.
-    pub window: Duration,
-    /// First pause before taking the lights back.
+    /// Pause after the first loss.
     pub initial_backoff: Duration,
-    /// Longest pause; each repeat of the contention doubles it up to this.
+    /// Longest pause; each loss soon after a resume doubles the pause up
+    /// to this.
     pub max_backoff: Duration,
+    /// Holding the login this long without a loss counts as a quiet period
+    /// and resets the pause to `initial_backoff`.
+    pub quiet_period: Duration,
 }
 
 impl Default for ContentionPolicy {
     fn default() -> Self {
         Self {
-            max_takeovers: 3,
-            window: Duration::from_mins(2),
             initial_backoff: Duration::from_secs(30),
             max_backoff: Duration::from_mins(10),
+            quiet_period: Duration::from_mins(10),
         }
     }
 }
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Connected device: immutable facts plus the shared stream state.
 struct SessionHandle {
@@ -401,57 +404,76 @@ async fn bind_rt_socket(peer: SocketAddr) -> Result<UdpSocket> {
     Ok(socket)
 }
 
-/// Takeover bookkeeping for [`ContentionPolicy`].
-struct Contention {
+/// Who holds the device's login, as the upkeep sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ownership {
+    /// Hypercolor holds the login, since `held_since`.
+    Owning { held_since: Instant },
+    /// Another client took it; try once more at `resume_at`.
+    Yielded { resume_at: Instant },
+}
+
+/// The ownership state machine (Spec 92 §5.4).
+///
+/// The first loss of the login to someone else yields at once: no re-login,
+/// frames declined, `yielded_to_another_app` reported. After the pause the
+/// session tries one resume, a single transition that succeeds only when
+/// both the login and the switch to real-time mode do; anything else
+/// re-arms the pause. A loss soon after a resume doubles the next pause;
+/// holding the login for the quiet period resets it.
+struct OwnershipState {
     policy: ContentionPolicy,
-    takeovers: VecDeque<Instant>,
+    ownership: Ownership,
     backoff: Duration,
-    resume_at: Option<Instant>,
 }
 
-impl Contention {
-    fn new(policy: ContentionPolicy) -> Self {
+impl OwnershipState {
+    fn new(policy: ContentionPolicy, now: Instant) -> Self {
         Self {
-            backoff: policy.initial_backoff,
+            backoff: policy.initial_backoff.min(MAX_PAUSE),
             policy,
-            takeovers: VecDeque::new(),
-            resume_at: None,
+            ownership: Ownership::Owning { held_since: now },
         }
     }
 
-    fn prune(&mut self, now: Instant) {
-        while self
-            .takeovers
-            .front()
-            .is_some_and(|at| now.saturating_duration_since(*at) > self.policy.window)
-        {
-            self.takeovers.pop_front();
-        }
-        if self.takeovers.is_empty() && self.resume_at.is_none() {
-            self.backoff = self.policy.initial_backoff;
-        }
-    }
-
-    /// Record losing the login. Returns the pause to take when the losses
-    /// add up to contention, else `None` to log in again now.
-    fn lost_login(&mut self, now: Instant) -> Option<Duration> {
-        self.prune(now);
-        self.takeovers.push_back(now);
-        if self.takeovers.len() < self.policy.max_takeovers.max(1) {
-            return None;
-        }
+    /// Another client holds the login: pause, and lengthen the next pause.
+    fn lose(&mut self, device_id: &DeviceId, shared: &SessionShared, now: Instant) {
         let pause = self.backoff;
-        self.backoff = (self.backoff * 2).min(self.policy.max_backoff);
-        self.resume_at = Some(now + pause);
-        Some(pause)
+        shared.yielded.store(true, Ordering::Release);
+        self.ownership = Ownership::Yielded {
+            resume_at: now.checked_add(pause).unwrap_or(now),
+        };
+        self.backoff = self
+            .backoff
+            .saturating_mul(2)
+            .min(self.policy.max_backoff.min(MAX_PAUSE));
+        warn!(
+            %device_id,
+            pause_secs = pause.as_secs(),
+            "Another app took control of the Twinkly lights; Hypercolor is pausing instead of fighting for the login"
+        );
+    }
+
+    /// A resume attempt failed for a reason other than another login: try
+    /// again after the same pause.
+    fn rearm(&mut self, now: Instant) {
+        let pause = self.backoff;
+        self.ownership = Ownership::Yielded {
+            resume_at: now.checked_add(pause).unwrap_or(now),
+        };
+    }
+
+    /// The login and real-time mode are ours again.
+    fn resumed(&mut self, shared: &SessionShared, now: Instant) {
+        shared.yielded.store(false, Ordering::Release);
+        self.ownership = Ownership::Owning { held_since: now };
     }
 }
 
-/// Keep a session streamable: refresh the token before it expires, log in
-/// again when the device rejects it (another client logged in), and put
-/// the device back in real-time mode when something switched it away.
-/// When another client keeps taking the login, step back for a growing
-/// pause instead of fighting over it (Spec 92 §5.4).
+/// Keep a session streamable: put the device back in real-time mode when
+/// something switched it away, refresh the token before it expires, and
+/// step back the moment another client takes the login (Spec 92 §5.3 and
+/// §5.4).
 async fn run_upkeep(
     device_id: DeviceId,
     client: TwinklyClient,
@@ -462,56 +484,75 @@ async fn run_upkeep(
 ) {
     let mut obtained_at = Instant::now();
     let mut failures = 0_u32;
-    let mut contention = Contention::new(policy);
+    let mut state = OwnershipState::new(policy, obtained_at);
     loop {
         tokio::time::sleep(interval).await;
         if shared.closed.load(Ordering::Acquire) {
             return;
         }
         let now = Instant::now();
-        contention.prune(now);
-        let outcome = if let Some(resume_at) = contention.resume_at {
-            if now < resume_at {
-                continue;
-            }
-            info!(%device_id, "Taking the Twinkly lights back after another app's quiet period");
-            contention.resume_at = None;
-            contention.takeovers.push_back(now);
-            relogin(&client, &shared).await
-        } else {
-            let refresh_due = token.expires_in.is_some_and(|lifetime| {
-                obtained_at.elapsed() + TOKEN_REFRESH_MARGIN.min(lifetime / 2) >= lifetime
-            });
-            let outcome = if refresh_due {
-                debug!(%device_id, "Twinkly token near expiry; logging in again");
-                relogin(&client, &shared).await
-            } else {
-                check_mode(&client, &token).await.map(|()| None)
-            };
-            match outcome {
-                Err(error) if is_unauthorized(&error) => {
-                    if yield_if_contended(&device_id, &mut contention, &shared, now) {
-                        continue;
+        let outcome: Result<()> = match state.ownership {
+            Ownership::Yielded { resume_at } if now < resume_at => continue,
+            Ownership::Yielded { .. } => {
+                info!(%device_id, "Taking the Twinkly lights back after a pause");
+                match resume(&client, &shared).await {
+                    Ok(fresh) => {
+                        token = fresh;
+                        obtained_at = Instant::now();
+                        state.resumed(&shared, obtained_at);
+                        info!(%device_id, "Hypercolor holds the Twinkly lights again");
+                        Ok(())
                     }
-                    info!(%device_id, "Twinkly token rejected, likely another login; logging in again");
-                    relogin(&client, &shared).await
+                    Err(error) if is_unauthorized(&error) => {
+                        state.lose(&device_id, &shared, now);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        state.rearm(now);
+                        Err(error)
+                    }
                 }
-                other => other,
+            }
+            Ownership::Owning { held_since } => {
+                if now.saturating_duration_since(held_since) >= policy.quiet_period {
+                    state.backoff = policy.initial_backoff.min(MAX_PAUSE);
+                }
+                // Check ownership before anything else, including a refresh:
+                // a login now would sign out whoever took the device.
+                match check_mode(&client, &token).await {
+                    Err(error) if is_unauthorized(&error) => {
+                        state.lose(&device_id, &shared, now);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                    Ok(()) => {
+                        let refresh_due = token.expires_in.is_some_and(|lifetime| {
+                            obtained_at.elapsed() + TOKEN_REFRESH_MARGIN.min(lifetime / 2)
+                                >= lifetime
+                        });
+                        if refresh_due {
+                            debug!(%device_id, "Twinkly token near expiry; logging in again");
+                            match resume(&client, &shared).await {
+                                Ok(fresh) => {
+                                    token = fresh;
+                                    obtained_at = Instant::now();
+                                    Ok(())
+                                }
+                                Err(error) if is_unauthorized(&error) => {
+                                    state.lose(&device_id, &shared, now);
+                                    Ok(())
+                                }
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    }
+                }
             }
         };
         match outcome {
-            Ok(refreshed) => {
-                failures = 0;
-                if let Some(fresh) = refreshed {
-                    token = fresh;
-                    obtained_at = Instant::now();
-                    shared.yielded.store(false, Ordering::Release);
-                }
-            }
-            // Signed out again mid-login: contention, not a broken device.
-            Err(error) if is_unauthorized(&error) => {
-                yield_if_contended(&device_id, &mut contention, &shared, now);
-            }
+            Ok(()) => failures = 0,
             Err(error) => {
                 failures += 1;
                 warn!(%device_id, failures, error = %format!("{error:#}"), "Twinkly session upkeep failed");
@@ -530,26 +571,6 @@ fn is_unauthorized(error: &anyhow::Error) -> bool {
         .is_some_and(ApiError::is_unauthorized)
 }
 
-/// Record a lost login and step back when losses add up to contention.
-/// Returns whether the session is now paused.
-fn yield_if_contended(
-    device_id: &DeviceId,
-    contention: &mut Contention,
-    shared: &SessionShared,
-    now: Instant,
-) -> bool {
-    let Some(pause) = contention.lost_login(now) else {
-        return false;
-    };
-    shared.yielded.store(true, Ordering::Release);
-    warn!(
-        %device_id,
-        pause_secs = pause.as_secs(),
-        "Another app keeps taking control of the Twinkly lights; Hypercolor is pausing instead of fighting for the login"
-    );
-    true
-}
-
 async fn check_mode(client: &TwinklyClient, token: &AuthToken) -> Result<()> {
     let mode = client.mode(token).await?;
     if mode.mode != RT_MODE {
@@ -559,12 +580,14 @@ async fn check_mode(client: &TwinklyClient, token: &AuthToken) -> Result<()> {
     Ok(())
 }
 
-async fn relogin(client: &TwinklyClient, shared: &SessionShared) -> Result<Option<AuthToken>> {
+/// Log in, hand the token to the frame encoder, and switch to real-time
+/// mode. Both steps must succeed for the token to count as held.
+async fn resume(client: &TwinklyClient, shared: &SessionShared) -> Result<AuthToken> {
     let token = client.login().await?;
     shared.stream.lock().await.encoder.set_token(token.bytes);
     token.clone_into(&mut shared.token.lock().unwrap_or_else(PoisonError::into_inner));
     client.set_mode(&token, RT_MODE).await?;
-    Ok(Some(token))
+    Ok(token)
 }
 
 struct TwinklyFrameSink {
