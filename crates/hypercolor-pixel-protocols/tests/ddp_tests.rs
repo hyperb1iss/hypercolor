@@ -67,7 +67,7 @@ fn chunk_len_keeps_whole_pixels() {
 }
 
 #[test]
-fn spans_share_sequence_and_push_only_last() {
+fn spans_number_every_packet_and_push_only_last() {
     let first = vec![0x11; 1500];
     let second = vec![0x22; 30];
     let mut sequence = DdpSequence::default();
@@ -88,7 +88,6 @@ fn spans_share_sequence_and_push_only_last() {
         &mut sequence,
     );
 
-    assert_eq!(packets.len(), 3);
     let headers: Vec<_> = packets
         .iter()
         .map(|packet| {
@@ -103,7 +102,48 @@ fn spans_share_sequence_and_push_only_last() {
         .collect();
     assert_eq!(
         headers,
-        vec![(0x40, 1, 0, 1440), (0x40, 1, 1440, 60), (0x41, 1, 6000, 30)]
+        vec![(0x40, 1, 0, 1440), (0x40, 2, 1440, 60), (0x41, 3, 6000, 30)],
+        "each new packet takes the next sequence number"
+    );
+    assert_eq!(sequence.current(), 3);
+}
+
+#[test]
+fn span_sequence_wraps_from_15_to_1_inside_a_frame() {
+    let data = vec![0x44; 1440 * 3];
+    let mut sequence = DdpSequence::default();
+    for _ in 0..13 {
+        sequence.advance();
+    }
+    let packets = build_ddp_spans(
+        &[DdpSpan {
+            offset: 0,
+            data: &data,
+        }],
+        DDP_DTYPE_RGB8,
+        DDP_ID_DEFAULT,
+        1440,
+        &mut sequence,
+    );
+    let sequences: Vec<u8> = packets.iter().map(|packet| packet.as_bytes()[1]).collect();
+    assert_eq!(
+        sequences,
+        vec![14, 15, 1],
+        "sequence 0 means unused and is skipped"
+    );
+}
+
+#[test]
+fn frame_builder_keeps_one_sequence_per_frame() {
+    // The WLED driver's framing: every fragment of a frame shares a number.
+    let data = vec![0x55; 3000];
+    let mut sequence = DdpSequence::default();
+    let packets = build_ddp_frame(&data, DDP_DTYPE_RGB8, &mut sequence);
+    let sequences: Vec<u8> = packets.iter().map(|packet| packet.as_bytes()[1]).collect();
+    assert_eq!(sequences, vec![1, 1, 1]);
+    assert_eq!(
+        packets.last().map(|packet| packet.as_bytes()[0]),
+        Some(0x41)
     );
 }
 
@@ -131,7 +171,7 @@ fn odd_stride_chunks_never_split_a_pixel() {
 }
 
 #[test]
-fn single_span_frame_matches_frame_builder() {
+fn single_span_payloads_match_frame_builder() {
     let data: Vec<u8> = (0..3000_u16).map(|i| (i % 256) as u8).collect();
     let mut a = DdpSequence::default();
     let mut b = DdpSequence::default();
@@ -148,6 +188,9 @@ fn single_span_frame_matches_frame_builder() {
     );
     assert_eq!(frame.len(), spans.len());
     for (left, right) in frame.iter().zip(&spans) {
-        assert_eq!(left.as_bytes(), right.as_bytes());
+        // Same flags, type, destination, offset, length, and data; only the
+        // sequence byte differs between the two framings.
+        assert_eq!(left.as_bytes()[0], right.as_bytes()[0]);
+        assert_eq!(left.as_bytes()[2..], right.as_bytes()[2..]);
     }
 }

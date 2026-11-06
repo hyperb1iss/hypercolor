@@ -200,14 +200,18 @@ pub struct DdpSpan<'a> {
 ///
 /// Fragments the pixel data into `DDP_MAX_PAYLOAD`-sized chunks,
 /// setting the push flag only on the final packet to trigger the
-/// receiver's frame latch.
+/// receiver's frame latch. Every packet of the frame carries the same
+/// sequence number, which is the framing the WLED driver has always sent;
+/// WLED's receiver only rejects sequence numbers that fall just behind the
+/// last one it recorded, so this framing holds for any frame size there.
+/// New senders should use [`build_ddp_spans`], which numbers each packet.
 #[must_use]
 pub fn build_ddp_frame(
     pixel_data: &[u8],
     data_type: u8,
     sequence: &mut DdpSequence,
 ) -> Vec<DdpPacket> {
-    build_ddp_spans(
+    build_packets(
         &[DdpSpan {
             offset: 0,
             data: pixel_data,
@@ -216,6 +220,7 @@ pub fn build_ddp_frame(
         DDP_ID_DEFAULT,
         DDP_MAX_PAYLOAD,
         sequence,
+        Sequencing::PerFrame,
     )
 }
 
@@ -234,10 +239,12 @@ pub const fn pixel_aligned_chunk_len(channels_per_pixel: usize) -> usize {
 
 /// Build the DDP packets for one frame assembled from several spans.
 ///
-/// Every packet in the frame shares one sequence number. Each span is
-/// fragmented into chunks of at most `chunk_len` bytes (clamped to
-/// 1..=`DDP_MAX_PAYLOAD`) at increasing offsets, and only the final packet
-/// of the whole frame carries the push flag.
+/// The DDP spec says the sequence number "should be incremented with each
+/// new packet sent" and lets receivers ignore back-to-back duplicates, so
+/// every packet takes the next number. Each span is fragmented into chunks
+/// of at most `chunk_len` bytes (clamped to 1..=`DDP_MAX_PAYLOAD`) at
+/// increasing offsets, and only the final packet of the whole frame carries
+/// the push flag.
 #[must_use]
 pub fn build_ddp_spans(
     spans: &[DdpSpan<'_>],
@@ -246,8 +253,32 @@ pub fn build_ddp_spans(
     chunk_len: usize,
     sequence: &mut DdpSequence,
 ) -> Vec<DdpPacket> {
+    build_packets(
+        spans,
+        data_type,
+        destination,
+        chunk_len,
+        sequence,
+        Sequencing::PerPacket,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sequencing {
+    PerFrame,
+    PerPacket,
+}
+
+fn build_packets(
+    spans: &[DdpSpan<'_>],
+    data_type: u8,
+    destination: u8,
+    chunk_len: usize,
+    sequence: &mut DdpSequence,
+    sequencing: Sequencing,
+) -> Vec<DdpPacket> {
     let chunk_len = chunk_len.clamp(1, DDP_MAX_PAYLOAD);
-    let seq = sequence.advance();
+    let frame_sequence = sequence.advance();
     let total = spans
         .iter()
         .map(|span| span.data.len().div_ceil(chunk_len))
@@ -259,6 +290,11 @@ pub fn build_ddp_spans(
             #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
             let offset = span.offset.wrapping_add((i * chunk_len) as u32);
             let push = packets.len() + 1 == total;
+            let seq = if sequencing == Sequencing::PerPacket && !packets.is_empty() {
+                sequence.advance()
+            } else {
+                frame_sequence
+            };
             packets.push(DdpPacket::with_destination(
                 chunk,
                 offset,

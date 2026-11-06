@@ -284,8 +284,12 @@ async fn ddp_frames_fragment_and_push_on_the_last_packet() {
     let packets = recv_n(&receiver, 2).await;
     assert_eq!(packets[0][0], 0x40, "first packet holds the latch");
     assert_eq!(packets[1][0], 0x41, "last packet pushes");
+    assert_eq!(
+        (packets[0][1], packets[1][1]),
+        (1, 2),
+        "each packet takes the next sequence number"
+    );
     for packet in &packets {
-        assert_eq!(packet[1], 1, "frame sequence");
         assert_eq!(packet[2], 0x0B, "RGB 8-bit");
         assert_eq!(packet[3], 0x01, "default output device");
     }
@@ -297,7 +301,7 @@ async fn ddp_frames_fragment_and_push_on_the_last_packet() {
 
     backend.write_colors(&id, &colors).await.expect("write");
     let next = recv_n(&receiver, 2).await;
-    assert_eq!(next[0][1], 2);
+    assert_eq!((next[0][1], next[1][1]), (3, 4));
 }
 
 #[tokio::test]
