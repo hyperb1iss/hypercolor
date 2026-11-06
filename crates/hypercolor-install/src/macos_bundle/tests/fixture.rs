@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -20,6 +21,8 @@ const MH_MAGIC_64: u32 = 0xfeed_facf;
 const LC_CODE_SIGNATURE: u32 = 0x1d;
 
 pub(super) const EXECUTABLES: [&str; 3] = ["hypercolor-app", "hypercolor-daemon", "hypercolor"];
+/// The window every fixture transaction holds a candidate through.
+pub(super) const PROBATION: Duration = Duration::from_secs(90);
 
 /// A thin Mach-O for this host's architecture carrying one SHA-256
 /// CodeDirectory, so its cdhash is a function of `seed`.
@@ -231,6 +234,7 @@ impl Fixture {
         MacosBundleConfig {
             installed_bundle: self.applications().join("Hypercolor.app"),
             release_root: self.store.root().to_path_buf(),
+            probation: PROBATION,
         }
     }
 

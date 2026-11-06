@@ -21,6 +21,9 @@ pub(super) struct BundleRecord {
     pub(super) prior: Option<BundleBinding>,
     /// The daemon that ran when the transaction was prepared.
     pub(super) baseline: Option<MacosBundleRunningDaemon>,
+    /// Whether launchd could load the agent when the transaction was
+    /// prepared. A transaction closes that gate around each swap.
+    pub(super) autostart: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

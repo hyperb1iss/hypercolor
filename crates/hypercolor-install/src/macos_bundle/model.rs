@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
+use hypercolor_platform_fs::is_macos_translocated_path;
 use serde::{Deserialize, Serialize};
 
 use super::super::{InstallPlatformError, UnitId};
@@ -26,11 +28,15 @@ pub struct MacosBundleConfig {
     pub installed_bundle: PathBuf,
     /// The release root, holding the `active` pointer and `units/`.
     pub release_root: PathBuf,
+    /// How long a started candidate must keep running, then prove itself
+    /// again, before the transaction commits it.
+    pub probation: Duration,
 }
 
 impl MacosBundleConfig {
-    /// Check that both roots are canonical absolute UTF-8 paths and that the
-    /// installed bundle is named [`MACOS_BUNDLE_NAME`].
+    /// Check that both roots are canonical absolute UTF-8 paths, that the
+    /// installed bundle is named [`MACOS_BUNDLE_NAME`] and stands outside App
+    /// Translocation, and that the probation window is within its bound.
     ///
     /// # Errors
     /// Returns an error naming the first path that is not exact.
@@ -55,6 +61,18 @@ impl MacosBundleConfig {
         if self.installed_bundle.file_name() != Some(std::ffi::OsStr::new(MACOS_BUNDLE_NAME)) {
             return Err(error(format!(
                 "the installed macOS bundle must be named {MACOS_BUNDLE_NAME}"
+            )));
+        }
+        if is_macos_translocated_path(&self.installed_bundle) {
+            return Err(error(
+                "the installed macOS bundle cannot be a translocated path, which vanishes when \
+                 the app exits",
+            ));
+        }
+        if self.probation > crate::MAX_PROBATION_WINDOW {
+            return Err(error(format!(
+                "the probation window may be at most {} seconds",
+                crate::MAX_PROBATION_WINDOW.as_secs()
             )));
         }
         if self.release_root.starts_with(&self.installed_bundle)
