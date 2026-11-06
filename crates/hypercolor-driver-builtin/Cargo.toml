@@ -14,11 +14,12 @@ workspace = true
 [features]
 default = ["network", "hal"]
 hal = ["dep:hypercolor-hal"]
-network = ["wled", "govee", "hue", "nanoleaf", "openrgb"]
+network = ["wled", "govee", "hue", "nanoleaf", "openrgb", "pixel"]
 govee = ["dep:hypercolor-driver-govee"]
 hue = ["dep:hypercolor-driver-hue"]
 nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
 openrgb = ["dep:hypercolor-driver-openrgb"]
+pixel = ["dep:hypercolor-driver-pixel"]
 wled = ["dep:hypercolor-driver-wled"]
 
 [dependencies]
@@ -29,6 +30,7 @@ hypercolor-driver-govee = { workspace = true, optional = true }
 hypercolor-driver-hue = { workspace = true, optional = true }
 hypercolor-driver-nanoleaf = { workspace = true, optional = true }
 hypercolor-driver-openrgb = { workspace = true, optional = true }
+hypercolor-driver-pixel = { workspace = true, optional = true }
 hypercolor-driver-wled = { workspace = true, optional = true }
 hypercolor-hal = { workspace = true, optional = true }
 hypercolor-network = { workspace = true }

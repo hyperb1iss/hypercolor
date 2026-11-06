@@ -39,6 +39,7 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         assert!(ids.contains(&"hue".to_owned()));
         assert!(ids.contains(&"nanoleaf".to_owned()));
         assert!(ids.contains(&"openrgb".to_owned()));
+        assert!(ids.contains(&"pixel".to_owned()));
     }
 
     #[cfg(feature = "hal")]
@@ -48,7 +49,7 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
     }
 
     #[cfg(feature = "network")]
-    for driver_id in ["wled", "govee", "hue", "nanoleaf"] {
+    for driver_id in ["wled", "govee", "hue", "nanoleaf", "pixel"] {
         let driver = registry
             .get(driver_id)
             .expect("network driver should be registered");
@@ -133,4 +134,20 @@ fn register_driver_modules_appends_to_existing_registry() {
     assert!(registry.get("openrgb").is_some());
     #[cfg(feature = "hal")]
     assert!(registry.get("nollie").is_some());
+}
+
+#[cfg(feature = "pixel")]
+#[test]
+fn normalize_seeds_an_enabled_pixel_entry_with_no_devices() {
+    let mut config = HypercolorConfig::default();
+    hypercolor_driver_builtin::normalize_driver_config_entries(&mut config);
+    let entry = config
+        .drivers
+        .get("pixel")
+        .expect("pixel driver entry should be seeded");
+    assert!(entry.enabled);
+    assert!(
+        !entry.settings.contains_key("devices"),
+        "a default install configures no pixel controllers"
+    );
 }

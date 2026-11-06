@@ -25,6 +25,8 @@ use hypercolor_driver_hue::HueDriverModule;
 use hypercolor_driver_nanoleaf::NanoleafDriverModule;
 #[cfg(feature = "openrgb")]
 use hypercolor_driver_openrgb::OpenRgbDriverModule;
+#[cfg(feature = "pixel")]
+use hypercolor_driver_pixel::PixelDriverModule;
 #[cfg(feature = "wled")]
 use hypercolor_driver_wled::WledDriverModule;
 
@@ -71,6 +73,7 @@ pub fn register_driver_modules(
         feature = "hue",
         feature = "nanoleaf",
         feature = "openrgb",
+        feature = "pixel",
         feature = "hal"
     )))]
     let _ = registry;
@@ -95,6 +98,9 @@ pub fn register_driver_modules(
 
     #[cfg(feature = "openrgb")]
     registry.register(OpenRgbDriverModule)?;
+
+    #[cfg(feature = "pixel")]
+    registry.register(PixelDriverModule::new())?;
 
     #[cfg(feature = "hal")]
     {
@@ -130,6 +136,7 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         feature = "hue",
         feature = "nanoleaf",
         feature = "openrgb",
+        feature = "pixel",
         feature = "hal"
     )))]
     let _ = config;
@@ -167,6 +174,12 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
                 std::collections::BTreeMap::default(),
             )
         });
+
+    #[cfg(feature = "pixel")]
+    config
+        .drivers
+        .entry(hypercolor_driver_pixel::DESCRIPTOR.id.to_owned())
+        .or_default();
 
     #[cfg(feature = "hal")]
     for descriptor in hal::hal_module_descriptors() {
