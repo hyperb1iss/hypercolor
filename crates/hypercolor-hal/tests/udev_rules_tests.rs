@@ -6,11 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::corsair::CORSAIR_VID;
 use hypercolor_hal::drivers::corsair::peripheral::devices as corsair_peripherals;
+use hypercolor_hal::drivers::lianli::LIANLI_TL_VENDOR_ID;
+use hypercolor_hal::drivers::lianli::wireless::transport::PID_WIRELESS_RX;
 use hypercolor_hal::drivers::wooting::{
     WOOTING_FAMILY, WOOTING_LEGACY_VID, WOOTING_VID, descriptors as wooting_descriptors,
 };
-use hypercolor_hal::drivers::lianli::LIANLI_TL_VENDOR_ID;
-use hypercolor_hal::drivers::lianli::wireless::transport::PID_WIRELESS_RX;
 use hypercolor_hal::registry::TransportType;
 use udev_model::{
     HYPERCOLOR_RULES, INTERFACE_SHAPES, InterfaceShape, PROBED_INTERFACES, RuleSet, hidraw_node,

@@ -57,7 +57,8 @@ pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     DriverTransportKind::Network,
     true,
     false,
-);
+)
+.experimental();
 
 const FIELD_DEVICE_IPS: &str = "device_ips";
 const FIELD_BROADCAST_DISCOVERY: &str = "broadcast_discovery";

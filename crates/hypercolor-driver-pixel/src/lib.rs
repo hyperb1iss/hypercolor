@@ -56,7 +56,8 @@ pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     DriverTransportKind::Network,
     true,
     false,
-);
+)
+.experimental();
 
 /// Device capability frame rate reported when a device follows the render loop.
 const RENDER_LOOP_MAX_FPS: u32 = 60;

@@ -5,7 +5,7 @@
 
 use std::sync::LazyLock;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding};
@@ -241,6 +241,7 @@ macro_rules! nzxt_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Experimental,
         }
     };
     (

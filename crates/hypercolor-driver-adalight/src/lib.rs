@@ -61,7 +61,8 @@ pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     DriverTransportKind::Serial,
     true,
     false,
-);
+)
+.experimental();
 
 /// Adalight serial driver module.
 #[derive(Debug, Clone, Default)]

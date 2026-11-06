@@ -1009,6 +1009,7 @@ fn chroma_argb_descriptor() -> DeviceDescriptor {
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: DriverStability::Experimental,
     }
 }
 

@@ -11,7 +11,7 @@
 //! input interface, and the Polaris carries a keyboard collection on its
 //! second interface.
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::drivers::corsair::CORSAIR_VID;
 use crate::drivers::corsair::peripheral::nxp::CorsairNxpProtocol;
@@ -225,6 +225,7 @@ macro_rules! nxp_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Experimental,
         }
     };
 }
