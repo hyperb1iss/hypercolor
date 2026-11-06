@@ -39,6 +39,8 @@ pub struct FakeSpec {
     pub rogue_from: Option<Ipv4Addr>,
     /// Advertise this IP in `Location` instead of the fake's own.
     pub location_ip: Option<Ipv4Addr>,
+    /// Close the control connection on `set_music` without answering.
+    pub close_on_music: bool,
 }
 
 impl FakeSpec {
@@ -54,6 +56,7 @@ impl FakeSpec {
             music_never_connects: false,
             rogue_from: None,
             location_ip: None,
+            close_on_music: false,
         }
     }
 }
@@ -238,6 +241,9 @@ async fn serve_commands(
             .control_lines
             .push(command.clone());
         served += 1;
+        if spec.close_on_music && command["method"] == "set_music" {
+            return;
+        }
         let id = command["id"].clone();
         let rejected =
             served > spec.quota_after && served <= spec.quota_after + spec.quota_rejections;

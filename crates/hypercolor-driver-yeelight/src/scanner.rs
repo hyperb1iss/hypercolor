@@ -4,7 +4,7 @@
 //! id, model, supported methods), so a scan never opens a control
 //! connection: each device allows only four.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -220,8 +220,8 @@ pub async fn search_until(
     limit: Option<usize>,
 ) -> Result<Vec<YeelightDeviceProfile>> {
     let limit = limit.unwrap_or(MAX_SEARCH_REPLIES).min(MAX_SEARCH_REPLIES);
-    let mut sources = HashSet::new();
-    let mut ids = HashSet::new();
+    let mut admission = SearchAdmission::new(limit);
+    let mut warned_full = false;
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .await
         .context("failed to bind the Yeelight search socket")?;
@@ -230,7 +230,6 @@ pub async fn search_until(
     let mut next_round = Instant::now();
     let mut rounds = 0;
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_LEN];
-    let mut found: Vec<YeelightDeviceProfile> = Vec::new();
     loop {
         if rounds < SEARCH_ROUNDS && Instant::now() >= next_round {
             for target in targets {
@@ -254,36 +253,120 @@ pub async fn search_until(
                 break;
             }
             Ok(Ok((len, source))) => match decode_search_reply(&buffer[..len]) {
-                Ok(reply) => {
-                    // A light answers for itself: its control address is
-                    // the reply's source, and one address is one light.
-                    if reply.location.ip() != source.ip() {
-                        debug!(%source, location = %reply.location, "ignoring a Yeelight reply for another address");
-                        continue;
+                Ok(reply) => match admission.offer(source, reply) {
+                    Offer::Admitted => {
+                        if limit < MAX_SEARCH_REPLIES && admission.len() >= limit {
+                            // A targeted lookup (the identity check) is done.
+                            break;
+                        }
                     }
-                    if !sources.insert(source.ip()) || !ids.insert(reply.id.clone()) {
-                        continue;
+                    Offer::Replaced => {}
+                    Offer::Foreign => {
+                        debug!(%source, "ignoring a Yeelight reply naming another address");
                     }
-                    debug!(%source, id = %reply.id, model = ?reply.model, "Yeelight search reply");
-                    found.push(YeelightDeviceProfile {
-                        reply,
-                        search_port: source.port(),
-                    });
-                    if found.len() >= limit {
-                        if limit == MAX_SEARCH_REPLIES {
+                    Offer::Duplicate => {
+                        debug!(%source, "ignoring a Yeelight id another address reported");
+                    }
+                    Offer::Full => {
+                        if limit == MAX_SEARCH_REPLIES && !warned_full {
+                            warned_full = true;
                             warn!(
                                 limit,
                                 "Yeelight search stopped admitting lights at its limit; add the rest to device_ips"
                             );
                         }
-                        break;
                     }
-                }
+                },
                 Err(error) => debug!(%source, %error, "ignoring non-Yeelight search reply"),
             },
         }
     }
-    Ok(found)
+    Ok(admission.into_profiles())
+}
+
+/// What [`SearchAdmission::offer`] did with a reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Offer {
+    /// A new address and id, now tracked.
+    Admitted,
+    /// The address was tracked; its most recent reply replaced the last.
+    Replaced,
+    /// The reply names a control address other than its source.
+    Foreign,
+    /// Another tracked address already reported this id.
+    Duplicate,
+    /// The scan already tracks its limit of addresses.
+    Full,
+}
+
+/// Per-scan admission of search replies (Spec 94 §3.3).
+///
+/// Every check runs before any state changes, and the only state is one
+/// entry per admitted source address, so replies from spoofed sources
+/// cannot grow memory past the limit. Each address reports only its most
+/// recent id: one endpoint cannot hand a scan more than one identity.
+#[derive(Debug)]
+pub struct SearchAdmission {
+    limit: usize,
+    by_source: HashMap<IpAddr, YeelightDeviceProfile>,
+}
+
+impl SearchAdmission {
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            by_source: HashMap::new(),
+        }
+    }
+
+    /// Consider one reply from `source`.
+    pub fn offer(&mut self, source: SocketAddr, reply: SearchReply) -> Offer {
+        // A light answers for itself: its control address is the source.
+        if reply.location.ip() != source.ip() {
+            return Offer::Foreign;
+        }
+        let ip = source.ip();
+        if self
+            .by_source
+            .iter()
+            .any(|(other, known)| *other != ip && known.reply.id == reply.id)
+        {
+            return Offer::Duplicate;
+        }
+        let profile = YeelightDeviceProfile {
+            reply,
+            search_port: source.port(),
+        };
+        if let Some(known) = self.by_source.get_mut(&ip) {
+            *known = profile;
+            return Offer::Replaced;
+        }
+        if self.by_source.len() >= self.limit {
+            return Offer::Full;
+        }
+        self.by_source.insert(ip, profile);
+        Offer::Admitted
+    }
+
+    /// Addresses tracked so far.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_source.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_source.is_empty()
+    }
+
+    /// The admitted profiles, sorted by id.
+    #[must_use]
+    pub fn into_profiles(self) -> Vec<YeelightDeviceProfile> {
+        let mut profiles: Vec<YeelightDeviceProfile> = self.by_source.into_values().collect();
+        profiles.sort_by(|left, right| left.reply.id.cmp(&right.reply.id));
+        profiles
+    }
 }
 
 /// Metadata published for a device.
