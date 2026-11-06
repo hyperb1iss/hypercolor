@@ -5,8 +5,11 @@
 # conservative fallback group/mode for the supported vendor families.
 # A replug or reboot is required after installation for existing devices.
 #
-# USB rules are vendor-wide for the brands Hypercolor supports so newly added
-# product IDs do not require a udev update just to gain device-node access.
+# hidraw rules name the products Hypercolor registers, never a whole vendor,
+# and on keyboards, mice, and headsets they grant only the HID interface
+# Hypercolor opens, since the other interfaces carry keystrokes and pointer
+# input. A new product ID needs its own hidraw rule here; the tests in
+# crates/hypercolor-hal/tests/udev_rules_tests.rs fail until it has one.
 # SMBus access is granted generically via `/dev/i2c-*` because bus nodes are
 # host-controller devices, not vendor-scoped endpoints.
 #
@@ -401,11 +404,21 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d2", ATTR{idPro
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d3", ATTRS{idProduct}=="0001", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d3", ATTR{idProduct}=="0001", MODE="0660", GROUP="users", TAG+="uaccess"
 
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4711", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4712", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4714", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3061", ATTRS{idProduct}=="4716", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4711", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4712", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4714", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3061", ATTR{idProduct}=="4716", MODE="0660", GROUP="users", TAG+="uaccess"
 
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", MODE="0660", GROUP="users", TAG+="uaccess"
+# Prism S and Prism Mini. 16d0 is a vendor ID many small makers share, so
+# only these two products.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="1294", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="1407", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", ATTR{idProduct}=="1294", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", ATTR{idProduct}=="1407", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Dygma ────────────────────────────────────────────────────────────────────
 # Serial only. Hypercolor talks to Dygma keyboards over their serial port,
@@ -433,8 +446,14 @@ SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1AA6d*ic03isc*ip*in02", MODE="0
 SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v0B05p1BEDd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Lian Li ──────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", MODE="0660", GROUP="users", TAG+="uaccess"
+# TL Fan Hub (7372) and the L-Wireless controller's TX (8040) and RX (8041),
+# scoped to the products: 0416 is Winbond's vendor ID, which unrelated HID
+# hardware reports too. The wireless controller is reached through its USB
+# device nodes only.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="7372", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", ATTR{idProduct}=="7372", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", ATTR{idProduct}=="8040", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", ATTR{idProduct}=="8041", MODE="0660", GROUP="users", TAG+="uaccess"
 
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0cf2", MODE="0660", GROUP="users", TAG+="uaccess"
 
