@@ -1,28 +1,55 @@
 //! USB CDC-ACM serial transport for line-oriented protocols.
+//!
+//! A send hands its bytes to the kernel tty layer and returns without
+//! waiting for the device to drain them. `flush` on a tokio-serial stream is
+//! a synchronous `tcdrain` that parks the calling runtime worker until the
+//! port drains, has no timeout, and discards its own error, so this
+//! transport never calls it. The tty layer keeps bytes in write order, a
+//! write deadline catches a device that stops accepting data, and protocols
+//! that need a barrier get one from the device's reply.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::future::Future;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{oneshot, watch};
 use tokio_serial::{SerialPortBuilderExt, SerialPortType};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::transport::{Transport, TransportError};
+
+/// Default bound on one send before the port counts as wedged.
+///
+/// A send waits only while the kernel's output queue is full, which a
+/// healthy CDC-ACM device clears within a few milliseconds, so this budget
+/// trips only when the device has stopped taking data.
+pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Bound on [`Transport::close`] for this transport.
+///
+/// Closing a tty waits in the kernel until queued output drains, for up to
+/// the driver's closing wait (30 seconds by default) when the device is
+/// wedged. The release runs on a retained worker thread; once this bound
+/// passes, close returns and the release finishes in the background.
+pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 trait AsyncSerialIo: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl<T> AsyncSerialIo for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
-struct UsbSerialTransportInner {
-    stream: Box<dyn AsyncSerialIo>,
-}
+type SerialStreamSlot = Option<Box<dyn AsyncSerialIo>>;
 
 /// USB CDC-ACM serial transport used by Focus-class devices.
 pub struct UsbSerialTransport {
     path: String,
-    inner: tokio::sync::Mutex<UsbSerialTransportInner>,
-    closed: AtomicBool,
+    /// `None` once [`Transport::close`] has released the port.
+    stream: tokio::sync::Mutex<SerialStreamSlot>,
+    /// Flips to `true` on close or after a failed write, and wakes any
+    /// operation still waiting on the port.
+    closed: watch::Sender<bool>,
+    write_timeout: Duration,
 }
 
 impl UsbSerialTransport {
@@ -105,23 +132,46 @@ impl UsbSerialTransport {
     ) -> Self {
         Self {
             path: path.into(),
-            inner: tokio::sync::Mutex::new(UsbSerialTransportInner {
-                stream: Box::new(stream),
-            }),
-            closed: AtomicBool::new(false),
+            stream: tokio::sync::Mutex::new(Some(Box::new(stream))),
+            closed: watch::Sender::new(false),
+            write_timeout: DEFAULT_WRITE_TIMEOUT,
         }
     }
 
+    /// Bound each send by `timeout` instead of [`DEFAULT_WRITE_TIMEOUT`].
+    ///
+    /// A send that misses its deadline fails the transport, because the
+    /// device may already hold part of the packet.
+    #[must_use]
+    pub fn with_write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = timeout;
+        self
+    }
+
     fn check_open(&self) -> Result<(), TransportError> {
-        if self.closed.load(Ordering::Acquire) {
+        if *self.closed.borrow() {
             return Err(TransportError::Closed);
         }
         Ok(())
     }
 
+    /// Run `operation` until it finishes or the transport closes.
+    async fn until_closed<T>(
+        &self,
+        operation: impl Future<Output = Result<T, TransportError>>,
+    ) -> Result<T, TransportError> {
+        let mut closed = self.closed.subscribe();
+        tokio::select! {
+            biased;
+            // The transport owns the sender, so this only resolves on close.
+            _ = closed.wait_for(|closed| *closed) => Err(TransportError::Closed),
+            result = operation => result,
+        }
+    }
+
     async fn send_locked(
         &self,
-        inner: &mut UsbSerialTransportInner,
+        slot: &mut SerialStreamSlot,
         data: &[u8],
     ) -> Result<(), TransportError> {
         trace!(
@@ -130,21 +180,40 @@ impl UsbSerialTransport {
             payload = %String::from_utf8_lossy(data),
             "usb serial send"
         );
-        inner
-            .stream
-            .write_all(data)
-            .await
-            .map_err(|error| map_io_error(&error, "write"))?;
-        inner
-            .stream
-            .flush()
-            .await
-            .map_err(|error| map_io_error(&error, "flush"))
+        let stream = slot.as_mut().ok_or(TransportError::Closed)?;
+        let write_timeout = self.write_timeout;
+        let result = self
+            .until_closed(async {
+                match tokio::time::timeout(write_timeout, stream.write_all(data)).await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(map_io_error(&error, "write")),
+                    Err(_) => Err(TransportError::Timeout {
+                        timeout_ms: duration_ms(write_timeout),
+                    }),
+                }
+            })
+            .await;
+
+        if let Err(error) = &result
+            && !matches!(error, TransportError::Closed)
+        {
+            // A write that failed or stalled partway may have left part of a
+            // packet queued for the device, so nothing after it would frame
+            // correctly. Fail the transport and let close release the port.
+            debug!(
+                path = %self.path,
+                error = %error,
+                "usb serial write failed; transport is no longer usable"
+            );
+            self.closed.send_replace(true);
+        }
+
+        result
     }
 
     async fn receive_locked(
         &self,
-        inner: &mut UsbSerialTransportInner,
+        slot: &mut SerialStreamSlot,
         timeout: Duration,
     ) -> Result<Vec<u8>, TransportError> {
         debug!(
@@ -152,47 +221,17 @@ impl UsbSerialTransport {
             timeout_ms = timeout.as_millis(),
             "usb serial receive requested"
         );
+        let stream = slot.as_mut().ok_or(TransportError::Closed)?;
 
-        let response = tokio::time::timeout(timeout, async {
-            let mut payload = Vec::new();
-            let mut line = Vec::new();
-
-            loop {
-                let mut byte = [0_u8; 1];
-                let read = inner
-                    .stream
-                    .read(&mut byte)
+        let response = self
+            .until_closed(async {
+                tokio::time::timeout(timeout, read_focus_reply(stream))
                     .await
-                    .map_err(|error| map_io_error(&error, "read"))?;
-                if read == 0 {
-                    return Err(TransportError::Closed);
-                }
-
-                line.push(byte[0]);
-                if byte[0] != b'\n' {
-                    continue;
-                }
-
-                if is_terminator_line(&line) {
-                    break;
-                }
-
-                let stripped = strip_line_endings(&line);
-                if !stripped.is_empty() {
-                    if !payload.is_empty() {
-                        payload.push(b'\n');
-                    }
-                    payload.extend_from_slice(stripped);
-                }
-                line.clear();
-            }
-
-            Ok(payload)
-        })
-        .await
-        .map_err(|_| TransportError::Timeout {
-            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-        })??;
+                    .map_err(|_| TransportError::Timeout {
+                        timeout_ms: duration_ms(timeout),
+                    })?
+            })
+            .await?;
 
         trace!(
             path = %self.path,
@@ -205,6 +244,14 @@ impl UsbSerialTransport {
     }
 }
 
+impl Drop for UsbSerialTransport {
+    fn drop(&mut self) {
+        if let Some(stream) = self.stream.get_mut().take() {
+            drop(release_stream(&self.path, stream));
+        }
+    }
+}
+
 #[async_trait]
 impl Transport for UsbSerialTransport {
     fn name(&self) -> &'static str {
@@ -213,14 +260,14 @@ impl Transport for UsbSerialTransport {
 
     async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
         self.check_open()?;
-        let mut inner = self.inner.lock().await;
-        self.send_locked(&mut inner, data).await
+        let mut slot = self.stream.lock().await;
+        self.send_locked(&mut slot, data).await
     }
 
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
-        let mut inner = self.inner.lock().await;
-        self.receive_locked(&mut inner, timeout).await
+        let mut slot = self.stream.lock().await;
+        self.receive_locked(&mut slot, timeout).await
     }
 
     async fn send_receive(
@@ -229,14 +276,115 @@ impl Transport for UsbSerialTransport {
         timeout: Duration,
     ) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
-        let mut inner = self.inner.lock().await;
-        self.send_locked(&mut inner, data).await?;
-        self.receive_locked(&mut inner, timeout).await
+        let mut slot = self.stream.lock().await;
+        // No drain between the two halves: the reply cannot arrive before the
+        // device has read the whole command, so the reply is the barrier.
+        self.send_locked(&mut slot, data).await?;
+        self.receive_locked(&mut slot, timeout).await
     }
+
     async fn close(&self) -> Result<(), TransportError> {
-        self.closed.store(true, Ordering::Release);
+        let deadline = tokio::time::Instant::now() + CLOSE_TIMEOUT;
+        // Wakes an operation that is still waiting on the port, so it hands
+        // the lock back instead of holding close behind a stalled write.
+        self.closed.send_replace(true);
+
+        let Ok(mut slot) = tokio::time::timeout_at(deadline, self.stream.lock()).await else {
+            warn!(
+                path = %self.path,
+                bound_ms = CLOSE_TIMEOUT.as_millis(),
+                "usb serial close could not reclaim the port in time; it is released when the transport drops"
+            );
+            return Ok(());
+        };
+        let Some(stream) = slot.take() else {
+            return Ok(());
+        };
+        drop(slot);
+
+        let Some(released) = release_stream(&self.path, stream) else {
+            return Ok(());
+        };
+        if tokio::time::timeout_at(deadline, released).await.is_err() {
+            debug!(
+                path = %self.path,
+                bound_ms = CLOSE_TIMEOUT.as_millis(),
+                "usb serial port is still draining on close; finishing in the background"
+            );
+        }
         Ok(())
     }
+}
+
+/// Read one Focus reply: every line up to a lone `.` terminator line.
+async fn read_focus_reply(stream: &mut Box<dyn AsyncSerialIo>) -> Result<Vec<u8>, TransportError> {
+    let mut payload = Vec::new();
+    let mut line = Vec::new();
+
+    loop {
+        let mut byte = [0_u8; 1];
+        let read = stream
+            .read(&mut byte)
+            .await
+            .map_err(|error| map_io_error(&error, "read"))?;
+        if read == 0 {
+            return Err(TransportError::Closed);
+        }
+
+        line.push(byte[0]);
+        if byte[0] != b'\n' {
+            continue;
+        }
+
+        if is_terminator_line(&line) {
+            break;
+        }
+
+        let stripped = strip_line_endings(&line);
+        if !stripped.is_empty() {
+            if !payload.is_empty() {
+                payload.push(b'\n');
+            }
+            payload.extend_from_slice(stripped);
+        }
+        line.clear();
+    }
+
+    Ok(payload)
+}
+
+/// Drop `stream` on a retained worker thread, because closing a tty waits
+/// in the kernel for queued output and must not stall a runtime worker.
+///
+/// The receiver resolves once the descriptor is released. `None` means no
+/// worker could start and the stream was already dropped on this thread.
+fn release_stream(path: &str, stream: Box<dyn AsyncSerialIo>) -> Option<oneshot::Receiver<()>> {
+    let (released_tx, released_rx) = oneshot::channel();
+    let worker = spawn_worker(
+        std::thread::Builder::new().name("hc-serial-close".to_owned()),
+        move || {
+            drop(stream);
+            let _ = released_tx.send(());
+        },
+    );
+    match worker {
+        Ok(worker) => {
+            retain_worker(worker, format!("usb serial close {path}"));
+            Some(released_rx)
+        }
+        Err(error) => {
+            warn!(
+                path,
+                error = %error,
+                "could not start a serial close worker; released the port on this thread"
+            );
+            None
+        }
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn map_serial_open_error(error: &tokio_serial::Error, path: &str) -> TransportError {

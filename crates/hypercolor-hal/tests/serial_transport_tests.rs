@@ -1,14 +1,30 @@
-use std::time::Duration;
+#[path = "support/serial_fake.rs"]
+mod serial_fake;
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use hypercolor_hal::transport::Transport;
 use hypercolor_hal::transport::TransportError;
-use hypercolor_hal::transport::serial::UsbSerialTransport;
+use hypercolor_hal::transport::serial::{CLOSE_TIMEOUT, DEFAULT_WRITE_TIMEOUT, UsbSerialTransport};
+use serial_fake::{Ticker, TrapStream, wait_released};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Slack on top of a deadline before a timing assertion counts as a hang.
+const SLACK: Duration = Duration::from_millis(500);
+
+/// Long enough that a test only sees it expire if close failed to wake it.
+const NEVER: Duration = Duration::from_secs(30);
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).expect("test durations fit in u64")
+}
 
 #[tokio::test]
 async fn send_receive_reads_until_focus_terminator() {
     let (client, mut server) = tokio::io::duplex(256);
-    let transport = UsbSerialTransport::from_stream("test-focus", client);
+    let (stream, _probe) = TrapStream::new(client);
+    let transport = UsbSerialTransport::from_stream("test-focus", stream);
 
     let server_task = tokio::spawn(async move {
         let mut command = [0_u8; 16];
@@ -88,4 +104,242 @@ async fn receive_returns_closed_when_peer_disconnects_mid_response() {
         .expect_err("disconnect should fail");
 
     assert!(matches!(error, TransportError::Closed));
+}
+
+#[tokio::test]
+async fn sends_queue_frames_without_flushing_or_waiting_for_the_device() {
+    let (client, mut device) = tokio::io::duplex(8 * 1024);
+    let (stream, _probe) = TrapStream::new(client);
+    let transport = UsbSerialTransport::from_stream("test-frame", stream);
+    let packets = (0_u8..49).map(|index| vec![index; 64]).collect::<Vec<_>>();
+
+    for packet in &packets {
+        transport
+            .send(packet)
+            .await
+            .expect("send should complete while the device has not read yet");
+    }
+
+    let mut received = vec![0_u8; packets.len() * 64];
+    device
+        .read_exact(&mut received)
+        .await
+        .expect("device should read every packet");
+    assert_eq!(received, packets.concat());
+}
+
+#[tokio::test]
+async fn write_error_surfaces_and_fails_the_transport() {
+    let (client, device) = tokio::io::duplex(64);
+    let transport = UsbSerialTransport::from_stream("test-unplug", client);
+    drop(device);
+
+    let error = transport
+        .send(b"frame")
+        .await
+        .expect_err("a write to a vanished device must fail");
+    assert!(
+        matches!(error, TransportError::NotFound { .. }),
+        "broken pipe should classify as a missing device: {error:?}"
+    );
+
+    assert!(matches!(
+        transport.send(b"frame").await,
+        Err(TransportError::Closed)
+    ));
+    assert!(matches!(
+        transport.receive(Duration::from_millis(25)).await,
+        Err(TransportError::Closed)
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn write_deadline_fails_a_stalled_transport_without_parking_the_runtime() {
+    let write_timeout = Duration::from_millis(50);
+    let (client, _device) = tokio::io::duplex(64);
+    let transport =
+        UsbSerialTransport::from_stream("test-stall", client).with_write_timeout(write_timeout);
+    let ticker = Ticker::start();
+
+    let started = Instant::now();
+    let error = transport
+        .send(&[0x5A; 1024])
+        .await
+        .expect_err("a write the device never takes must miss its deadline");
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(error, TransportError::Timeout { timeout_ms } if timeout_ms == millis(write_timeout)),
+        "{error:?}"
+    );
+    assert!(
+        elapsed >= write_timeout,
+        "deadline fired early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < write_timeout + SLACK,
+        "deadline fired late: {elapsed:?}"
+    );
+    assert!(
+        ticker.ticks() > 0,
+        "the stalled write parked the only runtime thread"
+    );
+    assert!(matches!(
+        transport.send(b"next").await,
+        Err(TransportError::Closed)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_send_reports_the_default_write_deadline() {
+    let (client, _device) = tokio::io::duplex(64);
+    let transport = UsbSerialTransport::from_stream("test-default-deadline", client);
+
+    let error = transport
+        .send(&[0x5A; 1024])
+        .await
+        .expect_err("a write the device never takes must miss its deadline");
+
+    assert!(
+        matches!(error, TransportError::Timeout { timeout_ms } if timeout_ms == millis(DEFAULT_WRITE_TIMEOUT)),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_interrupts_a_stalled_write() {
+    let (client, _device) = tokio::io::duplex(64);
+    let transport = Arc::new(
+        UsbSerialTransport::from_stream("test-close-stalled-write", client)
+            .with_write_timeout(NEVER),
+    );
+    let writer = tokio::spawn({
+        let transport = Arc::clone(&transport);
+        async move { transport.send(&[0x5A; 1024]).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !writer.is_finished(),
+        "write should be stalled on the full pipe"
+    );
+
+    let started = Instant::now();
+    transport.close().await.expect("close should succeed");
+    assert!(
+        started.elapsed() < SLACK,
+        "close waited behind the stalled write: {:?}",
+        started.elapsed()
+    );
+
+    let result = tokio::time::timeout(SLACK, writer)
+        .await
+        .expect("the stalled write should resolve once the transport closes")
+        .expect("writer task should not panic");
+    assert!(matches!(result, Err(TransportError::Closed)), "{result:?}");
+    assert!(matches!(
+        transport.send(b"next").await,
+        Err(TransportError::Closed)
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_interrupts_a_pending_receive() {
+    let (client, _device) = tokio::io::duplex(64);
+    let transport = Arc::new(UsbSerialTransport::from_stream(
+        "test-close-pending-read",
+        client,
+    ));
+    let reader = tokio::spawn({
+        let transport = Arc::clone(&transport);
+        async move { transport.receive(NEVER).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!reader.is_finished(), "receive should wait for a reply");
+
+    let started = Instant::now();
+    transport.close().await.expect("close should succeed");
+    assert!(started.elapsed() < SLACK);
+
+    let result = tokio::time::timeout(SLACK, reader)
+        .await
+        .expect("the pending receive should resolve once the transport closes")
+        .expect("reader task should not panic");
+    assert!(matches!(result, Err(TransportError::Closed)), "{result:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_releases_the_port_before_returning() {
+    let (client, _device) = tokio::io::duplex(64);
+    let (stream, probe) = TrapStream::new(client);
+    let transport = UsbSerialTransport::from_stream("test-close-release", stream);
+    transport.send(b"last frame").await.expect("send");
+
+    transport.close().await.expect("close should succeed");
+
+    assert!(
+        probe.released(),
+        "close should hand the port back so a reconnect can reopen it"
+    );
+    transport
+        .close()
+        .await
+        .expect("a second close should be a no-op");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_is_bounded_when_the_port_release_blocks() {
+    let (client, _device) = tokio::io::duplex(64);
+    let (stream, probe, release) = TrapStream::holding_release(client);
+    let transport = UsbSerialTransport::from_stream("test-close-drain", stream);
+    let ticker = Ticker::start();
+
+    let started = Instant::now();
+    transport.close().await.expect("close should succeed");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed + Duration::from_millis(10) >= CLOSE_TIMEOUT,
+        "close should give the release its whole bound: {elapsed:?}"
+    );
+    assert!(
+        elapsed < CLOSE_TIMEOUT + SLACK,
+        "close outlived its bound: {elapsed:?}"
+    );
+    assert!(
+        !probe.released(),
+        "the held release should still be finishing in the background"
+    );
+    assert!(
+        ticker.ticks() >= 10,
+        "close parked the runtime thread while the port drained"
+    );
+
+    release
+        .send(())
+        .expect("release worker should still be waiting");
+    wait_released(&probe, SLACK).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_an_open_transport_releases_the_port_off_the_runtime() {
+    let (client, _device) = tokio::io::duplex(64);
+    let (stream, probe, release) = TrapStream::holding_release(client);
+    let transport = UsbSerialTransport::from_stream("test-drop", stream);
+    let ticker = Ticker::start();
+
+    let started = Instant::now();
+    drop(transport);
+    assert!(
+        started.elapsed() < SLACK,
+        "drop blocked on the port release"
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!probe.released());
+    assert!(ticker.ticks() > 0);
+
+    release
+        .send(())
+        .expect("release worker should still be waiting");
+    wait_released(&probe, SLACK).await;
 }
