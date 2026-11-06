@@ -133,6 +133,18 @@ impl WindowsEntryMetadata {
         self.links
     }
 
+    /// The serial number of the volume holding the file.
+    #[must_use]
+    pub const fn volume_serial(self) -> u64 {
+        self.volume
+    }
+
+    /// The file's 128-bit ID on its volume.
+    #[must_use]
+    pub const fn file_id(self) -> u128 {
+        self.file_id
+    }
+
     /// Whether both describe the same file on the same volume.
     #[must_use]
     pub const fn same_entry(self, other: Self) -> bool {

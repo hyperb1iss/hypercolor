@@ -1,6 +1,6 @@
 [package]
 name = "hypercolor-install"
-description = "Transactional release installer for Hypercolor: install journal, coordinator, the Linux, macOS and macOS app bundle platforms, and the Windows store and unit producer"
+description = "Transactional release installer for Hypercolor: install journal, coordinator, and the Linux, macOS, macOS app bundle and Windows platforms"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -29,6 +29,8 @@ zbus = { workspace = true, features = ["p2p"] }
 tempfile = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+hypercolor-windows-install-native = { workspace = true }
+hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio", version = "0.9.0" }
 windows-service = "0.8.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]

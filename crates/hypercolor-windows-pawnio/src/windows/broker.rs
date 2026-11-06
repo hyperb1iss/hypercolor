@@ -181,7 +181,11 @@ pub(super) fn read_smn(addr: u32) -> PawnIoResult<u32> {
 /// broker from before this request answered it, which still proves the
 /// pipe is served; only [`PawnIoError::BrokerUnavailable`] means nobody is
 /// listening.
-pub(super) fn ping() -> PawnIoResult<String> {
+///
+/// # Errors
+///
+/// Returns the failed request, as above.
+pub fn ping_broker() -> PawnIoResult<String> {
     let response = send_request(BrokerRequest::Ping, "ping")?;
     let BrokerResponse::Pong { version } = response else {
         return Err(unexpected_response("ping"));
