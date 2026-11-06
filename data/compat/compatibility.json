@@ -3,12 +3,12 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 32,
-    "devices": 420,
+    "devices": 438,
     "byStatus": {
-      "supported": 184,
-      "in_progress": 1,
+      "supported": 210,
+      "in_progress": 8,
       "planned": 0,
-      "researched": 95,
+      "researched": 80,
       "known": 138,
       "blocked": 2
     },
@@ -4449,6 +4449,19 @@
       "notes": null,
       "devices": [
         {
+          "pid": 3848,
+          "pidHex": "0x0F08",
+          "vid": null,
+          "vidHex": null,
+          "name": "Base Station Chroma",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 15,
+          "notes": "Extended matrix 1x15"
+        },
+        {
           "pid": 3872,
           "pidHex": "0x0F20",
           "vid": null,
@@ -4605,6 +4618,45 @@
           "notes": null
         },
         {
+          "pid": 515,
+          "pidHex": "0x0203",
+          "vid": null,
+          "vidHex": null,
+          "name": "BlackWidow Chroma",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Standard matrix 6x22"
+        },
+        {
+          "pid": 529,
+          "pidHex": "0x0211",
+          "vid": null,
+          "vidHex": null,
+          "name": "BlackWidow Chroma Overwatch",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Standard matrix 6x22"
+        },
+        {
+          "pid": 521,
+          "pidHex": "0x0209",
+          "vid": null,
+          "vidHex": null,
+          "name": "BlackWidow Tournament Edition Chroma",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Standard matrix 6x22"
+        },
+        {
           "pid": 590,
           "pidHex": "0x024E",
           "vid": null,
@@ -4722,6 +4774,19 @@
           "notes": null
         },
         {
+          "pid": 534,
+          "pidHex": "0x0216",
+          "vid": null,
+          "vidHex": null,
+          "name": "BlackWidow X Chroma",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "Standard matrix 6x22"
+        },
+        {
           "pid": 624,
           "pidHex": "0x0270",
           "vid": null,
@@ -4813,6 +4878,32 @@
           "notes": null
         },
         {
+          "pid": 3847,
+          "pidHex": "0x0F07",
+          "vid": null,
+          "vidHex": null,
+          "name": "Chroma Mug Holder",
+          "type": "desk",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 15,
+          "notes": "Linear 1x15, switched to driver mode on connect"
+        },
+        {
+          "pid": 3854,
+          "pidHex": "0x0F0E",
+          "vid": null,
+          "vidHex": null,
+          "name": "Chroma PC Case Lighting Kit",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 32,
+          "notes": "Extended matrix 2x16, one row per strip"
+        },
+        {
           "pid": 163,
           "pidHex": "0x00A3",
           "vid": null,
@@ -4852,6 +4943,19 @@
           "notes": null
         },
         {
+          "pid": 533,
+          "pidHex": "0x0215",
+          "vid": null,
+          "vidHex": null,
+          "name": "Core",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 9,
+          "notes": "Standard matrix 1x9"
+        },
+        {
           "pid": 554,
           "pidHex": "0x022A",
           "vid": null,
@@ -4863,6 +4967,32 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": null
+        },
+        {
+          "pid": 110,
+          "pidHex": "0x006E",
+          "vid": null,
+          "vidHex": null,
+          "name": "DeathAdder Essential (Legacy)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 2,
+          "notes": "Extended matrix 1x2"
+        },
+        {
+          "pid": 113,
+          "pidHex": "0x0071",
+          "vid": null,
+          "vidHex": null,
+          "name": "DeathAdder Essential (White Edition)",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 2,
+          "notes": "Extended matrix 1x2"
         },
         {
           "pid": 152,
@@ -4930,6 +5060,71 @@
           "notes": null
         },
         {
+          "pid": 662,
+          "pidHex": "0x0296",
+          "vid": null,
+          "vidHex": null,
+          "name": "DeathStalker V2 Pro TKL (Wireless)",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "0x9F wireless transaction ID, extended matrix 6x17"
+        },
+        {
+          "pid": 76,
+          "pidHex": "0x004C",
+          "vid": null,
+          "vidHex": null,
+          "name": "Diamondback Chroma",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 21,
+          "notes": "Linear 1x21"
+        },
+        {
+          "pid": 3072,
+          "pidHex": "0x0C00",
+          "vid": null,
+          "vidHex": null,
+          "name": "Firefly",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 15,
+          "notes": "Linear 1x15"
+        },
+        {
+          "pid": 104,
+          "pidHex": "0x0068",
+          "vid": null,
+          "vidHex": null,
+          "name": "Firefly Hyperflux",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 14,
+          "notes": "Extended matrix 1x14, switched to driver mode on connect"
+        },
+        {
+          "pid": 3076,
+          "pidHex": "0x0C04",
+          "vid": null,
+          "vidHex": null,
+          "name": "Firefly V2",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 19,
+          "notes": "Extended matrix 1x19"
+        },
+        {
           "pid": 3080,
           "pidHex": "0x0C08",
           "vid": null,
@@ -4943,6 +5138,19 @@
           "notes": null
         },
         {
+          "pid": 3073,
+          "pidHex": "0x0C01",
+          "vid": null,
+          "vidHex": null,
+          "name": "Goliathus Chroma",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Single zone"
+        },
+        {
           "pid": 3078,
           "pidHex": "0x0C06",
           "vid": null,
@@ -4954,6 +5162,19 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": null
+        },
+        {
+          "pid": 3074,
+          "pidHex": "0x0C02",
+          "vid": null,
+          "vidHex": null,
+          "name": "Goliathus Chroma Extended",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Single zone"
         },
         {
           "pid": 551,
@@ -5112,6 +5333,19 @@
           "notes": null
         },
         {
+          "pid": 3865,
+          "pidHex": "0x0F19",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken Kitty Edition",
+          "type": "headset",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 4,
+          "notes": "Extended matrix 1x4 on HID interface 1"
+        },
+        {
           "pid": 1319,
           "pidHex": "0x0527",
           "vid": null,
@@ -5164,6 +5398,19 @@
           "notes": null
         },
         {
+          "pid": 1354,
+          "pidHex": "0x054A",
+          "vid": null,
+          "vidHex": null,
+          "name": "Leviathan V2 X",
+          "type": "speakers",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 14,
+          "notes": "Extended matrix 1x14, HID report ID 0x07"
+        },
+        {
           "pid": 3859,
           "pidHex": "0x0F13",
           "vid": null,
@@ -5201,6 +5448,32 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": null
+        },
+        {
+          "pid": 126,
+          "pidHex": "0x007E",
+          "vid": null,
+          "vidHex": null,
+          "name": "Mouse Dock Chroma",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Single zone"
+        },
+        {
+          "pid": 164,
+          "pidHex": "0x00A4",
+          "vid": null,
+          "vidHex": null,
+          "name": "Mouse Dock Pro",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 9,
+          "notes": "0xFF transaction ID with extended matrix frames, 1x9 per OpenRGB (OpenRazer lists 1x8)"
         },
         {
           "pid": 147,
@@ -5281,6 +5554,32 @@
           "notes": null
         },
         {
+          "pid": 1303,
+          "pidHex": "0x0517",
+          "vid": null,
+          "vidHex": null,
+          "name": "Nommo Chroma",
+          "type": "speakers",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 48,
+          "notes": "Extended matrix 2x24"
+        },
+        {
+          "pid": 1304,
+          "pidHex": "0x0518",
+          "vid": null,
+          "vidHex": null,
+          "name": "Nommo Pro",
+          "type": "speakers",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 16,
+          "notes": "Extended matrix 2x8"
+        },
+        {
           "pid": 542,
           "pidHex": "0x021E",
           "vid": null,
@@ -5320,6 +5619,19 @@
           "notes": null
         },
         {
+          "pid": 3077,
+          "pidHex": "0x0C05",
+          "vid": null,
+          "vidHex": null,
+          "name": "Strider Chroma",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 19,
+          "notes": "Extended matrix 1x19"
+        },
+        {
           "pid": 520,
           "pidHex": "0x0208",
           "vid": null,
@@ -5344,6 +5656,32 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": null
+        },
+        {
+          "pid": 3873,
+          "pidHex": "0x0F21",
+          "vid": null,
+          "vidHex": null,
+          "name": "Thunderbolt 4 Dock Chroma",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 12,
+          "notes": "Extended matrix 1x12, matched by consumer-control usage on any interface"
+        },
+        {
+          "pid": 3922,
+          "pidHex": "0x0F52",
+          "vid": null,
+          "vidHex": null,
+          "name": "Thunderbolt 5 Dock Chroma",
+          "type": "other",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 12,
+          "notes": "Extended matrix 1x12, matched by consumer-control usage on any interface"
         },
         {
           "pid": 3843,
@@ -5372,17 +5710,95 @@
           "notes": null
         },
         {
-          "pid": 3871,
-          "pidHex": "0x0F1F",
+          "pid": 3866,
+          "pidHex": "0x0F1A",
           "vid": null,
           "vidHex": null,
-          "name": "Addressable RGB Controller",
-          "type": "argb_controller",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
+          "name": "Core X Chroma",
+          "type": "other",
+          "status": "in_progress",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 16,
+          "notes": "OpenRGB facts: 0x3F transaction ID, extended matrix 1x16 on HID interface 2 (OpenRazer sends 0x1F). Awaiting hardware confirmation."
+        },
+        {
+          "pid": 1284,
+          "pidHex": "0x0504",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken 7.1 Chroma",
+          "type": "headset",
+          "status": "in_progress",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol (Spec 83), Kraken 7.1 Chroma address map with the LED mode register at 0x1008. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 1296,
+          "pidHex": "0x0510",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken 7.1 V2",
+          "type": "headset",
+          "status": "in_progress",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 1376,
+          "pidHex": "0x0560",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken Kitty V2",
+          "type": "headset",
+          "status": "in_progress",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Sold as the Kitty Black Edition V2. Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 1312,
+          "pidHex": "0x0520",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken Tournament Edition",
+          "type": "headset",
+          "status": "in_progress",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 3858,
+          "pidHex": "0x0F12",
+          "vid": null,
+          "vidHex": null,
+          "name": "Raptor 27",
+          "type": "monitor",
+          "status": "in_progress",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 12,
+          "notes": "OpenRazer facts: 0x1F transaction ID, extended matrix 1x12 on HID interface 0. Awaiting hardware confirmation."
+        },
+        {
+          "pid": 3863,
+          "pidHex": "0x0F17",
+          "vid": null,
+          "vidHex": null,
+          "name": "Tomahawk ATX",
+          "type": "case",
+          "status": "in_progress",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 20,
+          "notes": "OpenRazer facts: 0x1F transaction ID, extended matrix 1x20 on HID interface 0. Awaiting hardware confirmation."
         },
         {
           "pid": 1396,
@@ -5395,20 +5811,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 3848,
-          "pidHex": "0x0F08",
-          "vid": null,
-          "vidHex": null,
-          "name": "Base Station Chroma",
-          "type": "other",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
+          "notes": "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
         },
         {
           "pid": 577,
@@ -5416,45 +5819,6 @@
           "vid": null,
           "vidHex": null,
           "name": "BlackWidow 2019",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 515,
-          "pidHex": "0x0203",
-          "vid": null,
-          "vidHex": null,
-          "name": "BlackWidow Chroma",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "Legacy protocol"
-        },
-        {
-          "pid": 529,
-          "pidHex": "0x0211",
-          "vid": null,
-          "vidHex": null,
-          "name": "BlackWidow Chroma Overwatch",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 521,
-          "pidHex": "0x0209",
-          "vid": null,
-          "vidHex": null,
-          "name": "BlackWidow Tournament Edition Chroma",
           "type": "keyboard",
           "status": "researched",
           "driver": null,
@@ -5476,17 +5840,17 @@
           "notes": "Very old model, low priority"
         },
         {
-          "pid": 534,
-          "pidHex": "0x0216",
+          "pid": 3871,
+          "pidHex": "0x0F1F",
           "vid": null,
           "vidHex": null,
-          "name": "BlackWidow X Chroma",
-          "type": "keyboard",
+          "name": "Chroma Addressable RGB Controller",
+          "type": "argb_controller",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
+          "notes": "Six ARGB channels of up to 80 LEDs. Frames travel as a separate 320-byte ARGB feature report on HID interface 1, not the 90-byte report (Spec 17 section 6.3)."
         },
         {
           "pid": 3884,
@@ -5499,20 +5863,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 3854,
-          "pidHex": "0x0F0E",
-          "vid": null,
-          "vidHex": null,
-          "name": "Chroma Lighting Kit",
-          "type": "argb_controller",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
+          "notes": "Enumerates as the Chroma Wireless ARGB Controller. OpenRGB issue 2203 holds undecoded captures; no wire format is documented."
         },
         {
           "pid": 575,
@@ -5541,108 +5892,56 @@
           "notes": null
         },
         {
-          "pid": 113,
-          "pidHex": "0x0071",
+          "pid": 3893,
+          "pidHex": "0x0F35",
           "vid": null,
           "vidHex": null,
-          "name": "DeathAdder Essential (Alt)",
-          "type": "mouse",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 110,
-          "pidHex": "0x006E",
-          "vid": null,
-          "vidHex": null,
-          "name": "DeathAdder Essential (Legacy)",
-          "type": "mouse",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 662,
-          "pidHex": "0x0296",
-          "vid": null,
-          "vidHex": null,
-          "name": "DeathStalker V2 Pro TKL (Wireless)",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 76,
-          "pidHex": "0x004C",
-          "vid": null,
-          "vidHex": null,
-          "name": "Diamondback Chroma",
-          "type": "mouse",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "Legacy mouse"
-        },
-        {
-          "pid": 3908,
-          "pidHex": "0x0F44",
-          "vid": null,
-          "vidHex": null,
-          "name": "Hanbo AIO",
+          "name": "Hanbo Chroma",
           "type": "aio",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
+          "notes": "Own report layout with green-red-blue color order (OpenRGB RazerHanboController), not the 90-byte report."
         },
         {
-          "pid": 1296,
-          "pidHex": "0x0510",
+          "pid": 1353,
+          "pidHex": "0x0549",
           "vid": null,
           "vidHex": null,
-          "name": "Kraken 7.1 V2",
+          "name": "Kraken V3",
           "type": "headset",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
+          "notes": "Kraken V3 family: a 13-byte output report 0x40 per OpenRGB, neither the Kraken memory-access protocol nor the 90-byte report."
         },
         {
           "pid": 1331,
           "pidHex": "0x0533",
           "vid": null,
           "vidHex": null,
-          "name": "Kraken Headset",
+          "name": "Kraken V3 HyperSense",
           "type": "headset",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Multiple PIDs: 0x0533, 0x0537, 0x0549, 0x0560"
+          "notes": "Kraken V3 family: a 13-byte output report 0x40 per OpenRGB, neither the Kraken memory-access protocol nor the 90-byte report."
         },
         {
-          "pid": 527,
-          "pidHex": "0x020F",
+          "pid": 1335,
+          "pidHex": "0x0537",
           "vid": null,
           "vidHex": null,
-          "name": "Kraken Kitty Edition",
+          "name": "Kraken V3 X",
           "type": "headset",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
+          "notes": "Kraken V3 family: a 13-byte output report 0x40 per OpenRGB, neither the Kraken memory-access protocol nor the 90-byte report."
         },
         {
           "pid": 3907,
@@ -5655,72 +5954,20 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
+          "notes": "No public protocol documentation (OpenRGB request 4565 has no captures)."
         },
         {
-          "pid": 1330,
-          "pidHex": "0x0532",
+          "pid": 1352,
+          "pidHex": "0x0548",
           "vid": null,
           "vidHex": null,
-          "name": "Leviathan V2 Soundbar",
+          "name": "Leviathan V2 Pro",
           "type": "speakers",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Multiple PIDs: 0x0532, 0x054A, 0x0548"
-        },
-        {
-          "pid": 3876,
-          "pidHex": "0x0F24",
-          "vid": null,
-          "vidHex": null,
-          "name": "Mouse Bungee V3",
-          "type": "other",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 3874,
-          "pidHex": "0x0F22",
-          "vid": null,
-          "vidHex": null,
-          "name": "Mouse Dock",
-          "type": "other",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 3875,
-          "pidHex": "0x0F23",
-          "vid": null,
-          "vidHex": null,
-          "name": "Mouse Dock Pro",
-          "type": "other",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 3072,
-          "pidHex": "0x0C00",
-          "vid": null,
-          "vidHex": null,
-          "name": "Mousepad Controller",
-          "type": "mousepad",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05"
+          "notes": "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
         },
         {
           "pid": 78,
@@ -5746,20 +5993,33 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A"
+          "notes": "Multiple PIDs: 0x051C Nari (Wireless), 0x051D Nari (Wired), 0x051A Nari Ultimate, 0x051E and 0x051F Nari Essential. No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
         },
         {
-          "pid": 1303,
-          "pidHex": "0x0517",
+          "pid": 1372,
+          "pidHex": "0x055C",
           "vid": null,
           "vidHex": null,
-          "name": "Nommo Speakers",
+          "name": "Nommo V2",
           "type": "speakers",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A"
+          "notes": "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
+        },
+        {
+          "pid": 1370,
+          "pidHex": "0x055A",
+          "vid": null,
+          "vidHex": null,
+          "name": "Nommo V2 Pro",
+          "type": "speakers",
+          "status": "researched",
+          "driver": null,
+          "transport": null,
+          "leds": null,
+          "notes": "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
         },
         {
           "pid": 519,
@@ -5805,26 +6065,26 @@
           "pidHex": "0x0F3C",
           "vid": null,
           "vidHex": null,
-          "name": "PWM Controller",
+          "name": "PWM PC Fan Controller",
           "type": "fan_controller",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": null
+          "notes": "HID interface 1. No lighting protocol is documented."
         },
         {
-          "pid": 3858,
-          "pidHex": "0x0F12",
+          "pid": 3880,
+          "pidHex": "0x0F28",
           "vid": null,
           "vidHex": null,
-          "name": "Raptor 27 Inch Monitor",
+          "name": "Raptor 27 (second PID)",
           "type": "monitor",
           "status": "researched",
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Multiple PIDs: 0x0F12, 0x0F28"
+          "notes": "Neither OpenRazer nor OpenRGB lists this PID, so its report format is unconfirmed. 0x0F12 is registered."
         },
         {
           "pid": 556,
@@ -5838,43 +6098,17 @@
           "transport": null,
           "leds": null,
           "notes": null
-        },
-        {
-          "pid": 3873,
-          "pidHex": "0x0F21",
-          "vid": null,
-          "vidHex": null,
-          "name": "Thunderbolt Dock",
-          "type": "other",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
-        },
-        {
-          "pid": 3845,
-          "pidHex": "0x0F05",
-          "vid": null,
-          "vidHex": null,
-          "name": "Tomahawk ATX Case",
-          "type": "case",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": null
         }
       ],
       "counts": {
-        "supported": 71,
-        "in_progress": 0,
+        "supported": 97,
+        "in_progress": 7,
         "planned": 0,
-        "researched": 38,
+        "researched": 23,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 109,
+      "totalDevices": 127,
       "drivers": [
         "razer"
       ],
@@ -5885,6 +6119,7 @@
         "aio",
         "argb_controller",
         "case",
+        "desk",
         "fan_controller",
         "headset",
         "keyboard",
