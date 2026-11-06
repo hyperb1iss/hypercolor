@@ -324,7 +324,7 @@ fn third_party_notices_ship_beside_the_license() {
 #[test]
 fn incomplete_or_unloadable_inputs_are_refused_and_leave_nothing() {
     type Break = fn(&WindowsUnitSources);
-    let cases: [(&str, Break); 5] = [
+    let cases: [(&str, Break); 4] = [
         ("no-daemon", |sources| {
             fs::remove_file(sources.bin_dir.join("hypercolor-daemon.exe")).expect("remove");
         }),
@@ -337,9 +337,6 @@ fn incomplete_or_unloadable_inputs_are_refused_and_leave_nothing() {
         ("no-pawnio-setup", |sources| {
             fs::remove_file(sources.stage_dir.join("tools/pawnio/PawnIO_setup.exe"))
                 .expect("remove");
-        }),
-        ("bad-name", |sources| {
-            write(&sources.stage_dir.join("ui/aux.js"), b"x");
         }),
     ];
     for (name, break_inputs) in cases {
@@ -364,13 +361,21 @@ fn incomplete_or_unloadable_inputs_are_refused_and_leave_nothing() {
     );
 }
 
+/// Windows itself cannot hold these inputs: it maps `aux.js` to a device
+/// and merges names that differ only in case.
 #[cfg(unix)]
 #[test]
-fn links_and_case_collisions_in_the_inputs_are_refused() {
+fn links_device_names_and_case_collisions_in_the_inputs_are_refused() {
     let fixture = Fixture::new();
     std::os::unix::fs::symlink("/etc/passwd", fixture.sources.stage_dir.join("ui/passwd"))
         .expect("link");
     assert!(produce_windows_unit(&fixture.sources, &fixture.output("linked")).is_err());
+
+    let fixture = Fixture::new();
+    write(&fixture.sources.stage_dir.join("ui/aux.js"), b"x");
+    let output = fixture.output("device");
+    assert!(produce_windows_unit(&fixture.sources, &output).is_err());
+    assert!(!output.exists());
 
     let fixture = Fixture::new();
     write(&fixture.sources.stage_dir.join("ui/Index.html"), b"other");
