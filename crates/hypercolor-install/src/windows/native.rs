@@ -4,18 +4,22 @@
 //! Each method is one call or one bounded wait, and it decides nothing.
 
 use std::ffi::{OsStr, OsString};
+use std::fs::OpenOptions;
 use std::io::{self, Read as _};
 use std::net::SocketAddr;
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess};
+use hypercolor_platform_fs::{
+    WindowsDirectory, WindowsDirectoryAccess, windows_named_pipe_server_process_id,
+};
 use hypercolor_windows_install_native::{
     FirewallRule, ProcessId, RunningProcess, firewall_rule, process, process_with_pid,
     processes_named, set_firewall_rule_program, terminate_processes, wait_for_any_exit,
     wait_for_every_exit,
 };
-use hypercolor_windows_pawnio::{BROKER_SERVICE_NAME, PawnIoError, ping_broker};
+use hypercolor_windows_pawnio::{BROKER_PIPE_NAME, BROKER_SERVICE_NAME};
 use sha2::{Digest as _, Sha256};
 use windows_service::service::{Service, ServiceAccess, ServiceInfo, ServiceState, ServiceStatus};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -39,6 +43,9 @@ const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 const ERROR_SERVICE_CANNOT_ACCEPT_CTRL: i32 = 1061;
 /// `ERROR_SERVICE_NOT_ACTIVE`.
 const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
+/// `SECURITY_IDENTIFICATION`: a pipe server may learn who this client is,
+/// but never act as it.
+const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
 /// How long the broker gets to start or stop. Its own wait hints are 15 and
 /// 10 seconds.
 const BROKER_DEADLINE: Duration = Duration::from_secs(30);
@@ -215,20 +222,37 @@ fn start_and_wait(service: &Service) -> Result<u32, InstallPlatformError> {
     }
 }
 
-/// Wait until the broker's pipe answers. Any answer proves it is served,
-/// even one that refuses the request.
-fn wait_for_pipe() -> Result<(), InstallPlatformError> {
-    let deadline = Instant::now() + BROKER_DEADLINE;
+/// The process serving the pipe `name`, reached without letting it act as
+/// this LocalSystem caller and without one byte crossing it, so whoever
+/// serves the name can neither use this client nor stall it.
+fn pipe_server(name: &str) -> io::Result<u32> {
+    let pipe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .security_qos_flags(SECURITY_IDENTIFICATION)
+        .open(name)?;
+    windows_named_pipe_server_process_id(&pipe)
+}
+
+/// Wait until `broker` itself serves the pipe `name`. The name is open to
+/// anyone while the broker is down, so only the serving process proves it.
+pub(super) fn wait_for_pipe(
+    name: &str,
+    broker: u32,
+    timeout: Duration,
+) -> Result<(), InstallPlatformError> {
+    let deadline = Instant::now() + timeout;
     loop {
-        match ping_broker() {
-            Err(PawnIoError::BrokerUnavailable { detail }) => {
-                if Instant::now() >= deadline {
-                    return Err(io_error("the SMBus broker does not answer", detail));
-                }
-                std::thread::sleep(SERVICE_STATE_PAUSE);
-            }
-            Ok(_) | Err(_) => return Ok(()),
+        let served = pipe_server(name);
+        if matches!(served, Ok(server) if server == broker) {
+            return Ok(());
         }
+        if Instant::now() >= deadline {
+            return Err(error(format!(
+                "process {broker} does not serve the SMBus broker's pipe: {served:?}"
+            )));
+        }
+        std::thread::sleep(SERVICE_STATE_PAUSE);
     }
 }
 
@@ -307,7 +331,7 @@ impl WindowsInstallExecutor for WindowsNativeExecutor {
         let service = self.require_broker(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
         let pid = start_and_wait(&service)?;
         // The broker reports running before it opens its pipe.
-        wait_for_pipe()?;
+        wait_for_pipe(BROKER_PIPE_NAME, pid, BROKER_DEADLINE)?;
         process_with_pid(pid)
             .map_err(|source| io_error("name the SMBus broker's process", source))?
             .map(|running| process_id(running.id))

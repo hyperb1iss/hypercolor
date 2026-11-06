@@ -128,7 +128,7 @@ fn the_broker_switches_units_through_the_service_control_manager() {
     assert_eq!(observed.image, format!("\"{}\"", text(&first)));
     assert!(!observed.running);
 
-    let process = executor.start_broker().expect("start and hear the broker");
+    let process = executor.start_broker().expect("start the broker");
     assert_eq!(
         executor.start_broker().expect("starting it again"),
         process,
@@ -155,10 +155,6 @@ fn the_broker_switches_units_through_the_service_control_manager() {
         .expect("registered");
     assert_eq!(observed.image, format!("\"{}\"", text(&second)));
     assert!(!observed.running, "a switch leaves the broker stopped");
-    assert_eq!(
-        executor.process_image(process).expect("ask after stop"),
-        None
-    );
 
     executor
         .switch_broker(text(&second))

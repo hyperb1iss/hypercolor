@@ -11,8 +11,10 @@ use std::time::Duration;
 use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess, WindowsSid};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
+use tokio::net::windows::named_pipe::ServerOptions;
 
 use super::model::same_windows_path;
+use super::native::wait_for_pipe;
 use super::store::InstallStore;
 use super::{
     WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsInstallExecutor,
@@ -301,6 +303,46 @@ fn the_active_pointer_reads_without_the_transaction_lock() {
     );
     fixture.store.set_active(None, &held).expect("deactivate");
     assert_eq!(executor.active_unit().expect("read the pointer"), None);
+}
+
+#[test]
+fn only_the_serving_process_proves_a_pipe() {
+    let name = format!(r"\\.\pipe\hypercolor-install-test-{}", std::process::id());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("runtime");
+    let _guard = runtime.enter();
+
+    let refused = wait_for_pipe(&name, std::process::id(), SHORT).expect_err("nothing serves it");
+    assert!(refused.to_string().contains("does not serve"), "{refused}");
+
+    let _server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&name)
+        .expect("serve the pipe");
+    wait_for_pipe(&name, std::process::id(), LONG).expect("this process serves it");
+}
+
+#[test]
+fn another_process_serving_the_pipe_proves_nothing() {
+    let name = format!(
+        r"\\.\pipe\hypercolor-install-test-other-{}",
+        std::process::id()
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("runtime");
+    let _guard = runtime.enter();
+    let _server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&name)
+        .expect("serve the pipe");
+
+    let refused =
+        wait_for_pipe(&name, std::process::id() + 1, SHORT).expect_err("not that process");
+    assert!(refused.to_string().contains("does not serve"), "{refused}");
 }
 
 #[test]

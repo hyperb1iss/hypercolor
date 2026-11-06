@@ -39,12 +39,12 @@ pub trait WindowsInstallExecutor {
     /// control manager refuses the change.
     fn switch_broker(&mut self, program: &str) -> Result<(), InstallPlatformError>;
 
-    /// Start the broker unless it runs, wait until it answers on its pipe,
-    /// and return the process it runs in.
+    /// Start the broker unless it runs, wait until that process serves its
+    /// pipe, and return it.
     ///
     /// # Errors
-    /// Returns an error when it does not reach running or does not answer
-    /// in time.
+    /// Returns an error when it does not reach running, or its process does
+    /// not serve the pipe in time.
     fn start_broker(&mut self) -> Result<WindowsProcessId, InstallPlatformError>;
 
     /// The programs the firewall rules allow, or `None` when the firewall
