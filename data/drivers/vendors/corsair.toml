@@ -490,42 +490,42 @@ pid = 0x1B62
 name = "K57 Wireless Dongle"
 type = "other"
 status = "researched"
-notes = "Bragi receiver; child routing is not enabled yet"
+notes = "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
 
 [[devices]]
 pid = 0x1B66
 name = "Ironclaw RGB Wireless Dongle"
 type = "other"
 status = "researched"
-notes = "Bragi receiver; child routing is not enabled yet"
+notes = "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
 
 [[devices]]
 pid = 0x1B65
 name = "Harpoon Wireless Dongle"
 type = "other"
 status = "researched"
-notes = "Bragi receiver; child routing is not enabled yet"
+notes = "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
 
 [[devices]]
 pid = 0x1B81
 name = "Dark Core RGB Pro Wireless Dongle"
 type = "other"
 status = "researched"
-notes = "Bragi receiver; child routing is not enabled yet"
+notes = "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
 
 [[devices]]
 pid = 0x1B7F
 name = "Dark Core RGB Pro SE Wireless Dongle"
 type = "other"
 status = "researched"
-notes = "Bragi receiver; child routing is not enabled yet"
+notes = "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
 
 [[devices]]
 pid = 0x1BA6
 name = "Generic Bragi Dongle"
 type = "other"
 status = "researched"
-notes = "Bragi receiver; child routing is not enabled yet"
+notes = "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
 
 # ─── NXP/CUE Peripherals ───────────────────────────────────────────────
 
@@ -533,99 +533,138 @@ notes = "Bragi receiver; child routing is not enabled yet"
 pid = 0x1B3D
 name = "K55"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE zoned keyboard protocol; transport safety not enabled yet"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 3
+notes = "NXP/CUE three-zone keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Winlock LED not driven"
 
 [[devices]]
 pid = 0x1B41
 name = "K66"
 type = "keyboard"
 status = "researched"
-notes = "NXP/CUE protocol without backlight"
+notes = "NXP/CUE protocol without backlight; held because there is no lighting to drive"
 
 [[devices]]
 pid = 0x1B17
 name = "K65 RGB"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE 512-color packed keyboard protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
 
 [[devices]]
 pid = 0x1B37
 name = "K65 Lux RGB"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE full-range keyboard protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
 
 [[devices]]
 pid = 0x1B13
 name = "K70 RGB"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE 512-color packed keyboard protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
 
 [[devices]]
 pid = 0x1B33
 name = "K70 Lux RGB"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE full-range keyboard protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
 
 [[devices]]
 pid = 0x1B49
 name = "K70 MK.2"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE full-range keyboard protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
 
 [[devices]]
 pid = 0x1B11
 name = "K95 RGB"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE 512-color packed keyboard protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Skips the hardware-mode handover on exit"
 
 [[devices]]
 pid = 0x1B2D
 name = "K95 Platinum"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE full-range keyboard protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Light bar slots beyond 144 not driven"
 
 [[devices]]
 pid = 0x1B20
 name = "Strafe RGB"
 type = "keyboard"
-status = "researched"
-notes = "NXP/CUE full-range keyboard protocol with sidelight quirk"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 144
+notes = "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Sidelight toggle not driven"
 
 [[devices]]
 pid = 0x1B12
 name = "M65"
 type = "mouse"
-status = "researched"
-notes = "NXP/CUE mouse-zone RGB protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 6
+notes = "NXP/CUE mouse zones on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Drives the six software zone IDs"
 
 [[devices]]
 pid = 0x1B1E
 name = "Scimitar"
 type = "mouse"
-status = "researched"
-notes = "NXP/CUE mouse-zone RGB protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 6
+notes = "NXP/CUE mouse zones on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Drives the six software zone IDs"
 
 [[devices]]
 pid = 0x1B3B
 name = "Polaris"
 type = "mousepad"
-status = "researched"
-notes = "NXP/CUE mousepad RGB protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 15
+notes = "NXP/CUE mousepad packet on the vendor command collection (interface 0, usage page 0xFFC2) via hidraw; interface 1 is a keyboard collection and is never opened"
 
 [[devices]]
 pid = 0x0A34
 name = "ST100"
 type = "other"
-status = "researched"
-notes = "NXP/CUE mousepad-style RGB protocol"
+status = "supported"
+driver = "corsair"
+transport = "usb_hid"
+leds = 15
+notes = "NXP/CUE mousepad-style packet on the single vendor interface via hidraw. Nine physical zones across 15 packet slots; slot order unverified"
 
 # ─── Legacy Peripherals ────────────────────────────────────────────────
 
@@ -634,35 +673,35 @@ pid = 0x1B07
 name = "K65 Legacy"
 type = "keyboard"
 status = "researched"
-notes = "Legacy vendor-control hardware-mode lighting"
+notes = "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
 
 [[devices]]
 pid = 0x1B09
 name = "K70 Legacy"
 type = "keyboard"
 status = "researched"
-notes = "Legacy vendor-control hardware-mode lighting"
+notes = "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
 
 [[devices]]
 pid = 0x1B02
 name = "K90 Legacy"
 type = "keyboard"
 status = "researched"
-notes = "Legacy vendor-control hardware-mode lighting"
+notes = "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
 
 [[devices]]
 pid = 0x1B08
 name = "K95 Legacy"
 type = "keyboard"
 status = "researched"
-notes = "Legacy vendor-control hardware-mode lighting"
+notes = "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
 
 [[devices]]
 pid = 0x1B06
 name = "M95"
 type = "mouse"
 status = "researched"
-notes = "Legacy vendor-control backlight on/off"
+notes = "Legacy vendor-control backlight on/off; held because vendor control requests need the whole USB device node and no HID-class path carries them"
 
 # ─── Not Yet Supported ───────────────────────────────────────────────
 

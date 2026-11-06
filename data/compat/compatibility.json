@@ -5,10 +5,10 @@
     "vendors": 32,
     "devices": 438,
     "byStatus": {
-      "supported": 210,
+      "supported": 223,
       "in_progress": 8,
       "planned": 0,
-      "researched": 80,
+      "researched": 67,
       "known": 138,
       "blocked": 2
     },
@@ -1088,6 +1088,19 @@
           "notes": "Bragi 1024-byte HID reports, alternate RGB payload"
         },
         {
+          "pid": 6973,
+          "pidHex": "0x1B3D",
+          "vid": null,
+          "vidHex": null,
+          "name": "K55",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 3,
+          "notes": "NXP/CUE three-zone keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Winlock LED not driven"
+        },
+        {
           "pid": 7076,
           "pidHex": "0x1BA4",
           "vid": null,
@@ -1179,6 +1192,19 @@
           "notes": "Bragi 64-byte HID reports, per-key RGB"
         },
         {
+          "pid": 6967,
+          "pidHex": "0x1B37",
+          "vid": null,
+          "vidHex": null,
+          "name": "K65 Lux RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
+        },
+        {
           "pid": 7087,
           "pidHex": "0x1BAF",
           "vid": null,
@@ -1190,6 +1216,19 @@
           "transport": "usb_hid",
           "leds": 123,
           "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 6935,
+          "pidHex": "0x1B17",
+          "vid": null,
+          "vidHex": null,
+          "name": "K65 RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
         },
         {
           "pid": 11018,
@@ -1244,6 +1283,32 @@
           "notes": "Bragi 64-byte HID reports, per-key RGB"
         },
         {
+          "pid": 6963,
+          "pidHex": "0x1B33",
+          "vid": null,
+          "vidHex": null,
+          "name": "K70 Lux RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
+        },
+        {
+          "pid": 6985,
+          "pidHex": "0x1B49",
+          "vid": null,
+          "vidHex": null,
+          "name": "K70 MK.2",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
+        },
+        {
           "pid": 7124,
           "pidHex": "0x1BD4",
           "vid": null,
@@ -1255,6 +1320,19 @@
           "transport": "usb_hid",
           "leds": 193,
           "notes": "Bragi 1024-byte HID reports, per-key RGB"
+        },
+        {
+          "pid": 6931,
+          "pidHex": "0x1B13",
+          "vid": null,
+          "vidHex": null,
+          "name": "K70 RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x"
         },
         {
           "pid": 7108,
@@ -1309,6 +1387,19 @@
           "notes": "Bragi 1024-byte HID reports, per-key RGB"
         },
         {
+          "pid": 6957,
+          "pidHex": "0x1B2D",
+          "vid": null,
+          "vidHex": null,
+          "name": "K95 Platinum",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Light bar slots beyond 144 not driven"
+        },
+        {
           "pid": 7049,
           "pidHex": "0x1B89",
           "vid": null,
@@ -1320,6 +1411,19 @@
           "transport": "usb_hid",
           "leds": 156,
           "notes": "Bragi 64-byte HID reports, top-bar keyboard topology"
+        },
+        {
+          "pid": 6929,
+          "pidHex": "0x1B11",
+          "vid": null,
+          "vidHex": null,
+          "name": "K95 RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE 512-color packed keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Skips the hardware-mode handover on exit"
         },
         {
           "pid": 7059,
@@ -1426,6 +1530,19 @@
           "notes": "Bragi 64-byte HID reports"
         },
         {
+          "pid": 6930,
+          "pidHex": "0x1B12",
+          "vid": null,
+          "vidHex": null,
+          "name": "M65",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 6,
+          "notes": "NXP/CUE mouse zones on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Drives the six software zone IDs"
+        },
+        {
           "pid": 7070,
           "pidHex": "0x1B9E",
           "vid": null,
@@ -1504,6 +1621,32 @@
           "notes": null
         },
         {
+          "pid": 6971,
+          "pidHex": "0x1B3B",
+          "vid": null,
+          "vidHex": null,
+          "name": "Polaris",
+          "type": "mousepad",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 15,
+          "notes": "NXP/CUE mousepad packet on the vendor command collection (interface 0, usage page 0xFFC2) via hidraw; interface 1 is a keyboard collection and is never opened"
+        },
+        {
+          "pid": 6942,
+          "pidHex": "0x1B1E",
+          "vid": null,
+          "vidHex": null,
+          "name": "Scimitar",
+          "type": "mouse",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 6,
+          "notes": "NXP/CUE mouse zones on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Drives the six software zone IDs"
+        },
+        {
           "pid": 7139,
           "pidHex": "0x1BE3",
           "vid": null,
@@ -1528,6 +1671,32 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": "2 channels"
+        },
+        {
+          "pid": 2612,
+          "pidHex": "0x0A34",
+          "vid": null,
+          "vidHex": null,
+          "name": "ST100",
+          "type": "other",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 15,
+          "notes": "NXP/CUE mousepad-style packet on the single vendor interface via hidraw. Nine physical zones across 15 packet slots; slot order unverified"
+        },
+        {
+          "pid": 6944,
+          "pidHex": "0x1B20",
+          "vid": null,
+          "vidHex": null,
+          "name": "Strafe RGB",
+          "type": "keyboard",
+          "status": "supported",
+          "driver": "corsair",
+          "transport": "usb_hid",
+          "leds": 144,
+          "notes": "NXP/CUE full-range keyboard on the vendor command collection (interface 1, usage page 0xFFC2) via hidraw; never detaches usbhid. Needs the two-interface firmware layout seen on 3.x. Sidelight toggle not driven"
         },
         {
           "pid": 3138,
@@ -1592,7 +1761,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Bragi receiver; child routing is not enabled yet"
+          "notes": "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
         },
         {
           "pid": 7041,
@@ -1605,7 +1774,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Bragi receiver; child routing is not enabled yet"
+          "notes": "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
         },
         {
           "pid": 6958,
@@ -1644,7 +1813,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Bragi receiver; child routing is not enabled yet"
+          "notes": "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
         },
         {
           "pid": 7013,
@@ -1657,7 +1826,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Bragi receiver; child routing is not enabled yet"
+          "notes": "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
         },
         {
           "pid": 2639,
@@ -1683,20 +1852,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Bragi receiver; child routing is not enabled yet"
-        },
-        {
-          "pid": 6973,
-          "pidHex": "0x1B3D",
-          "vid": null,
-          "vidHex": null,
-          "name": "K55",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE zoned keyboard protocol; transport safety not enabled yet"
+          "notes": "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
         },
         {
           "pid": 7010,
@@ -1709,7 +1865,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Bragi receiver; child routing is not enabled yet"
+          "notes": "Bragi receiver; child routing primitives exist but Spec 53 section 4.20 leaves discovery replies, presence changes, and the logical child device unspecified, so no descriptor registers"
         },
         {
           "pid": 6919,
@@ -1722,33 +1878,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Legacy vendor-control hardware-mode lighting"
-        },
-        {
-          "pid": 6967,
-          "pidHex": "0x1B37",
-          "vid": null,
-          "vidHex": null,
-          "name": "K65 Lux RGB",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE full-range keyboard protocol"
-        },
-        {
-          "pid": 6935,
-          "pidHex": "0x1B17",
-          "vid": null,
-          "vidHex": null,
-          "name": "K65 RGB",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE 512-color packed keyboard protocol"
+          "notes": "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
         },
         {
           "pid": 6977,
@@ -1761,7 +1891,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "NXP/CUE protocol without backlight"
+          "notes": "NXP/CUE protocol without backlight; held because there is no lighting to drive"
         },
         {
           "pid": 6921,
@@ -1774,46 +1904,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Legacy vendor-control hardware-mode lighting"
-        },
-        {
-          "pid": 6963,
-          "pidHex": "0x1B33",
-          "vid": null,
-          "vidHex": null,
-          "name": "K70 Lux RGB",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE full-range keyboard protocol"
-        },
-        {
-          "pid": 6985,
-          "pidHex": "0x1B49",
-          "vid": null,
-          "vidHex": null,
-          "name": "K70 MK.2",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE full-range keyboard protocol"
-        },
-        {
-          "pid": 6931,
-          "pidHex": "0x1B13",
-          "vid": null,
-          "vidHex": null,
-          "name": "K70 RGB",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE 512-color packed keyboard protocol"
+          "notes": "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
         },
         {
           "pid": 6914,
@@ -1826,7 +1917,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Legacy vendor-control hardware-mode lighting"
+          "notes": "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
         },
         {
           "pid": 6920,
@@ -1839,46 +1930,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Legacy vendor-control hardware-mode lighting"
-        },
-        {
-          "pid": 6957,
-          "pidHex": "0x1B2D",
-          "vid": null,
-          "vidHex": null,
-          "name": "K95 Platinum",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE full-range keyboard protocol"
-        },
-        {
-          "pid": 6929,
-          "pidHex": "0x1B11",
-          "vid": null,
-          "vidHex": null,
-          "name": "K95 RGB",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE 512-color packed keyboard protocol"
-        },
-        {
-          "pid": 6930,
-          "pidHex": "0x1B12",
-          "vid": null,
-          "vidHex": null,
-          "name": "M65",
-          "type": "mouse",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE mouse-zone RGB protocol"
+          "notes": "Legacy vendor-control hardware-mode lighting; held because vendor control requests need the whole USB device node and no HID-class path carries them"
         },
         {
           "pid": 6918,
@@ -1891,7 +1943,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Legacy vendor-control backlight on/off"
+          "notes": "Legacy vendor-control backlight on/off; held because vendor control requests need the whole USB device node and no HID-class path carries them"
         },
         {
           "pid": 2628,
@@ -1905,58 +1957,6 @@
           "transport": null,
           "leds": null,
           "notes": "5-inch touchscreen, different from AIO LCDs"
-        },
-        {
-          "pid": 6971,
-          "pidHex": "0x1B3B",
-          "vid": null,
-          "vidHex": null,
-          "name": "Polaris",
-          "type": "mousepad",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE mousepad RGB protocol"
-        },
-        {
-          "pid": 6942,
-          "pidHex": "0x1B1E",
-          "vid": null,
-          "vidHex": null,
-          "name": "Scimitar",
-          "type": "mouse",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE mouse-zone RGB protocol"
-        },
-        {
-          "pid": 2612,
-          "pidHex": "0x0A34",
-          "vid": null,
-          "vidHex": null,
-          "name": "ST100",
-          "type": "other",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE mousepad-style RGB protocol"
-        },
-        {
-          "pid": 6944,
-          "pidHex": "0x1B20",
-          "vid": null,
-          "vidHex": null,
-          "name": "Strafe RGB",
-          "type": "keyboard",
-          "status": "researched",
-          "driver": null,
-          "transport": null,
-          "leds": null,
-          "notes": "NXP/CUE full-range keyboard protocol with sidelight quirk"
         },
         {
           "pid": 2641,
@@ -1999,10 +1999,10 @@
         }
       ],
       "counts": {
-        "supported": 49,
+        "supported": 62,
         "in_progress": 0,
         "planned": 0,
-        "researched": 34,
+        "researched": 21,
         "known": 0,
         "blocked": 0
       },

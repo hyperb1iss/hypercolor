@@ -170,9 +170,15 @@ pub enum BragiHandle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CorsairPeripheralTopology {
     None,
-    KeyboardMatrix { rows: u32, cols: u32 },
+    KeyboardMatrix {
+        rows: u32,
+        cols: u32,
+    },
     Strip,
     Point,
+    /// LEDs in hardware index order with no rectangular geometry; the
+    /// spatial layout places them.
+    Custom,
 }
 
 impl CorsairPeripheralTopology {
@@ -182,6 +188,7 @@ impl CorsairPeripheralTopology {
             Self::None | Self::Strip => DeviceTopologyHint::Strip,
             Self::KeyboardMatrix { rows, cols } => DeviceTopologyHint::Matrix { rows, cols },
             Self::Point => DeviceTopologyHint::Point,
+            Self::Custom => DeviceTopologyHint::Custom,
         }
     }
 }
