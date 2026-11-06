@@ -129,6 +129,20 @@ previously tracked device. The listen window is half the scan budget, 300 ms
 to 2 s. Registration with `register` true (push subscription to port 38900)
 is not used: control works without it.
 
+### 3.1 Bounds on discovery
+
+Registration replies are unauthenticated, so a scan bounds what they can
+make it do:
+
+| Bound | Value | Why |
+|-------|-------|-----|
+| Reply validity | `method` is `registration`, `success` is not false, `result.mac` is 12 hexadecimal digits | Junk and invented replies are dropped |
+| Admission | each MAC once and each source IP once, at most 512 per scan | Replies from many ports or with many MACs cannot multiply probes; 512 matches the LIFX driver and covers the largest WiZ homes, and further replies are dropped with a warning that names `device_ips` |
+| Probes in flight | 32 | Each probe is one socket and two short requests |
+| Probe phase | the host's scan budget (at least one round) | Unfinished probes are aborted with a warning |
+
+Configured and tracked addresses are probed regardless of the admission cap.
+
 ---
 
 ## 4. Configuration Queries
@@ -186,7 +200,8 @@ HMAC is implemented over the workspace `sha2` crate (RFC 2104) and checked
 against RFC 4231 vectors; no new dependency.
 
 The key lives in the driver config file as `signing_key`. It is validated on
-load, never written into a control surface, and redacted from debug output.
+load, never written into a control surface, and redacted from the debug
+output of both the key and the driver config.
 Moving it into the encrypted credential store is a follow-up (section 11).
 
 ---
@@ -239,6 +254,17 @@ the light wrong.
 `setPilot` with color or dimming turns a light on, but the driver adds
 `"state":true` to the first lit frame after connect or after an off frame, to
 be explicit. A frame that rounds to 0 % sends `{"state":false}`.
+
+**Hardware validation item.** An effect that alternates black and lit frames
+(a strobe, or a chase that leaves a single-zone light dark between hits)
+produces an off and on pair per cycle, up to 20 power transitions a second at
+the default rate. How WiZ firmware handles that is unmeasured: power changes
+may run the device's own fade (`fadeIn` and `fadeOut`, 450 to 500 ms in
+`getUserConfig`), lag behind color changes, or wear the relay or flash if a
+model persists power state. Before the driver leaves experimental, measure
+alternating black frames on real bulbs. If transitions prove costly, the
+cheap fix is to send the dimming floor instead of off for black frames that
+last less than a few hundred milliseconds.
 
 ---
 
@@ -356,6 +382,8 @@ Every test binds 127.0.0.1.
 6. **Discovery reply port**: pywizlight receives replies on the sending
    socket; one source claims port 38900. The driver listens on the sending
    socket only.
+7. **Power transitions** for alternating black frames are unmeasured
+   (section 7.3).
 
 ---
 
