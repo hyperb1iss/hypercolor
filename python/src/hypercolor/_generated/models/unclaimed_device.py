@@ -27,6 +27,8 @@ class UnclaimedDevice:
             vendor_id (int):
             bus_path (None | str | Unset): Host bus path (`<bus>-<port chain>`), when the platform reports one.
             claimable_by (None | str | Unset):
+            experimental (bool | Unset): Whether the descriptor `claimable_by` refers to is labeled
+                experimental: nobody has run it on real hardware yet (Spec 89).
             interface_classes (list[int] | Unset): USB interface class codes of the active configuration, sorted and
                 deduplicated; empty where the platform does not expose them.
             manufacturer (None | str | Unset): Who made the device: its manufacturer string when the host reports
@@ -41,6 +43,7 @@ class UnclaimedDevice:
     vendor_id: int
     bus_path: None | str | Unset = UNSET
     claimable_by: None | str | Unset = UNSET
+    experimental: bool | Unset = UNSET
     interface_classes: list[int] | Unset = UNSET
     manufacturer: None | str | Unset = UNSET
     product: None | str | Unset = UNSET
@@ -63,6 +66,8 @@ class UnclaimedDevice:
             claimable_by = UNSET
         else:
             claimable_by = self.claimable_by
+
+        experimental = self.experimental
 
         interface_classes: list[int] | Unset = UNSET
         if not isinstance(self.interface_classes, Unset):
@@ -98,6 +103,8 @@ class UnclaimedDevice:
             field_dict["bus_path"] = bus_path
         if claimable_by is not UNSET:
             field_dict["claimable_by"] = claimable_by
+        if experimental is not UNSET:
+            field_dict["experimental"] = experimental
         if interface_classes is not UNSET:
             field_dict["interface_classes"] = interface_classes
         if manufacturer is not UNSET:
@@ -134,6 +141,8 @@ class UnclaimedDevice:
 
         claimable_by = _parse_claimable_by(d.pop("claimable_by", UNSET))
 
+        experimental = d.pop("experimental", UNSET)
+
         interface_classes = cast(list[int], d.pop("interface_classes", UNSET))
 
         def _parse_manufacturer(data: object) -> None | str | Unset:
@@ -168,6 +177,7 @@ class UnclaimedDevice:
             vendor_id=vendor_id,
             bus_path=bus_path,
             claimable_by=claimable_by,
+            experimental=experimental,
             interface_classes=interface_classes,
             manufacturer=manufacturer,
             product=product,

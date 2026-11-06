@@ -317,6 +317,7 @@ from .driver_module_descriptor import DriverModuleDescriptor
 from .driver_module_kind import DriverModuleKind
 from .driver_presentation import DriverPresentation
 from .driver_protocol_descriptor import DriverProtocolDescriptor
+from .driver_stability import DriverStability
 from .driver_summary import DriverSummary
 from .driver_summary_list_response import DriverSummaryListResponse
 from .driver_transport_availability_type_0 import DriverTransportAvailabilityType0
@@ -934,6 +935,7 @@ __all__ = (
     "DriverModuleKind",
     "DriverPresentation",
     "DriverProtocolDescriptor",
+    "DriverStability",
     "DriverSummary",
     "DriverSummaryListResponse",
     "DriverTransportAvailabilityType0",

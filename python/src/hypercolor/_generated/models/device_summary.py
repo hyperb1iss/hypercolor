@@ -41,6 +41,9 @@ class DeviceSummary:
         bridge (BridgeDeviceSummary | None | Unset):
         connection (DeviceConnectionSummary | Unset): Transport details for one device.
         display_rotation (DisplayRotation | None | Unset):
+        experimental (bool | Unset): Whether the driver module or protocol driving this device is labeled
+            experimental: nobody has run it on real hardware yet (Spec 89).
+            Omitted when false.
         firmware_version (None | str | Unset):
         segments (list[SegmentSummary] | Unset):
     """
@@ -58,6 +61,7 @@ class DeviceSummary:
     bridge: BridgeDeviceSummary | None | Unset = UNSET
     connection: DeviceConnectionSummary | Unset = UNSET
     display_rotation: DisplayRotation | None | Unset = UNSET
+    experimental: bool | Unset = UNSET
     firmware_version: None | str | Unset = UNSET
     segments: list[SegmentSummary] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -121,6 +125,8 @@ class DeviceSummary:
         else:
             display_rotation = self.display_rotation
 
+        experimental = self.experimental
+
         firmware_version: None | str | Unset
         if isinstance(self.firmware_version, Unset):
             firmware_version = UNSET
@@ -158,6 +164,8 @@ class DeviceSummary:
             field_dict["connection"] = connection
         if display_rotation is not UNSET:
             field_dict["display_rotation"] = display_rotation
+        if experimental is not UNSET:
+            field_dict["experimental"] = experimental
         if firmware_version is not UNSET:
             field_dict["firmware_version"] = firmware_version
         if segments is not UNSET:
@@ -271,6 +279,8 @@ class DeviceSummary:
 
         display_rotation = _parse_display_rotation(d.pop("display_rotation", UNSET))
 
+        experimental = d.pop("experimental", UNSET)
+
         def _parse_firmware_version(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -303,6 +313,7 @@ class DeviceSummary:
             bridge=bridge,
             connection=connection,
             display_rotation=display_rotation,
+            experimental=experimental,
             firmware_version=firmware_version,
             segments=segments,
         )

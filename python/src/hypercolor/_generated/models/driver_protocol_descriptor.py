@@ -7,6 +7,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
+from ..models.driver_stability import DriverStability
 from ..models.driver_transport_kind_type_0 import DriverTransportKindType0
 from ..types import UNSET, Unset
 
@@ -33,6 +34,12 @@ class DriverProtocolDescriptor:
         model_id (None | str | Unset): Optional model identifier exposed by a driver-specific catalog.
         presentation (DriverPresentation | None | Unset):
         product_id (int | None | Unset): USB product ID when the protocol maps to a concrete USB device.
+        stability (DriverStability | Unset): Release label of a driver module or of one protocol it contributes.
+
+            A label, not a gate: experimental drivers are enabled and claim devices
+            exactly like stable ones. It records that nobody has run the code on
+            real hardware yet. A protocol with a known safety hazard is not
+            registered at all until it is safe. See Spec 89.
         vendor_id (int | None | Unset): USB vendor ID when the protocol maps to a concrete USB device.
     """
 
@@ -45,6 +52,7 @@ class DriverProtocolDescriptor:
     model_id: None | str | Unset = UNSET
     presentation: DriverPresentation | None | Unset = UNSET
     product_id: int | None | Unset = UNSET
+    stability: DriverStability | Unset = UNSET
     vendor_id: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -87,6 +95,10 @@ class DriverProtocolDescriptor:
         else:
             product_id = self.product_id
 
+        stability: str | Unset = UNSET
+        if not isinstance(self.stability, Unset):
+            stability = self.stability.value
+
         vendor_id: int | None | Unset
         if isinstance(self.vendor_id, Unset):
             vendor_id = UNSET
@@ -111,6 +123,8 @@ class DriverProtocolDescriptor:
             field_dict["presentation"] = presentation
         if product_id is not UNSET:
             field_dict["product_id"] = product_id
+        if stability is not UNSET:
+            field_dict["stability"] = stability
         if vendor_id is not UNSET:
             field_dict["vendor_id"] = vendor_id
 
@@ -192,6 +206,13 @@ class DriverProtocolDescriptor:
 
         product_id = _parse_product_id(d.pop("product_id", UNSET))
 
+        _stability = d.pop("stability", UNSET)
+        stability: DriverStability | Unset
+        if isinstance(_stability, Unset):
+            stability = UNSET
+        else:
+            stability = DriverStability(_stability)
+
         def _parse_vendor_id(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -211,6 +232,7 @@ class DriverProtocolDescriptor:
             model_id=model_id,
             presentation=presentation,
             product_id=product_id,
+            stability=stability,
             vendor_id=vendor_id,
         )
 
