@@ -209,22 +209,33 @@ fn validate_bundle_member(path: &str, member: &ValidatedMember) -> Result<(), Re
         || path
             .strip_prefix(MACOS_BUNDLE_ROOT)
             .is_some_and(|rest| rest.starts_with('/'));
-    let allowed = match member {
+    let (allowed, mode) = match member {
         ValidatedMember::Directory { source_mode } => {
             // The swap renames both bundle roots across directories and the
             // displaced one is removed later, so the owner needs full access
             // to every bundle directory.
-            (in_bundle && source_mode & 0o700 == 0o700)
-                || matches!(path, "share" | "share/hypercolor")
+            (
+                (in_bundle && source_mode & 0o700 == 0o700)
+                    || matches!(path, "share" | "share/hypercolor"),
+                *source_mode,
+            )
         }
-        ValidatedMember::File { .. } => {
-            (in_bundle && path != MACOS_BUNDLE_ROOT) || path == MACOS_BUNDLE_DURABLE_STORES
-        }
+        ValidatedMember::File { source_mode, .. } => (
+            (in_bundle && path != MACOS_BUNDLE_ROOT) || path == MACOS_BUNDLE_DURABLE_STORES,
+            *source_mode,
+        ),
     };
     if !allowed {
         return Err(ReleasePayloadError::InvalidManifest(format!(
             "macOS bundle unit member {path} is outside the bundle and its store inventory, or \
              a bundle directory denies its owner full access"
+        )));
+    }
+    // The bundle is materialized with these modes in a directory its admin
+    // group shares, so no member may be writable by anyone but its owner.
+    if in_bundle && mode & 0o022 != 0 {
+        return Err(ReleasePayloadError::InvalidManifest(format!(
+            "macOS bundle member {path} is writable by its group or by others"
         )));
     }
     Ok(())

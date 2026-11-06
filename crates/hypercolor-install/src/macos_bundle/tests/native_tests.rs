@@ -363,10 +363,9 @@ impl DiskHarness {
         for _ in 0..16 {
             if let Ok(result) = outcome {
                 let outcome = result.expect("transaction").expect("terminal");
-                let journal = self.fixture.journal().expect("journal");
-                if survive(|| self.platform().settle(&journal)).is_err() {
+                if survive(|| self.fixture.settle(self.platform())).is_err() {
                     lock(&self.boundaries).crash_at = None;
-                    self.platform().settle(&journal).expect("settle again");
+                    self.fixture.settle(self.platform()).expect("settle again");
                 }
                 return outcome;
             }
@@ -490,6 +489,10 @@ impl<T: MacosBundleExecutor> MacosBundleExecutor for Crashing<T> {
 
     fn withdraw_installed(&mut self, name: &str) -> Result<(), InstallPlatformError> {
         self.around("withdraw", |inner| inner.withdraw_installed(name))
+    }
+
+    fn retire_staged(&mut self, name: &str) -> Result<(), InstallPlatformError> {
+        self.around("retire", |inner| inner.retire_staged(name))
     }
 
     fn discard(&mut self, name: &str) -> Result<(), InstallPlatformError> {

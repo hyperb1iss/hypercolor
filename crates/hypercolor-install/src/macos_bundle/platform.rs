@@ -3,7 +3,7 @@ use std::path::{Component, Path};
 use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
 
 use super::super::{
-    InstallDisposition, InstallJournalV1, InstallPlatform, InstallPlatformError, InstallationState,
+    InstallDisposition, InstallLock, InstallPlatform, InstallPlatformError, InstallationState,
     PlatformCheckpoint, PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord,
     PlatformTransitionStates, PreparedPlatformTransaction, RestoredRelease, UnitId, UnitRecord,
 };
@@ -15,6 +15,7 @@ use super::model::{
 use super::record::{BundleBinding, BundleRecord, decode_receipt, encode_receipt};
 use super::service::MacosBundleService;
 use super::swap::{SWAP_OPERATION_COUNT, SwapPosition, SwapStep, is_leftover_of};
+use crate::InstallStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Inspection {
@@ -71,17 +72,30 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> MacosBundleInstallPlatform<E
         (self.executor, self.service)
     }
 
-    /// Remove what a terminal transaction left in the staging root: the
-    /// displaced prior after a commit, the staged candidate after a
-    /// rollback, and every interrupted leftover of either.
+    /// Remove what the store's terminal transaction left in the staging
+    /// root: the displaced prior after a commit, the retired candidate after
+    /// a rollback, and every interrupted leftover of either.
     ///
-    /// Returns whether anything was removed. Repeating it is harmless.
+    /// It runs under `lock`, the store's transaction lock, and reads the
+    /// journal itself. Returns whether anything was removed; with no journal
+    /// there is nothing to settle, and repeating it is harmless. A later
+    /// transaction cannot be prepared until this has run.
     ///
     /// # Errors
-    /// Returns an error for a nonterminal journal, a journal of another
-    /// platform, or bundles that differ from the transaction's outcome; in
-    /// the last case nothing is removed.
-    pub fn settle(&mut self, journal: &InstallJournalV1) -> Result<bool, InstallPlatformError> {
+    /// Returns an error for a foreign lock, a nonterminal journal, a journal
+    /// of another platform, or bundles that differ from the transaction's
+    /// outcome; in the last case nothing is removed.
+    pub fn settle(
+        &mut self,
+        store: &InstallStore,
+        lock: &InstallLock,
+    ) -> Result<bool, InstallPlatformError> {
+        let Some(journal) = store
+            .load_journal(lock)
+            .map_err(|source| error(source.to_string()))?
+        else {
+            return Ok(false);
+        };
         let committed = match journal.disposition {
             InstallDisposition::Committed => true,
             InstallDisposition::RolledBack => false,
@@ -372,6 +386,12 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
                 "the macOS staging root still holds an earlier transaction; settle it first",
             ));
         }
+        if inspection.service.registered && inspection.active.is_none() {
+            return Err(error(
+                "a daemon agent is registered but no unit is active; adopt the installation \
+                 before updating it",
+            ));
+        }
         if target.launcher_unit.is_some() != prior.platform.launcher_unit.is_some() {
             return Err(error(
                 "registering or removing the daemon agent belongs to the installer, not to an \
@@ -576,14 +596,16 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
         let name = record.staging_name.as_str();
         match step {
             SwapStep::Materialize => {
+                // The room was reserved before the prior stopped; reserving
+                // again here would count a crashed attempt's own leftovers,
+                // which materializing removes first.
                 let (source, bound) = self.unit(&record.candidate.unit)?.clone();
-                self.reserve(&bound)?;
                 self.executor.materialize(&source, &bound, name)?;
             }
             SwapStep::Exchange => self.executor.exchange(name)?,
             SwapStep::InstallStaged => self.executor.install_staged(name)?,
             SwapStep::WithdrawInstalled => self.executor.withdraw_installed(name)?,
-            SwapStep::Discard => self.executor.discard(name)?,
+            SwapStep::Retire => self.executor.retire_staged(name)?,
         }
         self.last = None;
         Ok(())

@@ -11,9 +11,12 @@
 //!
 //! Every position is matched against both bundles' cdhashes, so a step
 //! repeated after a crash is recognized as done rather than redone. A
-//! committed transaction then removes the displaced prior and a rolled-back
-//! one its staged candidate (`settle`). With no prior bundle installed, the
-//! prior side of each position is absent and the swap becomes a move.
+//! rollback swaps back and retires the candidate's copy to its discard
+//! name in one rename, so the prior restarts without waiting on a tree
+//! removal. Once the transaction is terminal, `settle` removes the
+//! displaced prior or the retired candidate. With no prior bundle
+//! installed, the prior side of each position is absent and the swap
+//! becomes a move.
 
 use super::model::{MacosBundleIdentity, MacosBundleObservation, error};
 use crate::{InstallPlatformError, PlatformCheckpoint};
@@ -75,8 +78,8 @@ pub(super) enum SwapStep {
     InstallStaged,
     /// Move the installed bundle back to the staging name.
     WithdrawInstalled,
-    /// Remove the staged copy.
-    Discard,
+    /// Move the staged copy to its discard name, for `settle` to remove.
+    Retire,
 }
 
 /// The two bundles of one transaction.
@@ -158,11 +161,7 @@ impl SwapPlan<'_> {
                     SwapStep::WithdrawInstalled
                 },
             )),
-            (false, 0) => Ok((
-                SwapPosition::Staged,
-                SwapPosition::Before,
-                SwapStep::Discard,
-            )),
+            (false, 0) => Ok((SwapPosition::Staged, SwapPosition::Before, SwapStep::Retire)),
             _ => Err(error(
                 "macOS bundle layout cursor exceeds its two operations",
             )),
@@ -173,7 +172,7 @@ impl SwapPlan<'_> {
     /// to remove, after proving the installed bundle is the outcome's.
     ///
     /// A committed transaction may only remove the displaced prior, and a
-    /// rolled-back one only its own staged candidate.
+    /// rolled-back one only its own candidate's copy.
     pub(super) fn settle(
         &self,
         committed: bool,
@@ -313,7 +312,7 @@ mod tests {
             plan.step(false, 1).expect("reverse").2,
             SwapStep::WithdrawInstalled
         );
-        assert_eq!(plan.step(false, 0).expect("reverse").2, SwapStep::Discard);
+        assert_eq!(plan.step(false, 0).expect("reverse").2, SwapStep::Retire);
         assert!(plan.step(true, 2).is_err());
     }
 

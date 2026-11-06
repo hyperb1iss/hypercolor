@@ -3,7 +3,8 @@
 //!
 //! Every path below the installed bundle's parent is reached one component
 //! at a time with `O_NOFOLLOW`, so a symlink planted anywhere in the
-//! staging root or a bundle is refused, never followed. The calls that are
+//! staging root or a bundle is refused, never followed. Files open with
+//! `O_NONBLOCK`, so a FIFO in their place is refused, never waited on. The calls that are
 //! macOS's own (the swapping rename, `clonefile`, `F_FULLFSYNC` and the
 //! volume query) are confined to [`sys`].
 
@@ -270,6 +271,17 @@ impl MacosBundleExecutor for MacosBundleNativeExecutor {
         self.sync_rename(&staged)
     }
 
+    fn retire_staged(&mut self, name: &str) -> Result<(), InstallPlatformError> {
+        require_digest(name)?;
+        let root = self.require_staging_root()?;
+        let discard = format!("{name}{MACOS_BUNDLE_DISCARD_SUFFIX}");
+        remove_entry(&root, &discard)?;
+        rfs::renameat_with(&root, name, &root, discard.as_str(), RenameFlags::NOREPLACE)
+            .map_err(io("retire the staged bundle copy"))?;
+        sync_directory(&root)?;
+        sys::full_sync(&root).map_err(io("flush the retired bundle copy"))
+    }
+
     fn discard(&mut self, name: &str) -> Result<(), InstallPlatformError> {
         require_digest(name)?;
         let Some(root) = self.staging_root(false)? else {
@@ -390,7 +402,7 @@ impl Copier<'_> {
                 let cloned = rfs::openat(
                     destination,
                     name,
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                     Mode::empty(),
                 )
                 .map_err(io("open a cloned bundle file"))?;
@@ -412,9 +424,9 @@ impl Copier<'_> {
         let mut output = File::from(created);
         std::io::copy(&mut &*source, &mut output).map_err(io_error("copy a bundle file"))?;
         set_mode(&output, mode)?;
-        output
-            .sync_all()
-            .map_err(io_error("sync a copied bundle file"))?;
+        // A plain fsync per file; the one full flush before the copy is
+        // published covers every file at once.
+        rfs::fsync(&output).map_err(io("sync a copied bundle file"))?;
         self.result.copied_files += 1;
         Ok(())
     }
@@ -480,7 +492,7 @@ fn verify_directory(
                 let opened = rfs::openat(
                     directory,
                     name.as_str(),
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                     Mode::empty(),
                 )
                 .map_err(io("open a bundle copy file"))?;
@@ -526,7 +538,7 @@ fn bundle_identity(
         let opened = rfs::openat(
             &executables,
             executable,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
         )
         .map_err(io("open a bundle executable"))?;
