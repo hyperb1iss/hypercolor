@@ -489,7 +489,7 @@ edit reaches the next connection without rebuilding the backend.
 ### 9.4 Backend
 
 - **Connect** opens the configured path at the configured baud, 8N1, no flow
-  control, on a blocking thread. Unix opens set `TIOCEXCL`, so a second host
+  control, on a blocking thread. Unix opens take `TIOCEXCL` and an exclusive `flock`, so a second host
   (Hyperion, Prismatik) holding the port makes the open fail instead of
   sharing it. A missing port is a retryable connection failure; a
   permission error is reported as such.

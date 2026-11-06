@@ -36,6 +36,10 @@ Transport types live in the `TransportType` enum in `hal/src/registry.rs` and ar
 
 Getting USB devices working on Linux requires udev rules. Getting SMBus/I2C devices working on Linux requires the `i2c-dev` kernel module and correct permissions on `/dev/i2c-*`. These are separate permission paths with separate failure modes. See [USB devices](@/hardware/usb-devices.md) and [SMBus/I2C](@/hardware/smbus-i2c.md) for each.
 
+### Serial LED controllers
+
+DIY strips behind an Arduino, ESP8266, ESP32, or RP2040 running Adalight or HyperSerial (AWA) firmware are driven by the `adalight` driver crate. These boards use generic USB-serial chips, so they are never detected by USB id: you list each board's port, baud rate, protocol, and LED count in the config, and Hypercolor opens only those ports. Output is paced to what the serial line can carry. See [Adalight serial controllers](@/hardware/adalight.md).
+
 ### Network devices
 
 Network drivers live in separate crates behind the `hypercolor-driver-api` trait boundary. The `hypercolor-network` crate provides only the registry and orchestration shell; protocol logic belongs to each driver crate. Current network backends:
@@ -77,6 +81,7 @@ graph TD
     S -->|per-zone colors| BM[BackendManager]
     BM --> HAL[hypercolor-hal]
     BM --> NET[Network drivers]
+    BM --> ADA[Adalight serial]
     HAL --> USB[USB transports]
     HAL --> SMB[SMBus transport]
     NET --> HUE[Hue DTLS :2100]
@@ -100,6 +105,7 @@ Device fingerprints are stable across reconnects: USB devices key on VID/PID plu
 Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`, Twinkly: `net:twinkly:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
 Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`, Twinkly: `net:twinkly:<mac>`, WiZ: `net:wiz:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
 Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`, Twinkly: `net:twinkly:<mac>`, WiZ: `net:wiz:<mac>`) or device id (Yeelight: `net:yeelight:<id>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
+Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing. Adalight serial boards key on the `id` from their config entry (`usb:adalight:<id>`), so moving a board to another port keeps its layout.
 
 ---
 
@@ -127,6 +133,7 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **Yeelight** | Network / TCP | Color and white bulbs, strips, and lamps, one color per light; music mode for real-time streaming | Experimental (unverified on hardware) |
 | **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
 | **[ROLI Blocks bridge](@/hardware/roli-blocks.md)** | Unix socket / blocksd | Lightpad grids and 24 LUMI key colors | Supported with matching blocksd capabilities (Unix only) |
+| **[Adalight serial](@/hardware/adalight.md)** | Serial port | Adalight sketches, WLED serial input, and HyperSerial (AWA) on Arduino, ESP8266, ESP32, RP2040; configured by hand | Supported (experimental) |
 | **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
 
 Neither bridge is counted among the 13 driver families with shipping device support. LIFX, the newest of the 13, ships enabled but is labeled experimental until someone verifies it on real lights. The OpenRGB bridge ships compiled in but its config entry is minted disabled; run `hypercolor devices coverage` first and enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md) only when a device reads `unclaimed` or `none`. The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the fourteenth family implemented in the tree; it is excluded from the thirteen because no Dygma device lights up yet.
@@ -151,6 +158,8 @@ Hypercolor discovers devices automatically at startup and whenever a rescan is t
 **Network:** runs mDNS browsing for each network driver's service type. Devices can also be added by IP address in the config; the key differs per driver (`known_ips` for WLED and Govee, `bridge_ips` for Hue, `device_ips` for Nanoleaf, Twinkly, and WiZ) for networks where mDNS is blocked across VLANs. See [network discovery troubleshooting](@/troubleshooting/network-discovery.md) for the exact snippets.
 **Network:** runs mDNS browsing for each network driver's service type. Devices can also be added by IP address in the config; the key differs per driver (`known_ips` for WLED and Govee, `bridge_ips` for Hue, `device_ips` for Nanoleaf, Twinkly, WiZ, and Yeelight) for networks where mDNS is blocked across VLANs. See [network discovery troubleshooting](@/troubleshooting/network-discovery.md) for the exact snippets.
 
+**Serial:** never scanned. Each discovery pass turns the `drivers.adalight.devices` entries into devices without opening a port; the port opens only when the device connects.
+
 Trigger a manual scan:
 
 ```bash
@@ -174,6 +183,7 @@ Each transport path has its own setup page because the failure modes are differe
 
 - [USB devices](@/hardware/usb-devices.md): udev rules, hidraw vs hidapi, replug, hotplug
 - [SMBus/I2C](@/hardware/smbus-i2c.md): ASUS Aura motherboard, GPU, DRAM lighting; `i2c-dev` module; `/dev/i2c-*` permissions
+- [Adalight serial controllers](@/hardware/adalight.md): port paths, baud rate and protocol, serial bandwidth limits, RGBW white handling
 - [Network devices](@/hardware/network-devices.md): mDNS discovery, known-IP config, pairing overview
 - [Philips Hue](@/hardware/hue.md): link-button pairing, DTLS streaming
 - [Nanoleaf](@/hardware/nanoleaf.md): power-button pairing, panel layout
