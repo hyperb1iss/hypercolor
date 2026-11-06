@@ -13,6 +13,17 @@ pub const BRAGI_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(50);
 pub const BRAGI_KEYBOARD_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 pub const BRAGI_POINTER_FRAME_INTERVAL: Duration = Duration::from_millis(22);
 pub const NXP_PACKET_SIZE: usize = 64;
+/// Payload bytes after the four-byte NXP command header.
+pub const NXP_PAYLOAD_LEN: usize = NXP_PACKET_SIZE - 4;
+/// Hardware LED index space shared by NXP per-key keyboards.
+///
+/// The packed 512-color frame carries 216 bytes (three planes of 72 bytes,
+/// two LEDs per byte), so every NXP keyboard addresses 144 LED slots.
+pub const NXP_KEYBOARD_LED_SLOTS: usize = 144;
+/// Software zone IDs the NXP mouse color packet can address (one-based).
+pub const NXP_MOUSE_ZONE_SLOTS: usize = 6;
+/// RGB slots in the NXP mousepad and headset-stand color packet.
+pub const NXP_MOUSEPAD_ZONE_SLOTS: usize = 15;
 pub const NXP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 pub const NXP_KEYBOARD_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 pub const NXP_POINTER_FRAME_INTERVAL: Duration = Duration::from_millis(22);
