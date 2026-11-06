@@ -19,6 +19,8 @@ use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 
+#[cfg(feature = "adalight")]
+use hypercolor_driver_adalight::AdalightDriverModule;
 #[cfg(feature = "govee")]
 use hypercolor_driver_govee::GoveeDriverModule;
 #[cfg(feature = "hue")]
@@ -31,14 +33,12 @@ use hypercolor_driver_nanoleaf::NanoleafDriverModule;
 use hypercolor_driver_openrgb::OpenRgbDriverModule;
 #[cfg(feature = "pixel")]
 use hypercolor_driver_pixel::PixelDriverModule;
-#[cfg(feature = "adalight")]
-use hypercolor_driver_adalight::AdalightDriverModule;
-#[cfg(feature = "yeelight")]
-use hypercolor_driver_yeelight::YeelightDriverModule;
-#[cfg(feature = "wiz")]
-use hypercolor_driver_wiz::WizDriverModule;
 #[cfg(feature = "twinkly")]
 use hypercolor_driver_twinkly::TwinklyDriverModule;
+#[cfg(feature = "wiz")]
+use hypercolor_driver_wiz::WizDriverModule;
+#[cfg(feature = "yeelight")]
+use hypercolor_driver_yeelight::YeelightDriverModule;
 
 /// One compiled-in standalone driver.
 struct BuiltinDriver {
