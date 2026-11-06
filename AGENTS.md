@@ -69,6 +69,7 @@ crates/
   hypercolor-windows-session/      # Windows session and power event monitors
   hypercolor-windows-telemetry/    # Windows WMI/PawnIO sensors and board identity (stubs elsewhere)
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
+  hypercolor-windows-launcher/     # Stable Windows launcher and update recovery bootstrap, the programs outside release units
   hypercolor-platform-fs/          # Audited platform filesystem operations
   hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd and macOS launchd platforms, payload validation
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
@@ -146,6 +147,7 @@ graph TD
     CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     PFS --> INST[hypercolor-install] --> CLI
+    PFS & INST --> WL[hypercolor-windows-launcher]
     MO -.->|macOS only| INST
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI

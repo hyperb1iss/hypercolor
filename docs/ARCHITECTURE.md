@@ -138,6 +138,7 @@ graph TD
         WSES[hypercolor-windows-session]
         WTEL[hypercolor-windows-telemetry]
         WHLP[hypercolor-windows-helper]
+        WLCH[hypercolor-windows-launcher]
     end
 
     subgraph Storage
@@ -343,6 +344,9 @@ are exactly sixteen opt-outs, all audited platform crates plus the app shell:
 - `hypercolor-windows-pawnio` for SMBus access through the PawnIO kernel
   driver.
 - `hypercolor-windows-helper` for the signed elevated helper binary.
+- `hypercolor-windows-launcher` for the stable launcher and the update
+  service's recovery bootstrap: job objects, the failure dialog and the
+  service dispatch entry point.
 - `hypercolor-platform-fs` for privileged filesystem operations (unsafe is
   still forbidden there off Windows).
 - `hypercolor-app` for the Win32 power-event message pump.
