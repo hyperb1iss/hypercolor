@@ -14,7 +14,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_pixel::{
     KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG, PixelBackend, PixelConfig, configured_devices,
-    derived_cid,
+    derived_cid, fallback_installation_id,
 };
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde_json::json;
@@ -109,7 +109,10 @@ async fn e131_frames_split_into_universes_with_per_universe_sequences() {
         for (index, packet) in packets.iter().enumerate() {
             let universe = 5 + u16::try_from(index).expect("fits");
             assert_eq!(&packet[4..16], b"ASC-E1.17\0\0\0");
-            assert_eq!(&packet[22..38], derived_cid(None, "falcon").as_bytes());
+            assert_eq!(
+                &packet[22..38],
+                derived_cid(fallback_installation_id(), "falcon").as_bytes()
+            );
             assert_eq!(&packet[44..54], b"Hypercolor");
             assert_eq!(packet[108], 100, "standard default priority");
             assert_eq!(u16_be(packet, 109), 0, "no sync address");

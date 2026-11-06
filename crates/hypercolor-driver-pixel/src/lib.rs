@@ -44,7 +44,10 @@ pub use config::{
     PixelConfig, PixelConfigError, PixelDeviceConfig, PixelProtocol, PixelSegmentConfig,
 };
 pub use controls::{pixel_device_control_surface, pixel_driver_control_surface};
-pub use plan::{PixelDevicePlan, derived_cid, resolve_config, resolve_config_for, resolve_device};
+pub use plan::{
+    PixelDevicePlan, derived_cid, fallback_installation_id, resolve_config, resolve_config_for,
+    resolve_device,
+};
 
 /// Static driver descriptor.
 pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
