@@ -23,18 +23,39 @@ pub const fn pixel_aligned_universe_channels(channels_per_pixel: usize) -> usize
 
 /// Number of universes a run of `channel_count` channels touches when it
 /// starts at zero-based `start_slot` of the first universe.
+///
+/// Returns 0 for an empty run, a zero stride, or a run whose end overflows.
 #[must_use]
 pub const fn universes_spanned(
     start_slot: usize,
     channel_count: usize,
     channels_per_universe: usize,
 ) -> usize {
-    if channel_count == 0 || channels_per_universe == 0 {
-        return 0;
+    match last_universe_offset(start_slot, channel_count, channels_per_universe) {
+        Some(last) => last - start_slot / channels_per_universe + 1,
+        None => 0,
     }
-    let first = start_slot / channels_per_universe;
-    let last = (start_slot + channel_count - 1) / channels_per_universe;
-    last - first + 1
+}
+
+/// Universe offset holding the last channel of a run, computed with checked
+/// arithmetic and no allocation.
+///
+/// Returns `None` for an empty run, a zero stride, or a run whose last slot
+/// does not fit in `usize`. Callers check this against their universe range
+/// before materializing any per-universe run.
+#[must_use]
+pub const fn last_universe_offset(
+    start_slot: usize,
+    channel_count: usize,
+    channels_per_universe: usize,
+) -> Option<usize> {
+    if channel_count == 0 || channels_per_universe == 0 {
+        return None;
+    }
+    match start_slot.checked_add(channel_count - 1) {
+        Some(last_slot) => Some(last_slot / channels_per_universe),
+        None => None,
+    }
 }
 
 /// One slice of a channel stream that lands inside a single universe.
@@ -48,31 +69,34 @@ pub struct UniverseRun {
     pub source: Range<usize>,
 }
 
-/// Split a channel stream into per-universe runs.
+/// Split a channel stream into per-universe runs, lazily.
 ///
 /// `start_slot` is the zero-based position of the stream's first channel,
 /// counted from slot 0 of the first universe; it may exceed one universe.
-/// `channels_per_universe` is clamped to 1-512.
-#[must_use]
+/// `channels_per_universe` is clamped to 1-512. Runs are produced on demand,
+/// so the split itself never allocates, whatever the stream length; a run
+/// whose absolute position would overflow `usize` ends the iteration.
 pub fn split_into_universes(
     start_slot: usize,
     channel_count: usize,
     channels_per_universe: usize,
-) -> Vec<UniverseRun> {
+) -> impl Iterator<Item = UniverseRun> {
     let per_universe = channels_per_universe.clamp(1, DMX_UNIVERSE_CHANNELS);
-    let mut runs = Vec::with_capacity(universes_spanned(start_slot, channel_count, per_universe));
-    let mut consumed = 0;
-    while consumed < channel_count {
-        let absolute = start_slot + consumed;
+    let mut consumed = 0_usize;
+    std::iter::from_fn(move || {
+        if consumed >= channel_count {
+            return None;
+        }
+        let absolute = start_slot.checked_add(consumed)?;
         let universe_offset = absolute / per_universe;
         let first_slot = absolute % per_universe;
         let take = (per_universe - first_slot).min(channel_count - consumed);
-        runs.push(UniverseRun {
+        let run = UniverseRun {
             universe_offset,
             first_slot,
             source: consumed..consumed + take,
-        });
+        };
         consumed += take;
-    }
-    runs
+        Some(run)
+    })
 }

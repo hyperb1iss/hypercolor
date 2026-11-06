@@ -16,7 +16,8 @@ use hypercolor_pixel_protocols::ddp::{
     DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DDP_DTYPE_UNDEFINED, pixel_aligned_chunk_len,
 };
 use hypercolor_pixel_protocols::dmx::{
-    DMX_UNIVERSE_CHANNELS, pixel_aligned_universe_channels, split_into_universes,
+    DMX_UNIVERSE_CHANNELS, last_universe_offset, pixel_aligned_universe_channels,
+    split_into_universes,
 };
 use hypercolor_pixel_protocols::e131::{
     E131_DEFAULT_PRIORITY, E131_MAX_PRIORITY, E131_MAX_UNIVERSE, E131_MIN_UNIVERSE,
@@ -561,9 +562,7 @@ fn resolve_dmx(
         }
         let length = segment.pixel_count as usize * channels_per_pixel;
         // Reject before building runs: the last addressed universe decides.
-        let last_universe = cursor
-            .checked_add(length - 1)
-            .map(|last_slot| last_slot / per_universe);
+        let last_universe = last_universe_offset(cursor, length, per_universe);
         if last_universe.is_none_or(|universe| universe > usize::from(max_universe)) {
             return Err(format!(
                 "{label} runs past {} universe {max_universe}",
