@@ -547,6 +547,15 @@ async fn run_response_command(
 
     match protocol.parse_response(&response) {
         Ok(parsed) => {
+            // SMBus reads only ever answer the transaction that asked, so
+            // a protocol calling one unsolicited is wrong, not waiting.
+            if parsed.status == ResponseStatus::Unsolicited {
+                return Err(anyhow!(
+                    "{} marked an SMBus reply unsolicited; SMBus has no unprompted reports",
+                    protocol.name()
+                ));
+            }
+
             if matches!(
                 parsed.status,
                 ResponseStatus::Busy | ResponseStatus::Timeout

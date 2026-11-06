@@ -443,6 +443,18 @@ pub enum ResponseStatus {
 
     /// Device does not support this command.
     Unsupported,
+
+    /// The report is not a reply to the command in flight: an asynchronous
+    /// status packet the device sends on its own schedule, say.
+    ///
+    /// The USB backend reads the next report in its place without resending
+    /// the command and without counting it toward the command's
+    /// [`ResponsePlan::count`]. A bounded number of unsolicited reports is
+    /// tolerated per command; past that the command fails, so a reply that
+    /// never arrives is an error rather than a silent success. Unlike
+    /// [`Self::Busy`], nothing is resent, so the reply already queued behind
+    /// the unsolicited reports is the one that gets read.
+    Unsolicited,
 }
 
 /// Protocol-level parse/encode errors.

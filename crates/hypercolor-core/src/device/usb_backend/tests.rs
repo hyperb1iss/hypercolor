@@ -4298,3 +4298,59 @@ async fn disconnect_retires_the_input_lease_before_shutting_down() {
     TransportInputSink::interrupted(input.as_ref());
     assert!(host.registry().snapshot().child(device_id).is_none());
 }
+
+/// Asynchronous status reports queued ahead of a reply are read past, never
+/// answered with a resend, so the reply behind them is the one parsed.
+#[tokio::test]
+async fn unsolicited_reports_are_read_past_without_resending() {
+    let protocol = ReportRecordingProtocol::with_statuses(vec![
+        ResponseStatus::Unsolicited,
+        ResponseStatus::Unsolicited,
+    ]);
+    let transport = ResponsePlanTransport::new(vec![
+        b"status-1".to_vec(),
+        b"status-2".to_vec(),
+        b"reply".to_vec(),
+        b"next-command-reply".to_vec(),
+    ]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[responding_command(0xA6), responding_command(0xAA)],
+    )
+    .await
+    .expect("both commands should run");
+
+    assert_eq!(
+        protocol.seen(),
+        vec![
+            b"status-1".to_vec(),
+            b"status-2".to_vec(),
+            b"reply".to_vec(),
+            b"next-command-reply".to_vec(),
+        ]
+    );
+    assert_eq!(
+        transport.sends(),
+        vec![vec![0xA6], vec![0xAA]],
+        "unsolicited reports are reads, not resends"
+    );
+}
+
+#[tokio::test]
+async fn a_command_fails_once_unsolicited_reports_exceed_the_budget() {
+    let protocol = ReportRecordingProtocol::with_statuses(vec![ResponseStatus::Unsolicited; 17]);
+    let transport = ResponsePlanTransport::new(vec![b"status".to_vec(); 17]);
+
+    let error = UsbBackend::run_commands(&protocol, &transport, &[responding_command(0xA6)])
+        .await
+        .expect_err("a reply that never comes must fail the command");
+
+    assert!(
+        error.to_string().contains("unsolicited"),
+        "error should name the cause: {error}"
+    );
+    assert_eq!(transport.sends(), vec![vec![0xA6]]);
+    assert_eq!(protocol.seen().len(), 17);
+}

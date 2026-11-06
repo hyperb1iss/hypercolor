@@ -20,6 +20,24 @@ use super::{
     record_usb_display_lane,
 };
 
+/// Unsolicited reports one responding command reads past before it fails.
+///
+/// Devices that push status packets on their own schedule (fan and pump
+/// telemetry) can queue a few ahead of a reply; a device that only ever
+/// streams status and never answers must still end the command.
+const MAX_UNSOLICITED_REPORTS: u8 = 16;
+
+/// What one parsed response report means for the command awaiting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportOutcome {
+    /// The report is (part of) the reply.
+    Accepted,
+    /// Resend the command from the top.
+    Retry,
+    /// Not a reply; read the next report without resending.
+    Unsolicited,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameWriteDisposition {
     Transient,
@@ -1157,9 +1175,13 @@ impl UsbBackend {
         // A responding command always reads at least once, so a protocol that
         // leaves the count at zero still gets its reply.
         let report_count = u16::from(plan.count.max(1));
+        let mut report_index = 0_u16;
+        let mut unsolicited = 0_u8;
 
-        for report_index in 0..report_count {
-            let read = if report_index > 0 {
+        while report_index < report_count {
+            // Only the very first read sends the command; a report read in
+            // place of an unsolicited one is a plain receive.
+            let read = if report_index > 0 || unsolicited > 0 {
                 trace!(
                     protocol = protocol.name(),
                     transport = transport.name(),
@@ -1167,6 +1189,7 @@ impl UsbBackend {
                     total_commands,
                     report_index,
                     report_count,
+                    unsolicited,
                     "usb reading additional response report"
                 );
                 transport
@@ -1257,7 +1280,7 @@ impl UsbBackend {
             };
 
             let remaining_reports = report_count.saturating_sub(report_index).saturating_sub(1);
-            let retry = match Self::parse_response_report(
+            let outcome = match Self::parse_response_report(
                 protocol,
                 transport,
                 command,
@@ -1268,7 +1291,7 @@ impl UsbBackend {
             )
             .await
             {
-                Ok(retry) => retry,
+                Ok(outcome) => outcome,
                 // A parse failure aborts the batch, but the reports still
                 // queued for this command would otherwise answer whatever the
                 // next session asks first.
@@ -1278,12 +1301,34 @@ impl UsbBackend {
                 }
             };
 
-            if retry {
-                // The retry resends the whole command, so any report this
-                // attempt left queued would be read as a reply to the
-                // resend and desync every read after it.
-                Self::discard_queued_reports(transport, command, remaining_reports).await;
-                return Ok(true);
+            match outcome {
+                ReportOutcome::Accepted => report_index += 1,
+                ReportOutcome::Retry => {
+                    // The retry resends the whole command, so any report this
+                    // attempt left queued would be read as a reply to the
+                    // resend and desync every read after it.
+                    Self::discard_queued_reports(transport, command, remaining_reports).await;
+                    return Ok(true);
+                }
+                ReportOutcome::Unsolicited => {
+                    unsolicited = unsolicited.saturating_add(1);
+                    if unsolicited > MAX_UNSOLICITED_REPORTS {
+                        return Err(anyhow!(
+                            "{} sent {unsolicited} unsolicited reports and no reply to {}",
+                            protocol.name(),
+                            describe_packet(&command.data)
+                        ));
+                    }
+                    debug!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        unsolicited,
+                        report = %describe_packet(&response),
+                        "unsolicited report; reading the next one without resending"
+                    );
+                }
             }
         }
 
@@ -1332,8 +1377,9 @@ impl UsbBackend {
         }
     }
 
-    /// Parse one response report, answering whether the command should be
-    /// retried from the top.
+    /// Parse one response report, answering whether it was the reply, a
+    /// reason to retry the command from the top, or a report that answers
+    /// nothing and is read past.
     async fn parse_response_report(
         protocol: &dyn Protocol,
         transport: &dyn Transport,
@@ -1342,7 +1388,7 @@ impl UsbBackend {
         total_commands: usize,
         attempt: &mut u8,
         response: &[u8],
-    ) -> Result<bool> {
+    ) -> Result<ReportOutcome> {
         trace!(
             protocol = protocol.name(),
             transport = transport.name(),
@@ -1372,6 +1418,10 @@ impl UsbBackend {
                     parsed_data = %format_hex_preview(&parsed.data, 24),
                     "usb response parsed"
                 );
+                if parsed.status == ResponseStatus::Unsolicited {
+                    return Ok(ReportOutcome::Unsolicited);
+                }
+
                 if matches!(
                     parsed.status,
                     ResponseStatus::Busy | ResponseStatus::Timeout
@@ -1379,7 +1429,7 @@ impl UsbBackend {
                 {
                     *attempt = attempt.saturating_add(1);
                     tokio::time::sleep(RETRY_BACKOFF).await;
-                    return Ok(true);
+                    return Ok(ReportOutcome::Retry);
                 }
 
                 if parsed.status == ResponseStatus::Unsupported {
@@ -1389,14 +1439,14 @@ impl UsbBackend {
                     );
                 }
 
-                Ok(false)
+                Ok(ReportOutcome::Accepted)
             }
             Err(ProtocolError::DeviceError {
                 status: ResponseStatus::Busy | ResponseStatus::Timeout,
             }) if *attempt < MAX_RETRIES => {
                 *attempt = attempt.saturating_add(1);
                 tokio::time::sleep(RETRY_BACKOFF).await;
-                Ok(true)
+                Ok(ReportOutcome::Retry)
             }
             Err(error) => {
                 warn!(
