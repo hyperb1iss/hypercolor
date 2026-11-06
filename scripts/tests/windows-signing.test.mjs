@@ -83,7 +83,7 @@ test('exactly one job uploads the Windows release installer', () => {
   const build = job('build-native-app');
   const sign = job('sign-windows');
   const installerUploads = (body) => steps(body)
-    .filter((candidate) => candidate.uses === 'actions/upload-artifact@v7' && /name: hypercolor-app-/.test(candidate.text));
+    .filter((candidate) => candidate.uses?.startsWith('actions/upload-artifact@') && /name: hypercolor-app-/.test(candidate.text));
   for (const signing of ['true', 'false']) {
     const fromBuild = installerUploads(build)
       .filter((candidate) => candidate.text.includes('windows') || candidate.condition?.includes("'Windows'"))
@@ -133,9 +133,14 @@ test('every signing step waits for the decision, and setup follows the login', (
   assert.equal(order[login + 2], 'Bundle and sign Windows installer');
   assert.equal(order[login + 3], 'Verify Windows signatures');
   assert.equal(order.at(-1), 'Upload native release bundle');
-  // The signing job installs prebuilt tools and compiles nothing.
-  assert.match(step(job('sign-windows'), 'Install Tauri CLI').text, /--strategies crate-meta-data/);
-  assert.doesNotMatch(job('sign-windows'), /cargo (build|install)|cargo-cache-build/);
+  // The signing job installs Tauri's own pinned release binary, the same
+  // version build-native-app pins, and compiles nothing.
+  const install = step(job('sign-windows'), 'Install Tauri CLI').text;
+  const pinned = job('build-native-app').match(/"tauri-cli@=([\d.]+)"/)[1];
+  assert.match(install, new RegExp(`TAURI_CLI_VERSION: "${pinned.replaceAll('.', '\\.')}"`));
+  assert.match(install, /TAURI_CLI_SHA256: [0-9a-f]{64}$/m);
+  assert.match(install, /Get-FileHash -Algorithm SHA256/);
+  assert.doesNotMatch(job('sign-windows'), /cargo (build|install|binstall)|cargo-cache-build|install-action/);
   const bundle = step(job('sign-windows'), 'Bundle and sign Windows installer').text;
   assert.match(bundle, /cargo tauri bundle --ci --bundles nsis --no-binary-patching/);
   assert.match(bundle, /--config \$env:HYPERCOLOR_TAURI_SIGN_CONFIG/);
@@ -145,12 +150,15 @@ test('every signing step waits for the decision, and setup follows the login', (
   assert.match(verify, /check-windows-dll-closure\.ps1 -Installer/);
 });
 
-test('third-party actions in the signing path are pinned to commits', () => {
-  for (const source of [job('sign-windows'), selftest]) {
-    for (const [, ref] of source.matchAll(/uses: azure\/login@(\S+)/g)) {
-      assert.match(ref, /^[0-9a-f]{40}$/);
+test('every action in the jobs that sign is pinned to a commit', () => {
+  const signers = [['sign-windows', job('sign-windows')], ['selftest', jobsOf(selftest).get('selftest')]];
+  for (const [name, body] of signers) {
+    assert.match(body, /^ {6}id-token: write$/m, `${name} is a signing job`);
+    const actions = [...body.matchAll(/uses: (\S+)/g)].map((match) => match[1]);
+    assert.ok(actions.includes('azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906'), name);
+    for (const action of actions) {
+      assert.match(action, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/, `${name} uses ${action}`);
     }
-    assert.match(source, /uses: azure\/login@/);
   }
 });
 

@@ -2414,7 +2414,7 @@ jobs:
         if: needs.release-credentials.outputs.windows_signing != 'true'
         run: echo "Windows signing is off for this run (release-credentials says why); build-native-app uploaded the unsigned installer."
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.release-credentials.outputs.windows_signing == 'true'
         with:
           persist-credentials: false
@@ -2426,22 +2426,33 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
 
-      - uses: taiki-e/install-action@v2
-        if: needs.release-credentials.outputs.windows_signing == 'true'
-        with:
-          tool: cargo-binstall
-
       - name: Install Tauri CLI
         if: needs.release-credentials.outputs.windows_signing == 'true'
-        # Tauri's prebuilt release binary only: this job compiles nothing
-        # while it can mint an OIDC token. The version matches build-native-app.
+        # Tauri's own release binary, pinned by version and SHA-256 (the
+        # digest GitHub records for the asset), with no installer action:
+        # this job compiles nothing and runs no unpinned code while it can
+        # mint an OIDC token. The version matches build-native-app's pin.
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: cargo binstall -y --strategies crate-meta-data --targets x86_64-pc-windows-msvc "tauri-cli@=2.12.1"
+          TAURI_CLI_VERSION: "2.12.1"
+          TAURI_CLI_SHA256: d3919ebe0bf7013dd98293862784dd37b8f76db2d650e13a3ec11c5dd799c519
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          $dir = Join-Path $env:RUNNER_TEMP "tauri-cli"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir "cargo-tauri.zip"
+          $url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v$env:TAURI_CLI_VERSION/cargo-tauri-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash
+          if ($actual -ne $env:TAURI_CLI_SHA256) { throw "SHA256 mismatch for ${url}: expected $env:TAURI_CLI_SHA256, got $actual" }
+          Expand-Archive -LiteralPath $zip -DestinationPath $dir -Force
+          $dir >> $env:GITHUB_PATH
+          & (Join-Path $dir "cargo-tauri.exe") --version
 
       - name: Download unsigned Windows payload
         if: needs.release-credentials.outputs.windows_signing == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-windows-x64
           path: ${{ runner.temp }}/unsigned-windows
@@ -2524,7 +2535,7 @@ jobs:
 
       - name: Upload native release bundle
         if: needs.release-credentials.outputs.windows_signing == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hypercolor-app-${{ steps.payload.outputs.version }}-windows-x64-nsis
           path: target/release/bundle/nsis/*_x64-setup.exe
