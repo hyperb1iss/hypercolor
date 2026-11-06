@@ -165,6 +165,26 @@ print(f"flipped byte {offset} of {len(data)}")
 PY
 }
 
+# Lists ticket offsets. "signed" is the header, every 8th byte of the
+# certificate chain, and every byte of the signed payload and its signature.
+# "padding" is whatever follows the signature, which nothing signs.
+ticket_offsets() {
+  python3 - "$1" "$2" <<'PY'
+import struct
+import sys
+
+data = open(sys.argv[1], "rb").read()
+chain, payload = struct.unpack("<II", data[8:16])
+signed_start = 16 + chain
+signature = signed_start + payload
+end = signature + 2 + data[signature + 1]
+if sys.argv[2] == "padding":
+    print(*range(end, len(data)))
+else:
+    print(*range(16), *range(16, signed_start, 8), *range(signed_start, end))
+PY
+}
+
 row_1() {
   local unstapled
   unstapled="$(unpack A-unstapled a)"
@@ -231,7 +251,7 @@ row_6() {
 }
 
 row_7() {
-  local stapled damaged unstapled ticket pristine size index offset status
+  local stapled damaged unstapled ticket pristine size offsets total rejected offset status
   stapled="$(unpack A-stapled stapled)"
   damaged="$(unpack A-stapled damaged)"
   unstapled="$(unpack A-unstapled unstapled)"
@@ -248,9 +268,11 @@ row_7() {
   check "row 7: unstapled, afterwards" spec fail "${unstapled}"
   store_state "after row 7"
 
-  note "row 7 sweep: 64 offsets across ${size} bytes"
-  for ((index = 0; index < 64; index++)); do
-    offset=$((index * (size - 1) / 63))
+  offsets="$(ticket_offsets "${pristine}" signed)"
+  total="$(wc -w <<< "${offsets}" | tr -d ' ')"
+  rejected=0
+  note "row 7 sweep: ${total} offsets across ${size} bytes"
+  for offset in ${offsets}; do
     cp "${pristine}" "${ticket}"
     flip_byte "${ticket}" "${offset}" >/dev/null
     status=0
@@ -260,10 +282,18 @@ row_7() {
       mismatches=$((mismatches + 1))
       break
     fi
+    rejected=$((rejected + 1))
   done
-  printf 'sweep rejected %s of 64 offsets\n' "${index}"
-  printf '| row 7 sweep: rejected offsets | spec | %s of 64 | 64 of 64 |\n' \
-    "${index}" >> "${summary}"
+  printf 'sweep rejected %s of %s offsets\n' "${rejected}" "${total}"
+  printf '| row 7 sweep: rejected offsets | spec | %s of %s | %s of %s |\n' \
+    "${rejected}" "${total}" "${total}" "${total}" >> "${summary}"
+  store_state "after the sweep"
+
+  for offset in $(ticket_offsets "${pristine}" padding); do
+    cp "${pristine}" "${ticket}"
+    flip_byte "${ticket}" "${offset}"
+    check "row 7: padding byte ${offset}, outside the signature" spec record "${damaged}" bundle
+  done
 
   check "row 7 control: the intact staple" spec record "${stapled}"
   store_state "after the control"
