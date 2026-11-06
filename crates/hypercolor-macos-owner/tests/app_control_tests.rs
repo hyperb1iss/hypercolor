@@ -70,7 +70,7 @@ fn serve(root: &Path, app: MacosRunningApp) -> thread::JoinHandle<std::io::Resul
 #[test]
 fn the_update_state_root_lives_in_the_accounts_application_support() {
     assert_eq!(
-        macos_update_state_root(Path::new("/Users/player")),
+        macos_update_state_root(Path::new("/Users/player/Library/Application Support")),
         Path::new("/Users/player/Library/Application Support/Hypercolor/update")
     );
 }
@@ -97,18 +97,24 @@ fn startup_holds_for_a_translocated_app_and_an_open_update() {
     let root = tempfile::tempdir().expect("root");
     let installed = Path::new("/Applications/Hypercolor.app/Contents/MacOS/hypercolor-app");
     let translocated = PathBuf::from(TRANSLOCATED).join("Contents/MacOS/hypercolor-app");
-    assert_eq!(macos_app_startup_hold(installed, root.path()), None);
+    assert_eq!(macos_app_startup_hold(installed, Some(root.path())), None);
+    assert_eq!(macos_app_startup_hold(installed, None), None);
     assert_eq!(
-        macos_app_startup_hold(&translocated, root.path()),
+        macos_app_startup_hold(&translocated, Some(root.path())),
         Some(MacosAppStartupHold::MoveToApplications)
+    );
+    assert_eq!(
+        macos_app_startup_hold(&translocated, None),
+        Some(MacosAppStartupHold::MoveToApplications),
+        "an unresolved account changes nothing about a translocated copy"
     );
     std::fs::write(root.path().join(MACOS_UPDATE_PENDING_FILE_NAME), b"").expect("pending");
     assert_eq!(
-        macos_app_startup_hold(installed, root.path()),
+        macos_app_startup_hold(installed, Some(root.path())),
         Some(MacosAppStartupHold::UpdateInProgress)
     );
     assert_eq!(
-        macos_app_startup_hold(&translocated, root.path()),
+        macos_app_startup_hold(&translocated, Some(root.path())),
         Some(MacosAppStartupHold::MoveToApplications),
         "a copy that can never proceed does not wait for the update"
     );

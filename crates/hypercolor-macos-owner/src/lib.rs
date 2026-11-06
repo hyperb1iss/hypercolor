@@ -32,7 +32,8 @@ pub use app_control::NativeMacosAppHost;
 pub use app_control::{
     MACOS_APP_CONTROL_SOCKET_NAME, MACOS_APP_RELAUNCH_FILE_NAME, MACOS_UPDATE_PENDING_FILE_NAME,
     MacosAppControl, MacosAppControlServer, MacosAppHost, MacosRunningApp, macos_app_bundle_of,
-    macos_app_startup_hold, macos_update_state_root, wait_for_macos_update_end,
+    macos_app_startup_hold, macos_update_state_root, macos_user_update_state_root,
+    wait_for_macos_update_end,
 };
 pub use coordinator::{
     MacosOwnerCoordinatorOutcome, MacosOwnerRemedy, choose_daemon_owner, recover_daemon_owner,
