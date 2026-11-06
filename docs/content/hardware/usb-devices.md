@@ -76,7 +76,7 @@ The file uses vendor-wide rules for brands where new product IDs should work wit
 | PrismRGB | `16d0` | Vendor-wide |
 | PrismRGB / Nollie / GCS | `16d1`, `16d2`, `16d3`, `16d5` | PID-scoped |
 | Nollie Gen 2 | `3061` | Vendor-wide |
-| Wooting | `31e3` | Configuration interface only, ARM boards (see below) |
+| Wooting | `31e3` | Configuration interface of two PIDs only (see below) |
 
 Corsair is scoped because its keyboards and mice expose their keystroke and
 pointer collections as hidraw nodes too. Each Corsair peripheral is tagged by
@@ -91,14 +91,14 @@ vendor IDs are granted vendor-wide in the udev rules.
 
 Wooting keyboards get the narrowest rules in the file. A vendor-wide or even a
 product-wide `hidraw` rule would also open the keyboard and analog report nodes
-to the fallback group, which is a keystroke feed, so each rule matches one
-product's configuration interface (interface 2, non-boot HID) through its
-`modalias`, and no Wooting `usb` rule exists at all. That covers the ARM boards
-(Two HE ARM, 60HE ARM, 60HE+, 60HE v2, 80HE, UwU RGB) with Xbox or no gamepad
-emulation. The AVR boards, v1 firmware, and DirectInput gamepad mode have no
-verified interface layout yet, so they get no Hypercolor rule; Wooting's own
-[udev rules for Wootility](https://help.wooting.io/article/147-configuring-device-access-for-wootility-under-linux-udev-rules)
-cover them.
+to the fallback group, which is a keystroke feed, so no Wooting `usb` rule
+exists at all and each `hidraw` rule matches one product's configuration
+interface through its `modalias`. A rule exists only where a published
+descriptor dump confirms that interface, which today means two boards with
+gamepad emulation disabled: the Two HE (ARM) at `31e3:1232` and the 60HE (ARM)
+at `31e3:1312`. Every other Wooting board and gamepad mode needs Wooting's own
+[udev rules for Wootility](https://help.wooting.io/article/147-configuring-device-access-for-wootility-under-linux-udev-rules),
+which Wootility on Linux asks for anyway.
 
 ## Transport types
 

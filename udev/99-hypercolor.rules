@@ -319,24 +319,13 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="320f", MODE="0660
 # also open the keyboard, analog, and mouse report nodes to the fallback
 # group, which exposes keystrokes, and a usb_device rule would let a group
 # member detach the keyboard's input driver, so neither exists here
-# (Spec 90 section 8.3). The ARM boards carry the configuration collection
-# alone on interface 2. The modalias match also demands a non-boot HID
-# interface, so a shifted interface number never lands on the boot keyboard
-# or the vendor-class Xbox gamepad function. DirectInput gamepad PIDs (low
-# nibble 1), the AVR boards, and v1 firmware have no verified interface
-# layout and get no rule here; Wooting's own udev rules cover them.
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1230d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+# (Spec 90 section 8.3). A rule exists only where a published descriptor
+# dump places the configuration collection on interface 2: the Two HE (ARM)
+# and the 60HE (ARM), both with gamepad emulation disabled. The modalias
+# match also demands a non-boot HID interface. Every other Wooting board
+# and mode gets no rule here; Wooting's own udev rules cover them.
 SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1232d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1310d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1312d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1320d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1322d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1340d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1342d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1400d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1402d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1510d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1512d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Input event nodes ────────────────────────────────────────────────────────
 # Host keyboard/mouse capture lives in 70-hypercolor-input.rules, which MUST

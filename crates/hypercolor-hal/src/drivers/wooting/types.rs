@@ -229,25 +229,6 @@ impl WootingModel {
         }
     }
 
-    /// USB interface number of the configuration collection, where a
-    /// published descriptor dump confirms it.
-    ///
-    /// Only the udev rules use this, to scope device-node access to the
-    /// lighting interface. The transport selects the collection by usage
-    /// page and never by interface number.
-    #[must_use]
-    pub const fn config_interface(self) -> Option<u8> {
-        match self {
-            Self::TwoHeArm
-            | Self::SixtyHeArm
-            | Self::SixtyHePlus
-            | Self::SixtyHeV2
-            | Self::EightyHe
-            | Self::UwuRgb => Some(2),
-            _ => None,
-        }
-    }
-
     /// Zone name for the model's lighting.
     #[must_use]
     pub const fn zone_name(self) -> &'static str {

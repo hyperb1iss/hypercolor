@@ -362,21 +362,22 @@ hidapi on Linux is the hidraw backend, on macOS opens devices in shared mode, an
 
 A product-wide hidraw rule would hand the fallback group every hidraw node of the keyboard, including the boot keyboard and analog interfaces, which is a keystroke feed. A `usb_device` rule would let a group member detach the keyboard's input driver through usbfs. Hypercolor ships neither for Wooting.
 
-The ARM boards carry the configuration collection alone on interface 2 (a Windows descriptor dump of the Two HE ARM, and an lsusb dump of the 60HE ARM in which interface 2 is the only one with both IN and OUT endpoints). The rules match the interface's `modalias`, which pins VID, PID, interface class, and interface number on one sysfs device:
+A rule exists only where a published descriptor dump pins the configuration collection to an interface, and both such dumps come from boards with gamepad emulation disabled:
+
+| PID | Board and mode | Evidence |
+|---|---|---|
+| `0x1232` | Two HE (ARM), no gamepad, firmware 2.12+ | Windows HID dump: usage page `0xFF55` is the only collection on `mi_02` (deskhop issue 335) |
+| `0x1312` | 60HE (ARM), no gamepad | USB descriptor listing from September 2024: interface 2 (class 3/0/0) is the only interface with an OUT endpoint, so the only one that can take output reports. The listing predates firmware 2.12 and shows no usage pages |
+
+The rules match the interface's `modalias`, which pins VID, PID, interface class, and interface number on one sysfs device:
 
 ```
-SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1230d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1232d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
 ```
 
-`ic03isc00ip00` demands a non-boot HID interface, so the rule can never match the boot keyboard (`ic03isc01ip01`) or the vendor-class Xbox gamepad function. If Xbox emulation inserted its interface ahead of the configuration collection, interface 2 would become the keyboard or the gamepad and the rule would match nothing.
+`ic03isc00ip00` demands a non-boot HID interface, which keeps the boot keyboard (`ic03isc01ip01`) out but not a non-boot keyboard, consumer, or analog collection. The class guard is therefore no substitute for evidence: a rule on an unconfirmed layout could still expose an input node. Every other Wooting product and gamepad mode (the other ARM PIDs, every DirectInput and Xbox PID, the AVR boards, and v1 firmware) gets no Hypercolor rule until a dump for it is published.
 
-| Products | Rule |
-|---|---|
-| ARM boards, Xbox (`base`) and no-gamepad (`base | 2`) PIDs | Interface 2, as above |
-| ARM boards, DirectInput PIDs (`base | 1`) | None: a DirectInput gamepad is itself a non-boot HID interface, so a shifted interface number could land the grant on it |
-| AVR boards and v1 firmware | None: no published dump confirms their configuration interface |
-
-Products without a rule work as root or with Wooting's own udev rules, which Wootility on Linux requires anyway (help.wooting.io article 147).
+Products without a rule work as root or with Wooting's own udev rules, which Wootility on Linux requires anyway: https://help.wooting.io/article/147-configuring-device-access-for-wootility-under-linux-udev-rules
 
 ### 8.4 Topology
 
@@ -411,8 +412,8 @@ No test opens a device. `crates/hypercolor-hal/tests/`:
 | File | Asserts |
 |---|---|
 | `wooting_protocol_tests.rs` | RGB565 table (§5.2), CRC check value, feature commands per generation (§5.1), multi-report frame length, header and 21-column stride (§7), 60% row offset and UwU grid (§2.2), v2 large report and small-packet split (§6), v1 register layout, sRGB decode table, golden checksums, ANSI to ISO mirroring, numpad chip (§4), zone geometry, truncate and pad, command-buffer reuse without reallocation |
-| `wooting_devices_tests.rs` | Every VID/PID in §2 resolves to exactly one descriptor and protocol ID; §2.3 products stay unregistered; gamepad variants agree; each generation binds its usage page and report length; every transport rides the host HID stack and selects the vendor collection by usage page; the hidapi and hidraw transport sources contain no interface claim or detach call |
-| `udev_rules_tests.rs` | Each §8.3 product has exactly its interface-scoped rule, every other Wooting product has none, no Wooting rule opens the USB device node, and every Wooting rule excludes the boot keyboard class |
+| `wooting_devices_tests.rs` | Every VID/PID in §2 resolves to exactly one descriptor and protocol ID; §2.3 products stay unregistered; gamepad variants agree; each generation binds its usage page and report length; every transport rides the host HID stack and selects the vendor collection by usage page; the hidapi and hidraw transport sources contain no interface claim or detach call (a textual guard on the source, not behavioral proof) |
+| `udev_rules_tests.rs` | Checked against its own evidence table (the two §8.3 rows with their sources), not against driver metadata: each evidenced PID has exactly its interface-scoped rule, every other registered Wooting product has none, no Wooting rule opens the USB device node, and every Wooting rule excludes the boot keyboard class |
 
 `benches/protocol_encoding.rs` carries an 80HE multi-report case and a Two v1 case.
 
@@ -422,7 +423,7 @@ No test opens a device. `crates/hypercolor-hal/tests/`:
 
 1. **ARM boards on firmware before 2.12.** Registered on `0xFF55`, so they fail to connect until updated. Supporting both pages needs the HAL to pick between descriptors that share a VID/PID by the usage pages actually present, or a HID transport that accepts a fallback usage page. The v2 small-packet encoder is ready for that.
 2. **v2 packet size from the report descriptor.** The AVR boards use the SDK's large-packet default. A board whose descriptor declares 64-byte reports would need the descriptor read the SDK performs.
-3. **Interface layout of the AVR boards and v1 firmware.** No public dump; their udev rules wait on one.
+3. **Interface layout of every board except the two in §8.3.** No public dump for the other ARM PIDs, any gamepad mode, the AVR boards, or v1 firmware; their udev rules wait on one each.
 4. **80HE+ PID.** Unknown at the time of writing.
 5. **Keyboard layout.** The device configuration reply names ANSI, ISO, or JIS. Reading it would let the spatial layout label keys, but it needs an input-report read the HAL cannot yet pair with a feature-report command.
 6. **Hardware verification.** Every byte here is from the sources below, cross-checked by golden tests, and has never reached a Wooting.

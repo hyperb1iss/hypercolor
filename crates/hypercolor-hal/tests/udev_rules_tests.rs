@@ -4,7 +4,7 @@ use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::corsair::CORSAIR_VID;
 use hypercolor_hal::drivers::corsair::peripheral::devices as corsair_peripherals;
 use hypercolor_hal::drivers::wooting::{
-    GamepadMode, MODELS, WOOTING_FAMILY, WOOTING_LEGACY_VID, WOOTING_VID,
+    WOOTING_FAMILY, WOOTING_LEGACY_VID, WOOTING_VID, descriptors as wooting_descriptors,
 };
 use hypercolor_hal::registry::TransportType;
 
@@ -77,7 +77,7 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
 
     for descriptor in ProtocolDatabase::all() {
         // Wooting keyboards follow the interface-scoped policy checked in
-        // `wooting_udev_rules_open_only_the_configuration_interface`.
+        // `wooting_udev_rules_open_only_evidenced_configuration_interfaces`.
         if descriptor.family == WOOTING_FAMILY {
             continue;
         }
@@ -378,15 +378,10 @@ fn corsair_peripherals_have_no_whole_product_hidraw_grant() {
 /// line naming Wooting's VID, and any line naming the Atmel VID that v1
 /// firmware borrowed without pinning a non-Wooting product.
 fn wooting_rule_lines() -> Vec<&'static str> {
-    let legacy_pids: Vec<String> = MODELS
+    // The v1 firmware PIDs on the borrowed Atmel VID (Spec 90 section 2.2).
+    let legacy_pids: Vec<String> = [0xFF01_u16, 0xFF02]
         .iter()
-        .filter(|model| model.vendor_id == WOOTING_LEGACY_VID)
-        .flat_map(|model| {
-            [
-                format!("{:04x}", model.base_pid),
-                format!("{:04X}", model.base_pid),
-            ]
-        })
+        .flat_map(|pid| [format!("{pid:04x}"), format!("{pid:04X}")])
         .collect();
     let wooting_vid = [format!("{WOOTING_VID:04x}"), format!("{WOOTING_VID:04X}")];
     let legacy_vid = [
@@ -408,6 +403,25 @@ fn wooting_rule_lines() -> Vec<&'static str> {
         .collect()
 }
 
+/// Wooting products whose configuration interface a published descriptor
+/// dump pins down, with the source (Spec 90 section 8.3). This table is the
+/// evidence on its own, kept out of the driver so no production change can
+/// widen a grant: adding a row means citing a new dump.
+const WOOTING_EVIDENCED_CONFIG_INTERFACES: &[(u16, u8, &str)] = &[
+    (
+        0x1232,
+        2,
+        "Two HE (ARM), no gamepad, firmware 2.12+: usage page 0xFF55 alone on \
+         mi_02 (github.com/hrvach/deskhop/issues/335)",
+    ),
+    (
+        0x1312,
+        2,
+        "60HE (ARM), no gamepad: interface 2 is the only one with an OUT \
+         endpoint (forum.level1techs.com/t/wooting-60he-and-hid-ports/210911)",
+    ),
+];
+
 fn wooting_config_rule(product_id: u16, interface: u8) -> String {
     format!(
         "SUBSYSTEM==\"hidraw\", ATTRS{{modalias}}==\"usb:v{WOOTING_VID:04X}p{product_id:04X}d*ic03isc00ip00in{interface:02X}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
@@ -415,58 +429,55 @@ fn wooting_config_rule(product_id: u16, interface: u8) -> String {
 }
 
 #[test]
-fn wooting_udev_rules_open_only_the_configuration_interface() {
+fn wooting_udev_rules_open_only_evidenced_configuration_interfaces() {
     let lines = wooting_rule_lines();
-    let mut expected = BTreeSet::new();
+    let expected: BTreeSet<String> = WOOTING_EVIDENCED_CONFIG_INTERFACES
+        .iter()
+        .map(|&(product_id, interface, _)| wooting_config_rule(product_id, interface))
+        .collect();
 
-    for model in MODELS {
-        let interface = model.model.config_interface();
-        for mode in GamepadMode::ALL {
-            if model.vendor_id == WOOTING_LEGACY_VID && mode != GamepadMode::Xinput {
-                continue;
-            }
-            let product_id = model.base_pid | mode.pid_offset();
-            let pid_token = format!("p{product_id:04X}d");
-            let idproduct_token = format!("{product_id:04x}");
-            let mentions: Vec<_> = lines
+    for &(product_id, _, source) in WOOTING_EVIDENCED_CONFIG_INTERFACES {
+        assert!(
+            wooting_descriptors()
                 .iter()
-                .filter(|line| {
-                    line.contains(&pid_token)
-                        || line.contains(&format!("idProduct}}==\"{idproduct_token}\""))
-                })
-                .collect();
-
-            // A DirectInput gamepad is itself a non-boot HID interface, so an
-            // interface number shifted by it could land the grant on a
-            // gamepad node. Only the verified layouts get a rule.
-            match interface {
-                Some(interface) if mode != GamepadMode::DirectInput => {
-                    let rule = wooting_config_rule(product_id, interface);
-                    assert_eq!(
-                        mentions,
-                        vec![&rule.as_str()],
-                        "{} PID {product_id:04x} needs exactly its configuration-interface rule",
-                        model.name
-                    );
-                    expected.insert(rule);
-                }
-                _ => assert!(
-                    mentions.is_empty(),
-                    "{} PID {product_id:04x} has no verified configuration interface, so it must not get a rule: {mentions:?}",
-                    model.name
-                ),
-            }
-        }
+                .any(|descriptor| descriptor.vendor_id == WOOTING_VID
+                    && descriptor.product_id == product_id),
+            "evidence row {product_id:04x} ({source}) names no registered Wooting product"
+        );
     }
-
-    assert!(
-        !expected.is_empty(),
-        "the ARM boards must have scoped rules"
-    );
+    for rule in &expected {
+        assert!(
+            lines.contains(&rule.as_str()),
+            "missing evidenced Wooting rule: {rule}"
+        );
+    }
     for line in &lines {
         assert!(
             expected.contains(*line),
-            "unexpected Wooting udev rule (a vendor- or product-wide grant would expose keystrokes): {line}"
+            "Wooting udev rule without cited descriptor evidence (a wider grant can expose \
+             a keyboard, consumer, or analog input node): {line}"
+        );
+    }
+
+    for descriptor in wooting_descriptors() {
+        let evidenced = descriptor.vendor_id == WOOTING_VID
+            && WOOTING_EVIDENCED_CONFIG_INTERFACES
+                .iter()
+                .any(|&(product_id, _, _)| product_id == descriptor.product_id);
+        let pid_token = format!("p{:04X}d", descriptor.product_id);
+        let idproduct_token = format!("idProduct}}==\"{:04x}\"", descriptor.product_id);
+        let mentions = lines
+            .iter()
+            .filter(|line| line.contains(&pid_token) || line.contains(&idproduct_token))
+            .count();
+        assert_eq!(
+            mentions,
+            usize::from(evidenced),
+            "{} ({:04x}:{:04x}) must get {} udev rule",
+            descriptor.name,
+            descriptor.vendor_id,
+            descriptor.product_id,
+            if evidenced { "exactly one" } else { "no" }
         );
     }
 }
