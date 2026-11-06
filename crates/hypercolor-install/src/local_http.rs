@@ -1,27 +1,89 @@
+//! The bounded HTTP client every platform proves a local daemon with.
+
 use std::io::{Read as _, Write as _};
+#[cfg(any(unix, windows))]
 use std::net::{SocketAddr, TcpStream};
+#[cfg(any(unix, windows))]
 use std::time::{Duration, Instant};
 
-use super::super::InstallPlatformError;
-use super::model::{LinuxHttpResponse, error};
+use super::InstallPlatformError;
 
+/// Largest proof response body a platform reads.
+pub(crate) const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
+#[cfg(any(unix, windows))]
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// One response from the daemon's local API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalHttpResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+fn error(detail: impl Into<String>) -> InstallPlatformError {
+    InstallPlatformError::new(detail)
+}
+
+#[cfg(any(unix, windows))]
 pub(crate) fn http_get(
     address: SocketAddr,
     path: &str,
     max_bytes: usize,
-) -> Result<LinuxHttpResponse, InstallPlatformError> {
+) -> Result<LocalHttpResponse, InstallPlatformError> {
     http_get_with_timeout(address, path, max_bytes, HTTP_TIMEOUT)
 }
 
+/// Require a healthy daemon on `/health` and `/api/v1/system` that reports
+/// exactly `version`, with a non-empty instance identity.
+///
+/// # Errors
+/// Returns an error for any other response.
+pub(crate) fn verify_http(
+    health: LocalHttpResponse,
+    system: LocalHttpResponse,
+    version: &str,
+) -> Result<(), InstallPlatformError> {
+    if health.status != 200
+        || system.status != 200
+        || health.body.len() > MAX_HTTP_RESPONSE_BYTES
+        || system.body.len() > MAX_HTTP_RESPONSE_BYTES
+    {
+        return Err(error("bounded daemon HTTP proof failed"));
+    }
+    let health: serde_json::Value = serde_json::from_slice(&health.body)
+        .map_err(|_| error("invalid /health identity response"))?;
+    let system: serde_json::Value = serde_json::from_slice(&system.body)
+        .map_err(|_| error("invalid /api/v1/system identity response"))?;
+    if health.get("status").and_then(serde_json::Value::as_str) != Some("healthy")
+        || health.get("version").and_then(serde_json::Value::as_str) != Some(version)
+        || system
+            .pointer("/data/identity/version")
+            .and_then(serde_json::Value::as_str)
+            != Some(version)
+        || system
+            .pointer("/data/identity/instance_id")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+        || system
+            .pointer("/data/identity/instance_name")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err(error(
+            "daemon HTTP identity does not match the immutable unit",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
 fn http_get_with_timeout(
     address: SocketAddr,
     path: &str,
     max_bytes: usize,
     timeout: Duration,
-) -> Result<LinuxHttpResponse, InstallPlatformError> {
+) -> Result<LocalHttpResponse, InstallPlatformError> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or_else(|| error("HTTP owner proof deadline overflowed"))?;
@@ -48,12 +110,13 @@ fn http_get_with_timeout(
         read_exact_deadline(&mut stream, &mut response[initial..], deadline)?;
     }
     reject_buffered_trailing(&stream)?;
-    Ok(LinuxHttpResponse {
+    Ok(LocalHttpResponse {
         status,
         body: response[body_start..].to_vec(),
     })
 }
 
+#[cfg(any(unix, windows))]
 fn write_deadline(
     stream: &mut TcpStream,
     mut bytes: &[u8],
@@ -75,6 +138,7 @@ fn write_deadline(
     stream.flush().map_err(io_error)
 }
 
+#[cfg(any(unix, windows))]
 fn read_headers(
     stream: &mut TcpStream,
     deadline: Instant,
@@ -97,6 +161,7 @@ fn read_headers(
     Ok(response)
 }
 
+#[cfg(any(unix, windows))]
 fn read_exact_deadline(
     stream: &mut TcpStream,
     mut bytes: &mut [u8],
@@ -115,6 +180,7 @@ fn read_exact_deadline(
     Ok(())
 }
 
+#[cfg(any(unix, windows))]
 fn reject_buffered_trailing(stream: &TcpStream) -> Result<(), InstallPlatformError> {
     stream.set_nonblocking(true).map_err(io_error)?;
     let mut byte = [0_u8; 1];
@@ -126,6 +192,7 @@ fn reject_buffered_trailing(stream: &TcpStream) -> Result<(), InstallPlatformErr
     }
 }
 
+#[cfg(any(unix, windows))]
 fn parse_headers(headers: &[u8], max_bytes: usize) -> Result<(u16, usize), InstallPlatformError> {
     if headers.len() > MAX_HTTP_HEADER_BYTES {
         return Err(error("HTTP owner proof headers exceed their byte bound"));
@@ -163,6 +230,7 @@ fn parse_headers(headers: &[u8], max_bytes: usize) -> Result<(u16, usize), Insta
     Ok((status, declared))
 }
 
+#[cfg(any(unix, windows))]
 fn remaining(deadline: Instant) -> Result<Duration, InstallPlatformError> {
     deadline
         .checked_duration_since(Instant::now())
@@ -170,6 +238,7 @@ fn remaining(deadline: Instant) -> Result<Duration, InstallPlatformError> {
         .ok_or_else(|| error("HTTP owner proof exceeded its absolute deadline"))
 }
 
+#[cfg(any(unix, windows))]
 fn io_error(source: std::io::Error) -> InstallPlatformError {
     error(source.to_string())
 }
@@ -180,7 +249,46 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    use super::{Duration, Instant, http_get_with_timeout};
+    use serde_json::json;
+
+    use super::{Duration, Instant, LocalHttpResponse, http_get_with_timeout, verify_http};
+
+    fn response(value: serde_json::Value) -> LocalHttpResponse {
+        LocalHttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&value).expect("serialize identity response fixture"),
+        }
+    }
+
+    #[test]
+    fn owner_proof_uses_the_system_resources_nested_public_identity() {
+        let health = response(json!({"status":"healthy", "version":"0.4.0"}));
+        let system = response(json!({"data":{"identity":{
+            "version":"0.4.0", "instance_id":"daemon-id", "instance_name":"lights"
+        },"status":null}}));
+        verify_http(health, system, "0.4.0")
+            .expect("public system identity without privileged status");
+    }
+
+    #[test]
+    fn owner_proof_rejects_retired_flat_missing_and_mismatched_system_identity() {
+        for system in [
+            json!({"data":{"version":"0.4.0", "instance_id":"id", "instance_name":"name"}}),
+            json!({"data":{"status":{}}}),
+            json!({"data":{"identity":{"version":"0.3.0", "instance_id":"id", "instance_name":"name"}}}),
+            json!({"data":{"identity":{"version":"0.4.0", "instance_id":"", "instance_name":"name"}}}),
+            json!({"data":{"identity":{"version":"0.4.0", "instance_id":"id", "instance_name":""}}}),
+        ] {
+            assert!(
+                verify_http(
+                    response(json!({"status":"healthy", "version":"0.4.0"})),
+                    response(system),
+                    "0.4.0"
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn keep_alive_response_finishes_at_exact_content_length() {

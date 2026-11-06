@@ -3,14 +3,14 @@ use std::path::Path;
 
 use sha2::{Digest as _, Sha256};
 
+use super::super::local_http::{LocalHttpResponse, MAX_HTTP_RESPONSE_BYTES, verify_http};
 use super::super::{InstallPlatformError, PlatformCheckpoint, PlatformState, UnitId, UnitRecord};
 use super::LinuxInstallPlatform;
 use super::executor::LinuxInstallExecutor;
 use super::model::{
-    DAEMON_RELATIVE_PATH, LAUNCHER_MODE, LinuxExactEntry, LinuxHttpResponse, LinuxLauncher,
-    LinuxOwnerReceipt, LinuxRecord, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
-    LinuxSystemdObservation, LinuxUnitBinding, MAX_HTTP_RESPONSE_BYTES, MAX_SYSTEMD_SHOW_BYTES,
-    error, parse_systemd_show,
+    DAEMON_RELATIVE_PATH, LAUNCHER_MODE, LinuxExactEntry, LinuxLauncher, LinuxOwnerReceipt,
+    LinuxRecord, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
+    LinuxSystemdObservation, LinuxUnitBinding, MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
 };
 use super::service::{
     CONTRACT_LINE_PREFIX, LinuxServiceInput, LinuxServiceRenderer, unit_contract,
@@ -692,48 +692,10 @@ pub(super) fn require_running_observation(
     Ok(())
 }
 
-pub(crate) fn verify_http(
-    health: LinuxHttpResponse,
-    system: LinuxHttpResponse,
-    version: &str,
-) -> Result<(), InstallPlatformError> {
-    if health.status != 200
-        || system.status != 200
-        || health.body.len() > super::model::MAX_HTTP_RESPONSE_BYTES
-        || system.body.len() > super::model::MAX_HTTP_RESPONSE_BYTES
-    {
-        return Err(error("bounded daemon HTTP proof failed"));
-    }
-    let health: serde_json::Value = serde_json::from_slice(&health.body)
-        .map_err(|_| error("invalid /health identity response"))?;
-    let system: serde_json::Value = serde_json::from_slice(&system.body)
-        .map_err(|_| error("invalid /api/v1/system identity response"))?;
-    if health.get("status").and_then(serde_json::Value::as_str) != Some("healthy")
-        || health.get("version").and_then(serde_json::Value::as_str) != Some(version)
-        || system
-            .pointer("/data/identity/version")
-            .and_then(serde_json::Value::as_str)
-            != Some(version)
-        || system
-            .pointer("/data/identity/instance_id")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(str::is_empty)
-        || system
-            .pointer("/data/identity/instance_name")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(str::is_empty)
-    {
-        return Err(error(
-            "daemon HTTP identity does not match the immutable unit",
-        ));
-    }
-    Ok(())
-}
-
 pub(super) fn read_health_version(
-    health: LinuxHttpResponse,
+    health: LocalHttpResponse,
 ) -> Result<String, InstallPlatformError> {
-    if health.status != 200 || health.body.len() > super::model::MAX_HTTP_RESPONSE_BYTES {
+    if health.status != 200 || health.body.len() > MAX_HTTP_RESPONSE_BYTES {
         return Err(error("bounded legacy health proof failed"));
     }
     let health: serde_json::Value = serde_json::from_slice(&health.body)
@@ -820,47 +782,4 @@ fn hash_opened(
         return Err(error("retained daemon size changed while hashing"));
     }
     Ok(hex::encode(hasher.finalize()))
-}
-
-#[cfg(test)]
-mod identity_tests {
-    use super::{LinuxHttpResponse, verify_http};
-    use serde_json::json;
-
-    fn response(value: serde_json::Value) -> LinuxHttpResponse {
-        LinuxHttpResponse {
-            status: 200,
-            body: serde_json::to_vec(&value).expect("serialize identity response fixture"),
-        }
-    }
-
-    #[test]
-    fn owner_proof_uses_the_system_resources_nested_public_identity() {
-        let health = response(json!({"status":"healthy", "version":"0.4.0"}));
-        let system = response(json!({"data":{"identity":{
-            "version":"0.4.0", "instance_id":"daemon-id", "instance_name":"lights"
-        },"status":null}}));
-        verify_http(health, system, "0.4.0")
-            .expect("public system identity without privileged status");
-    }
-
-    #[test]
-    fn owner_proof_rejects_retired_flat_missing_and_mismatched_system_identity() {
-        for system in [
-            json!({"data":{"version":"0.4.0", "instance_id":"id", "instance_name":"name"}}),
-            json!({"data":{"status":{}}}),
-            json!({"data":{"identity":{"version":"0.3.0", "instance_id":"id", "instance_name":"name"}}}),
-            json!({"data":{"identity":{"version":"0.4.0", "instance_id":"", "instance_name":"name"}}}),
-            json!({"data":{"identity":{"version":"0.4.0", "instance_id":"id", "instance_name":""}}}),
-        ] {
-            assert!(
-                verify_http(
-                    response(json!({"status":"healthy", "version":"0.4.0"})),
-                    response(system),
-                    "0.4.0"
-                )
-                .is_err()
-            );
-        }
-    }
 }

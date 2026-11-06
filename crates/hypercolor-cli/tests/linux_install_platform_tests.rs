@@ -10,10 +10,10 @@ use hypercolor_install::{
     InstallAction, InstallCoordinator, InstallDisposition, InstallPlatform, InstallRequest,
     InstallStore, InstallTargetPolicy, InstallTransactionId, InstallationState,
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
-    LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig,
-    LinuxInstallExecutor, LinuxInstallPlatform, LinuxLayoutItem, LinuxLayoutPublication,
-    LinuxLegacyFile, LinuxProcessExecutable, LinuxPublicTree, LinuxServiceIdentity,
-    LinuxServicePhase, LinuxServiceWatch, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
+    LinuxExactEntry, LinuxFilePublication, LinuxInstallConfig, LinuxInstallExecutor,
+    LinuxInstallPlatform, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
+    LinuxProcessExecutable, LinuxPublicTree, LinuxServiceIdentity, LinuxServicePhase,
+    LinuxServiceWatch, LocalHttpResponse, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
     PlatformTransactionRecord, UnitId, bind_linux_retained_unit, parse_systemd_show,
     retain_linux_unit, stage_release_payload,
 };
@@ -592,7 +592,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         &mut self,
         path: &'static str,
         max_bytes: usize,
-    ) -> Result<LinuxHttpResponse, hypercolor_install::InstallPlatformError> {
+    ) -> Result<LocalHttpResponse, hypercolor_install::InstallPlatformError> {
         self.http_calls += 1;
         if self.http_hung {
             return Err(hypercolor_install::InstallPlatformError::new(
@@ -612,7 +612,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         };
         let body = serde_json::to_vec(&value).expect("HTTP JSON");
         assert!(body.len() <= max_bytes);
-        Ok(LinuxHttpResponse { status: 200, body })
+        Ok(LocalHttpResponse { status: 200, body })
     }
 
     fn snapshot_legacy_unit(

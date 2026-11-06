@@ -21,9 +21,7 @@ use sha2::{Digest as _, Sha256};
 use super::super::InstallPlatformError;
 use super::launchd::{MacosBundleAgent, MacosBundleAgentJob};
 use super::model::{MacosBundleRunningDaemon, error};
-use crate::linux::http::http_get;
-use crate::linux::model::MAX_HTTP_RESPONSE_BYTES;
-use crate::linux::proof::verify_http;
+use crate::local_http::{MAX_HTTP_RESPONSE_BYTES, http_get, verify_http};
 
 /// Bound on one launchctl mutation, which launchd answers promptly.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
