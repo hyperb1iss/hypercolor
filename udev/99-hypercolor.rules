@@ -220,6 +220,7 @@ SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p027Ad*ic03isc*ip*in02", MODE="0
 SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p028Ad*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p028Cd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p029Dd*ic03isc*ip*in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v1532p0F1Fd*ic03isc*ip*in01", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Corsair ──────────────────────────────────────────────────────────────────
 # Scoped per product, never vendor-wide. Corsair keyboards and mice expose

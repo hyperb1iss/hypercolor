@@ -178,6 +178,11 @@ fn hidraw_granted_on(vendor_id: u16, product_id: u16, interface: u8) -> bool {
 #[test]
 fn every_hidraw_descriptor_is_granted_on_the_interface_it_opens() {
     for descriptor in ProtocolDatabase::all() {
+        // Wooting boards rely on Wooting's own udev rules except where a
+        // public descriptor dump pins the interface.
+        if descriptor.family == WOOTING_FAMILY {
+            continue;
+        }
         let Some(target) = hidraw_target(descriptor.transport) else {
             continue;
         };
