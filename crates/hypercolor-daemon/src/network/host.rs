@@ -29,6 +29,7 @@ pub struct DaemonDriverHost {
     driver_registry: Arc<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
     device_input: Option<Arc<dyn DeviceInputSink>>,
+    installation_id: Option<Arc<str>>,
 }
 
 impl DaemonDriverHost {
@@ -45,6 +46,7 @@ impl DaemonDriverHost {
             driver_registry,
             config_manager,
             device_input: None,
+            installation_id: None,
         }
     }
 
@@ -52,6 +54,13 @@ impl DaemonDriverHost {
     #[must_use]
     pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
         self.device_input = Some(sink);
+        self
+    }
+
+    /// Expose the persisted daemon instance id to drivers.
+    #[must_use]
+    pub fn with_installation_id(mut self, installation_id: impl Into<Arc<str>>) -> Self {
+        self.installation_id = Some(installation_id.into());
         self
     }
 
@@ -205,6 +214,7 @@ struct RetainedDriverRuntime {
     driver_registry: Arc<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
     device_input: Option<Arc<dyn DeviceInputSink>>,
+    installation_id: Option<Arc<str>>,
 }
 
 impl RetainedDriverRuntime {
@@ -219,6 +229,7 @@ impl RetainedDriverRuntime {
             driver_registry: Arc::clone(&self.driver_registry),
             config_manager: self.config_manager.clone(),
             device_input: self.device_input.clone(),
+            installation_id: self.installation_id.clone(),
         })
     }
 }
@@ -373,6 +384,7 @@ impl DriverHost for DaemonDriverHost {
             driver_registry: Arc::clone(&self.driver_registry),
             config_manager: self.config_manager.clone(),
             device_input: self.device_input.clone(),
+            installation_id: self.installation_id.clone(),
         }))
     }
 
@@ -386,6 +398,10 @@ impl DriverHost for DaemonDriverHost {
 
     fn device_input(&self) -> Option<Arc<dyn DeviceInputSink>> {
         self.device_input.clone()
+    }
+
+    fn installation_id(&self) -> Option<&str> {
+        self.installation_id.as_deref()
     }
 }
 

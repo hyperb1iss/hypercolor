@@ -140,4 +140,12 @@ pub trait DriverHost: Send + Sync {
     fn device_input(&self) -> Option<Arc<dyn DeviceInputSink>> {
         None
     }
+
+    /// Stable identifier of this Hypercolor installation, when the host
+    /// persists one. Drivers mix it into identities that must be unique per
+    /// installation, such as protocol sender ids, so two hosts with the same
+    /// config never collide.
+    fn installation_id(&self) -> Option<&str> {
+        None
+    }
 }
