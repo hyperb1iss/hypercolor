@@ -35,6 +35,9 @@ enabled = false
 [drivers.openrgb]
 enabled = false
 
+[drivers.pixel]
+enabled = false
+
 [drivers.prismrgb]
 enabled = false
 
