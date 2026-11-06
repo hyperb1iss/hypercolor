@@ -4871,7 +4871,6 @@ dependencies = [
  "hypercolor-types",
  "if-addrs",
  "rand 0.10.3",
- "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

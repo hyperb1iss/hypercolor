@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use reqwest::StatusCode;
+use hypercolor_driver_support::http::{
+    BoundedHttpClient, BoundedRequest, BoundedResponse, HttpError, ReadBudget, StatusCode,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -79,7 +81,7 @@ pub enum ApiError {
     Transport {
         endpoint: String,
         #[source]
-        source: reqwest::Error,
+        source: HttpError,
     },
     #[error("Twinkly device rejected the authentication token on {endpoint}")]
     Unauthorized { endpoint: String },
@@ -98,6 +100,14 @@ impl ApiError {
     #[must_use]
     pub const fn is_unauthorized(&self) -> bool {
         matches!(self, Self::Unauthorized { .. })
+    }
+
+    fn from_http(endpoint: &str, error: HttpError) -> Self {
+        let endpoint = endpoint.to_owned();
+        match error {
+            HttpError::BodyTooLarge { limit } => Self::TooLarge { endpoint, limit },
+            source => Self::Transport { endpoint, source },
+        }
     }
 }
 
@@ -238,9 +248,10 @@ pub fn mode_request_body(mode: &str) -> serde_json::Value {
 /// REST client for one device.
 #[derive(Debug, Clone)]
 pub struct TwinklyClient {
-    http: reqwest::Client,
+    http: BoundedHttpClient,
     endpoint: TwinklyEndpoint,
     base_url: String,
+    timeout: Duration,
 }
 
 impl TwinklyClient {
@@ -251,22 +262,18 @@ impl TwinklyClient {
     /// Returns an error if the HTTP client cannot be built.
     pub fn new(endpoint: TwinklyEndpoint, timeout: Duration) -> Result<Self, ApiError> {
         // The API lives at one fixed address. Redirects are never followed:
-        // reqwest strips standard credentials across origins but would
-        // forward the custom X-Auth-Token header.
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .connect_timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
+        // standard credentials are stripped across origins but the custom
+        // X-Auth-Token header would be forwarded.
+        let http = BoundedHttpClient::builder()
+            .no_redirects()
             .no_proxy()
             .build()
-            .map_err(|source| ApiError::Transport {
-                endpoint: endpoint.base_url(),
-                source,
-            })?;
+            .map_err(|source| ApiError::from_http(&endpoint.base_url(), source))?;
         Ok(Self {
             http,
             base_url: endpoint.base_url(),
             endpoint,
+            timeout,
         })
     }
 
@@ -354,16 +361,8 @@ impl TwinklyClient {
     /// Returns [`ApiError::Unauthorized`] when the token is no longer valid.
     pub async fn layout(&self, token: &AuthToken) -> Result<LayoutReply, ApiError> {
         let url = self.url("led/layout/full");
-        let response = self
-            .http
-            .get(&url)
-            .header(AUTH_HEADER, &token.text)
-            .send()
-            .await
-            .map_err(|source| ApiError::Transport {
-                endpoint: url.clone(),
-                source,
-            })?;
+        let request = self.http.get(&url).header(AUTH_HEADER, &token.text);
+        let response = self.send(&url, request).await?;
         let body = Self::read_body(&url, response).await?;
         decode_layout_reply(&url, &body)
     }
@@ -382,10 +381,7 @@ impl TwinklyClient {
         if let Some(token) = token {
             request = request.header(AUTH_HEADER, token);
         }
-        let response = request.send().await.map_err(|source| ApiError::Transport {
-            endpoint: url.clone(),
-            source,
-        })?;
+        let response = self.send(&url, request).await?;
         Self::decode(url, response).await
     }
 
@@ -400,24 +396,27 @@ impl TwinklyClient {
         if let Some(token) = token {
             request = request.header(AUTH_HEADER, token);
         }
-        let response = request.send().await.map_err(|source| ApiError::Transport {
-            endpoint: url.clone(),
-            source,
-        })?;
+        let response = self.send(&url, request).await?;
         Self::decode(url, response).await
+    }
+
+    async fn send(&self, url: &str, request: BoundedRequest) -> Result<BoundedResponse, ApiError> {
+        request
+            .send(ReadBudget::new(MAX_REPLY_BYTES, self.timeout))
+            .await
+            .map_err(|source| ApiError::from_http(url, source))
     }
 
     async fn decode<T: DeserializeOwned>(
         url: String,
-        response: reqwest::Response,
+        response: BoundedResponse,
     ) -> Result<T, ApiError> {
         let body = Self::read_body(&url, response).await?;
         decode_reply(&url, &body)
     }
 
-    /// Check the status and read the body, refusing anything over
-    /// [`MAX_REPLY_BYTES`] as it arrives.
-    async fn read_body(url: &str, mut response: reqwest::Response) -> Result<Vec<u8>, ApiError> {
+    /// Check the status and read the body.
+    async fn read_body(url: &str, response: BoundedResponse) -> Result<Vec<u8>, ApiError> {
         let status = response.status();
         if status == StatusCode::UNAUTHORIZED {
             return Err(ApiError::Unauthorized {
@@ -430,31 +429,10 @@ impl TwinklyClient {
                 status: status.as_u16(),
             });
         }
-        let too_large = || ApiError::TooLarge {
-            endpoint: url.to_owned(),
-            limit: MAX_REPLY_BYTES,
-        };
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_REPLY_BYTES as u64)
-        {
-            return Err(too_large());
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
+        response
+            .bytes()
             .await
-            .map_err(|source| ApiError::Transport {
-                endpoint: url.to_owned(),
-                source,
-            })?
-        {
-            if body.len() + chunk.len() > MAX_REPLY_BYTES {
-                return Err(too_large());
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(body)
+            .map_err(|source| ApiError::from_http(url, source))
     }
 }
 

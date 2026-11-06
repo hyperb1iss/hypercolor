@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use hypercolor_driver_support::http::HttpError;
 use hypercolor_driver_twinkly::api::{
     ApiError, AuthToken, Gestalt, MAX_REPLY_BYTES, TwinklyClient, decode_layout_reply, decode_reply,
 };
@@ -82,6 +83,45 @@ async fn oversized_streamed_bodies_are_refused_while_reading() -> TestResult {
         client.gestalt().await,
         Err(ApiError::TooLarge { .. })
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_slow_drip_fails_at_the_request_deadline() -> TestResult {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let port = listener.local_addr()?.port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request).await;
+                let head = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(head).await;
+                // Always making progress, never finishing.
+                while stream.write_all(b" ").await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            });
+        }
+    });
+    let client = TwinklyClient::new(endpoint(port), Duration::from_millis(300))?;
+    let started = Instant::now();
+    let error = client.gestalt().await.expect_err("dripped reply");
+    assert!(
+        matches!(
+            error,
+            ApiError::Transport {
+                source: HttpError::DeadlineExceeded,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the deadline is absolute: {:?}",
+        started.elapsed()
+    );
     Ok(())
 }
 

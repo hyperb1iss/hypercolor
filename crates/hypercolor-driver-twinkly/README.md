@@ -18,7 +18,7 @@ run it on real Twinkly hardware yet.
 ## Position in the Workspace
 
 - Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`, `hypercolor-color`,
-  `hypercolor-types`, `anyhow`, `async-trait`, `base64`, `if-addrs`, `rand`, `reqwest`,
+  `hypercolor-types`, `anyhow`, `async-trait`, `base64`, `if-addrs`, `rand`,
   `serde`, `serde_json`, `thiserror`, `tokio`, `tracing`
 - Consumed by: `hypercolor-driver-builtin` (via the `twinkly` feature)
 
