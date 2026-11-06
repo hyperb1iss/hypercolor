@@ -46,10 +46,9 @@ class TemplateDetail:
     `led_positions` is expanded from the topology at request time, so it
     is present here but never in the listing.
 
-    The item routes that also return this body today (`GET` and `PUT` on
-    `/attachments/templates/{id}`) are deleted in wave 78.5, which leaves
-    creation as the only caller. The type is chartered on creation for
-    that reason, and the collection listing keeps its own summary shape.
+    Creation is the only route that returns this body, so the type is
+    chartered on creation, and the collection listing keeps its own
+    summary shape.
 
         Attributes:
             category (ComponentCategoryType0 | ComponentCategoryType1 | ComponentCategoryType10 | ComponentCategoryType2 |
