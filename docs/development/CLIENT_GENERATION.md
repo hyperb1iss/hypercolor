@@ -31,6 +31,16 @@ just python-generate-check
 generator warnings, validates the JSON document, and compares generated output
 directly during `--check`.
 
+The docs site's REST reference is generated from the same export.
+`scripts/gen-rest-reference.ts` renders `docs/content/api/rest.md` and
+`docs/content/api/rest-schemas.md`, merging the authored notes in
+`docs/content/api/rest.notes.md`:
+
+```bash
+just rest-reference
+just rest-reference-check
+```
+
 ## WebSocket Contract
 
 The shared WebSocket manifest lives at:
@@ -76,7 +86,8 @@ The Python job runs the hand-written client checks as individual `uv run`
 steps, the same set `just python-verify` runs locally: Ruff check, Ruff
 format check, ty, WebSocket protocol drift, and pytest.
 Generated OpenAPI drift runs in the separate `Python Generated Client` job
-because it compiles the Rust daemon exporter.
+because it compiles the Rust daemon exporter. The REST reference check runs in
+the same job and reuses that build.
 
 The Python client is published to PyPI as `hypercolor`. Publishing is
 automated: stable release tags build sdist and wheel artifacts, and the

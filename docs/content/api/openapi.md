@@ -87,8 +87,9 @@ typed success payload, real success statuses, and shared error responses. Schema
 components are discovered from those operation types at registration time, so
 there is no second route table or component inventory to keep synchronized.
 
-The parity tests lock the runtime document to the Spec 78 inventory of 83 paths
-and 118 operations. They also verify unique operation ids, required string path
+The parity tests lock the runtime document to the Spec 78 target manifest
+(`crates/hypercolor-daemon/tests/fixtures/rest_v1/spec78-target-manifest.json`).
+They also verify unique operation ids, required string path
 parameters, resolvable schema references, real success bodies and media types,
 and the shared error contract on every operation. A new REST route therefore
 cannot silently expand the public surface or disappear from OpenAPI.
@@ -124,12 +125,30 @@ The document describes the REST surface only. A few things are out of scope:
 - **MCP** at `/mcp` is a separate Streamable HTTP surface with its own tool,
   resource, and prompt schemas. See the [Agents & MCP](@/agents/_index.md) section.
 - **Diagnostic telemetry** remains daemon-local, but its REST responses still
-  carry concrete OpenAPI schemas. The [REST reference](@/api/rest.md) is the
-  human-readable companion.
+  carry concrete OpenAPI schemas.
 
 The security scheme advertised in the document is HTTP `Bearer` (`bearer_auth`,
 bearer format "API key"), matching the daemon's `Authorization: Bearer <token>`
 auth.
+
+## The REST reference is generated
+
+The [REST reference](@/api/rest.md) and [REST schemas](@/api/rest-schemas.md)
+pages are rendered from this document by `scripts/gen-rest-reference.ts`, so
+every operation, parameter, body, status, and schema on them is the one the
+router serves. Prose the document cannot carry (behavior, examples, caveats)
+lives beside the page in `docs/content/api/rest.notes.md`, keyed by
+`METHOD /path`; a note for a route that no longer exists fails generation.
+
+```bash
+just rest-reference         # export the document and rewrite both pages
+just rest-reference-check   # fail when either page differs from the document
+```
+
+The `Python Generated Client` CI job runs the check, so a route change that
+skips regeneration fails CI. Operation summaries, parameter descriptions, and
+type doc comments come from the Rust source; change them there, not in the
+generated pages.
 
 ## Generated clients
 
@@ -149,8 +168,9 @@ curl -s http://localhost:9420/api/v1/openapi.json \
   | jq '[.paths[] | keys[]] | length'
 ```
 
-The count is `118`. A matching result means the daemon is serving the locked
-OpenAPI surface and you are ready to browse it at
+The count matches the operation total at the top of the
+[REST reference](@/api/rest.md). A matching result means the daemon is serving
+the locked OpenAPI surface and you are ready to browse it at
 [`/api/v1/docs`](http://localhost:9420/api/v1/docs) or wire it into a client
 generator.
 
@@ -158,5 +178,6 @@ generator.
 
 - [API overview](@/api/_index.md): the four daemon surfaces and the response envelope.
 - [REST reference](@/api/rest.md): every `/api/v1` endpoint, grouped by domain.
+- [REST schemas](@/api/rest-schemas.md): every request and response type the endpoints use.
 - [Envelope & errors](@/api/rest-envelope-and-errors.md): the `{ data, meta }` and `{ error, meta }` shapes and the error-code-to-HTTP-status table.
 - [Auth & security](@/api/auth-and-security.md): the dual-key Bearer model (`HYPERCOLOR_API_KEY` for control, `HYPERCOLOR_READ_API_KEY` for read) and the loopback exemption.
