@@ -1,0 +1,81 @@
+[vendor]
+name = "LIFX"
+vid = []
+website = "https://www.lifx.com"
+notes = "Driven over the official LIFX LAN protocol on UDP port 56700: discovered by broadcast GetService or configured IPs, with no account or pairing. Zone counts and tile geometry are read from each device at connect. Experimental: tested against the lifx-emulator project, not yet verified on real LIFX hardware."
+
+[[devices]]
+name = "LIFX Color Bulbs"
+type = "other"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+leds = 1
+notes = "Single-zone color lights (A19, A21, BR30, GU10, Mini, Downlight, PAR38, Candle) painted with SetColor. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX White and White to Warm"
+type = "other"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+leds = 1
+notes = "White-only lights follow the effect's luminance at the configured white point. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX Z, Lightstrip, and Permanent Outdoor"
+type = "strip"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+notes = "Per-zone strips via SetExtendedColorZones, with the SetColorZones fallback for the first-generation Z and firmware before 2.77. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX Neon and String"
+type = "strip"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+notes = "Extended multizone lights; zone count read from the device. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX Beam"
+type = "lightbar"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+notes = "Up to 82 zones per message; older Beam firmware uses the legacy zone messages. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX Tile"
+type = "other"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+leds = 64
+notes = "8x8 per tile, chains of up to five mapped from the positions and rotations set in the LIFX app. One Set64 per tile per frame, so a five-tile chain updates at 4 FPS within LIFX's 20 messages per second guideline. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX Candle Color"
+type = "other"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+leds = 26
+notes = "5x6 matrix: a top zone above a five by five wrap. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX Ceiling and Ceiling 13x26"
+type = "other"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+notes = "8x8 or 16x8 downlight matrix plus a separate uplight zone; the 128-zone model uses a hidden frame buffer and CopyFrameBuffer when the device reports one. Experimental, unverified on hardware."
+
+[[devices]]
+name = "LIFX Tube, Spot, Path, Luna, and Mirror"
+type = "other"
+status = "supported"
+driver = "lifx"
+transport = "network_udp"
+notes = "Single matrix devices mapped as a grid of the size the device reports. Experimental, unverified on hardware."
