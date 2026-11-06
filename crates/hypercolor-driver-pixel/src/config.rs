@@ -28,6 +28,16 @@ pub const MAX_NAME_LEN: usize = 128;
 /// Highest configurable per-device frame rate cap.
 pub const MAX_FPS_LIMIT: u32 = 1000;
 
+/// Most channels one device may stream (4 MiB of channel data per frame,
+/// about 8,200 full DMX universes or 1.39 million RGB pixels).
+///
+/// Bounds the per-frame encode buffer and packet plan that a config entry
+/// can request, independent of what each protocol could address.
+pub const MAX_DEVICE_CHANNELS: u64 = 4 * 1024 * 1024;
+
+/// Most segments one device may list.
+pub const MAX_SEGMENTS: usize = 256;
+
 /// Streaming protocol spoken by one pixel controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -141,14 +151,27 @@ impl Default for PixelConfig {
 
 impl PixelConfig {
     /// Device config with driver-level E1.31 defaults filled in.
+    ///
+    /// For E1.31 devices without an explicit `cid`, the sender CID is
+    /// derived from `installation_id` and the device id (see
+    /// [`crate::plan::derived_cid`]), so it stays stable across restarts and
+    /// differs between installations that reuse a device id.
     #[must_use]
-    pub fn effective_device(&self, device: &PixelDeviceConfig) -> PixelDeviceConfig {
+    pub fn effective_device(
+        &self,
+        device: &PixelDeviceConfig,
+        installation_id: Option<&str>,
+    ) -> PixelDeviceConfig {
         let mut effective = device.clone();
+        effective.host = device.host.to_canonical();
         if device.protocol == PixelProtocol::E131 {
             effective.priority.get_or_insert(self.priority);
             effective
                 .source_name
                 .get_or_insert_with(|| self.source_name.clone());
+            effective
+                .cid
+                .get_or_insert_with(|| crate::plan::derived_cid(installation_id, &device.id));
         }
         effective
     }
@@ -371,15 +394,21 @@ pub fn is_valid_device_id(id: &str) -> bool {
 
 /// Whether `ip` may receive unicast pixel data.
 ///
-/// Rejects unspecified, multicast, and IPv4 limited-broadcast addresses.
-/// The driver never sends multicast or broadcast traffic.
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are judged as the IPv4
+/// address they carry, because a dual-stack socket sends them as IPv4.
+/// Rejects unspecified addresses, every multicast range (IPv4 224.0.0.0/4,
+/// IPv6 ff00::/8 including link-local multicast), the IPv4 limited
+/// broadcast, and the IPv4 "this network" block 0.0.0.0/8. Directed
+/// subnet broadcasts cannot be recognized without the netmask; the output
+/// sockets never enable `SO_BROADCAST`, so the kernel refuses them.
 #[must_use]
 pub fn is_unicast_target(ip: IpAddr) -> bool {
+    let ip = ip.to_canonical();
     if ip.is_unspecified() || ip.is_multicast() {
         return false;
     }
     match ip {
-        IpAddr::V4(ipv4) => !ipv4.is_broadcast(),
+        IpAddr::V4(ipv4) => !ipv4.is_broadcast() && ipv4.octets()[0] != 0,
         IpAddr::V6(_) => true,
     }
 }

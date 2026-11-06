@@ -25,8 +25,9 @@ use uuid::Uuid;
 
 use crate::color::ColorOrder;
 use crate::config::{
-    DEFAULT_SOURCE_NAME, MAX_DEVICES, MAX_FPS_LIMIT, MAX_NAME_LEN, PixelConfig, PixelConfigError,
-    PixelDeviceConfig, PixelProtocol, is_unicast_target, is_valid_device_id,
+    DEFAULT_SOURCE_NAME, MAX_DEVICE_CHANNELS, MAX_DEVICES, MAX_FPS_LIMIT, MAX_NAME_LEN,
+    MAX_SEGMENTS, PixelConfig, PixelConfigError, PixelDeviceConfig, PixelProtocol,
+    is_unicast_target, is_valid_device_id,
 };
 
 /// Namespace for CIDs derived from device ids (UUID v5).
@@ -205,10 +206,20 @@ fn range_label(start: u16, end: u16) -> String {
     }
 }
 
-/// Derive the stable CID for a device id.
+/// Derive the stable E1.31 CID for a device.
+///
+/// E1.31 section 5.6 needs a CID unique to each source. The name hashed
+/// into the UUID v5 combines the host's persistent installation id with the
+/// device id, so two installations that reuse a device id get different
+/// CIDs and each stays stable across restarts. Without an installation id
+/// (a host that persists none) the device id alone is hashed.
 #[must_use]
-pub fn derived_cid(device_id: &str) -> Uuid {
-    Uuid::new_v5(&CID_NAMESPACE, device_id.as_bytes())
+pub fn derived_cid(installation_id: Option<&str>, device_id: &str) -> Uuid {
+    let name = match installation_id {
+        Some(installation_id) => format!("{installation_id}/{device_id}"),
+        None => device_id.to_owned(),
+    };
+    Uuid::new_v5(&CID_NAMESPACE, name.as_bytes())
 }
 
 /// Validate a whole config and resolve every device's plan.
@@ -219,6 +230,19 @@ pub fn derived_cid(device_id: &str) -> Uuid {
 ///
 /// Returns the first validation failure found.
 pub fn resolve_config(config: &PixelConfig) -> Result<Vec<PixelDevicePlan>, PixelConfigError> {
+    resolve_config_for(config, None)
+}
+
+/// Validate a whole config and resolve every device's plan, deriving E1.31
+/// CIDs for `installation_id` (see [`derived_cid`]).
+///
+/// # Errors
+///
+/// Returns the first validation failure found.
+pub fn resolve_config_for(
+    config: &PixelConfig,
+    installation_id: Option<&str>,
+) -> Result<Vec<PixelDevicePlan>, PixelConfigError> {
     if config.devices.len() > MAX_DEVICES {
         return Err(PixelConfigError::TooManyDevices {
             count: config.devices.len(),
@@ -235,7 +259,9 @@ pub fn resolve_config(config: &PixelConfig) -> Result<Vec<PixelDevicePlan>, Pixe
                 id: device.id.clone(),
             });
         }
-        plans.push(resolve_device(&config.effective_device(device))?);
+        plans.push(resolve_device(
+            &config.effective_device(device, installation_id),
+        )?);
     }
     check_cross_device_conflicts(&plans)?;
     Ok(plans)
@@ -267,9 +293,16 @@ pub fn resolve_device(device: &PixelDeviceConfig) -> Result<PixelDevicePlan, Pix
             "name is longer than {MAX_NAME_LEN} characters"
         )));
     }
-    if !is_unicast_target(device.host) {
+    let host = device.host.to_canonical();
+    if !is_unicast_target(host) {
         return Err(fail(format!(
             "host {} is not a unicast address; multicast and broadcast output are not supported",
+            device.host
+        )));
+    }
+    if device.protocol == PixelProtocol::ArtNet && host.is_ipv6() {
+        return Err(fail(format!(
+            "host {} is IPv6, but Art-Net 4 is an IPv4 protocol",
             device.host
         )));
     }
@@ -288,6 +321,17 @@ pub fn resolve_device(device: &PixelDeviceConfig) -> Result<PixelDevicePlan, Pix
     }
 
     let segments = resolve_segments(device).map_err(fail)?;
+    let total_channels = segments
+        .iter()
+        .map(|(segment, _)| u64::from(segment.pixel_count))
+        .sum::<u64>()
+        .saturating_mul(channels_per_pixel as u64);
+    if total_channels > MAX_DEVICE_CHANNELS {
+        return Err(fail(format!(
+            "device needs {total_channels} channels; the limit is {MAX_DEVICE_CHANNELS} per device, \
+             so split it into several devices"
+        )));
+    }
     let max_fps = device.max_fps.unwrap_or(0);
     if max_fps > MAX_FPS_LIMIT {
         return Err(fail(format!("max_fps must be 0-{MAX_FPS_LIMIT}")));
@@ -313,7 +357,7 @@ pub fn resolve_device(device: &PixelDeviceConfig) -> Result<PixelDevicePlan, Pix
     Ok(PixelDevicePlan {
         id: device.id.clone(),
         name: device.display_name().to_owned(),
-        target: SocketAddr::new(device.host, port),
+        target: SocketAddr::new(host, port),
         protocol: device.protocol,
         color_order: device.color_order,
         channels_per_pixel,
@@ -339,6 +383,10 @@ fn resolve_segments(device: &PixelDeviceConfig) -> Result<Vec<ResolvedSegment<'_
             },
             None,
         )]),
+        (None, false) if device.segments.len() > MAX_SEGMENTS => Err(format!(
+            "{} segments configured; the limit is {MAX_SEGMENTS} per device",
+            device.segments.len()
+        )),
         (None, false) => device
             .segments
             .iter()
@@ -472,7 +520,9 @@ fn resolve_dmx(
     let device_channel = device.start_channel.unwrap_or(1);
     check_channel(device_channel, "start_channel")?;
 
-    // Absolute slot = universe * per_universe + zero-based channel.
+    // Absolute slot = universe * per_universe + zero-based channel. Inputs
+    // are bounded (universe <= 65535, per_universe <= 512, the device's
+    // channels <= MAX_DEVICE_CHANNELS), so slots stay far below usize::MAX.
     let absolute = |universe: u16, channel: u16| {
         usize::from(universe) * per_universe + usize::from(channel) - 1
     };
@@ -498,16 +548,23 @@ fn resolve_dmx(
             }
         }
         let length = segment.pixel_count as usize * channels_per_pixel;
+        // Reject before building runs: the last addressed universe decides.
+        let last_universe = cursor
+            .checked_add(length - 1)
+            .map(|last_slot| last_slot / per_universe);
+        if last_universe.is_none_or(|universe| universe > usize::from(max_universe)) {
+            return Err(format!(
+                "{label} runs past {} universe {max_universe}",
+                device.protocol.label()
+            ));
+        }
         for run in split_into_universes(cursor, length, per_universe) {
-            let universe = u16::try_from(run.universe_offset)
-                .ok()
-                .filter(|universe| *universe <= max_universe)
-                .ok_or_else(|| {
-                    format!(
-                        "{label} runs past {} universe {max_universe}",
-                        device.protocol.label()
-                    )
-                })?;
+            let universe = u16::try_from(run.universe_offset).map_err(|_| {
+                format!(
+                    "{label} runs past {} universe {max_universe}",
+                    device.protocol.label()
+                )
+            })?;
             let slot_range = run.first_slot..run.first_slot + run.source.len();
             let used = slots.entry(universe).or_default();
             if used.iter().any(|existing| overlaps(existing, &slot_range)) {
@@ -567,7 +624,7 @@ fn resolve_e131_source(device: &PixelDeviceConfig) -> Result<E131Source, String>
     Ok(E131Source {
         priority,
         source_name,
-        cid: device.cid.unwrap_or_else(|| derived_cid(&device.id)),
+        cid: device.cid.unwrap_or_else(|| derived_cid(None, &device.id)),
         sync_universe: device.sync_universe,
     })
 }
@@ -587,7 +644,7 @@ fn resolve_ddp(
             cursor = u64::from(offset);
         }
         let length = segment.pixel_count as usize * channels_per_pixel;
-        let end = cursor + length as u64;
+        let end = cursor.saturating_add(length as u64);
         if end > u64::from(u32::MAX) + 1 {
             return Err(format!(
                 "segment {} runs past the 32-bit DDP offset space",

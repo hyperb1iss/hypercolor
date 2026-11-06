@@ -182,7 +182,7 @@ fn rgb_device_fills_510_channel_universes() {
     assert_eq!(dmx.runs[2].source, 1020..1200);
     assert_eq!(source.priority, 100);
     assert_eq!(source.source_name, "Hypercolor");
-    assert_eq!(source.cid, derived_cid("strip"));
+    assert_eq!(source.cid, derived_cid(None, "strip"));
     assert_eq!(plans[0].target.port(), 5568);
 }
 
@@ -561,7 +561,7 @@ fn explicit_cid_overrides_the_derived_one() {
         panic!("expected an E1.31 plan");
     };
     assert_eq!(source.cid.to_string(), cid);
-    assert_ne!(derived_cid("a"), derived_cid("b"));
+    assert_ne!(derived_cid(None, "a"), derived_cid(None, "b"));
 }
 
 #[test]
@@ -607,4 +607,118 @@ fn max_fps_is_bounded() {
         "id": "a", "host": "10.0.0.5", "protocol": "ddp", "pixel_count": 1, "max_fps": 1001
     }));
     assert!(resolve_error(&config).contains("max_fps must be 0-1000"));
+}
+
+// ── Bounds and address forms ────────────────────────────────────────────
+
+#[test]
+fn huge_pixel_counts_are_rejected_before_planning() {
+    let started = std::time::Instant::now();
+    // With 3-channel universes this would have been ~4.3 billion runs.
+    let huge = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "e131", "pixel_count": u32::MAX,
+        "channels_per_universe": 3
+    }));
+    assert!(resolve_error(&huge).contains("the limit is 4194304 per device"));
+
+    let summed = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp",
+        "segments": [{ "pixel_count": u32::MAX }, { "pixel_count": u32::MAX }]
+    }));
+    assert!(resolve_error(&summed).contains("the limit is 4194304 per device"));
+
+    let ddp = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp", "pixel_count": 1_400_000_000_u32
+    }));
+    assert!(resolve_error(&ddp).contains("channels; the limit"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "rejection must not allocate per-universe runs first"
+    );
+}
+
+#[test]
+fn last_universe_is_checked_before_runs_are_built() {
+    // 1,000,000 pixels in 3-channel universes fits the channel cap but
+    // needs a million universes, far past E1.31's 63999.
+    let config = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "e131", "pixel_count": 1_000_000,
+        "channels_per_universe": 3
+    }));
+    assert!(resolve_error(&config).contains("runs past E1.31 (sACN) universe 63999"));
+}
+
+#[test]
+fn segment_count_is_bounded() {
+    let segments: Vec<_> = (0..257).map(|_| json!({ "pixel_count": 1 })).collect();
+    let config = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp", "segments": segments
+    }));
+    assert!(resolve_error(&config).contains("257 segments configured; the limit is 256"));
+}
+
+#[test]
+fn ipv4_mapped_and_other_non_unicast_forms_are_rejected() {
+    for host in [
+        "::ffff:239.1.2.3",
+        "::ffff:255.255.255.255",
+        "::ffff:0.0.0.0",
+        "::ffff:0.1.2.3",
+        "0.1.2.3",
+        "224.0.0.1",
+        "ff02::1",
+        "ff05::2",
+        "::",
+    ] {
+        let ip: IpAddr = host.parse().expect("valid IP");
+        assert!(
+            !hypercolor_driver_pixel::config::is_unicast_target(ip),
+            "{host}"
+        );
+        let config = one_device(json!({
+            "id": "a", "host": host, "protocol": "e131", "pixel_count": 1
+        }));
+        assert!(
+            resolve_error(&config).contains("is not a unicast address"),
+            "{host} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn ipv4_mapped_unicast_hosts_resolve_to_ipv4() {
+    let config = one_device(json!({
+        "id": "a", "host": "::ffff:10.0.0.5", "protocol": "ddp", "pixel_count": 1
+    }));
+    let plans = resolve_config(&config).expect("mapped unicast is accepted");
+    assert_eq!(
+        plans[0].target.ip(),
+        "10.0.0.5".parse::<IpAddr>().expect("valid IP")
+    );
+    assert!(plans[0].target.is_ipv4());
+}
+
+#[test]
+fn ipv4_mapped_hosts_collide_with_their_ipv4_form() {
+    let config = parse(json!({ "devices": [
+        { "id": "plain", "host": "10.0.0.5", "protocol": "artnet", "pixel_count": 2 },
+        { "id": "mapped", "host": "::ffff:10.0.0.5", "protocol": "artnet", "pixel_count": 2 }
+    ]}));
+    assert!(
+        resolve_error(&config)
+            .contains("'plain' and 'mapped' both send Art-Net universe 1 to 10.0.0.5:6454")
+    );
+}
+
+#[test]
+fn artnet_hosts_must_be_ipv4() {
+    let config = one_device(json!({
+        "id": "a", "host": "2001:db8::5", "protocol": "artnet", "pixel_count": 1
+    }));
+    assert!(resolve_error(&config).contains("Art-Net 4 is an IPv4 protocol"));
+
+    let mapped = one_device(json!({
+        "id": "a", "host": "::ffff:10.0.0.5", "protocol": "artnet", "pixel_count": 1
+    }));
+    assert!(resolve_config(&mapped).is_ok());
 }
