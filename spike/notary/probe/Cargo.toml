@@ -1,0 +1,11 @@
+[package]
+name = "notary-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+core-foundation = "0.10"
+security-framework = "=3.7.0"

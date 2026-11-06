@@ -1,0 +1,110 @@
+name: Notary Spike
+
+# Throwaway. Answers whether an offline static validation against a code
+# requirement carrying the notarized clause passes on a stapled bundle and
+# fails where it must. Hosted macOS runners are fresh VMs per job, so every
+# row that needs a clean ticket store gets its own job. Only the bundles job
+# receives the signing and notary secrets.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notary-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  XCODE_VERSION: "26.5"
+
+jobs:
+  bundles:
+    name: Build, notarize and staple
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Harness fixes reuse the bundles instead of resubmitting them to Apple.
+      - name: Restore earlier bundles
+        id: cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: dist
+          key: notary-spike-dist-${{ hashFiles('spike/notary/build-bundles.sh') }}
+
+      - name: Select Xcode
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+
+      - name: Build, sign, notarize and staple
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          NOTARY_WAIT_TIMEOUT: 30m
+        run: bash scripts/with-macos-signing.sh bash spike/notary/build-bundles.sh dist
+
+      - name: List the bundles
+        run: ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notary-spike-bundles
+          path: dist
+          retention-days: 14
+          if-no-files-found: error
+
+  rows:
+    name: Row ${{ matrix.row }} on ${{ matrix.os }}
+    needs: bundles
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15, macos-15-intel]
+        row: ["1", "2", "3-4", "5", "6", "7"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: notary-spike-bundles
+          path: dist
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: "1.99.0"
+
+      - name: Build the probe
+        working-directory: spike/notary/probe
+        run: cargo build --release --locked
+
+      - name: Run the row
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MATRIX_ROW: ${{ matrix.row }}
+        shell: bash
+        run: bash spike/notary/row.sh "${MATRIX_ROW}" 2>&1 | tee row-output.txt
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: row-${{ matrix.row }}-${{ matrix.os }}
+          path: row-output.txt
+          retention-days: 14
