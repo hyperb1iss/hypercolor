@@ -72,9 +72,13 @@ $ExcludedCredentials = @(
     'InteractiveBrowserCredential'
 )
 
-# Vendor binaries the installer carries. They keep their vendors'
-# signatures, and install-bundled-pawnio.ps1 also checks PawnIO's hash.
-$ThirdPartyBinaries = @('PawnIO_setup.exe', 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
+# Vendor binaries the installer carries, never re-signed. The VC++ runtime
+# must arrive with a valid Microsoft signature. PawnIO's setup may chain to
+# a root the runner does not trust, so it is held to the SHA-256 pin that
+# install-bundled-pawnio.ps1 also checks at install time.
+$MicrosoftRuntimeBinaries = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
+$MicrosoftSigner = 'Microsoft Corporation'
+$ThirdPartyBinaries = @('PawnIO_setup.exe') + $MicrosoftRuntimeBinaries
 
 # Payload paths (as 7-Zip extracts them) that every installer must carry
 # with a Hypercolor signature.
@@ -527,7 +531,14 @@ function Invoke-Verify {
         $signature = Get-AuthenticodeSignature -LiteralPath $full
         $signer = Get-SignerName $signature
         $rows.Add("| ``$relative`` | $(if ($signer) { $signer } else { '(none)' }) | $($signature.Status) |")
-        if ((Split-Path -Leaf $relative) -in $ThirdPartyBinaries) {
+        $leaf = Split-Path -Leaf $relative
+        if ($leaf -in $MicrosoftRuntimeBinaries) {
+            if ($signature.Status -ne 'Valid' -or $signer -ne $MicrosoftSigner) {
+                $failures.Add("$relative is a VC++ runtime but carries a $($signature.Status) signature from '$signer', expected a Valid one from '$MicrosoftSigner'")
+            }
+            continue
+        }
+        if ($leaf -in $ThirdPartyBinaries) {
             if (-not $signer) {
                 $failures.Add("$relative is a vendor binary but carries no signature")
             } elseif ($signer -eq $publisher) {
@@ -555,7 +566,8 @@ function Invoke-Verify {
     }
 
     # The unsigned build of the same inputs passed the upgrade check, so the
-    # signed one must ship the same files with only executables changed.
+    # signed one must ship the same files, with only Hypercolor's own
+    # executables changed: vendor binaries must match byte for byte.
     if ($UnsignedInstaller) {
         $unsignedRoot = Expand-Installer $UnsignedInstaller 'unsigned'
         $unsignedFiles = @(Get-RelativeFiles $unsignedRoot)
@@ -568,7 +580,8 @@ function Invoke-Verify {
         # 7-Zip may also emit [NSIS].nsi, a script it decompiles from the
         # installer header rather than a file the installer ships.
         $comparable = $files | Where-Object {
-            $_ -in $unsignedFiles -and -not (Test-PeFile $_) -and -not $_.StartsWith('[NSIS]')
+            $_ -in $unsignedFiles -and -not $_.StartsWith('[NSIS]') -and
+                (-not (Test-PeFile $_) -or (Split-Path -Leaf $_) -in $ThirdPartyBinaries)
         }
         foreach ($relative in $comparable) {
             $signedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $root $relative)).Hash
