@@ -45,21 +45,6 @@ pub struct WledKnownTarget {
     /// Stable device fingerprint from a previous successful discovery.
     #[serde(default)]
     pub fingerprint: Option<DeviceFingerprint>,
-    /// Last-known friendly WLED display name.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Last-known LED count.
-    #[serde(default)]
-    pub led_count: Option<u32>,
-    /// Last-known firmware version.
-    #[serde(default)]
-    pub firmware_version: Option<String>,
-    /// Last-known max FPS capability.
-    #[serde(default)]
-    pub max_fps: Option<u32>,
-    /// Whether the device reported RGBW support.
-    #[serde(default)]
-    pub rgbw: Option<bool>,
     /// Forward-compatible driver-owned fields.
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -73,11 +58,6 @@ impl WledKnownTarget {
             ip,
             hostname: None,
             fingerprint: None,
-            name: None,
-            led_count: None,
-            firmware_version: None,
-            max_fps: None,
-            rgbw: None,
             extra: BTreeMap::new(),
         }
     }
@@ -89,21 +69,6 @@ impl WledKnownTarget {
         }
         if self.fingerprint.is_none() {
             self.fingerprint.clone_from(&other.fingerprint);
-        }
-        if self.name.is_none() {
-            self.name.clone_from(&other.name);
-        }
-        if self.led_count.is_none() {
-            self.led_count = other.led_count;
-        }
-        if self.firmware_version.is_none() {
-            self.firmware_version.clone_from(&other.firmware_version);
-        }
-        if self.max_fps.is_none() {
-            self.max_fps = other.max_fps;
-        }
-        if self.rgbw.is_none() {
-            self.rgbw = other.rgbw;
         }
         for (key, value) in &other.extra {
             self.extra
@@ -119,21 +84,6 @@ impl WledKnownTarget {
         }
         if other.fingerprint.is_some() {
             self.fingerprint.clone_from(&other.fingerprint);
-        }
-        if other.name.is_some() {
-            self.name.clone_from(&other.name);
-        }
-        if other.led_count.is_some() {
-            self.led_count = other.led_count;
-        }
-        if other.firmware_version.is_some() {
-            self.firmware_version.clone_from(&other.firmware_version);
-        }
-        if other.max_fps.is_some() {
-            self.max_fps = other.max_fps;
-        }
-        if other.rgbw.is_some() {
-            self.rgbw = other.rgbw;
         }
         self.extra.extend(other.extra.clone());
     }

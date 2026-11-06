@@ -152,7 +152,7 @@ Search replies are unauthenticated, so the decoder and the scan bound them:
 | Address | the `Location` IP must be the reply's source IP: a light answers for itself |
 | Duplicate id | an id another source already reported is dropped |
 | Per source | each source IP reports only its most recent id; a later reply replaces the earlier one instead of adding a second identity |
-| Admission | at most 256 source addresses per scan; further new addresses are dropped with a warning that names `device_ips` |
+| Admission | at most 256 unsolicited source addresses per scan; refused addresses leave a coverage gap, and configured and tracked addresses never count against the limit |
 
 Every check runs before any state changes, and the only state a scan keeps
 is one entry per admitted source address, so spoofed replies cannot grow

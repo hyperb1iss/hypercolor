@@ -906,22 +906,11 @@ pub fn resolve_wled_probe_targets_from_sources(
 fn tracked_wled_target(tracked: &DriverTrackedDevice) -> Option<WledKnownTarget> {
     let ip = tracked.metadata.get("ip")?.parse::<IpAddr>().ok()?;
     let ip = validate_ip(ip).ok()?;
-    let rgbw = tracked.info.segments.first().map(|segment| {
-        matches!(
-            segment.color_format,
-            hypercolor_types::device::DeviceColorFormat::Rgbw
-        )
-    });
 
     Some(WledKnownTarget {
         ip,
         hostname: tracked.metadata.get("hostname").cloned(),
         fingerprint: tracked.fingerprint.clone(),
-        name: Some(tracked.info.name.clone()),
-        led_count: Some(tracked.info.total_led_count()),
-        firmware_version: tracked.info.firmware_version.clone(),
-        max_fps: Some(tracked.info.capabilities.max_fps),
-        rgbw,
         extra: BTreeMap::new(),
     })
 }

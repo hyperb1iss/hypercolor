@@ -103,10 +103,8 @@ fn resolve_probe_targets_prefers_tracked_metadata() {
     );
 
     assert_eq!(resolved.len(), 1);
-    assert_eq!(resolved[0].name.as_deref(), Some("Desk Strip"));
     assert_eq!(resolved[0].hostname.as_deref(), Some("desk.local"));
-    assert_eq!(resolved[0].led_count, Some(60));
-    assert_eq!(resolved[0].rgbw, Some(true));
+    assert!(resolved[0].fingerprint.is_some());
 }
 
 #[test]
@@ -117,11 +115,6 @@ fn tracked_identity_refreshes_metadata_and_replaces_learned_ip() {
     let cached = WledKnownTarget {
         ip: old_ip,
         fingerprint: tracked.fingerprint.clone(),
-        name: Some("Stale Name".to_owned()),
-        led_count: Some(12),
-        firmware_version: Some("0.13.0".to_owned()),
-        max_fps: Some(20),
-        rgbw: Some(false),
         extra: BTreeMap::from([("future_field".to_owned(), serde_json::json!(true))]),
         ..WledKnownTarget::from_ip(old_ip)
     };
@@ -142,11 +135,7 @@ fn tracked_identity_refreshes_metadata_and_replaces_learned_ip() {
     assert_eq!(ips, vec![new_ip]);
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].ip, new_ip);
-    assert_eq!(targets[0].name.as_deref(), Some("Desk Strip Renamed"));
-    assert_eq!(targets[0].firmware_version.as_deref(), Some("0.15.0"));
-    assert_eq!(targets[0].led_count, Some(60));
-    assert_eq!(targets[0].max_fps, Some(55));
-    assert_eq!(targets[0].rgbw, Some(true));
+    assert_eq!(targets[0].hostname.as_deref(), Some("desk.local"));
     assert_eq!(targets[0].extra["future_field"], serde_json::json!(true));
 }
 
