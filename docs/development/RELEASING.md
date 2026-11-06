@@ -263,11 +263,12 @@ uninstaller in the middle of a Tauri build.
 4. The same job unpacks the signed installer with 7-Zip and fails unless
    three things hold. Every first-party exe and dll inside it, including
    `uninstall.exe` and the NSIS plugins, carries a valid, timestamped
-   signature from `WINDOWS_SIGNING_PUBLISHER`. Every vendor binary still
-   carries its vendor's signature. The signed installer ships the same
-   files as the tested unsigned one, with every non-executable file byte
-   for byte equal. The job then reruns the DLL closure check on the signed
-   installer and uploads it under the release artifact name that
+   signature from `WINDOWS_SIGNING_PUBLISHER`. Every VC++ runtime DLL
+   carries a valid Microsoft signature, and `PawnIO_setup.exe` matches its
+   pinned SHA-256. The signed installer ships the same files as the tested
+   unsigned one, and every non-executable file and every vendor binary in it
+   is byte for byte equal. The job then reruns the DLL closure check on the
+   signed installer and uploads it under the release artifact name that
    `create-release` publishes.
 
 A failed `sign-windows` job reruns on its own with "Re-run failed jobs",
