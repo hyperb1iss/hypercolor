@@ -775,6 +775,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The rendering smoke tests draw through Mesa's software EGL, so the
+      # lane names those packages instead of trusting the runner image.
       - name: Install system dependencies
         run: |
           sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
@@ -787,7 +789,8 @@ jobs:
             -o Acquire::Retries="$APT_RETRIES" \
             -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
-            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }} \
+            libegl-mesa0 libgl1-mesa-dri
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -842,6 +845,19 @@ jobs:
           ./scripts/cargo-cache-build.sh
           cargo test --locked -p hypercolor-core --features servo
           --test html_loader_tests
+
+      # Real Servo frames through Mesa's software EGL, asserted pixel by
+      # pixel. Pull requests render the fast set; main and tags add the
+      # sweep over every generated effect.
+      - name: Run Servo rendering smoke tests
+        timeout-minutes: 10
+        env:
+          HYPERCOLOR_REQUIRE_GENERATED_EFFECTS: "1"
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --locked -p hypercolor-core --features servo
+          --test servo_integration_tests
+          ${{ needs.changes.outputs.full == 'true' && '-- --include-ignored' || '' }}
 
       - name: Run core Servo doc tests
         if: needs.changes.outputs.full == 'true'
