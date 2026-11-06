@@ -39,6 +39,20 @@ multiple-versions = "warn"
 wildcards = "allow"
 workspace-default-features = "allow"
 external-default-features = "allow"
+# Drivers reach HTTP through hypercolor-driver-support, whose read budget
+# bounds every reply. Depending on reqwest directly reopens its unbounded
+# readers, so a driver never joins this list.
+deny = [
+    { crate = "reqwest", wrappers = [
+        "hypercolor",
+        "hypercolor-app",
+        "hypercolor-core",
+        "hypercolor-daemon",
+        "hypercolor-driver-support",
+        "hypercolor-tui",
+        "tauri",
+    ] },
+]
 
 [sources]
 unknown-registry = "warn"
