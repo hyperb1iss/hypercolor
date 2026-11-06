@@ -1,8 +1,9 @@
 //! Art-Net source port handling: UDP 6454 when free, an ephemeral port when
 //! another application owns it, and release when no Art-Net session needs it.
 //!
-//! These tests bind 0.0.0.0:6454 themselves, so they run one at a time in
-//! their own test binary. Every packet still goes to a 127.0.0.1 receiver.
+//! These tests bind 0.0.0.0:6454 themselves. The lock serializes them under
+//! plain `cargo test`; `.config/nextest.toml` does the same across processes.
+//! Every packet still goes to a 127.0.0.1 receiver.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
