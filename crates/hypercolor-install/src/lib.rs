@@ -4,11 +4,11 @@
 //! recovery through [`InstallCoordinator`], on every platform. Platforms
 //! apply and prove each step: `LinuxInstallPlatform` drives a per-user
 //! systemd service, the `macos` module a launchd agent over a standalone
-//! tree, and the `macos_bundle` module a signed app bundle. The `windows`
-//! module holds the machine-wide store and release units a Windows
-//! platform transacts on; its unit manifest compiles on every host. The raw `hypercolor __install-release` command is
-//! one host of this library; others (an update activator, a daemon that
-//! observes its own installation) link it directly.
+//! tree, the `macos_bundle` module a signed app bundle, and the `windows`
+//! module a per-machine installation whose app runs in its user's session.
+//! The raw `hypercolor __install-release` command is one host of this
+//! library; others (an update activator, a daemon that observes its own
+//! installation) link it directly.
 
 mod coordinator;
 #[cfg(unix)]
@@ -34,26 +34,26 @@ use windows::store;
 pub use coordinator::{
     InstallCoordinator, InstallCoordinatorError, InstallPlatform, InstallPlatformError,
 };
-pub use local_http::LocalHttpResponse;
 #[cfg(unix)]
 pub use linux::{
     DEFAULT_PROBATION_WINDOW, InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS,
     LINUX_PUBLIC_SERVICE_CONTRACT, LinuxAdoption, LinuxAdoptionError, LinuxDirectoryItem,
-    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
-    LinuxInstallAuthority, LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig,
-    LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation,
-    LinuxInstallLocator, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRecords,
-    LinuxInstallRequest, LinuxInstallRun, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
-    LinuxLegacySnapshot, LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor,
-    LinuxObservationError, LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicEntry,
-    LinuxPublicTree, LinuxRenderedService, LinuxRuntimeSettlement, LinuxServiceIdentity,
-    LinuxServiceInput, LinuxServicePhase, LinuxServiceRenderer, LinuxServiceWatch,
-    LinuxSystemdConnection, LinuxSystemdObservation, LinuxUninstallCheckpoint, LinuxUninstallHost,
-    LinuxUninstallRun, MAX_PROBATION_WINDOW, RetainedLinuxInstallLocation, bind_linux_platform,
+    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxInstallAuthority,
+    LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig, LinuxInstallElection,
+    LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation, LinuxInstallLocator,
+    LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRecords, LinuxInstallRequest,
+    LinuxInstallRun, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLegacySnapshot,
+    LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor, LinuxObservationError,
+    LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree,
+    LinuxRenderedService, LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceInput,
+    LinuxServicePhase, LinuxServiceRenderer, LinuxServiceWatch, LinuxSystemdConnection,
+    LinuxSystemdObservation, LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun,
+    MAX_PROBATION_WINDOW, RetainedLinuxInstallLocation, bind_linux_platform,
     bind_linux_retained_unit, elect_linux_installation, elect_linux_installation_with,
     observe_linux_installation, parse_systemd_show, retain_linux_unit, run_linux_install,
     run_linux_uninstall,
 };
+pub use local_http::LocalHttpResponse;
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,
     InstallModelError, InstallOutcome, InstallRequest, InstallTargetPolicy, InstallTransactionId,
