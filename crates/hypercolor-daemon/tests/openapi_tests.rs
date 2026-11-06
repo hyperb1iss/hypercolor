@@ -779,3 +779,32 @@ fn backups_declare_streamed_binary_upload_and_typed_confirmation() {
         "#/components/schemas/BackupApplyRequest"
     );
 }
+
+#[test]
+fn runtime_document_declares_every_operation_tag() {
+    // The generated REST reference takes each resource's heading, order, and
+    // description from the tag declarations in `ApiDoc`.
+    let document = openapi_document();
+    let declared = document["tags"]
+        .as_array()
+        .expect("the document should declare its tags")
+        .iter()
+        .filter_map(|tag| tag["name"].as_str())
+        .collect::<BTreeSet<_>>();
+    let paths = document["paths"]
+        .as_object()
+        .expect("OpenAPI paths should be an object");
+
+    for (method, path) in documented_operations(&document) {
+        for tag in paths[&path][&method]["tags"]
+            .as_array()
+            .expect("every operation should carry tags")
+        {
+            let tag = tag.as_str().expect("tags should be strings");
+            assert!(
+                declared.contains(tag),
+                "{method} {path} uses tag `{tag}`, which ApiDoc does not declare"
+            );
+        }
+    }
+}
