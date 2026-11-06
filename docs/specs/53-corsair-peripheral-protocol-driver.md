@@ -1430,6 +1430,24 @@ a kernel driver. It checks every registered Corsair descriptor that is either
 in the peripheral module or typed keyboard, mouse, mousepad, or headset in the
 vendor database. That catches a peripheral registered outside the module too.
 
+A vendor usage page alone does not make a filter safe, so the test also holds
+two independent tables. The first lists the known non-lighting collections
+per family, as `(interface, usage page, usage)`:
+
+| Family | Known input or non-lighting collections |
+| ------ | ---------------------------------------- |
+| NXP keyboards and mice | `(0, 0x0001, 0x0006)`, `(0, 0x0001, 0x0002)`, `(0, 0x0001, 0x0001)`, `(0, 0x000C, 0x0001)`, `(0, 0xFFC0, 0x0002)`, `(0, 0xFFC1, 0x0002)`, `(0, 0xFFC2, 0x0003)` |
+| Polaris | `(1, 0x0001, 0x0006)` |
+| Bragi | `(0, 0x0001, 0x0006)`, `(0, 0x000C, 0x0001)`, `(2, 0xFF42, 0x0002)`, `(3, 0x0001, 0x0002)` |
+| ST100 | none |
+
+The second lists the expected lighting filter for every registered peripheral
+PID. A descriptor fails when its filter could select one of its family's known
+collections, or when it differs from the table. A newly registered peripheral
+also fails until someone adds it to both tables. Negative fixtures pin the
+cases a page-only filter gets wrong, such as `(0, 0xFFC2, 0x0003)` on NXP
+devices and an unpinned `0xFF42` filter on Bragi devices.
+
 ### 8.8 Linux Device Permissions
 
 `udev/99-hypercolor.rules` grants Corsair access per product, never
@@ -1597,11 +1615,13 @@ Required database tests:
 - Scimitar Elite Bragi uses max report length 128.
 - Dongles have zero LED count and no direct RGB capability.
 - Every registered peripheral is `supported` in `data/drivers/vendors/corsair.toml`, nothing `researched` is registered, and the K66 and legacy devices stay unregistered.
-- NXP descriptors pin interface, usage page, usage, report ID 0, and a 65-byte HIDAPI buffer, and report 144 slots (keyboards), 6 zones (mice), or 15 slots (accessories).
+- NXP descriptors pin interface, usage page, usage, report ID 0, and a 65-byte HIDAPI buffer, and report 144 slots (keyboards), 6 zones (mice), or 15 slots (accessories). The K95 Platinum reports 163 LEDs in a 144-slot keyboard zone and a 19-LED light bar zone; packed keyboards stay at 144.
 
 Required input-safety tests (`corsair_peripheral_input_safety_tests.rs`):
 
-- Every Corsair peripheral transport is host-managed HID on a vendor usage page.
+- Every Corsair peripheral transport is host-managed HID on a vendor usage page and cannot select any known input collection of its family.
+- Every registered peripheral PID matches an independent table of expected `(interface, usage page, usage)` filters, and the table lists exactly the registered peripherals.
+- Known input collections are refused under exact, page-only, and interface-free filters.
 - Every peripheral pins its lighting interface; NXP keyboards and mice pin usage `0x0004`.
 - Each peripheral PID has exactly one descriptor and no firmware predicate.
 - The classifier rejects every interface-claiming transport.
