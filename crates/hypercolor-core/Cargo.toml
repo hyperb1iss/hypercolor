@@ -183,6 +183,14 @@ path = "tests/spatial_area_reuse_tests.rs"
 required-features = ["allocation-contract-tests"]
 
 [[test]]
+name = "servo_integration_tests"
+path = "tests/servo_integration_tests.rs"
+required-features = ["servo"]
+# One Servo runtime serves every case and must shut down before the process
+# exits; see the file's `main`.
+harness = false
+
+[[test]]
 name = "macos_screen_capture_tests"
 path = "tests/macos_screen_capture_tests.rs"
 required-features = ["macos-capture-fixtures"]
