@@ -65,6 +65,9 @@ enabled = false
 [drivers.wiz]
 enabled = false
 
+[drivers.yeelight]
+enabled = false
+
 [drivers.usb]
 enabled = false
 
