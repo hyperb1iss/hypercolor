@@ -1,3 +1,6 @@
+use hypercolor_hal::drivers::corsair::peripheral::devices::{
+    K95_PLATINUM_LIGHT_BAR_SLOTS, PID_K95_RGB_PLATINUM,
+};
 use hypercolor_hal::drivers::corsair::peripheral::legacy::{
     CorsairLegacyPeripheralProtocol, LegacyPeripheralConfig, LegacyPeripheralKind,
 };
@@ -382,4 +385,61 @@ fn legacy_m95_backlight_maps_brightness_to_on_off_vendor_command() {
             data: Vec::new(),
         }]
     );
+}
+
+/// Bar LED `p` (left to right) arrives at frame position `144 + p` and must
+/// land in plane slot `K95_PLATINUM_LIGHT_BAR_SLOTS[p]` of every component.
+#[test]
+fn k95_platinum_light_bar_colors_reach_their_plane_slots() {
+    let descriptor = hypercolor_hal::ProtocolDatabase::lookup(0x1B1C, PID_K95_RGB_PLATINUM)
+        .expect("K95 Platinum descriptor should exist");
+    let protocol = (descriptor.protocol.build)();
+
+    let mut colors = vec![[0_u8, 0, 0]; 163];
+    for position in 0..19_u8 {
+        colors[144 + usize::from(position)] = [0x40 + position, 0x80 + position, 0xC0 + position];
+    }
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 12);
+
+    // Chunk 3 of each plane carries slots 120..168 at payload offset 0.
+    for (component, chunk) in [(0_usize, 2_usize), (1, 6), (2, 10)] {
+        let packet = &commands[chunk].data;
+        assert_eq!(packet[0], NxpCommand::WriteBulk as u8);
+        assert_eq!(packet[1], 0x03);
+        let plane = &packet[4..];
+
+        for (position, &slot) in K95_PLATINUM_LIGHT_BAR_SLOTS.iter().enumerate() {
+            let expected = colors[144 + position][component];
+            assert_eq!(
+                plane[usize::from(slot) - 120],
+                expected,
+                "bar LED {position} component {component} must land in slot {slot:#04X}"
+            );
+        }
+        // Keys stay black and the unused slots 163..168 stay zero.
+        assert!(plane[..24].iter().all(|byte| *byte == 0));
+        assert!(plane[43..48].iter().all(|byte| *byte == 0));
+    }
+}
+
+#[test]
+fn light_bar_slots_cover_the_plane_tail_without_overlap() {
+    let mut slots = K95_PLATINUM_LIGHT_BAR_SLOTS.to_vec();
+    slots.sort_unstable();
+    assert_eq!(slots, (0x90_u8..=0xA2).collect::<Vec<_>>());
+}
+
+#[test]
+#[should_panic(expected = "only full-range planes have room for a light bar")]
+fn packed_keyboards_cannot_take_a_light_bar() {
+    let _ = keyboard_config("K70 RGB", NxpLightingKind::Packed512Keyboard, 144)
+        .with_light_bar(&K95_PLATINUM_LIGHT_BAR_SLOTS);
+}
+
+#[test]
+#[should_panic(expected = "light bar slots must follow the key slots inside the plane")]
+fn light_bar_slots_outside_the_plane_are_refused() {
+    let _ = keyboard_config("K95 Platinum", NxpLightingKind::FullRangeKeyboard, 144)
+        .with_light_bar(&[0x90, 0xA8]);
 }

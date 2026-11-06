@@ -141,7 +141,7 @@ fn nxp_devices_register_on_the_vendor_lighting_collection() {
         (PID_K70_LUX_RGB, NXP_KEYBOARD_LED_SLOTS),
         (PID_K70_RGB_MK2, NXP_KEYBOARD_LED_SLOTS),
         (PID_K95_RGB, NXP_KEYBOARD_LED_SLOTS),
-        (PID_K95_RGB_PLATINUM, NXP_KEYBOARD_LED_SLOTS),
+        (PID_K95_RGB_PLATINUM, NXP_KEYBOARD_LED_SLOTS + 19),
         (PID_STRAFE_RGB, NXP_KEYBOARD_LED_SLOTS),
         (PID_M65_RGB, NXP_MOUSE_ZONE_SLOTS),
         (PID_SCIMITAR_RGB, NXP_MOUSE_ZONE_SLOTS),
@@ -204,6 +204,37 @@ fn nxp_keyboards_report_their_hardware_index_space_as_custom_topology() {
     assert_eq!(zones.len(), 1);
     assert_eq!(zones[0].led_count, 144);
     assert_eq!(zones[0].topology, DeviceTopologyHint::Custom);
+}
+
+#[test]
+fn k95_platinum_exposes_its_light_bar_as_a_left_to_right_zone() {
+    let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_K95_RGB_PLATINUM)
+        .expect("K95 Platinum descriptor should exist");
+    let protocol = (descriptor.protocol.build)();
+    let zones = protocol.zones();
+
+    assert_eq!(protocol.total_leds(), 163);
+    assert_eq!(zones.len(), 2);
+    assert_eq!(zones[0].led_count, 144);
+    assert_eq!(zones[0].topology, DeviceTopologyHint::Custom);
+    assert_eq!(zones[1].name, "Light Bar");
+    assert_eq!(zones[1].led_count, 19);
+    assert_eq!(
+        zones[1].topology,
+        DeviceTopologyHint::Matrix { rows: 1, cols: 19 }
+    );
+}
+
+#[test]
+fn packed_512_keyboards_keep_the_144_slot_space() {
+    for pid in [PID_K65_RGB, PID_K70_RGB, PID_K95_RGB] {
+        let descriptor =
+            ProtocolDatabase::lookup(CORSAIR_VID, pid).expect("packed keyboard should exist");
+        let protocol = (descriptor.protocol.build)();
+
+        assert_eq!(protocol.total_leds(), 144, "{}", descriptor.name);
+        assert_eq!(protocol.zones().len(), 1, "{}", descriptor.name);
+    }
 }
 
 #[test]

@@ -249,7 +249,7 @@ exists.
 | `0x1B33` | K70 Lux RGB | Registered | same as K55 | same |
 | `0x1B49` | K70 MK.2 | Registered | same as K55 | same; layout confirmed on fw 3.24 |
 | `0x1B11` | K95 RGB | Registered | same as K55 | same; fw 2.05 has no hidraw path (section 5.1) |
-| `0x1B2D` | K95 Platinum | Registered | same as K55 | same; layout confirmed on fw 3.21 |
+| `0x1B2D` | K95 Platinum | Registered | same as K55 | same; layout confirmed on fw 3.21; 144 key slots plus a 19-LED light bar zone (section 7.4) |
 | `0x1B20` | Strafe RGB | Registered | same as K55 | same; fw 2.05 has no hidraw path (section 5.1) |
 | `0x1B12` | M65 | Registered | same as K55 | same; fw 2.04 has no hidraw path (section 5.1) |
 | `0x1B1E` | Scimitar | Registered | same as K55 | same |
@@ -1256,9 +1256,30 @@ NXP per-key keyboards address 144 hardware LED slots: the packed frame's 216
 bytes (`0xD8`) are three planes of 72 bytes at two LEDs per byte. Hypercolor
 exposes the slots in hardware index order as one `Custom` zone, and per-key
 positions come from the spatial layout. A full-range plane declares 168 bytes
-(60 + 60 + 48). Slots 144 through 167 are not mapped by this spec (the K95
-Platinum light bar is the likely occupant), so Hypercolor writes zero there.
-The K55 exposes its three zones as a 1x3 matrix.
+(60 + 60 + 48), so slots 144 through 167 exist only on full-range keyboards.
+Packed 512-color keyboards keep exactly 144 slots. The K55 exposes its three
+zones as a 1x3 matrix.
+
+The K95 Platinum's 19-LED top light bar occupies plane slots `0x90` through
+`0xA2` (144 through 162), but not in bar order. From the leftmost LED to the
+rightmost, the slots are:
+
+| Bar LED (left to right) | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+| ----------------------- | - | - | - | - | - | - | - | - | - | -- |
+| Plane slot | `0x90` | `0x91` | `0x92` | `0x9E` | `0xA0` | `0x93` | `0x94` | `0x95` | `0x96` | `0x97` |
+
+| Bar LED (left to right) | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
+| ----------------------- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| Plane slot | `0x98` | `0x99` | `0x9A` | `0x9B` | `0x9F` | `0xA2` | `0xA1` | `0x9C` | `0x9D` |
+
+Slots 163 through 167 carry nothing on any known keyboard and stay zero.
+Hypercolor exposes the K95 Platinum as 163 LEDs in two zones: the 144 key
+slots in hardware order (`Custom`), then the bar as a 1x19 matrix in
+left-to-right order. The encoder writes bar LED `n` into its plane slot
+from the table above, in all three component planes. A light bar is only
+allowed on a full-range or monochrome keyboard, with slots past the key
+slots and inside the 168-byte plane; `NxpDeviceConfig::with_light_bar`
+refuses anything else at compile time.
 
 ### 7.5 NXP Mouse Zone Counts
 
@@ -1595,6 +1616,8 @@ Additional NXP encoder tests:
 - Init sends only the lighting-mode packet and never touches `FIELD_SPECIAL` or `FIELD_KEYINPUT`.
 - Every init, frame, and shutdown command is write-only and 64 bytes.
 - Reused command buffers encode the same bytes as fresh ones.
+- Nonzero K95 Platinum bar colors land in their plane slots (section 7.4) in every component, keys stay black, and slots 163 through 167 stay zero.
+- A light bar on a packed keyboard, or a bar slot outside the plane, is refused.
 
 ### 9.7 Hardware Smoke Tests
 
@@ -1692,6 +1715,8 @@ Facts only; no code was copied from any GPL source.
 - OpenRGB work item 4944, HIDAPI enumeration of a K70 RGB (`1B13`): interface 0 carries keyboard, consumer, `0xFFC0`, and `0xFFC2`/`0x0003` collections; interface 1 carries only `0xFFC2`/`0x0004`. https://gitlab.com/CalcProgrammer1/OpenRGB/-/work_items/4944
 - OpenRGB issue 4016, HIDAPI enumeration: Polaris interface 0 `0xFFC2`/`0x0001`, interface 1 keyboard `0x0001`/`0x0006`; K100 (`1BC5`) Bragi `0xFF42` split over interfaces 1 (`0x0001`) and 2 (`0x0002`). https://gitlab.com/CalcProgrammer1/OpenRGB/-/issues/4016
 - linux-hardware.org `lsusb -v` probes: K70 RGB fw 3.08 (https://linux-hardware.org/?probe=ead58254b2&log=lsusb), K95 Platinum fw 3.21 (https://linux-hardware.org/?probe=d6735c5f18&log=lsusb), K95 RGB fw 2.05 (https://linux-hardware.org/?probe=45c2efaa3e&log=lsusb), M65 fw 2.04 (https://linux-hardware.org/?probe=17bcc983ca&log=lsusb), ST100 (https://linux-hardware.org/?probe=59ffe32cfa&log=lsusb), M55 RGB Pro (https://linux-hardware.org/index.php?probe=8ea3fec27b&log=lsusb), K70 RGB Pro (https://linux-hardware.org/?probe=28f1074e0a&log=lsusb).
+- ckb-next daemon keymap (GPL-2.0; read for hardware index facts only): the K95 Platinum top bar LEDs `topbar1` through `topbar19` and their key indices `0x90` through `0xA2`. https://github.com/ckb-next/ckb-next/blob/master/src/daemon/keymap.c
+- ckb-next GUI keymap (GPL-2.0; read for layout facts only): the K95 Platinum bar LEDs `topbar1` through `topbar19` sit left to right at evenly spaced x positions. https://github.com/ckb-next/ckb-next/blob/master/src/gui/keymap.cpp
 - ckb-next issue 659, Strafe RGB fw 2.05 `dmesg`: interface 1 binds as a keyboard input device. https://github.com/ckb-next/ckb-next/issues/659
 - K70 MK.2 fw 3.24 `dmesg` report: the vendor interface binds as hidraw with no input device. https://gist.github.com/KenEucker/f13eb2edbbd5c5ab02b66e0e6ddeb8c8
 - Corsair ST100 RGB user manual: nine RGB zones, one logo and eight base. https://manuals.online/corsair/rack-and-stand/st100-rgb/user-manual/1rmy1
