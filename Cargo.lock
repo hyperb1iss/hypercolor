@@ -4853,6 +4853,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-driver-yeelight"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hypercolor-color",
+ "hypercolor-driver-api",
+ "hypercolor-driver-support",
+ "hypercolor-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hypercolor-gpu-frame"
 version = "0.9.0"
 dependencies = [
