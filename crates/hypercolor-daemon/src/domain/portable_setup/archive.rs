@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use hypercolor_core::portable_setup::archive::{read_configuration_archive, write_archive};
 use hypercolor_types::api::backups::{BackupApplyResponse, BackupPreview};
-use hypercolor_types::portable_setup::{PortableBackupV1, PortablePreferences};
+use hypercolor_types::portable_setup::{
+    PORTABLE_BACKUP_SCHEMA_VERSION, PortableBackupV1, PortablePreferences,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -42,7 +44,7 @@ impl PortableSetupService {
             ));
         }
         let backup = PortableBackupV1 {
-            schema_version: 1,
+            schema_version: PORTABLE_BACKUP_SCHEMA_VERSION,
             setup: snapshot.manifest,
             preferences,
             tui_preferences,

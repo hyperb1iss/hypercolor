@@ -2,7 +2,9 @@
 //! resource payloads; durable resource transactions retain a separate reader.
 
 use super::{SetupBlobError, SetupBlobStore};
-use hypercolor_types::portable_setup::{PortableBackupV1, PortableBlob, PortableSetupError};
+use hypercolor_types::portable_setup::{
+    PortableBackupDecodeError, PortableBackupV1, PortableBlob, PortableSetupError,
+};
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -20,6 +22,15 @@ pub enum BackupArchiveError {
     Io(#[from] io::Error),
     #[error("backup container is invalid: {0}")]
     Container(String),
+}
+
+impl From<PortableBackupDecodeError> for BackupArchiveError {
+    fn from(error: PortableBackupDecodeError) -> Self {
+        match error {
+            PortableBackupDecodeError::Json(error) => Self::Json(error),
+            PortableBackupDecodeError::Schema(error) => Self::Manifest(error),
+        }
+    }
 }
 
 /// Write a deterministic tar archive with one JSON manifest and one entry per
@@ -99,7 +110,13 @@ fn read_archive_impl(
         if manifest.path_bytes().as_ref() != MANIFEST.as_bytes() {
             return Err(invalid("manifest must be the first entry"));
         }
-        backup = serde_json::from_reader::<_, PortableBackupV1>(&mut manifest)?;
+        // The whole manifest is read before decoding so its declared schema
+        // can be checked first: a newer build's backup gets an upgrade
+        // message, an older one is upgraded in memory.
+        let mut bytes = Vec::new();
+        manifest.read_to_end(&mut bytes)?;
+        backup = PortableBackupV1::from_manifest_json(&bytes)?;
+        drop(bytes);
         backup.validate()?;
         drop(manifest);
         let mut remaining = backup.blobs()?;
