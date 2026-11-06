@@ -12,19 +12,23 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_platform_fs::{
-    WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind, WindowsFileLock,
+    WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind, WindowsFileLock, WindowsSid,
     windows_file_security,
 };
-use serde::{Deserialize, Serialize};
 
+use super::installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation};
 use super::ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
+use super::release_selection::{ReleaseRecords, decode_active_pointer, encode_active_pointer};
+use super::update_pipe::{UPDATE_PIPE_RECORD, UpdatePipeName};
 use crate::model::{InstallDisposition, InstallJournalV1, InstallModelError, UnitId};
 
 const INSTALL_LOCK_FILE: &str = "install.lock";
 const INSTALL_JOURNAL_FILE: &str = "install-journal.json";
 const ACTIVE_POINTER_FILE: &str = "active.json";
-const ACTIVE_POINTER_SCHEMA_VERSION: u32 = 1;
 const MAX_ACTIVE_POINTER_BYTES: usize = 4 * 1024;
+const MAX_INSTALLATION_BYTES: usize = 4 * 1024;
+/// The activator's records, and the pipe record the service publishes.
+const ACTIVATOR_DIRECTORY: &str = "activator";
 const UNITS_DIRECTORY: &str = "units";
 /// File systems whose rename and flush give the journal and pointer one
 /// durable step.
@@ -44,14 +48,6 @@ pub struct InstallStore {
     state_root: PathBuf,
     max_journal_bytes: usize,
     ownership: WindowsOwnershipPolicy,
-}
-
-/// The pointer that names the active unit.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ActivePointer {
-    schema_version: u32,
-    unit: UnitId,
 }
 
 impl InstallStore {
@@ -136,8 +132,8 @@ impl InstallStore {
     /// Returns [`InstallStoreError::LockContended`] when another process
     /// holds the lock, and an error for a missing, unsafe or aliased root.
     pub fn acquire_lock(&self) -> Result<InstallLock, InstallStoreError> {
-        let release = self.open_root(&self.root)?;
-        let state = self.open_root(&self.state_root)?;
+        let release = self.open_root(&self.root, WindowsDirectoryAccess::Write)?;
+        let state = self.open_root(&self.state_root, WindowsDirectoryAccess::Write)?;
         let release_identity = release
             .metadata()
             .map_err(|source| self.open_root_error(&self.root, source))?;
@@ -162,7 +158,44 @@ impl InstallStore {
         })
     }
 
-    fn open_root(&self, root: &Path) -> Result<WindowsDirectory, InstallStoreError> {
+    /// Prove both roots and their ancestors safe for a reader that holds no
+    /// lock: a program outside any unit, running as whoever started it.
+    ///
+    /// # Errors
+    /// Returns an error for a missing or unsafe root.
+    pub fn release_records(&self) -> Result<WindowsReleaseRecords, InstallStoreError> {
+        let release = self.open_root(&self.root, WindowsDirectoryAccess::Read)?;
+        let state = self.open_root(&self.state_root, WindowsDirectoryAccess::Read)?;
+        Ok(WindowsReleaseRecords {
+            store: self.clone(),
+            release,
+            state,
+        })
+    }
+
+    fn activator_directory(
+        &self,
+        state: &WindowsDirectory,
+    ) -> Result<WindowsDirectory, InstallStoreError> {
+        let name = OsStr::new(ACTIVATOR_DIRECTORY);
+        let path = self.state_root.join(ACTIVATOR_DIRECTORY);
+        let directory = match state.entry_metadata(name) {
+            Ok(None) => {
+                state.create_child_directory_with_security(name, &self.ownership.units_sddl())
+            }
+            Ok(Some(_)) => state.open_child_directory(name, WindowsDirectoryAccess::Write),
+            Err(error) => Err(error),
+        }
+        .map_err(|source| self.open_root_error(&path, source))?;
+        self.require_installer_owned(&directory, &path)?;
+        Ok(directory)
+    }
+
+    fn open_root(
+        &self,
+        root: &Path,
+        access: WindowsDirectoryAccess,
+    ) -> Result<WindowsDirectory, InstallStoreError> {
         let mut ancestor = PathBuf::new();
         let mut components = root.components().peekable();
         while let Some(component) = components.next() {
@@ -179,7 +212,7 @@ impl InstallStore {
                 .require_ancestor(&security)
                 .map_err(|refusal| InstallStoreError::Untrusted(ancestor.clone(), refusal))?;
         }
-        let directory = WindowsDirectory::open(root, WindowsDirectoryAccess::Write)
+        let directory = WindowsDirectory::open(root, access)
             .map_err(|source| self.open_root_error(root, source))?;
         self.require_installer_owned(&directory, root)?;
         let file_system = directory
@@ -249,15 +282,9 @@ impl InstallStore {
                     "the pointer exceeds {MAX_ACTIVE_POINTER_BYTES} bytes"
                 ))
             })?;
-        let pointer: ActivePointer = serde_json::from_slice(&bytes)
-            .map_err(|error| InstallStoreError::InvalidActivePointer(error.to_string()))?;
-        if pointer.schema_version != ACTIVE_POINTER_SCHEMA_VERSION {
-            return Err(InstallStoreError::InvalidActivePointer(format!(
-                "unsupported pointer schema {}",
-                pointer.schema_version
-            )));
-        }
-        Ok(Some(pointer.unit))
+        decode_active_pointer(&bytes)
+            .map(Some)
+            .map_err(InstallStoreError::InvalidActivePointer)
     }
 
     /// Point the installation at `unit`, or at nothing, in one durable step.
@@ -272,11 +299,8 @@ impl InstallStore {
         let state = self.state_directory(lock)?;
         match unit {
             Some(unit) => {
-                let bytes = serde_json::to_vec(&ActivePointer {
-                    schema_version: ACTIVE_POINTER_SCHEMA_VERSION,
-                    unit: unit.clone(),
-                })
-                .map_err(|error| InstallStoreError::SwitchActive(io::Error::other(error)))?;
+                let bytes = encode_active_pointer(unit)
+                    .map_err(|error| InstallStoreError::SwitchActive(io::Error::other(error)))?;
                 replace_durably(state, ACTIVE_POINTER_FILE, &bytes)
                     .map_err(InstallStoreError::SwitchActive)
             }
@@ -549,6 +573,113 @@ pub struct UnitCollection {
     pub refused: Vec<(PathBuf, String)>,
 }
 
+/// The journal, the pointer and the units, for a reader that holds no lock.
+///
+/// Every read goes through the root handles this retained, and every
+/// record and program is judged by the handle its contents come from.
+#[derive(Debug)]
+pub struct WindowsReleaseRecords {
+    store: InstallStore,
+    release: WindowsDirectory,
+    state: WindowsDirectory,
+}
+
+impl WindowsReleaseRecords {
+    /// The path of `program` at the root of `unit`, once the units
+    /// directory, the unit and the program are all proven to be the
+    /// installer's own.
+    ///
+    /// # Errors
+    /// Returns an error for a missing or unsafe unit or program. A prior
+    /// that is gone stays an error: nothing else may stand in for it.
+    pub fn unit_program(&self, unit: &UnitId, program: &str) -> Result<PathBuf, InstallStoreError> {
+        let store = &self.store;
+        let units_path = store.root.join(UNITS_DIRECTORY);
+        let units = self
+            .release
+            .open_child_directory(OsStr::new(UNITS_DIRECTORY), WindowsDirectoryAccess::Read)
+            .map_err(InstallStoreError::OpenUnits)?;
+        let security = units
+            .security()
+            .map_err(|source| store.open_root_error(&units_path, source))?;
+        store
+            .ownership
+            .require_units_directory(&security)
+            .map_err(|refusal| InstallStoreError::Untrusted(units_path, refusal))?;
+        let unit_path = store.unit_path(unit);
+        let directory = units
+            .open_child_directory(OsStr::new(unit.as_str()), WindowsDirectoryAccess::Read)
+            .map_err(InstallStoreError::OpenUnit)?;
+        store.require_installer_owned(&directory, &unit_path)?;
+        let program_path = unit_path.join(program);
+        let file = directory
+            .open_file(OsStr::new(program))
+            .map_err(InstallStoreError::OpenUnit)?;
+        store.require_trusted_file(&file, &program_path)?;
+        Ok(program_path)
+    }
+
+    /// Publish the update pipe's name to `user` and nobody else, in one
+    /// step, so a reader never finds half a record.
+    ///
+    /// # Errors
+    /// Returns an error for an unsafe state root or a failed write.
+    pub fn publish_update_pipe(
+        &self,
+        name: &UpdatePipeName,
+        user: &WindowsSid,
+    ) -> Result<(), InstallStoreError> {
+        let store = &self.store;
+        let state = store.open_root(&store.state_root, WindowsDirectoryAccess::Write)?;
+        let directory = store.activator_directory(&state)?;
+        let bytes = name
+            .encode_record()
+            .map_err(|error| InstallStoreError::PublishPipe(io::Error::other(error)))?;
+        let sddl = format!("D:P(A;;FA;;;SY)(A;;FR;;;{})", user.to_string_form());
+        replace_durably_with(&directory, UPDATE_PIPE_RECORD, &bytes, Some(&sddl))
+            .map_err(InstallStoreError::PublishPipe)
+    }
+
+    /// What the installer recorded about this installation.
+    ///
+    /// # Errors
+    /// Returns an error for a missing, unsafe or invalid record.
+    pub fn installation(&self) -> Result<WindowsInstallation, InstallStoreError> {
+        let bytes = self
+            .read_trusted(WINDOWS_INSTALLATION_FILE, MAX_INSTALLATION_BYTES)?
+            .ok_or_else(|| {
+                InstallStoreError::InvalidInstallation("the record is missing".to_owned())
+            })?;
+        WindowsInstallation::decode(&bytes).map_err(InstallStoreError::InvalidInstallation)
+    }
+
+    fn read_trusted(&self, name: &str, limit: usize) -> Result<Option<Vec<u8>>, InstallStoreError> {
+        let file = match self.state.open_file(OsStr::new(name)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(InstallStoreError::ReadRecord(error)),
+        };
+        self.store
+            .require_trusted_file(&file, &self.store.state_root.join(name))?;
+        let bytes = read_bounded(file, limit)
+            .map_err(InstallStoreError::ReadRecord)?
+            .ok_or(InstallStoreError::RecordTooLarge { limit })?;
+        Ok(Some(bytes))
+    }
+}
+
+impl ReleaseRecords for WindowsReleaseRecords {
+    fn read_journal(&mut self) -> io::Result<Option<Vec<u8>>> {
+        self.read_trusted(INSTALL_JOURNAL_FILE, self.store.max_journal_bytes)
+            .map_err(io::Error::other)
+    }
+
+    fn read_pointer(&mut self) -> io::Result<Option<Vec<u8>>> {
+        self.read_trusted(ACTIVE_POINTER_FILE, MAX_ACTIVE_POINTER_BYTES)
+            .map_err(io::Error::other)
+    }
+}
+
 /// The held transaction lock and the root handles it retained.
 #[derive(Debug)]
 pub struct InstallLock {
@@ -567,11 +698,30 @@ impl InstallLock {
 
 /// Write `bytes` to a fresh temporary file beside `name`, flush it, then
 /// rename it over `name` and flush the directory.
-fn replace_durably(directory: &WindowsDirectory, name: &str, bytes: &[u8]) -> io::Result<()> {
+pub(super) fn replace_durably(
+    directory: &WindowsDirectory,
+    name: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    replace_durably_with(directory, name, bytes, None)
+}
+
+/// [`replace_durably`], for a file that carries exactly `sddl` when one is
+/// given and whatever the directory passes on otherwise.
+fn replace_durably_with(
+    directory: &WindowsDirectory,
+    name: &str,
+    bytes: &[u8],
+    sddl: Option<&str>,
+) -> io::Result<()> {
     for _ in 0..MAX_STAGE_ATTEMPTS {
         let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temporary = format!(".{name}.{}.{sequence}", std::process::id());
-        let mut file = match directory.create_file(OsStr::new(&temporary)) {
+        let created = match sddl {
+            Some(sddl) => directory.create_file_with_security(OsStr::new(&temporary), sddl),
+            None => directory.create_file(OsStr::new(&temporary)),
+        };
+        let mut file = match created {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -694,6 +844,14 @@ pub enum InstallStoreError {
     },
     #[error("failed to inspect the install state directory: {0}")]
     InspectState(io::Error),
+    #[error("failed to read an installation record: {0}")]
+    ReadRecord(io::Error),
+    #[error("an installation record exceeds {limit} bytes")]
+    RecordTooLarge { limit: usize },
+    #[error("invalid installation record: {0}")]
+    InvalidInstallation(String),
+    #[error("failed to publish the update pipe: {0}")]
+    PublishPipe(io::Error),
 }
 
 #[cfg(test)]
