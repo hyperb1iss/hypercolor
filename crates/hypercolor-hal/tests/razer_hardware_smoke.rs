@@ -11,6 +11,7 @@ use hypercolor_hal::drivers::razer::{
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::transport::Transport;
 use hypercolor_hal::transport::control::UsbControlTransport;
+use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 use zerocopy::{FromZeros, IntoBytes};
 
@@ -104,12 +105,19 @@ async fn blade_identify_sequence_writes_without_protocol_errors() -> Result<(), 
 
     let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_15_LATE_2021_ADVANCED)
         .expect("Blade 15 descriptor should exist");
-    let (interface, report_id) = match descriptor.transport {
-        TransportType::UsbControl {
-            interface,
-            report_id,
-        } => (interface, report_id),
-        other => panic!("expected control transport for Blade 15, got {other:?}"),
+    let TransportType::UsbHidApi {
+        interface,
+        report_id,
+        report_mode,
+        max_report_len,
+        usage_page,
+        usage,
+    } = descriptor.transport
+    else {
+        panic!(
+            "expected HIDAPI transport for Blade 15, got {:?}",
+            descriptor.transport
+        );
     };
 
     let usb = nusb::list_devices()
@@ -119,7 +127,20 @@ async fn blade_identify_sequence_writes_without_protocol_errors() -> Result<(), 
                 && device.product_id() == PID_BLADE_15_LATE_2021_ADVANCED
         })
         .expect("Blade 15 USB device should be present");
-    let transport = UsbControlTransport::new(usb.open().await?, interface, report_id).await?;
+    let usb_device_path = usb_path(&usb);
+    let transport = UsbHidApiTransport::open(
+        RAZER_VENDOR_ID,
+        PID_BLADE_15_LATE_2021_ADVANCED,
+        interface,
+        report_id,
+        report_mode,
+        max_report_len,
+        usb.serial_number(),
+        Some(&usb_device_path),
+        usage_page,
+        usage,
+        descriptor.serial_quirk.is_some(),
+    )?;
     let protocol = (descriptor.protocol.build)();
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
     let purple = vec![[0x80, 0x10, 0xD8]; total_leds];

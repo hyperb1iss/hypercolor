@@ -818,10 +818,7 @@ fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
 
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbControl {
-            interface: 2,
-            report_id: 0x00
-        }
+        expected_razer_shared_hid_transport(2, 0x00, Some(0x0001), Some(0x0002))
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -839,10 +836,7 @@ fn lookup_returns_blade_14_2021_descriptor_with_keepalive() {
     assert_eq!(descriptor.name, "Razer Blade 14 (2021)");
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbControl {
-            interface: 2,
-            report_id: 0x00
-        }
+        expected_razer_shared_hid_transport(2, 0x00, Some(0x0001), Some(0x0002))
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -859,10 +853,7 @@ fn lookup_returns_blade_pro_2016_descriptor() {
     assert_eq!(descriptor.protocol.id, "razer/blade-pro-2016");
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbControl {
-            interface: 2,
-            report_id: 0x00
-        }
+        expected_razer_shared_hid_transport(2, 0x00, Some(0x0001), Some(0x0002))
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -906,10 +897,7 @@ fn lookup_returns_blade_14_2022_descriptor_with_keepalive() {
     );
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbControl {
-            interface: 2,
-            report_id: 0x00
-        }
+        expected_razer_shared_hid_transport(2, 0x00, Some(0x0001), Some(0x0002))
     );
 
     let protocol = (descriptor.protocol.build)();
