@@ -102,6 +102,27 @@ fn create_refuses_a_taken_name() {
 }
 
 #[test]
+fn a_file_created_with_security_carries_exactly_that_descriptor() {
+    let (_guard, root) = scratch();
+    let directory = open_write(&root);
+    let user = WindowsSid::current_user().expect("current user");
+    let sddl = format!("D:P(A;;FA;;;{})", user.to_string_form());
+
+    let mut file = directory
+        .create_file_with_security(OsStr::new("record"), &sddl)
+        .expect("create");
+    file.write_all(b"held").expect("write");
+
+    let security = windows_file_security(&file).expect("security");
+    assert!(security.dacl_protected, "nothing inherited");
+    assert_eq!(security.aces.len(), 1, "{:?}", security.aces);
+    assert_eq!(security.aces[0].sid, user);
+    directory
+        .create_file_with_security(OsStr::new("record"), &sddl)
+        .expect_err("the name is taken");
+}
+
+#[test]
 fn rename_replaces_a_file_a_reader_holds_open() {
     let (_guard, root) = scratch();
     let directory = open_write(&root);

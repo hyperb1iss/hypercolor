@@ -716,6 +716,30 @@ impl WindowsDirectory {
         Ok(File::from(handle))
     }
 
+    /// Create a new regular child file for writing, whose security
+    /// descriptor is exactly `sddl` from the start.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name or descriptor,
+    /// [`io::ErrorKind::AlreadyExists`] when the name is taken, and the
+    /// operating-system error for any other failure.
+    pub fn create_file_with_security(&self, name: &OsStr, sddl: &str) -> io::Result<File> {
+        self.require_write()?;
+        let wide = validate_name(name)?;
+        let descriptor = SddlDescriptor::parse(sddl)?;
+        let handle = nt_create(
+            Some(&self.handle),
+            &wide,
+            GENERIC_READ | GENERIC_WRITE | DELETE,
+            SHARE_ALL,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE,
+            Some(&descriptor),
+        )?;
+        Ok(File::from(handle))
+    }
+
     /// Open a regular child file for appending, creating it when it is
     /// missing. The handle can only add bytes at the end. A child that is a
     /// reparse point, a directory, or a file with a second name (a hard link
@@ -1302,10 +1326,10 @@ fn security(handle: RawHandle) -> io::Result<WindowsSecurity> {
 }
 
 /// A self-relative security descriptor parsed from SDDL, freed on drop.
-struct SddlDescriptor(PSECURITY_DESCRIPTOR);
+pub(super) struct SddlDescriptor(pub(super) PSECURITY_DESCRIPTOR);
 
 impl SddlDescriptor {
-    fn parse(sddl: &str) -> io::Result<Self> {
+    pub(super) fn parse(sddl: &str) -> io::Result<Self> {
         let mut wide = sddl.encode_utf16().collect::<Vec<_>>();
         if wide.contains(&0) {
             return Err(io::Error::new(
