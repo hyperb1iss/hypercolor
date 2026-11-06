@@ -55,9 +55,10 @@ pub const PID_UWU_RGB: u16 = 0x1510;
 /// HID transport for one Wooting wire generation.
 ///
 /// The configuration collection is chosen by usage page alone, never by
-/// interface number, since gamepad emulation adds an interface to the
-/// device. Packets carry their own report ID, and commands travel as
-/// feature reports on the same handle.
+/// interface number, as the vendor SDK chooses it: a gamepad emulation
+/// mode can add an interface to the device and shift the numbering.
+/// Packets carry their own report ID, and commands travel as feature
+/// reports on the same handle.
 #[must_use]
 pub const fn transport_for(interface: WootingInterface) -> TransportType {
     let (report_id, max_report_len, usage_page) = match interface {
