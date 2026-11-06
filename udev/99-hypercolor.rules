@@ -18,8 +18,127 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1532", MODE="0660", GROUP="users", TAG+="
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1532", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── Corsair ──────────────────────────────────────────────────────────────────
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", MODE="0660", GROUP="users", TAG+="uaccess"
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", MODE="0660", GROUP="users", TAG+="uaccess"
+# Scoped per product, never vendor-wide. Corsair keyboards and mice expose
+# their boot-keyboard, NKRO, and pointer collections as hidraw nodes too, and
+# a vendor-wide hidraw rule would hand every member of the fallback group a
+# keystroke feed. ATTRS also walks up through hubs, so a vendor-wide match can
+# catch any device plugged into a hub that reports Corsair's vendor ID.
+#
+# Fan, LCD, and Lighting Node controllers have no input collections and claim
+# their HID interface directly, so they get hidraw and USB device access.
+# iCUE LINK System Hub
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c3f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c3f", MODE="0660", GROUP="users", TAG+="uaccess"
+# Elite Capellix LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c39", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c39", MODE="0660", GROUP="users", TAG+="uaccess"
+# Elite Capellix LCD (alt)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c33", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c33", MODE="0660", GROUP="users", TAG+="uaccess"
+# iCUE LINK LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c4e", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c4e", MODE="0660", GROUP="users", TAG+="uaccess"
+# Nautilus RS LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c55", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c55", MODE="0660", GROUP="users", TAG+="uaccess"
+# XC7 RGB Elite LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c42", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c42", MODE="0660", GROUP="users", TAG+="uaccess"
+# XD6 Elite LCD
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c43", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c43", MODE="0660", GROUP="users", TAG+="uaccess"
+# Lighting Node Pro
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c0b", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c0b", MODE="0660", GROUP="users", TAG+="uaccess"
+# Lighting Node Core
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c1a", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c1a", MODE="0660", GROUP="users", TAG+="uaccess"
+# Commander Pro
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c10", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c10", MODE="0660", GROUP="users", TAG+="uaccess"
+# LS100 Starter Kit
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c1e", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c1e", MODE="0660", GROUP="users", TAG+="uaccess"
+# LT100 Tower
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c23", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="0c23", MODE="0660", GROUP="users", TAG+="uaccess"
+# 1000D Obsidian
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1d00", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="1d00", MODE="0660", GROUP="users", TAG+="uaccess"
+# Spec Omega RGB
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1d04", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1b1c", ATTR{idProduct}=="1d04", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Peripherals: Hypercolor reaches the lighting collection through hidraw and
+# never opens the USB device node, so these get no usb_device grant (write
+# access to that node is enough to detach usbhid). Each product is tagged
+# with its lighting interface first, then only the hidraw node on that
+# interface is granted. The two steps are needed because idProduct lives on
+# the USB device and bInterfaceNumber on the USB interface, and the ATTRS
+# keys of one rule must all match the same parent.
+#
+# Bragi keyboards, mice, and mousepads: vendor-only interface 1.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1ba4", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1ba0", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bad", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b8d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b83", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc7", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bed", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1baf", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b73", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bb9", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc4", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bb3", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bd4", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b0a", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bff", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bfd", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b01", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b89", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7c", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc5", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b4b", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b5e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b4c", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b70", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b93", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bba", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bac", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b9e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bb5", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bf0", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1be3", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b9b", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc9", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01"
+SUBSYSTEM=="hidraw", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}=="01", ATTRS{bInterfaceNumber}=="01", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# NXP/CUE keyboards and mice: interface 1, only while it has both an IN and an
+# OUT endpoint. Current firmware puts the vendor-only command interface there;
+# older firmware puts an IN-only keyboard interface there instead, and that
+# node must stay root-only.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b3d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b17", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b37", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b13", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b33", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b49", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b11", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b2d", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b20", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b12", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b1e", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="01-io"
+SUBSYSTEM=="hidraw", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}=="01-io", ATTRS{bInterfaceNumber}=="01", ATTRS{bNumEndpoints}=="02", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# NXP/CUE desk accessories: interface 0. The Polaris carries a keyboard
+# collection on interface 1, which stays root-only.
+# MM800 RGB Polaris
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b3b", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="00"
+# ST100 RGB
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0a34", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}="00"
+SUBSYSTEM=="hidraw", ENV{HYPERCOLOR_CORSAIR_LIGHTING_IF}=="00", ATTRS{bInterfaceNumber}=="00", MODE="0660", GROUP="users", TAG+="uaccess"
 
 # ─── PrismRGB / Nollie / GCS ──────────────────────────────────────────────────
 # Scope permissions to known supported product IDs for each vendor.

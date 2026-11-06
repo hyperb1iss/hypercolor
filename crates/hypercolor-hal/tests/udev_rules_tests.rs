@@ -1,11 +1,16 @@
 use std::collections::BTreeSet;
 
 use hypercolor_hal::database::ProtocolDatabase;
+use hypercolor_hal::drivers::corsair::CORSAIR_VID;
+use hypercolor_hal::drivers::corsair::peripheral::devices as corsair_peripherals;
 use hypercolor_hal::registry::TransportType;
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
 const UDEV_INPUT_RULES: &str = include_str!("../../../udev/70-hypercolor-input.rules");
 const UDEV_INPUT_ALL_RULES: &str = include_str!("../../../udev/70-hypercolor-input-all.rules");
+/// udev property the Corsair peripheral rules use to tag a product before
+/// granting its lighting-interface hidraw node.
+const CORSAIR_LIGHTING_IF_KEY: &str = "HYPERCOLOR_CORSAIR_LIGHTING_IF";
 const I2C_UDEV_RULE: &str = "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"";
 
 fn input_rule_lines(rules: &str) -> Vec<&str> {
@@ -69,16 +74,13 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
 
     for descriptor in ProtocolDatabase::all() {
         match descriptor.transport {
+            // Host-managed HID opens /dev/hidraw* (directly or through
+            // HIDAPI's hidraw backend) and never the USB device node.
             TransportType::UsbHidApi { .. } | TransportType::UsbHidRaw { .. } => {
                 required_rules.insert((
                     descriptor.vendor_id,
                     descriptor.product_id,
                     RequiredSubsystem::Hidraw,
-                ));
-                required_rules.insert((
-                    descriptor.vendor_id,
-                    descriptor.product_id,
-                    RequiredSubsystem::Usb,
                 ));
             }
             TransportType::UsbSerial { .. } => {
@@ -115,8 +117,10 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
         let has_product_rule = product_rule
             .as_ref()
             .is_some_and(|rule| UDEV_RULES.contains(rule));
+        let has_interface_rule = subsystem == RequiredSubsystem::Hidraw
+            && has_interface_scoped_hidraw_rule(vendor_id, product_id);
         assert!(
-            UDEV_RULES.contains(&vendor_rule) || has_product_rule,
+            UDEV_RULES.contains(&vendor_rule) || has_product_rule || has_interface_rule,
             "missing udev rule for vendor {vendor_id:04x} product {product_id:04x} subsystem {subsystem:?}: expected {vendor_rule}{}",
             product_rule
                 .as_ref()
@@ -210,5 +214,154 @@ fn input_uaccess_rules_sort_before_systemd_seat_late() {
             prefix < 73,
             "{name} must sort before systemd 73-seat-late.rules for uaccess to apply"
         );
+    }
+}
+
+/// A product's lighting-interface tag value, from
+/// `ATTRS{idVendor}=="vvvv", ATTRS{idProduct}=="pppp", ENV{KEY}="value"`.
+fn lighting_tag(vendor_id: u16, product_id: u16) -> Option<&'static str> {
+    let prefix = format!(
+        "SUBSYSTEM==\"hidraw\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", ATTRS{{idProduct}}==\"{product_id:04x}\", ENV{{{CORSAIR_LIGHTING_IF_KEY}}}=\""
+    );
+    rule_lines(UDEV_RULES).find_map(|line| {
+        line.strip_prefix(prefix.as_str())
+            .and_then(|rest| rest.strip_suffix('"'))
+    })
+}
+
+/// What the grant rule for one tag value admits.
+#[derive(Debug)]
+struct LightingGrant {
+    interface: u8,
+    requires_in_and_out_endpoints: bool,
+}
+
+fn lighting_grant(tag: &str) -> Option<LightingGrant> {
+    let prefix = format!(
+        "SUBSYSTEM==\"hidraw\", ENV{{{CORSAIR_LIGHTING_IF_KEY}}}==\"{tag}\", ATTRS{{bInterfaceNumber}}==\""
+    );
+    rule_lines(UDEV_RULES).find_map(|line| {
+        let rest = line.strip_prefix(prefix.as_str())?;
+        if !line.ends_with("MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"") {
+            return None;
+        }
+        let interface = u8::from_str_radix(rest.get(..2)?, 16).ok()?;
+        Some(LightingGrant {
+            interface,
+            requires_in_and_out_endpoints: line.contains("ATTRS{bNumEndpoints}==\"02\""),
+        })
+    })
+}
+
+fn has_interface_scoped_hidraw_rule(vendor_id: u16, product_id: u16) -> bool {
+    lighting_tag(vendor_id, product_id).is_some_and(|tag| lighting_grant(tag).is_some())
+}
+
+fn rule_lines(rules: &str) -> impl Iterator<Item = &str> {
+    rules
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
+/// Corsair keyboards and mice share their USB device with boot-keyboard,
+/// NKRO, and pointer collections. A vendor-wide hidraw or USB-node grant
+/// would expose those to the whole fallback group.
+#[test]
+fn corsair_rules_are_never_vendor_wide() {
+    let vendor = format!("{{idVendor}}==\"{CORSAIR_VID:04x}\"");
+    for line in rule_lines(UDEV_RULES) {
+        if !line.contains(&vendor) {
+            continue;
+        }
+        assert!(
+            line.contains("{idProduct}=="),
+            "Corsair udev rule must name a product ID: {line}"
+        );
+    }
+}
+
+/// Each Corsair peripheral grants only the hidraw node on the interface its
+/// transport opens, and never the USB device node.
+#[test]
+fn corsair_peripheral_rules_grant_only_the_lighting_node() {
+    for descriptor in corsair_peripherals::descriptors() {
+        let TransportType::UsbHidApi {
+            interface: Some(interface),
+            ..
+        } = descriptor.transport
+        else {
+            panic!(
+                "{} must pin the interface of its host-managed HID transport",
+                descriptor.name
+            );
+        };
+        let product = descriptor.product_id;
+
+        let tag = lighting_tag(CORSAIR_VID, product).unwrap_or_else(|| {
+            panic!(
+                "{} ({product:04x}) needs a lighting-interface tag",
+                descriptor.name
+            )
+        });
+        let grant = lighting_grant(tag).unwrap_or_else(|| {
+            panic!(
+                "{} ({product:04x}) tag {tag} has no grant rule",
+                descriptor.name
+            )
+        });
+        assert_eq!(
+            grant.interface, interface,
+            "{} grant must match the interface its transport opens",
+            descriptor.name
+        );
+
+        let usb_rule = RequiredSubsystem::Usb
+            .product_rule_line(CORSAIR_VID, product)
+            .expect("usb rules have a product form");
+        assert!(
+            !UDEV_RULES.contains(&usb_rule),
+            "{} ({product:04x}) must not get a USB device node grant: {usb_rule}",
+            descriptor.name
+        );
+    }
+}
+
+/// Older NXP firmware puts an IN-only keyboard interface where current
+/// firmware puts the IN+OUT command interface. The grant must tell them
+/// apart.
+#[test]
+fn nxp_input_device_grants_require_the_in_and_out_command_interface() {
+    for descriptor in corsair_peripherals::descriptors() {
+        if descriptor.transport != corsair_peripherals::NXP_INPUT_DEVICE_TRANSPORT {
+            continue;
+        }
+        let tag = lighting_tag(CORSAIR_VID, descriptor.product_id)
+            .unwrap_or_else(|| panic!("{} needs a lighting-interface tag", descriptor.name));
+        let grant = lighting_grant(tag)
+            .unwrap_or_else(|| panic!("{} tag {tag} has no grant rule", descriptor.name));
+        assert!(
+            grant.requires_in_and_out_endpoints,
+            "{} grant must require both endpoints: {grant:?}",
+            descriptor.name
+        );
+    }
+}
+
+/// The interface-scoped grant only means something when no other Corsair
+/// hidraw rule grants the same product wholesale.
+#[test]
+fn corsair_peripherals_have_no_whole_product_hidraw_grant() {
+    for descriptor in corsair_peripherals::descriptors() {
+        let product = format!("ATTRS{{idProduct}}==\"{:04x}\"", descriptor.product_id);
+        for line in rule_lines(UDEV_RULES) {
+            if line.starts_with("SUBSYSTEM==\"hidraw\"") && line.contains(&product) {
+                assert!(
+                    !line.contains("MODE="),
+                    "{} must not get a whole-product hidraw grant: {line}",
+                    descriptor.name
+                );
+            }
+        }
     }
 }
