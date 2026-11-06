@@ -43,7 +43,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/capture/monitors",
             axum::routing::get(capture::list_capture_monitors),
-            [OperationDoc::get_vec::<
+            [OperationDoc::get_list::<
                 hypercolor_types::api::capture::CaptureMonitor,
             >(
                 "list_capture_monitors",

@@ -22,12 +22,10 @@ use serde_json::json;
 
 #[test]
 fn control_surface_list_response_round_trips() {
-    let response = ControlSurfaceListResponse {
-        surfaces: Vec::new(),
-    };
+    let response = ControlSurfaceListResponse::complete(Vec::new());
 
     let wire = serde_json::to_value(&response).expect("control surface list serializes");
-    assert_eq!(wire, json!({ "surfaces": [] }));
+    assert_eq!(wire, json!({ "items": [], "total": 0 }));
     assert_eq!(
         serde_json::from_value::<ControlSurfaceListResponse>(wire)
             .expect("control surface list deserializes"),

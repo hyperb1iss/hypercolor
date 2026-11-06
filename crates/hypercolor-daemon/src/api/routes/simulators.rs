@@ -12,7 +12,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             axum::routing::get(simulators::list_simulated_displays)
                 .post(simulators::create_simulated_display),
             [
-                OperationDoc::get_vec::<hypercolor_types::api::simulators::SimulatedDisplay>(
+                OperationDoc::get_list::<hypercolor_types::api::simulators::SimulatedDisplay>(
                     "list_simulated_displays",
                     "displays",
                     "List simulated displays",

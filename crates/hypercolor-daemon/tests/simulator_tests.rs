@@ -205,9 +205,10 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
     )
     .await;
     let display_id = config.id.to_string();
-    assert_eq!(displays["data"][0]["id"], display_id);
-    assert_eq!(displays["data"][0]["name"], config.name);
-    assert_eq!(displays["data"][0]["circular"], config.circular);
+    assert_eq!(displays["data"]["total"], 1);
+    assert_eq!(displays["data"]["items"][0]["id"], display_id);
+    assert_eq!(displays["data"]["items"][0]["name"], config.name);
+    assert_eq!(displays["data"]["items"][0]["circular"], config.circular);
 
     let devices = body_json(
         app.oneshot(

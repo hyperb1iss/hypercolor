@@ -3111,13 +3111,15 @@ async fn config_schema_route_serves_the_key_registry() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let entries = json["data"]
+    let entries = json["data"]["items"]
         .as_array()
         .expect("the schema is served as a list of entries");
     assert_eq!(
         entries.len(),
         hypercolor_types::config_registry::schema_entries().len()
     );
+    assert_eq!(json["data"]["total"], entries.len());
+    assert!(json["data"].get("page").is_none());
 
     let render = entries
         .iter()
@@ -4685,9 +4687,9 @@ async fn list_control_surfaces_batches_device_and_driver_surfaces() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let surfaces = json["data"]["surfaces"]
+    let surfaces = json["data"]["items"]
         .as_array()
-        .expect("surfaces should be an array");
+        .expect("surfaces should be listed under items");
     assert_eq!(surfaces.len(), 3);
     assert!(surfaces.iter().any(|surface| {
         surface["surface_id"] == format!("device:{device_id}")
@@ -4724,9 +4726,9 @@ async fn list_control_surfaces_preserves_driver_action_confirmation() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let surfaces = json["data"]["surfaces"]
+    let surfaces = json["data"]["items"]
         .as_array()
-        .expect("surfaces should be an array");
+        .expect("surfaces should be listed under items");
     let nanoleaf = surfaces
         .iter()
         .find(|surface| surface["surface_id"] == format!("driver:nanoleaf:device:{device_id}"))
@@ -4842,9 +4844,9 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let surfaces = json["data"]["surfaces"]
+    let surfaces = json["data"]["items"]
         .as_array()
-        .expect("surfaces should be an array");
+        .expect("surfaces should be listed under items");
     let driver_device_surface = surfaces
         .iter()
         .find(|surface| surface["surface_id"] == surface_id)
@@ -11770,9 +11772,10 @@ async fn list_displays_only_returns_display_capable_devices() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let items = json["data"]
+    let items = json["data"]["items"]
         .as_array()
         .expect("display list should be an array");
+    assert_eq!(json["data"]["total"], items.len());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], display_id.to_string());
     assert_eq!(items[0]["name"], "Pump LCD");
@@ -11858,7 +11861,7 @@ async fn list_displays_tells_identical_panels_apart_by_port_and_honours_user_nam
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let names: HashMap<String, String> = json["data"]
+    let names: HashMap<String, String> = json["data"]["items"]
         .as_array()
         .expect("array")
         .iter()

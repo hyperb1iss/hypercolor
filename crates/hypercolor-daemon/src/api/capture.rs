@@ -13,7 +13,8 @@ use hypercolor_core::input::{
     picker_selection_snapshot,
 };
 use hypercolor_types::api::capture::{
-    CaptureAuthorizationResponse, CaptureMonitor, CapturePickerResponse, ProtectedSourceGrantOwner,
+    CaptureAuthorizationResponse, CaptureMonitor, CaptureMonitorListResponse,
+    CapturePickerResponse, ProtectedSourceGrantOwner,
 };
 
 use crate::api::envelope;
@@ -376,7 +377,7 @@ pub(crate) async fn list_capture_monitors(
         })
         .collect();
 
-    envelope::ok(monitors)
+    envelope::ok(CaptureMonitorListResponse::complete(monitors))
 }
 
 #[cfg(test)]

@@ -398,7 +398,8 @@ async fn control_surface_list_encodes_device_query() {
                     *captured_uri.lock().await = Some(uri.to_string());
                     canonical_json(json!({
                         "data": {
-                            "surfaces": [{
+                            "total": 1,
+                            "items": [{
                                 "surface_id": "device:Desk Strip",
                                 "scope": {
                                     "device": {
@@ -593,14 +594,17 @@ async fn get_simulated_displays_and_frame_decode_preview_image() {
             "/api/v1/simulators/displays",
             get(|| async {
                 canonical_json(json!({
-                    "data": [{
-                        "id": "0198c5b6-5100-7000-8000-00000000a001",
-                        "name": "Desk Preview",
-                        "width": 480,
-                        "height": 480,
-                        "circular": true,
-                        "enabled": true
-                    }]
+                    "data": {
+                        "items": [{
+                            "id": "0198c5b6-5100-7000-8000-00000000a001",
+                            "name": "Desk Preview",
+                            "width": 480,
+                            "height": 480,
+                            "circular": true,
+                            "enabled": true
+                        }],
+                        "total": 1
+                    }
                 }))
             }),
         )

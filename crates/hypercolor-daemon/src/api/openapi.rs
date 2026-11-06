@@ -159,14 +159,6 @@ impl OperationDoc {
         .component::<T>()
     }
 
-    pub(crate) fn get_vec<T: utoipa::ToSchema + utoipa::__dev::ComposeSchema>(
-        operation_id: &'static str,
-        tag: &'static str,
-        summary: &'static str,
-    ) -> Self {
-        Self::new::<Vec<T>>(HttpMethod::Get, operation_id, tag, summary).component::<T>()
-    }
-
     pub(crate) fn post<T: utoipa::ToSchema>(
         operation_id: &'static str,
         tag: &'static str,

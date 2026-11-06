@@ -8,6 +8,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::envelope::ListResponse;
+use crate::config_registry::ConfigKeySchemaEntry;
+
+/// Response body for `GET /api/v1/config/schema`: one entry per key
+/// pattern in the config registry.
+pub type ConfigSchemaListResponse = ListResponse<ConfigKeySchemaEntry>;
+
 /// Effective daemon config returned by `GET /api/v1/config`.
 ///
 /// The key registry defines the individual fields. The document stays

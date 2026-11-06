@@ -2,14 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::envelope::ListResponse;
 use crate::controls::{ControlSurfaceDocument, ControlValueMap};
 
 /// Response body for `GET /api/v1/control-surfaces`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct ControlSurfaceListResponse {
-    pub surfaces: Vec<ControlSurfaceDocument>,
-}
+pub type ControlSurfaceListResponse = ListResponse<ControlSurfaceDocument>;
 
 /// Query parameters for `GET /api/v1/control-surfaces`.
 ///

@@ -324,7 +324,7 @@ async fn openapi_json_is_served_with_expected_paths() {
     }
     assert!(body["components"]["schemas"]["CaptureAuthorizationResponse"].is_object());
     assert!(body["components"]["schemas"]["CapturePickerResponse"].is_object());
-    assert!(body["components"]["schemas"]["CaptureMonitorList"].is_object());
+    assert!(body["components"]["schemas"]["CaptureMonitorListResponse"].is_object());
     assert!(body["components"]["schemas"]["ProtectedSourceGrantOwner"].is_object());
 }
 
@@ -522,16 +522,44 @@ fn runtime_document_has_complete_operation_contracts() {
     assert!(schemas["ListResponse"].is_null());
     assert!(schemas["Option"].is_null());
     for schema in [
-        "CaptureMonitorList",
-        "ConfigKeySchemaEntryList",
+        "CaptureMonitorListResponse",
+        "ConfigKeySchemaEntryListResponse",
+        "ControlSurfaceDocumentListResponse",
         "DeviceSummaryListResponse",
-        "DisplaySummaryList",
+        "DisplaySummaryListResponse",
         "MediaAssetRecordListResponse",
-        "SimulatedDisplayList",
+        "SimulatedDisplayListResponse",
     ] {
         assert!(schemas[schema].is_object(), "missing schema {schema}");
     }
     assert_local_refs_resolve(&document, &document);
+}
+
+#[test]
+fn no_enveloped_read_answers_a_bare_array() {
+    let document = openapi_document();
+    let schemas = &document["components"]["schemas"];
+    let paths = document["paths"].as_object().expect("paths object");
+    let mut bare = Vec::new();
+    for (path, item) in paths {
+        let Some(data_ref) =
+            item["get"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
+                ["data"]["$ref"]
+                .as_str()
+        else {
+            continue;
+        };
+        let name = data_ref
+            .strip_prefix("#/components/schemas/")
+            .expect("data refs point at component schemas");
+        if schemas[name]["type"] == "array" {
+            bare.push(format!("{path} -> {name}"));
+        }
+    }
+    assert!(
+        bare.is_empty(),
+        "collection reads answer ListResponse, not a bare array: {bare:?}"
+    );
 }
 
 #[test]

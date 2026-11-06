@@ -679,10 +679,10 @@ async fn device_control_surfaces(
             urlencoded(device)
         ))
         .await?;
-    if response.surfaces.is_empty() {
+    if response.items.is_empty() {
         bail!("Device {device} does not expose control surfaces");
     }
-    Ok(response.surfaces)
+    Ok(response.items)
 }
 
 fn available_field_ids(surfaces: &[ControlSurfaceDocument]) -> String {

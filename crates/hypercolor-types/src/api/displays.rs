@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::envelope::ListResponse;
 use crate::control::ControlValue;
 use crate::display::DisplayDescriptor;
 use crate::effect::EffectMetadata;
@@ -54,6 +55,9 @@ pub struct DisplaySummary {
     /// the same descriptor injected into face pages.
     pub descriptor: DisplayDescriptor,
 }
+
+/// Response body for `GET /api/v1/displays`.
+pub type DisplayListResponse = ListResponse<DisplaySummary>;
 
 /// Response from `GET /api/v1/displays/{id}/face` and every face mutation
 /// route.

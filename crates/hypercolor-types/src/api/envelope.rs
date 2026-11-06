@@ -104,6 +104,20 @@ pub struct ListResponse<T> {
     pub page: Option<PageInfo>,
 }
 
+impl<T> ListResponse<T> {
+    /// A complete, unpaged list: `total` is the item count and `page` is
+    /// absent.
+    #[must_use]
+    pub fn complete(items: Vec<T>) -> Self {
+        let total = u64::try_from(items.len()).unwrap_or(u64::MAX);
+        Self {
+            items,
+            total,
+            page: None,
+        }
+    }
+}
+
 /// Paging state for endpoints that genuinely page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

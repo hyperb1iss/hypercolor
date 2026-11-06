@@ -115,3 +115,15 @@ fn complete_lists_omit_the_page_block_honestly() {
     let round: ListResponse<u32> = serde_json::from_value(json).expect("deserializes");
     assert_eq!(round, paged);
 }
+
+#[test]
+fn the_complete_constructor_counts_items_and_omits_paging() {
+    let complete = ListResponse::complete(vec!["a", "b", "c"]);
+    assert_eq!(complete.total, 3);
+    assert!(complete.page.is_none());
+    assert_eq!(
+        serde_json::to_value(&complete).expect("serializes"),
+        serde_json::json!({ "items": ["a", "b", "c"], "total": 3 })
+    );
+    assert_eq!(ListResponse::<u32>::complete(Vec::new()).total, 0);
+}

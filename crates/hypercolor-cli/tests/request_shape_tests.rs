@@ -1284,10 +1284,11 @@ async fn capture_device_control_surface_list(
     *captured_uri.lock().await = Some(uri.to_string());
     Json(serde_json::json!({
         "data": {
-            "surfaces": [
+            "items": [
                 device_control_surface_response()["data"].clone(),
                 driver_device_control_surface_response()["data"].clone()
-            ]
+            ],
+            "total": 2
         }
     }))
 }

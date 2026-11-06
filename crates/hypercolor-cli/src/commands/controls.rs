@@ -234,13 +234,13 @@ pub(crate) fn render_surface_list(
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain => {
-            for surface in &response.surfaces {
+            for surface in &response.items {
                 println!("{}", surface.surface_id);
             }
         }
         OutputFormat::Table => {
             let rows = response
-                .surfaces
+                .items
                 .iter()
                 .map(|surface| surface_row(surface, ctx))
                 .collect::<Vec<_>>();

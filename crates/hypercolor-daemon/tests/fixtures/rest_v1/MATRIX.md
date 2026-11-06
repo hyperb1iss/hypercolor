@@ -177,13 +177,12 @@ The complete collections are effects, effect presets, scenes, drivers, scene
 zone layers, assets, favorites, saved presets, and playlists. `total` counts the
 rows after any server-side filtering.
 
-Five list-shaped routes are **not** `ListResponse`. `GET /api/v1/displays`,
-`GET /api/v1/capture/monitors`, `GET /api/v1/simulators/displays`, and
-`GET /api/v1/config/schema` put a bare JSON array straight into `data`;
-`GET /api/v1/control-surfaces` puts an object, `{"surfaces": [ ]}`. All five
-still carry the standard envelope, so `meta` is unchanged and only `data`
-deviates, but a client cannot read `data.items` or `data.total` on any of
-them.
+`GET /api/v1/displays`, `GET /api/v1/capture/monitors`,
+`GET /api/v1/simulators/displays`, `GET /api/v1/config/schema`, and
+`GET /api/v1/control-surfaces` are complete collections too. Before 1.0 the
+first four put a bare JSON array in `data` and the last answered
+`{"surfaces": [ ]}`; they now answer `ListResponse` like every other
+collection.
 
 `GET /api/v1/effects/console` is a cursor window over a bounded log rather than
 a collection: `{"entries": [ ], "next_seq": 42, "truncated": false}`. Clients
@@ -262,7 +261,7 @@ the same effective power state directly.
 | PUT | `/api/v1/config/keys/{key}` | **The value itself** as the JSON body; `?live=` (default `true`) gates the live apply | `200`, enveloped `{key, value, live, requires_restart, pending_restart, path, persisted, persistence_error?}` | The body is typed JSON, so `true` is boolean and `"hello"` is a string. A file write that fails after admission still answers `200`: the change is live, `persisted` is `false`, and `persistence_error` says why (absent when `persisted` is `true`). Returns `500 internal_error` when no `ConfigManager` is wired, or when a live capture write cannot stage its file |
 | DELETE | `/api/v1/config/keys/{key}` | `?live=` (default `true`) | `200`, same mutation body, `value` carrying the restored default | |
 | POST | `/api/v1/config/reset` | No body; `?live=` (default `true`) | `200`, mutation body with `key` and `value` null | Whole-config reset only; `full_reset_config` carries exactly two things across, the `drivers` map and the `extensions` catch-all, which is where retired keys such as `include` now land. With live apply on, the reset rebuilds the capture source, so a config directory that refuses the staged file answers `500`; with `?live=false`, a refused write answers `200` with `persisted: false` |
-| GET | `/api/v1/config/schema` | Empty | `200`, enveloped list of `{pattern, apply, redaction, has_validator, protection}` | The key registry as clients read it; `apply` is `{kind, section?}` |
+| GET | `/api/v1/config/schema` | Empty | `200`, enveloped complete list (`{items, total}`) of `{pattern, apply, redaction, has_validator, protection}` | The key registry as clients read it; `apply` is `{kind, section?}` |
 
 ---
 

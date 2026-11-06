@@ -23,10 +23,10 @@ use crate::simulators::{
     SimulatedDisplayExt, activate_simulated_displays, logical_device_ids_for_simulator,
 };
 
-use hypercolor_types::api::simulators::SimulatedDisplay;
 pub use hypercolor_types::api::simulators::{
     CreateSimulatedDisplayRequest, DeleteSimulatedDisplayResponse, UpdateSimulatedDisplayRequest,
 };
+use hypercolor_types::api::simulators::{SimulatedDisplay, SimulatedDisplayListResponse};
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
 
@@ -38,7 +38,7 @@ impl AsRef<[u8]> for OwnedDisplayJpeg {
 
 pub async fn list_simulated_displays(State(state): State<Arc<AppState>>) -> Response {
     let store = state.simulated_displays.read().await;
-    envelope::ok(store.list())
+    envelope::ok(SimulatedDisplayListResponse::complete(store.list()))
 }
 
 pub async fn get_simulated_display(

@@ -113,7 +113,7 @@ impl DaemonClient {
         let response: Option<ControlSurfaceListResponse> = self
             .get_optional_data(&control_surface_list_path(query))
             .await?;
-        Ok(response.map_or_else(Vec::new, |response| response.surfaces))
+        Ok(response.map_or_else(Vec::new, |response| response.items))
     }
 
     /// Fetch device-owned and optional driver-owned control surfaces.
@@ -173,7 +173,9 @@ impl DaemonClient {
 
     /// Fetch all configured virtual display simulators.
     pub async fn get_simulated_displays(&self) -> Result<Vec<SimulatedDisplay>> {
-        self.get_data("/simulators/displays").await
+        let response: ListResponse<SimulatedDisplay> =
+            self.get_data("/simulators/displays").await?;
+        Ok(response.items)
     }
 
     /// Fetch the latest rendered frame for a virtual display simulator.

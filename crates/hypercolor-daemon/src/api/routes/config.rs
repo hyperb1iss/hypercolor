@@ -19,7 +19,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/config/schema",
             axum::routing::get(config::get_config_schema),
-            [OperationDoc::get_vec::<
+            [OperationDoc::get_list::<
                 hypercolor_types::config_registry::ConfigKeySchemaEntry,
             >(
                 "get_config_schema", "config", "Describe every config key"

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::envelope::ListResponse;
 use crate::device::DeviceId;
 
 /// One simulated display as `/api/v1/simulators/displays` renders it.
@@ -24,6 +25,9 @@ pub struct SimulatedDisplay {
 const fn default_simulated_display_enabled() -> bool {
     true
 }
+
+/// Response body for `GET /api/v1/simulators/displays`.
+pub type SimulatedDisplayListResponse = ListResponse<SimulatedDisplay>;
 
 /// Request body for `POST /api/v1/simulators/displays`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

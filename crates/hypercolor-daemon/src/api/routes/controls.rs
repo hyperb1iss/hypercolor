@@ -32,13 +32,15 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/control-surfaces",
             axum::routing::get(controls::list_control_surfaces),
-            [OperationDoc::get::<controls::ControlSurfaceListResponse>(
-                "list_control_surfaces",
-                "controls",
-                "List control surfaces",
-            )
-            .query::<hypercolor_types::api::controls::ControlSurfaceListQuery>()
-            .component::<hypercolor_types::control::ControlValue>()],
+            [
+                OperationDoc::get_list::<hypercolor_types::controls::ControlSurfaceDocument>(
+                    "list_control_surfaces",
+                    "controls",
+                    "List control surfaces",
+                )
+                .query::<hypercolor_types::api::controls::ControlSurfaceListQuery>()
+                .component::<hypercolor_types::control::ControlValue>(),
+            ],
         ))
         .routes(openapi::documented_route(
             "/control-surfaces/{id}",
