@@ -4881,6 +4881,7 @@ dependencies = [
  "hex",
  "hypercolor-macos-owner",
  "hypercolor-platform-fs",
+ "rustix 1.1.5",
  "security-framework",
  "serde",
  "serde_json",
