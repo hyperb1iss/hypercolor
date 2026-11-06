@@ -89,7 +89,9 @@ pub(super) use shared::{
 pub(super) use shared::{
     acquire_servo_worker, poison_shared_servo_worker_if_fatal, servo_worker_is_fatal_error,
 };
-pub use shared::{servo_memory_report_snapshot, shutdown_servo_runtime};
+pub use shared::{
+    servo_memory_report_snapshot, servo_runtime_poison_reason, shutdown_servo_runtime,
+};
 use wake::{ServoEventLoopWaker, ServoWakeSignal, WakingSender};
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);

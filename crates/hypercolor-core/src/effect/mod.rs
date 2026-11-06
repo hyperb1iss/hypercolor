@@ -50,8 +50,8 @@ pub use registry::{EffectEntry, EffectRegistry, RescanReport};
 pub use servo::{
     ConsoleMessage, HypercolorWebViewDelegate, ServoMemoryReport, ServoMemoryReportKind,
     ServoMemoryReportSnapshot, ServoMemoryReportTotals, ServoProcessMemoryReport, ServoRenderer,
-    ServoTelemetrySnapshot, servo_memory_report_snapshot, servo_telemetry_snapshot,
-    shutdown_servo_runtime,
+    ServoTelemetrySnapshot, servo_memory_report_snapshot, servo_runtime_poison_reason,
+    servo_telemetry_snapshot, shutdown_servo_runtime,
 };
 #[cfg(feature = "servo-gpu-import")]
 pub use servo::{

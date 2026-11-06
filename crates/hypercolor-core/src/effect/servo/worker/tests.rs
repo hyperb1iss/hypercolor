@@ -607,6 +607,44 @@ fn poisoned_shared_worker_requires_daemon_restart() {
 }
 
 #[test]
+fn poison_reason_reports_only_an_unusable_runtime() {
+    let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
+        .lock()
+        .expect("shared worker test lock");
+    reset_shared_servo_worker_state();
+    assert_eq!(servo_runtime_poison_reason(), None, "a vacant runtime");
+
+    let (worker, _stopped) = test_support::spawn_test_worker();
+    install_running_shared_worker(worker);
+    assert_eq!(servo_runtime_poison_reason(), None, "a running runtime");
+    shutdown_shared_servo_worker().expect("test worker should stop");
+
+    install_poisoned_shared_worker("test failure");
+    assert_eq!(
+        servo_runtime_poison_reason().as_deref(),
+        Some("test failure")
+    );
+
+    reset_shared_servo_worker_state();
+}
+
+#[test]
+fn process_exit_shutdown_reports_a_poisoned_runtime() {
+    let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
+        .lock()
+        .expect("shared worker test lock");
+    reset_shared_servo_worker_state();
+    let (worker, _stopped) = test_support::spawn_test_worker();
+    install_running_shared_worker(worker);
+
+    shutdown_servo_runtime().expect("process-exit shutdown should stop shared worker");
+
+    let reason = servo_runtime_poison_reason().expect("shutdown poisons the runtime");
+    assert!(reason.contains("shut down for process exit"), "{reason}");
+    reset_shared_servo_worker_state();
+}
+
+#[test]
 fn shutdown_clears_poisoned_shared_worker_state() {
     let _lock = test_support::SHARED_WORKER_STATE_TEST_LOCK
         .lock()
