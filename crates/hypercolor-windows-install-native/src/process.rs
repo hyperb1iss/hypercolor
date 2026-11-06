@@ -14,9 +14,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    GetProcessTimes, INFINITE, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
-    WaitForMultipleObjects, WaitForSingleObject,
+    GetProcessTimes, INFINITE, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    QueryFullProcessImageNameW, TerminateProcess, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows::core::{Owned, PWSTR};
 
@@ -26,6 +26,10 @@ const MAX_IMAGE_PATH_UNITS: usize = 32_768;
 const TERMINATED_EXIT_CODE: u32 = 1;
 /// `MAXIMUM_WAIT_OBJECTS`: how many handles one wait can hold.
 const MAX_WAIT_HANDLES: usize = 64;
+/// What naming and waiting need, which even a process another account owns
+/// usually grants.
+const WAIT_ACCESS: PROCESS_ACCESS_RIGHTS =
+    PROCESS_ACCESS_RIGHTS(PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0);
 
 /// One process, told apart from any later process that reuses its ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,10 +53,8 @@ fn os_error(error: &windows::core::Error) -> io::Error {
     io::Error::from_raw_os_error(error.code().0)
 }
 
-/// Open `pid` for naming, waiting and ending, or `None` when no such
-/// process exists.
-fn open(pid: u32) -> io::Result<Option<Owned<HANDLE>>> {
-    let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE;
+/// Open `pid` with `access`, or `None` when no such process exists.
+fn open_with(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> io::Result<Option<Owned<HANDLE>>> {
     // SAFETY: The call takes plain values and transfers ownership of the
     // returned handle, which `Owned` closes.
     match unsafe { OpenProcess(access, false, pid) } {
@@ -63,6 +65,11 @@ fn open(pid: u32) -> io::Result<Option<Owned<HANDLE>>> {
         Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => Ok(None),
         Err(error) => Err(os_error(&error)),
     }
+}
+
+/// Open `pid` for naming and waiting.
+fn open(pid: u32) -> io::Result<Option<Owned<HANDLE>>> {
+    open_with(pid, WAIT_ACCESS)
 }
 
 fn creation_time(handle: HANDLE) -> io::Result<u64> {
@@ -122,25 +129,27 @@ fn has_exited(handle: HANDLE) -> io::Result<bool> {
     }
 }
 
-/// A live process's description, or `None` when it has already exited and
-/// only a handle someone holds keeps it visible.
+/// A live process's description, or `None` when it has already exited,
+/// even if that happened while it was being read.
 fn describe(pid: u32, handle: HANDLE) -> io::Result<Option<RunningProcess>> {
     if has_exited(handle)? {
         return Ok(None);
     }
-    Ok(Some(RunningProcess {
-        id: ProcessId {
-            pid,
-            created: creation_time(handle)?,
-        },
-        image: image_path(handle)?,
-    }))
+    let created = creation_time(handle)?;
+    match image_path(handle) {
+        Ok(image) => Ok(Some(RunningProcess {
+            id: ProcessId { pid, created },
+            image,
+        })),
+        Err(_) if has_exited(handle)? => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// A handle to exactly `id`, or `None` when that process is gone, even if
 /// another process now uses its ID.
-fn retain(id: ProcessId) -> io::Result<Option<Owned<HANDLE>>> {
-    let Some(handle) = open(id.pid)? else {
+fn retain(id: ProcessId, access: PROCESS_ACCESS_RIGHTS) -> io::Result<Option<Owned<HANDLE>>> {
+    let Some(handle) = open_with(id.pid, access)? else {
         return Ok(None);
     };
     if creation_time(*handle)? != id.created {
@@ -156,7 +165,7 @@ fn retain(id: ProcessId) -> io::Result<Option<Owned<HANDLE>>> {
 /// Returns the operating-system error when the process cannot be opened or
 /// named.
 pub fn process(id: ProcessId) -> io::Result<Option<RunningProcess>> {
-    let Some(handle) = retain(id)? else {
+    let Some(handle) = retain(id, WAIT_ACCESS)? else {
         return Ok(None);
     };
     describe(id.pid, *handle)
@@ -227,10 +236,13 @@ fn wait_milliseconds(timeout: Duration) -> u32 {
 }
 
 /// Handles to whichever of `processes` still run.
-fn retain_all(processes: &[ProcessId]) -> io::Result<Vec<(ProcessId, Owned<HANDLE>)>> {
+fn retain_all(
+    processes: &[ProcessId],
+    access: PROCESS_ACCESS_RIGHTS,
+) -> io::Result<Vec<(ProcessId, Owned<HANDLE>)>> {
     let mut retained = Vec::with_capacity(processes.len());
     for id in processes {
-        if let Some(handle) = retain(*id)? {
+        if let Some(handle) = retain(*id, access)? {
             retained.push((*id, handle));
         }
     }
@@ -248,7 +260,7 @@ fn retain_all(processes: &[ProcessId]) -> io::Result<Vec<(ProcessId, Owned<HANDL
 /// Returns the operating-system error when a process cannot be opened or
 /// the wait fails.
 pub fn wait_for_every_exit(processes: &[ProcessId], timeout: Duration) -> io::Result<bool> {
-    let retained = retain_all(processes)?;
+    let retained = retain_all(processes, WAIT_ACCESS)?;
     if retained.is_empty() {
         return Ok(true);
     }
@@ -274,7 +286,7 @@ pub fn wait_for_any_exit(
     processes: &[ProcessId],
     timeout: Duration,
 ) -> io::Result<Option<ProcessId>> {
-    let retained = retain_all(processes)?;
+    let retained = retain_all(processes, WAIT_ACCESS)?;
     if let Some(gone) = processes
         .iter()
         .find(|id| !retained.iter().any(|(held, _)| held == *id))
@@ -308,7 +320,7 @@ pub fn wait_for_any_exit(
 /// Returns the operating-system error when a process that still runs
 /// cannot be opened or ended.
 pub fn terminate_processes(processes: &[ProcessId]) -> io::Result<()> {
-    for (_, handle) in retain_all(processes)? {
+    for (_, handle) in retain_all(processes, WAIT_ACCESS | PROCESS_TERMINATE)? {
         // SAFETY: `handle` is live for the call and holds `PROCESS_TERMINATE`.
         if let Err(error) = unsafe { TerminateProcess(*handle, TERMINATED_EXIT_CODE) }
             && !has_exited(*handle)?
