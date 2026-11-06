@@ -167,7 +167,8 @@ fn launchd_gates_loading_on_the_disabled_state_and_never_a_loaded_job() {
         "a crashed job stays loaded, waiting out its throttle"
     );
 
-    assert!(agent.launchctl(&["bootout", &target]).status.success());
+    let bootout = agent.launchctl(&["bootout", "--wait", &target]);
+    assert!(bootout.status.success(), "{bootout:?}");
     assert_eq!(agent.job(), MacosLaunchdJob::NotLoaded);
 
     // The gate holds across the unload: nothing loads until it reopens.
@@ -183,4 +184,104 @@ fn launchd_gates_loading_on_the_disabled_state_and_never_a_loaded_job() {
     let bootstrap = agent.bootstrap();
     assert!(bootstrap.status.success(), "{bootstrap:?}");
     agent.wait_for_job(|job| matches!(job, MacosLaunchdJob::Running { .. }));
+}
+
+/// A process this test binary starts from inside a fixture bundle sits here.
+#[test]
+#[ignore = "the fixture process, started by a test below"]
+fn fixture_process_waits_to_be_killed() {
+    std::thread::sleep(Duration::from_mins(2));
+}
+
+#[test]
+fn a_helper_in_a_bundle_reports_its_own_file_and_cdhash() {
+    let root = tempfile::tempdir().expect("root");
+    let root = std::fs::canonicalize(root.path()).expect("canonical root");
+    let macos = root.join("Fixture.app/Contents/MacOS");
+    std::fs::create_dir_all(&macos).expect("bundle");
+    std::fs::write(
+        root.join("Fixture.app/Contents/Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>fixture-app</string>
+<key>CFBundleIdentifier</key><string>tech.hyperbliss.hypercolor.image-fixture</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+"#,
+    )
+    .expect("Info.plist");
+    let helper = macos.join("fixture-daemon");
+    std::fs::copy(std::env::current_exe().expect("test binary"), &helper).expect("copy helper");
+
+    let mut child = Command::new(&helper)
+        .args(["--ignored", "--exact", "fixture_process_waits_to_be_killed"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("start helper");
+    let mut inspector = hypercolor_macos_owner::NativeMacosDirectLaunchdInspector::new();
+    let (executable, cdhash) = inspector
+        .process_image(child.id())
+        .expect("inspect helper")
+        .expect("the helper runs");
+    child.kill().expect("kill helper");
+    child.wait().expect("reap helper");
+
+    assert_eq!(executable, helper, "the file itself, never its bundle");
+    assert_eq!(cdhash.len(), 40, "{cdhash}");
+    assert!(
+        inspector
+            .process_image(child.id())
+            .expect("inspect a process that is gone")
+            .is_none()
+    );
+}
+
+#[test]
+fn launch_services_opens_the_bundle_at_the_path_not_its_identifier() {
+    use hypercolor_macos_owner::{MacosAppHost as _, NativeMacosAppHost};
+
+    let root = tempfile::tempdir().expect("root");
+    let root = std::fs::canonicalize(root.path()).expect("canonical root");
+    let marker = root.join("opened");
+    let bundle = |name: &str| {
+        let bundle = root.join(name).join("Fixture.app");
+        let macos = bundle.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).expect("bundle");
+        std::fs::write(
+            bundle.join("Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>fixture</string>
+<key>CFBundleIdentifier</key><string>tech.hyperbliss.hypercolor.open-fixture</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+"#,
+        )
+        .expect("Info.plist");
+        let executable = macos.join("fixture");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf %s \"{name}\" > \"{}\"\n",
+                marker.display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(
+            &executable,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("mode");
+        bundle
+    };
+    let _shadow = bundle("first");
+    let exact = bundle("second");
+
+    NativeMacosAppHost.open_bundle(&exact).expect("open");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the bundle never opened");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(std::fs::read_to_string(&marker).expect("marker"), "second");
 }

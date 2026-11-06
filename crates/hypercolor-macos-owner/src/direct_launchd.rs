@@ -614,4 +614,6 @@ pub use mutation::{
 #[cfg(target_os = "macos")]
 pub use native::NativeMacosDirectLaunchdInspector;
 #[cfg(target_os = "macos")]
+pub(crate) use native::open_macos_bundle;
+#[cfg(target_os = "macos")]
 pub use retained_code::validate_retained_macos_executable;

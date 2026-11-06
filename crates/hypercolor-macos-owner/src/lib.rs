@@ -1,5 +1,7 @@
 //! Durable macOS daemon ownership and handover state.
 
+#[cfg(unix)]
+mod app_control;
 mod coordinator;
 mod coordinator_error;
 mod direct_launchd;
@@ -24,6 +26,14 @@ mod store_io;
 mod tests;
 mod validation;
 
+#[cfg(target_os = "macos")]
+pub use app_control::NativeMacosAppHost;
+#[cfg(unix)]
+pub use app_control::{
+    MACOS_APP_CONTROL_SOCKET_NAME, MACOS_APP_RELAUNCH_FILE_NAME, MACOS_UPDATE_PENDING_FILE_NAME,
+    MacosAppControl, MacosAppControlServer, MacosAppHost, MacosRunningApp, macos_app_bundle_of,
+    macos_app_startup_hold, macos_update_state_root, wait_for_macos_update_end,
+};
 pub use coordinator::{
     MacosOwnerCoordinatorOutcome, MacosOwnerRemedy, choose_daemon_owner, recover_daemon_owner,
     recover_incoming_daemon_owner,
@@ -53,6 +63,7 @@ pub use guard::{
 };
 #[cfg(target_os = "macos")]
 pub use guard_coordinate::canonical_macos_daemon_guard_path;
+pub use hypercolor_platform_fs::is_macos_translocated_path;
 pub use journal::{MacosHandoverJournal, MacosHandoverTransactionId};
 pub use launchd_adapter::{
     LAUNCHCTL_PATH, LaunchdAdapter, LaunchdTarget, launch_agent_plist, launchctl_service_disabled,
@@ -67,11 +78,11 @@ pub use model::{
     MACOS_OWNER_RECORD_FILE_NAME, MACOS_OWNER_RECORD_SCHEMA_VERSION,
     MACOS_STANDALONE_HANDOVER_TIMEOUT, MAX_MACOS_AUDIT_TOKEN_IDENTITY_BYTES,
     MAX_MACOS_DESIGNATED_REQUIREMENT_HASH_BYTES, MAX_MACOS_EXECUTABLE_PATH_BYTES,
-    MAX_MACOS_HANDOVER_OPERATIONS, MAX_MACOS_OWNER_ARTIFACT_BYTES, MacosAutostartStates,
-    MacosConflictUpdate, MacosDaemonOwner, MacosDaemonSessionAttestation, MacosExternalOwnerMode,
-    MacosHandoverOperation, MacosHandoverPhase, MacosOwnerConflict, MacosOwnerConflictRecord,
-    MacosOwnerIdentity, MacosOwnerIncarnation, MacosOwnerRecord, MacosOwnerRecoveryRequired,
-    MacosOwnerSnapshot, MacosServerSessionId,
+    MAX_MACOS_HANDOVER_OPERATIONS, MAX_MACOS_OWNER_ARTIFACT_BYTES, MacosAppStartupHold,
+    MacosAutostartStates, MacosConflictUpdate, MacosDaemonOwner, MacosDaemonSessionAttestation,
+    MacosExternalOwnerMode, MacosHandoverOperation, MacosHandoverPhase, MacosOwnerConflict,
+    MacosOwnerConflictRecord, MacosOwnerIdentity, MacosOwnerIncarnation, MacosOwnerRecord,
+    MacosOwnerRecoveryRequired, MacosOwnerSnapshot, MacosServerSessionId,
 };
 #[cfg(target_os = "macos")]
 pub use process_identity::{request_macos_child_termination, request_macos_pid_termination};

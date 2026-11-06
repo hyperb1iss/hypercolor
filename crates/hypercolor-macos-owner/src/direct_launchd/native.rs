@@ -422,6 +422,30 @@ fn hex_digest(digest: &[u8]) -> String {
     output
 }
 
+/// Open exactly the bundle at `bundle` through LaunchServices. `open` takes
+/// the path as a URL; it never looks a bundle up by its identifier.
+pub(crate) fn open_macos_bundle(bundle: &Path) -> Result<(), MacosOwnerExecutionError> {
+    let path = bundle
+        .to_str()
+        .ok_or_else(|| MacosOwnerExecutionError::new("the app bundle path is not UTF-8"))?;
+    let output = run_bounded_command(
+        "/usr/bin/open",
+        &[path],
+        MAX_CODESIGN_OUTPUT_BYTES,
+        MAX_CODESIGN_OUTPUT_BYTES,
+        COMMAND_TIMEOUT,
+    )?;
+    if output.status == Some(0) {
+        Ok(())
+    } else {
+        Err(MacosOwnerExecutionError::new(format!(
+            "LaunchServices refused to open {path} with status {:?}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
 #[derive(Debug)]
 struct BoundedCommandOutput {
     status: Option<i32>,
