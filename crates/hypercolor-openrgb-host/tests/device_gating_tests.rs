@@ -429,3 +429,30 @@ fn native_nzxt_withholds_gen2_controllers_and_releases_unsupported_families() {
     );
     assert!(rules.detector_enabled("NZXT Hue+", None));
 }
+
+#[test]
+fn native_wooting_withholds_the_boards_it_claims() {
+    const SIXTY_HE_PLUS: UsbDeviceId = UsbDeviceId::new(0x31e3, 0x1322);
+    const TWO_LEGACY: UsbDeviceId = UsbDeviceId::new(0x03eb, 0xff02);
+    assert!(
+        detector_usb_claim("Wooting 60HE+").is_some(),
+        "the id map must know the 60HE+ for this test to mean anything"
+    );
+
+    let rules = partition_driver_ids(
+        &[
+            driver("wooting", true, &[SIXTY_HE_PLUS, TWO_LEGACY]),
+            driver("openrgb", true, &[]),
+        ],
+        &[device("wooting"), device("openrgb")],
+        &known_detector_driver_ids(),
+    )
+    .detector_rules();
+
+    assert!(!rules.detector_enabled("Wooting 60HE+", Some(true)));
+    assert!(!rules.detector_enabled("Wooting Two (Legacy)", None));
+    assert!(
+        rules.detector_enabled("Wooting 80HE", Some(false)),
+        "a mapped Wooting detector the catalog cannot claim goes back to OpenRGB"
+    );
+}

@@ -143,3 +143,25 @@ detectors = [
   "NZXT RGB Controller",
   "NZXT Smart Device V2",
 ]
+
+# Wooting names come from detector_usb_ids.toml (OpenRGB 1.0 udev output).
+# Every detector there claims only PIDs the wooting driver registers, so
+# the whole family is withheld while the native driver owns a device.
+[[family]]
+driver_id = "wooting"
+prefixes = ["Wooting "]
+detectors = [
+  "Wooting 60HE",
+  "Wooting 60HE (ARM)",
+  "Wooting 60HE+",
+  "Wooting 60HEv2",
+  "Wooting 80HE",
+  "Wooting One",
+  "Wooting One (Legacy)",
+  "Wooting Two",
+  "Wooting Two (Legacy)",
+  "Wooting Two HE",
+  "Wooting Two HE (ARM)",
+  "Wooting Two Lekker Edition",
+  "Wooting UwU RGB",
+]

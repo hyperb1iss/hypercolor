@@ -29,6 +29,13 @@
 # natively owned hardware and output-disables any route that still
 # overlaps, and the `openrgb` diagnose check reports that overlap.
 #
+# Wootility is deliberately absent too. Wooting firmware serves several
+# applications at once, and Wootility leaves per-key lighting to an SDK
+# client until that client resets it, which the wooting driver does on
+# disconnect, so it never holds a keyboard away from Hypercolor. Sources:
+# the Wootility 5.0.0-beta.7 changelog on wooting.io; github.com/ClintH/
+# woot README.
+#
 # Each entry cites where its names come from. Keep that up to date when a
 # vendor renames something.
 
