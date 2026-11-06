@@ -574,8 +574,10 @@ impl ServoWorkerRuntime {
 
         #[cfg(feature = "servo-gpu-import")]
         let mut rendering_context_handle = self.create_rendering_context(width, height)?;
+        let diag_start = Instant::now();
         #[cfg(not(feature = "servo-gpu-import"))]
         let rendering_context_handle = self.create_rendering_context(width, height)?;
+        eprintln!("DIAG rendering context in {:?}", diag_start.elapsed());
         let frame_clock = Rc::new(ServoFrameClock::default());
         let rendering_context: Rc<dyn RenderingContext> = Rc::new(FrameClockRenderingContext::new(
             rendering_context_handle.rendering_context.clone(),
@@ -617,10 +619,12 @@ impl ServoWorkerRuntime {
             },
         );
 
+        eprintln!("DIAG webview built at {:?}", diag_start.elapsed());
         if let Err(error) = self.wait_for_load_completion(session_id, WORKER_READY_TIMEOUT, None) {
             self.sessions.remove(&session_id);
             return Err(error);
         }
+        eprintln!("DIAG about:blank loaded at {:?}", diag_start.elapsed());
         debug!(?session_id, width, height, "Servo session ready");
 
         #[cfg(feature = "servo-gpu-import")]

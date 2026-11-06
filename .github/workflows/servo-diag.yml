@@ -1,0 +1,145 @@
+name: Servo Diag
+
+on:
+  push:
+    branches: [nova/servo-smoke-diag]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RUST_TOOLCHAIN: "1.99.0"
+  XCODE_VERSION: "26.5"
+  MACOSX_DEPLOYMENT_TARGET: "15.2"
+  APT_STEP_TIMEOUT: 35m
+  APT_HTTP_TIMEOUT: "20"
+  APT_RETRIES: "5"
+  # System deps shared across Linux jobs
+  LINUX_DEPS: >-
+    libudev-dev libdbus-1-dev libasound2-dev libpulse0
+    libpipewire-0.3-dev
+    ccache clang cmake jq nasm pkg-config lld
+    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+    libxdo-dev
+    libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+    librsvg2-dev libfontconfig1-dev libegl1 libssl-dev
+  LINUX_RUST_DEPS: >-
+    libudev-dev libdbus-1-dev libasound2-dev libpulse0
+    libpipewire-0.3-dev
+    ccache clang cmake jq nasm pkg-config lld ripgrep
+    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+    libxdo-dev libfontconfig1-dev libegl1 libssl-dev
+  # Servo and native app checks run separately so their feature/system deps do
+  # not force unrelated crates onto the slow path.
+  RUST_SHARED_WORKSPACE_ARGS: >-
+    --workspace
+    --exclude hypercolor-daemon
+    --exclude hypercolor-app
+  # Windows scope additionally drops the CLI, which depends on the daemon and
+  # so drags in Servo and mozangle. Those need a Visual Studio developer
+  # environment a bare runner does not have, and building them would tell us
+  # nothing about the Windows-only code this job exists to gate.
+  RUST_WINDOWS_WORKSPACE_ARGS: >-
+    --workspace
+    --exclude hypercolor-daemon
+    --exclude hypercolor-app
+    --exclude hypercolor
+  HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
+  # Tests resolve bundled effects next to the running executable unless this is
+  # set, and CI invokes cargo directly instead of through the justfile that
+  # normally exports it. Every job that stages generated effects puts them here.
+  HYPERCOLOR_EFFECTS_DIR: ${{ github.workspace }}/effects/hypercolor
+  CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target
+  MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
+  CARGO_INCREMENTAL: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  rust-test-servo:
+    name: Servo diag
+    runs-on: ubuntu-24.04
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
+    steps:
+      - uses: actions/checkout@v7
+
+      # The rendering smoke tests draw through Mesa's software EGL, so the
+      # lane names those packages instead of trusting the runner image.
+      - name: Install system dependencies
+        run: |
+          sudo timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout --kill-after=30s "$APT_STEP_TIMEOUT" apt-get \
+            -o Dpkg::Use-Pty=0 \
+            -o Acquire::Retries="$APT_RETRIES" \
+            -o Acquire::http::Timeout="$APT_HTTP_TIMEOUT" \
+            -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
+            install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }} \
+            libegl-mesa0 libgl1-mesa-dri
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
+          shared-key: servo
+          workspaces: . -> .cache/hypercolor/target/servo
+          cache-directories: |
+            .cache/hypercolor/mozbuild
+            .cache/hypercolor/toolchain
+            .cache/hypercolor/ccache
+          cache-on-failure: "false"
+
+      - name: Download generated effects
+        uses: actions/download-artifact@v8
+        with:
+          name: generated-effects
+          path: effects/hypercolor
+
+      - name: Build smoke binary
+        run: >-
+          ./scripts/cargo-cache-build.sh
+          cargo test --locked -p hypercolor-core --features servo
+          --test servo_integration_tests --no-run
+
+      - name: Environment report
+        continue-on-error: true
+        run: |
+          nproc; free -g; uname -a; ulimit -n; ulimit -Hn
+          env | sort | grep -E '^(DISPLAY|WAYLAND|XDG|LD_|LIBGL|EGL|MESA|GALLIUM|HOME)' || true
+          ls -la /dev/dri || true
+          ls -la /dev/kvm /dev/shm | head -5 || true
+          dpkg -l | grep -E 'mesa|libegl|libgl|libgallium|libllvm|fontconfig' || true
+          ls /usr/share/glvnd/egl_vendor.d/ || true
+          which fc-list && fc-list | wc -l
+          du -sh ~/.cache/fontconfig /var/cache/fontconfig || true
+          sudo apt-get install -y --no-install-recommends gdb
+
+      - name: Direct run, cold
+        continue-on-error: true
+        run: ./.github/servo-diag.sh cold
+
+      - name: Direct run, warm
+        continue-on-error: true
+        run: ./.github/servo-diag.sh warm
+
+      - name: Through cargo test
+        continue-on-error: true
+        run: >-
+          time ./scripts/cargo-cache-build.sh
+          cargo test --locked -p hypercolor-core --features servo
+          --test servo_integration_tests -- servo_renders_canvas2d

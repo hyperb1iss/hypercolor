@@ -67,7 +67,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// Hard deadline for one page: its load, degraded-render retries, and pixel
 /// checks together. Local runs need well under a second; the margin is for
 /// software GL with a cold shader cache on a loaded CI runner.
-const RENDER_DEADLINE: Duration = Duration::from_secs(30);
+const RENDER_DEADLINE: Duration = Duration::from_secs(150);
 /// How long a deliberately broken page gets to fail once it is presenting.
 const PROBE_WINDOW: Duration = Duration::from_secs(2);
 /// Per-channel slack for solid-color pages.

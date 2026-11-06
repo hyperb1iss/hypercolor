@@ -34,7 +34,7 @@ use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 use thiserror::Error;
 
 /// Maximum time a `load` call waits for the worker to finish loading the page.
-pub(super) const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum time an `unload` call waits for the worker to tear the page down.
 pub(super) const UNLOAD_TIMEOUT: Duration = Duration::from_secs(8);
 pub(super) const SERVO_RENDER_COMMAND_CAPACITY: usize = 256;
