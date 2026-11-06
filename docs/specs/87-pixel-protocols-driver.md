@@ -218,8 +218,10 @@ immediately and ignore the property values.
   namespace, of `<installation id>/<device id>`, and writes it into the
   device's effective config. The CID is therefore stable across restarts,
   and two installations that reuse a device id still get different CIDs. A
-  device may pin an explicit `cid`. A host without an installation id hashes
-  the device id alone.
+  device may pin an explicit `cid`. A host that persists no installation id
+  gets a random UUID v4 generated once per process in its place, so its CIDs
+  stay unique and are stable for that process's lifetime; hashing the device
+  id alone would give every such host the same CID.
 
 ---
 
@@ -375,7 +377,10 @@ CPU must be 1-512 and at least `C`.
 A position is an absolute slot `A = universe * CPU + (channel - 1)`. A run
 of `L` channels starting at `A` is split into universe runs: universe
 `floor(A / CPU)`, first slot `A mod CPU`, and `min(CPU - first slot,
-remaining)` channels, repeated until the run is consumed.
+remaining)` channels, repeated until the run is consumed. The split is a
+lazy iterator, and the universe holding the run's last channel is computed
+first with checked arithmetic (`last_universe_offset`), so an out-of-range
+run is rejected before a single universe run exists.
 
 - The device starts at `start_universe` (default 1) and `start_channel`
   (default 1, at most CPU).
@@ -485,11 +490,16 @@ Property Values ... shall be sent before the initiation of transmission
 suppression." E1.31 devices declare that through the output cadence
 (`OutputCadence::with_min_identical_sends(3)`): the output queue lets an
 unchanged payload through until it has been delivered three times, then
-suppresses it. Each repeat waits for the previous copy to be delivered, so a
-coalesced or failed attempt never counts, and a changed payload restarts
-the count. Repeats ride the render loop's existing cadence; nothing is
-paced lower. Art-Net and DDP keep plain suppression, and every other backend
-keeps the default of one send.
+suppresses it. An unchanged frame reaches the queue two ways. The render
+loop either pushes it again or, when the published frame, brightness, and
+routing are all unchanged, takes the routed-reuse path, which never calls
+`push`. The queue therefore owes the copies itself: `push` lets them through,
+and the reuse path requeues the latest payload while a copy is still owed.
+Each repeat waits for the previous copy to be delivered, so a coalesced or
+failed attempt never counts, and a changed payload restarts the count.
+Repeats ride the render loop's existing cadence; nothing is paced lower.
+Art-Net and DDP keep plain suppression, and every other backend keeps the
+default of one send, so their reuse path is unchanged.
 
 ### 9.3 Shutdown
 
@@ -560,7 +570,7 @@ start_universe = 4
 | `priority` | e131 | driver `priority` | 0-200 |
 | `source_name` | e131 | driver `source_name` | At most 63 bytes |
 | `sync_universe` | e131 | none | 1-63999 |
-| `cid` | e131 | UUID v5 of installation id and `id` | UUID string |
+| `cid` | e131 | UUID v5 of the installation id (or a per-process random id) and `id` | UUID string |
 | `max_fps` | all | 0 | 0-1000, 0 follows the render loop |
 
 Fields that do not apply to the device's protocol are rejected rather than
@@ -652,11 +662,21 @@ session, and `deliver_colors_shared_observed` reports transport start once
 the session is held.
 
 The core output queue keeps a device's frame sink after disconnect until it
-removes the queue, so the session carries a closed flag. Disconnect sets it
-while holding the session lock, then sends the shutdown frames. Every later
-write through the backend or a retained sink fails with `Disconnected`
-before any transport I/O, and the sink's `is_closed` reports it without
-blocking.
+removes the queue, so the session carries a closed flag. Closing sets it
+while holding the session lock, sends the shutdown frames, and takes the
+socket out of the session, all under that lock. A retained sink therefore
+keeps neither the stream nor the transport alive: every later write through
+the backend or the sink fails with `Disconnected` before any I/O, the sink's
+`is_closed` reports it without blocking, and UDP 6454 is free as soon as no
+open Art-Net session uses it.
+
+A repeated connect for a device replaces its session and retires the one it
+displaced: the old slot is closed and its transport released, so a sink
+from the earlier connect cannot transmit. The successor carries the stream
+on, so the retired session sends shutdown frames only when the device moved
+to a different receiver. Inserting into the session map is atomic, so
+concurrent connects for one id each retire the slot they displaced and leave
+exactly one open session.
 
 ---
 
@@ -706,10 +726,27 @@ The reuse-group and release tests fail against a backend that set reuse
 flags and held the port for its lifetime. `socket2` is a dev-dependency only,
 to create that `SO_REUSEPORT` socket.
 
+**Session lifecycle** (`backend_tests.rs`, `artnet_source_port_tests.rs`). A
+sink retained across disconnect cannot write and does not keep 6454 bound; a
+reconnect retires the previous session without a blackout, while a
+reconnect to a moved receiver shuts the old receiver down; and concurrent
+same-id connects leave one open session, send each frame once, and release
+6454 after disconnect. All of these fail against the backend before this
+lifecycle work.
+
+**Bounds** (`config_tests.rs`, `dmx_tests.rs`). Boundary cases accept exactly
+4,194,304 channels, 256 segments, a full last E1.31 universe (63999) and
+Art-Net Port-Address (32767), and the final DDP byte, and reject one more of
+each. The last-universe helper is checked with `usize::MAX`-channel runs no
+allocator could hold, and the split is shown to be lazy on such a run.
+
 **Output queue** (`hypercolor-core/tests/backend_manager_tests.rs`). A
 backend that opts into three identical sends gets exactly three writes of an
-unchanged frame and three more after a change; the existing test that an
-opted-out backend sends an unchanged frame once still passes.
+unchanged frame through repeated pushes, and exactly three through the
+routed-reuse path the render loop takes for unchanged frames, with three more
+after a change in both; the reuse test fails against the previous routing
+code. The existing tests that an opted-out backend sends an unchanged frame
+once, on both paths, still pass.
 
 **WLED regression.** The WLED suite passes unchanged after the extraction:
 93 tests across its two test files. The gate skips its two mDNS scanner
