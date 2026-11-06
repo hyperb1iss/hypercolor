@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
-    "vendors": 37,
-    "devices": 481,
+    "vendors": 38,
+    "devices": 487,
     "byStatus": {
-      "supported": 250,
+      "supported": 256,
       "in_progress": 35,
       "planned": 0,
       "researched": 64,
@@ -13,6 +13,7 @@
       "blocked": 2
     },
     "drivers": [
+      "adalight",
       "asus",
       "corsair",
       "govee",
@@ -2031,6 +2032,113 @@
         "strip"
       ],
       "sourceFile": "data/drivers/vendors/corsair.toml"
+    },
+    {
+      "slug": "adalight",
+      "name": "DIY Serial (Adalight / AWA)",
+      "website": null,
+      "vids": [],
+      "vidsHex": [],
+      "notes": "Boards running Adalight-compatible firmware on a serial port. Devices are configured by hand under drivers.adalight; the driver never claims a board by USB id. Experimental: built and tested against the published framing, not yet run on real boards.",
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Arduino with Adalight-FastLED",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "adalight",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "protocol ada, 115200 baud by default. Drops frames that arrive while it latches LEDs; set latch_ms on AVR boards. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Arduino with the Adalight sketch",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "adalight",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "Adafruit LEDstream sketch, protocol ada, 115200 baud. Classic Arduinos reset when the port opens; set startup_delay_ms. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "ESP32 with HyperSerialESP32",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "adalight",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "protocol awa, 2000000 baud by default, up to 4096 LEDs. RGBW builds take white = firmware (calibrated) or white = host. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "ESP8266 with HyperSerialEsp8266",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "adalight",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "protocol awa, 2000000 baud by default, up to 4096 LEDs. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "RP2040 with HyperSerialPico",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "adalight",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "protocol awa over USB CDC; the baud value is nominal, so configure the rate the link carries. Experimental, not yet tested on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "WLED serial input",
+          "type": "argb_controller",
+          "status": "supported",
+          "driver": "adalight",
+          "transport": "usb_serial",
+          "leds": null,
+          "notes": "protocol ada at 115200 baud. Prefer the network WLED driver: a lost byte can switch WLED's serial baud rate until it restarts. Experimental, not yet tested on hardware."
+        }
+      ],
+      "counts": {
+        "supported": 6,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 0,
+        "blocked": 0
+      },
+      "totalDevices": 6,
+      "drivers": [
+        "adalight"
+      ],
+      "transports": [
+        "usb_serial"
+      ],
+      "deviceTypes": [
+        "argb_controller"
+      ],
+      "sourceFile": "data/drivers/vendors/adalight.toml"
     },
     {
       "slug": "dygma",
