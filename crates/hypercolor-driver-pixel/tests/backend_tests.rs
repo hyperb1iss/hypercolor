@@ -253,23 +253,31 @@ async fn artnet_frames_address_port_and_zero_fill_lower_slots() {
 
 #[tokio::test]
 async fn e131_and_ddp_keep_ephemeral_source_ports() {
-    let (receiver, addr) = loopback_receiver().await;
-    let config = config_for(json!({
-        "id": "ephemeral", "host": "127.0.0.1", "port": addr.port(), "protocol": "e131",
-        "pixel_count": 1
-    }));
-    let (backend, id) = connect(&config).await;
-    backend
-        .write_colors(&id, &[[1, 2, 3]])
-        .await
-        .expect("write");
-    let mut buf = [0u8; 700];
-    let (_, from) = timeout(RECV_TIMEOUT, receiver.recv_from(&mut buf))
-        .await
-        .expect("packet should arrive")
-        .expect("receive should succeed");
-    assert_ne!(from.port(), 5568);
-    assert_ne!(from.port(), 6454);
+    for (protocol, standard_port) in [("e131", 5568), ("ddp", 4048)] {
+        let (receiver, addr) = loopback_receiver().await;
+        let config = config_for(json!({
+            "id": "ephemeral", "host": "127.0.0.1", "port": addr.port(), "protocol": protocol,
+            "pixel_count": 1
+        }));
+        let (backend, id) = connect(&config).await;
+        backend
+            .write_colors(&id, &[[1, 2, 3]])
+            .await
+            .expect("write");
+        let mut buf = [0u8; 700];
+        let (len, from) = timeout(RECV_TIMEOUT, receiver.recv_from(&mut buf))
+            .await
+            .expect("packet should arrive")
+            .expect("receive should succeed");
+        let expected_len = if protocol == "e131" { 126 + 3 } else { 10 + 3 };
+        assert_eq!(len, expected_len, "{protocol} packet arrived");
+        assert_ne!(
+            from.port(),
+            standard_port,
+            "{protocol} sends from an ephemeral port"
+        );
+        assert_ne!(from.port(), 6454, "{protocol} never uses the Art-Net port");
+    }
 }
 
 #[tokio::test]
@@ -447,6 +455,78 @@ async fn frame_sink_rejects_writes_after_disconnect() {
     assert!(!ack.transport_started);
     assert_eq!(started.load(Ordering::Relaxed), 0);
     assert_quiet(&receiver).await;
+}
+
+#[tokio::test]
+async fn reconnect_retires_the_previous_session_without_a_blackout() {
+    let (receiver, addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "again", "host": "127.0.0.1", "port": addr.port(), "protocol": "e131",
+        "pixel_count": 1
+    }));
+    let (backend, id) = connect(&config).await;
+    let old_sink = backend.frame_sink(&id).expect("sink");
+    old_sink
+        .write_colors_shared_outcome(Arc::new(vec![[5, 5, 5]]))
+        .await
+        .expect("write before reconnect");
+    recv(&receiver).await;
+
+    backend.connect(&id).await.expect("reconnect");
+    assert!(old_sink.is_closed());
+    assert!(matches!(
+        old_sink
+            .write_colors_shared_outcome(Arc::new(vec![[6, 6, 6]]))
+            .await,
+        Err(DeviceError::Disconnected { .. })
+    ));
+    assert_quiet(&receiver).await;
+
+    backend
+        .write_colors(&id, &[[7, 7, 7]])
+        .await
+        .expect("new session writes");
+    let packet = recv(&receiver).await;
+    assert_eq!(&packet[126..129], &[7, 7, 7]);
+    assert_quiet(&receiver).await;
+}
+
+#[tokio::test]
+async fn reconnect_to_a_moved_receiver_shuts_down_the_old_one() {
+    let (old_receiver, old_addr) = loopback_receiver().await;
+    let (new_receiver, new_addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "moved", "host": "127.0.0.1", "port": old_addr.port(), "protocol": "e131",
+        "pixel_count": 1
+    }));
+    let (backend, id) = connect(&config).await;
+    backend
+        .write_colors(&id, &[[9, 9, 9]])
+        .await
+        .expect("write");
+    recv(&old_receiver).await;
+
+    // The same device id, re-adopted with a new port, then reconnected.
+    let moved = config_for(json!({
+        "id": "moved", "host": "127.0.0.1", "port": new_addr.port(), "protocol": "e131",
+        "pixel_count": 1
+    }));
+    let device = configured_devices(&moved, None)
+        .expect("resolve")
+        .into_iter()
+        .next()
+        .expect("one device");
+    assert_eq!(device.info.id, id);
+    backend.adopt_device(&device).expect("re-adopt");
+    backend.connect(&id).await.expect("reconnect");
+
+    let shutdown = recv_n(&old_receiver, 1 + 3).await;
+    assert!(
+        shutdown[0][126..].iter().all(|&slot| slot == 0),
+        "black frame"
+    );
+    assert!(shutdown[1..].iter().all(|packet| packet[112] == 0x40));
+    assert_quiet(&new_receiver).await;
 }
 
 #[tokio::test]
