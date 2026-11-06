@@ -221,6 +221,22 @@ pub fn build_kraken_ultimate_protocol() -> Box<dyn Protocol> {
     Box::new(KrakenProtocol::new(KrakenModel::Ultimate))
 }
 
+fn build_kraken_v2_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::V2))
+}
+
+fn build_kraken_tournament_edition_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::TournamentEdition))
+}
+
+fn build_kraken_kitty_v2_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::KittyV2))
+}
+
+fn build_kraken_chroma_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::Chroma))
+}
+
 /// Build a Blade 15 (Late 2021 Advanced) protocol instance.
 pub fn build_blade_15_late_2021_advanced_protocol() -> Box<dyn Protocol> {
     Box::new(
@@ -1008,11 +1024,12 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     // - Custom-matrix generic devices (DeathAdder Chroma, Naga Epic Chroma,
     //   Mamba 2012, Orbweaver Chroma) because they need
     //   device-specific LED/effect packet routing instead of shared matrix I/O.
-    // - Chroma ARGB Controller, Kraken classic/V2/TE/Kitty V2/V3/V4, Hanbo,
-    //   and other specialty controller families because they use dedicated
-    //   controllers. Kraken Ultimate is the exception: it registers on the
-    //   memory-access protocol in `kraken`, which the V2, TE, and Kitty V2
-    //   share but which is untested on them.
+    // - Chroma Addressable RGB Controller (frames travel as a separate
+    //   320-byte ARGB feature report on interface 1), Hanbo Chroma (its own
+    //   report layout), Kraken V3 and V4 headsets (13-byte and 64-byte
+    //   reports), and the on/off-only Kraken 7.1 Classic. Spec 17 section
+    //   6.3 records their wire facts. The memory-access Kraken headsets
+    //   register through `kraken`.
     // - Kraken Kitty Black Edition (VID/PID 1532:0F21) because it collides
     //   with Thunderbolt 4 Dock Chroma and Hypercolor's descriptor selection is
     //   still VID/PID-first.
