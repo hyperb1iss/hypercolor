@@ -76,11 +76,12 @@ fn partition_disables_only_enabled_drivers_that_own_an_enabled_device() {
             "razer".to_owned(),
         ]
     );
-    // Only-disabled devices (nollie) and no devices (asus) are handed back
-    // to OpenRGB. Drivers without a detector family (hue, qmk) never appear.
+    // Only-disabled devices (nollie), no devices (asus), and a detector
+    // family whose driver the rig never reported (nzxt) are handed back to
+    // OpenRGB. Drivers without a detector family (hue, qmk) never appear.
     assert_eq!(
         plan.re_enable_driver_ids,
-        vec!["asus".to_owned(), "nollie".to_owned()]
+        vec!["asus".to_owned(), "nollie".to_owned(), "nzxt".to_owned()]
     );
 }
 

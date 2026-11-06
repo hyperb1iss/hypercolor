@@ -401,3 +401,31 @@ fn detector_rules_match_driver_ids_without_regard_to_case() {
     assert!(rules.detector_enabled("Razer Kraken Ultimate", Some(false)));
     assert!(!rules.detector_enabled("Corsair K70 RGB MK.2", Some(true)));
 }
+
+#[test]
+fn native_nzxt_withholds_gen2_controllers_and_releases_unsupported_families() {
+    const HUE_2: UsbDeviceId = UsbDeviceId::new(0x1e71, 0x2001);
+    const RGB_FAN_CONTROLLER: UsbDeviceId = UsbDeviceId::new(0x1e71, 0x2009);
+    assert!(
+        detector_usb_claim("NZXT Smart Device V1").is_some(),
+        "the id map must know the Smart Device V1 for this test to mean anything"
+    );
+
+    let rules = partition_driver_ids(
+        &[
+            driver("nzxt", true, &[HUE_2, RGB_FAN_CONTROLLER]),
+            driver("openrgb", true, &[]),
+        ],
+        &[device("nzxt"), device("openrgb")],
+        &known_detector_driver_ids(),
+    )
+    .detector_rules();
+
+    assert!(!rules.detector_enabled("NZXT Hue 2", None));
+    assert!(!rules.detector_enabled("NZXT RGB & Fan Controller", Some(true)));
+    assert!(
+        rules.detector_enabled("NZXT Smart Device V1", Some(false)),
+        "a mapped NZXT detector the catalog cannot claim goes back to OpenRGB"
+    );
+    assert!(rules.detector_enabled("NZXT Hue+", None));
+}

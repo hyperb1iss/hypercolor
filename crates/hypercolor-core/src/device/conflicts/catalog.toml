@@ -136,14 +136,17 @@ remedy = "Quit Polychrome RGB from its tray icon."
 
 # Sources: NZXT CAM 4.76.5 installer contents (nzxt-app.nzxt.com/
 # latest.yml); support.nzxt.com article 48391983200667. CAM reaches ENE
-# SMBus memory through cam_driver_mb.sys.
+# SMBus memory through cam_driver_mb.sys, and it is the vendor suite for
+# the NZXT USB lighting controllers and Kraken coolers the nzxt driver
+# drives.
 [[software]]
 id = "nzxt_cam"
 name = "NZXT CAM"
 processes = ["NZXT CAM.exe", "cam_helper.exe"]
 services = ["CAMService"]
+drivers = ["nzxt"]
 smbus = true
-remedy = "Quit NZXT CAM from its tray icon and stop the CAM Service in services.msc. CAM reaches RGB memory over SMBus."
+remedy = "Quit NZXT CAM from its tray icon and stop the CAM Service in services.msc. CAM drives NZXT controllers and Kraken coolers, and reaches RGB memory over SMBus."
 
 # Sources: TT RGB Plus 3.0.8 installer contents (file.thermaltake.com).
 # It installs an SMBus driver for ENE memory through a bundled ASUS
@@ -209,5 +212,5 @@ remedy = "Run: systemctl --user stop lianli-daemon, or sudo systemctl stop lianl
 id = "coolercontrol"
 name = "CoolerControl"
 processes = ["coolercontrold"]
-drivers = ["corsair", "lianli", "asus"]
-remedy = "Run: sudo systemctl stop coolercontrold. CoolerControl opens every liquidctl device it finds, including Corsair, Lian Li, and ASUS controllers."
+drivers = ["corsair", "lianli", "asus", "nzxt"]
+remedy = "Run: sudo systemctl stop coolercontrold. CoolerControl opens every liquidctl device it finds, including Corsair, Lian Li, ASUS, and NZXT controllers."
