@@ -24,6 +24,9 @@ pub enum PawnIoErrorKind {
 /// under.
 pub const BROKER_SERVICE_NAME: &str = "HypercolorSmBus";
 
+/// The named pipe the SMBus broker serves.
+pub const BROKER_PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
+
 /// Service-specific exit code the broker reports when its request loop
 /// failed, such as when it could not create its pipe for ten seconds.
 pub const BROKER_EXIT_SERVE_FAILED: u32 = 1;
@@ -84,7 +87,7 @@ pub use windows::{
     BrokerServiceState, BrokerServiceStatus, CpuTempReader, CpuVendor, PawnIoError, PawnIoResult,
     SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
     WindowsSmBusBusInfo, broker_log_path, broker_service_status, enumerate_smbus_buses,
-    machine_log_directory, open_smbus_bus, ping_broker, run_smbus_service,
+    machine_log_directory, open_smbus_bus, run_smbus_service,
 };
 
 #[cfg(not(target_os = "windows"))]

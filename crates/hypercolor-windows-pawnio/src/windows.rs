@@ -20,7 +20,6 @@ mod log_directory;
 mod service_log;
 mod service_status;
 
-pub use broker::ping_broker;
 pub use log_directory::machine_log_directory;
 pub use service_log::broker_log_path;
 pub use service_status::{BrokerServiceState, BrokerServiceStatus, broker_service_status};

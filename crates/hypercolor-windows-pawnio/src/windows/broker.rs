@@ -35,6 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -79,7 +80,7 @@ const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(10);
 /// How long a stopping broker waits for in-flight requests before its
 /// runtime is torn down regardless. Kept under the stop wait hint.
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
+const PIPE_NAME: &str = crate::BROKER_PIPE_NAME;
 /// Pause between attempts to create the next pipe instance.
 const PIPE_CREATE_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Consecutive pipe creation failures (ten seconds of retries) after which
@@ -96,6 +97,10 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_BATCH_DELAY_MS: u64 = 1_000;
 const CLIENT_CONNECT_ATTEMPTS: usize = 20;
 const CLIENT_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(10);
+/// `SECURITY_IDENTIFICATION`: whoever serves the pipe may learn who the
+/// client is, but never act as the client. Anyone who holds the name while
+/// the broker is down can serve it, and elevated tools connect here too.
+const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
 const DIRECT_ENV: &str = "HYPERCOLOR_PAWNIO_DIRECT";
 
 define_windows_service!(ffi_service_main, service_main);
@@ -181,11 +186,7 @@ pub(super) fn read_smn(addr: u32) -> PawnIoResult<u32> {
 /// broker from before this request answered it, which still proves the
 /// pipe is served; only [`PawnIoError::BrokerUnavailable`] means nobody is
 /// listening.
-///
-/// # Errors
-///
-/// Returns the failed request, as above.
-pub fn ping_broker() -> PawnIoResult<String> {
+pub(super) fn ping() -> PawnIoResult<String> {
     let response = send_request(BrokerRequest::Ping, "ping")?;
     let BrokerResponse::Pong { version } = response else {
         return Err(unexpected_response("ping"));
@@ -762,7 +763,12 @@ fn send_request_bytes(request: &[u8]) -> PawnIoResult<Vec<u8>> {
 fn open_pipe_client() -> PawnIoResult<std::fs::File> {
     let mut last_error = None;
     for attempt in 0..CLIENT_CONNECT_ATTEMPTS {
-        match OpenOptions::new().read(true).write(true).open(PIPE_NAME) {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(SECURITY_IDENTIFICATION)
+            .open(PIPE_NAME)
+        {
             Ok(file) => return Ok(file),
             Err(error) => {
                 last_error = Some(error);
