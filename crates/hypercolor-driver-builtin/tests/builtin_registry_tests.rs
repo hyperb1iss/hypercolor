@@ -29,19 +29,8 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
     )
     .expect("registry should build");
     let ids = registry.ids();
-    #[cfg(not(any(feature = "network", feature = "hal")))]
+    #[cfg(not(feature = "hal"))]
     let _ = &ids;
-
-    #[cfg(feature = "network")]
-    {
-        assert!(ids.contains(&"wled".to_owned()));
-        assert!(ids.contains(&"govee".to_owned()));
-        assert!(ids.contains(&"hue".to_owned()));
-        assert!(ids.contains(&"lifx".to_owned()));
-        assert!(ids.contains(&"nanoleaf".to_owned()));
-        assert!(ids.contains(&"openrgb".to_owned()));
-        assert!(ids.contains(&"pixel".to_owned()));
-    }
 
     #[cfg(feature = "hal")]
     {
@@ -49,14 +38,13 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         assert!(ids.contains(&"prismrgb".to_owned()));
     }
 
-    #[cfg(feature = "network")]
-    for driver_id in ["govee", "hue", "lifx", "nanoleaf", "pixel", "wled"] {
+    for driver_id in hypercolor_driver_builtin::builtin_driver_ids() {
         let driver = registry
             .get(driver_id)
-            .expect("network driver should be registered");
+            .expect("every table row should be registered under its descriptor id");
         let descriptor = driver.module_descriptor();
         assert!(descriptor.capabilities.config);
-        assert!(descriptor.capabilities.controls);
+        assert!(descriptor.capabilities.controls || driver_id == "openrgb");
         driver
             .config()
             .expect("config provider should be present")
