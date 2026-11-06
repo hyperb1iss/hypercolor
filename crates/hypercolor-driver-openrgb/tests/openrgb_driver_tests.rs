@@ -9,8 +9,9 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     DeviceBackend, DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveredDevice,
     DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation, DiscoveryRequest,
-    DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverRuntimeActions, DriverTrackedDevice,
+    DriverConfigSource, DriverConfigView, DriverContext, DriverContextProvider,
+    DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions,
+    DriverTrackedDevice, InstallationId,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -174,7 +175,7 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     assert!(discovered.info.capabilities.supports_direct);
 
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     backend
         .adopt_device(discovered)
@@ -233,7 +234,7 @@ async fn endpoint_reconnects_with_bounded_backoff_after_socket_close() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -340,7 +341,7 @@ async fn connect_re_resolves_controller_index_before_mode_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -391,7 +392,7 @@ async fn connect_fails_when_re_resolved_controller_disappears() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -434,7 +435,7 @@ async fn connect_handshake_timeout_preserves_configured_deadline() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = clock
         .wait(
@@ -521,7 +522,7 @@ async fn connect_rejects_unapproved_active_mode_after_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -562,7 +563,7 @@ async fn connect_rejects_missing_active_mode_after_setup() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -601,7 +602,7 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -665,7 +666,7 @@ async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -721,7 +722,7 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -783,7 +784,7 @@ async fn disconnect_completes_while_frame_sink_writers_race() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -852,7 +853,7 @@ async fn disconnect_restores_previous_openrgb_mode() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -923,7 +924,7 @@ async fn disconnect_fallback_blacks_out_without_previous_mode() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -973,7 +974,7 @@ async fn disconnect_blackout_policy_writes_zero_frame() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1023,7 +1024,7 @@ async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1072,7 +1073,7 @@ async fn connect_writes_brightness_max_and_verifies_readback() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1128,7 +1129,7 @@ async fn connect_rejects_readback_below_brightness_max() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1207,7 +1208,7 @@ async fn writer_paces_to_target_fps_and_drops_superseded_frames() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1310,7 +1311,7 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     assert_eq!(devices.len(), 2);
@@ -1532,7 +1533,7 @@ async fn assert_configured_zone_resize(initial_led_count: u32, rebound: bool) {
         entry: &base_entry,
     };
     let probe = module
-        .build(&host, base_view)
+        .build(host.driver_context(DESCRIPTOR.id), base_view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &probe, &host, base_view).await;
     let discovered = &devices[0];
@@ -1559,7 +1560,7 @@ async fn assert_configured_zone_resize(initial_led_count: u32, rebound: bool) {
         entry: &sized_entry,
     };
     let backend = module
-        .build(&host, sized_view)
+        .build(host.driver_context(DESCRIPTOR.id), sized_view)
         .expect("backend with zone sizes should build");
     let devices = if rebound {
         backend
@@ -1687,7 +1688,7 @@ async fn discovery_reuses_the_open_endpoint_link() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1783,7 +1784,7 @@ async fn write_path_pads_and_truncates_frames_to_controller_shape() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1863,7 +1864,7 @@ async fn device_list_update_with_new_shape_disables_output_until_rescan() {
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let device_id = devices[0].info.id;
@@ -1929,7 +1930,9 @@ async fn idle_shape_change_requests_lifecycle_reconnect_without_a_frame() {
         entry: &entry,
     };
     let module = OpenRgbDriverModule;
-    let backend = module.build(&host, view).expect("build");
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("build");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let id = devices[0].info.id;
     backend.connect(&id).await.expect("connect");
@@ -1979,11 +1982,17 @@ impl<R: DriverRuntimeActions + 'static> DriverHost for ReconnectHost<R> {
     fn runtime(&self) -> &dyn DriverRuntimeActions {
         self.0.as_ref()
     }
-    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
-        Some(self.0.clone())
-    }
     fn discovery_state(&self) -> &dyn DriverDiscoveryState {
         &NullHost
+    }
+}
+
+impl<R: DriverRuntimeActions + 'static> DriverContextProvider for ReconnectHost<R> {
+    fn driver_context(&self, driver_id: &str) -> DriverContext {
+        DriverContext {
+            runtime: self.0.clone(),
+            ..NullHost.driver_context(driver_id)
+        }
     }
 }
 
@@ -2160,7 +2169,7 @@ async fn discover_with_startup_rescan_server(server_protocol_version: u32) -> bo
     let host = NullHost;
     let module = OpenRgbDriverModule;
     let backend = module
-        .build(&host, view)
+        .build(host.driver_context(DESCRIPTOR.id), view)
         .expect("backend construction should succeed");
 
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
@@ -3176,6 +3185,25 @@ fn push_i32(body: &mut Vec<u8>, value: i32) {
 #[derive(Debug, Default)]
 struct NullHost;
 
+struct EmptyConfig;
+
+impl DriverConfigSource for EmptyConfig {
+    fn current(&self) -> DriverConfigEntry {
+        DriverConfigEntry::default()
+    }
+}
+
+impl DriverContextProvider for NullHost {
+    fn driver_context(&self, _driver_id: &str) -> DriverContext {
+        DriverContext {
+            config: Arc::new(EmptyConfig),
+            installation_id: InstallationId::new("openrgb-test"),
+            runtime: Arc::new(Self),
+            device_input: None,
+        }
+    }
+}
+
 #[async_trait]
 impl DriverCredentialStore for NullHost {
     async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
@@ -3327,7 +3355,9 @@ async fn malformed_enumeration_replaces_the_invalid_session() {
             entry: &entry,
         };
         let module = OpenRgbDriverModule;
-        let backend = module.build(&NullHost, view).expect("build");
+        let backend = module
+            .build(NullHost.driver_context(DESCRIPTOR.id), view)
+            .expect("build");
         let devices = discover_and_adopt(&module, &backend, &NullHost, view).await;
         let id = devices[0].info.id;
         backend.connect(&id).await.expect("connect");
@@ -3449,7 +3479,9 @@ async fn rejected_lifecycle_requests_retry_on_unchanged_enumeration() {
         entry: &entry,
     };
     let module = OpenRgbDriverModule;
-    let backend = module.build(&host, view).expect("build");
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("build");
     let devices = discover_and_adopt(&module, &backend, &host, view).await;
     let id = devices[0].info.id;
     backend.connect(&id).await.expect("connect");
@@ -3522,7 +3554,9 @@ async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
         entry: &entry,
     };
     let module = OpenRgbDriverModule;
-    let backend = module.build(&NullHost, view).expect("build");
+    let backend = module
+        .build(NullHost.driver_context(DESCRIPTOR.id), view)
+        .expect("build");
     let devices = discover_and_adopt(&module, &backend, &NullHost, view).await;
     let discovered = &devices[0];
     let id = discovered.info.id;
@@ -3542,7 +3576,7 @@ async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
     let resized_entry = config_entry(&resized);
     let replacement = module
         .build(
-            &NullHost,
+            NullHost.driver_context(DESCRIPTOR.id),
             DriverConfigView {
                 driver_id: DESCRIPTOR.id,
                 entry: &resized_entry,

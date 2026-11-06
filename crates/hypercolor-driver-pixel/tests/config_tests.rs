@@ -3,11 +3,10 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
-use hypercolor_driver_api::DriverConfigView;
+use hypercolor_driver_api::{DriverConfigView, InstallationId};
 use hypercolor_driver_pixel::plan::{ChannelRun, DdpSpanPlan, OutputPlan, UniversePlan};
 use hypercolor_driver_pixel::{
-    ColorOrder, PixelConfig, PixelConfigError, PixelProtocol, derived_cid,
-    fallback_installation_id, resolve_config,
+    ColorOrder, PixelConfig, PixelConfigError, PixelProtocol, derived_cid, resolve_config,
 };
 use hypercolor_pixel_protocols::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DDP_DTYPE_UNDEFINED};
 use hypercolor_types::config::DriverConfigEntry;
@@ -183,7 +182,7 @@ fn rgb_device_fills_510_channel_universes() {
     assert_eq!(dmx.runs[2].source, 1020..1200);
     assert_eq!(source.priority, 100);
     assert_eq!(source.source_name, "Hypercolor");
-    assert_eq!(source.cid, derived_cid(fallback_installation_id(), "strip"));
+    assert_eq!(source.cid, None, "the session derives an unpinned CID");
     assert_eq!(plans[0].target.port(), 5568);
 }
 
@@ -561,8 +560,12 @@ fn explicit_cid_overrides_the_derived_one() {
     let OutputPlan::E131 { source, .. } = &resolve_config(&config).expect("valid")[0].output else {
         panic!("expected an E1.31 plan");
     };
-    assert_eq!(source.cid.to_string(), cid);
-    assert_ne!(derived_cid("one", "a"), derived_cid("one", "b"));
+    assert_eq!(source.cid.map(|cid| cid.to_string()).as_deref(), Some(cid));
+    let installation = InstallationId::new("one");
+    assert_ne!(
+        derived_cid(&installation, "a"),
+        derived_cid(&installation, "b")
+    );
 }
 
 #[test]

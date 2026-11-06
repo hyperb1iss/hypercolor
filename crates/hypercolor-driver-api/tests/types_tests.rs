@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DiscoveryRequest, DriverConfigView, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputCadence,
-    ValidatedControlChanges,
+    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, InstallationId,
+    OutputCadence, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
@@ -789,12 +789,9 @@ fn pair_device_status_serde_uses_snake_case() {
 }
 
 #[test]
-fn hosts_offer_no_device_input_or_installation_id_by_default() {
-    assert!(NoopDriverHost.device_input().is_none());
-    assert!(NoopDriverHost.installation_id().is_none());
-}
-
-#[test]
-fn hosts_offer_no_live_config_by_default() {
-    assert!(NoopDriverHost.config_source().is_none());
+fn installation_ids_compare_by_their_text() {
+    let id = InstallationId::new("install-a");
+    assert_eq!(id.as_str(), "install-a");
+    assert_eq!(id, InstallationId::new("install-a"));
+    assert_ne!(id, InstallationId::new("install-b"));
 }

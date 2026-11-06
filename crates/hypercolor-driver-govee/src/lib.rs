@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, CoverageGap, DeviceBackend, DeviceBackendFactory, DiscoveredDevice,
     DiscoveryBatch, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
-    DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverRuntimeCacheProvider,
+    DriverConfigProvider, DriverConfigView, DriverContext, DriverControlProvider, DriverDescriptor,
+    DriverError, DriverHost, DriverModule, DriverPresentationProvider, DriverRuntimeCacheProvider,
     DriverTrackedDevice, OutputBinding, PairingCapability, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
@@ -182,7 +182,7 @@ impl DriverModule for GoveeDriverModule {
 impl DeviceBackendFactory for GoveeDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let resolved_config = self.resolved_config(config)?;

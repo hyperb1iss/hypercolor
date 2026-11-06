@@ -12,7 +12,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use anyhow::{Context, Result};
-use hypercolor_driver_api::{DriverConfigView, DriverHost, OutputBinding};
+use hypercolor_driver_api::{DriverConfigView, DriverContextProvider, OutputBinding};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
@@ -63,7 +63,7 @@ pub fn config_key_touches_drivers(key: &str) -> bool {
 pub async fn reconcile_driver_output_backends(
     runtime: &DiscoveryRuntime,
     registry: &DriverModuleRegistry,
-    host: &dyn DriverHost,
+    host: &dyn DriverContextProvider,
     config: &HypercolorConfig,
     previous: Option<&HypercolorConfig>,
 ) -> Result<DriverBackendReconcileReport> {

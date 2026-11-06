@@ -23,8 +23,8 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
     DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider,
-    DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
-    DriverModule, DriverPresentationProvider, OutputBinding, TrackedDeviceCtx,
+    DriverConfigView, DriverContext, DriverControlProvider, DriverDescriptor, DriverError,
+    DriverHost, DriverModule, DriverPresentationProvider, OutputBinding, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
 use hypercolor_driver_support::control_apply;
@@ -45,10 +45,7 @@ pub use config::{
     PixelConfig, PixelConfigError, PixelDeviceConfig, PixelProtocol, PixelSegmentConfig,
 };
 pub use controls::{pixel_device_control_surface, pixel_driver_control_surface};
-pub use plan::{
-    PixelDevicePlan, derived_cid, fallback_installation_id, resolve_config, resolve_config_for,
-    resolve_device,
-};
+pub use plan::{PixelDevicePlan, derived_cid, resolve_config, resolve_device};
 
 /// Static driver descriptor.
 pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
@@ -107,13 +104,10 @@ impl DriverModule for PixelDriverModule {
 impl DeviceBackendFactory for PixelDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        // The backend is config-free: every device carries its effective
-        // config through discovery metadata, so a config edit never needs
-        // a backend rebuild to reach new connections.
-        Ok(Arc::new(PixelBackend::new()))
+        Ok(Arc::new(PixelBackend::new(context.installation_id)))
     }
 }
 
@@ -134,12 +128,12 @@ impl DriverPresentationProvider for PixelDriverModule {
 impl DiscoveryCapability for PixelDriverModule {
     async fn discover(
         &self,
-        host: &dyn DriverHost,
+        _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<PixelConfig>()?;
-        configured_devices(&config, host.installation_id())
+        configured_devices(&config)
             .map(DiscoveryBatch::complete)
             .map_err(|error| DriverError::Configuration {
                 message: error.to_string(),
@@ -150,23 +144,19 @@ impl DiscoveryCapability for PixelDriverModule {
 /// Materialize every configured device as a discovery result.
 ///
 /// Sends no packets: pixel controllers are configured, not probed.
-/// `installation_id` scopes derived E1.31 CIDs to this installation.
 ///
 /// # Errors
 ///
 /// Returns the first config validation failure.
 pub fn configured_devices(
     config: &PixelConfig,
-    installation_id: Option<&str>,
 ) -> std::result::Result<Vec<DiscoveredDevice>, PixelConfigError> {
-    let plans = resolve_config_for(config, installation_id)?;
+    let plans = resolve_config(config)?;
     Ok(config
         .devices
         .iter()
         .zip(plans)
-        .map(|(device, plan)| {
-            discovered_device(&config.effective_device(device, installation_id), &plan)
-        })
+        .map(|(device, plan)| discovered_device(&config.effective_device(device), &plan))
         .collect())
 }
 

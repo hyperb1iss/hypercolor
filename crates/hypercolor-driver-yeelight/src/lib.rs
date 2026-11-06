@@ -22,7 +22,7 @@ use async_trait::async_trait;
 
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverContext, DriverControlProvider,
     DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
     DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
 };
@@ -108,7 +108,7 @@ impl DriverModule for YeelightDriverModule {
 impl DeviceBackendFactory for YeelightDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<YeelightConfig>()?;

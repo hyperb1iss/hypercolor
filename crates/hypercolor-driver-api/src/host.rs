@@ -115,14 +115,63 @@ pub trait DriverDiscoveryState: Send + Sync {
     fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>>;
 }
 
-/// Live, read-only view of driver configuration.
+/// Live, read-only view of one driver's configuration.
 ///
-/// A backend that must re-check the current config at the moment it acts,
-/// such as before opening a local device path named only by config, keeps
-/// one of these instead of trusting a snapshot taken when it was built.
+/// The host scopes each source to one driver, so a driver can only ever read
+/// its own entry. A driver acting on devices that exist only because config
+/// names them reads this at the moment it acts instead of trusting anything
+/// it was told earlier.
 pub trait DriverConfigSource: Send + Sync {
-    /// The driver's current config entry, or `None` when it has none.
-    fn driver_config(&self, driver_id: &str) -> Option<DriverConfigEntry>;
+    /// This driver's entry as it is right now. A driver the host holds no
+    /// entry for reads as [`DriverConfigEntry::default`], the same entry its
+    /// backend is built from.
+    fn current(&self) -> DriverConfigEntry;
+}
+
+/// Stable identity of one Hypercolor installation.
+///
+/// Drivers mix it into identities that must be unique per installation, such
+/// as protocol sender ids, so two hosts with the same config never collide.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InstallationId(Arc<str>);
+
+impl InstallationId {
+    /// Wrap the identity the host persists for this installation.
+    #[must_use]
+    pub fn new(id: impl Into<Arc<str>>) -> Self {
+        Self(id.into())
+    }
+
+    /// The identity as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Host services one driver's backend is built with.
+///
+/// A host cannot build a backend without supplying `config`,
+/// `installation_id`, and `runtime`, so no driver needs a fallback for their
+/// absence. `device_input` stays optional because only hardware with input
+/// surfaces consumes it, and a host may have no input routing at all.
+#[derive(Clone)]
+pub struct DriverContext {
+    /// Live view of this driver's configuration.
+    pub config: Arc<dyn DriverConfigSource>,
+    /// Identity of this installation.
+    pub installation_id: InstallationId,
+    /// Runtime actions a backend may retain for asynchronous lifecycle
+    /// notifications. This handle must not keep the backend graph alive.
+    pub runtime: Arc<dyn DriverRuntimeActions>,
+    /// Sink for input from driver-owned devices, when the host routes input.
+    pub device_input: Option<Arc<dyn DeviceInputSink>>,
+}
+
+/// Supplies the [`DriverContext`] each output backend is built with.
+pub trait DriverContextProvider: Send + Sync {
+    /// Build the context for one driver, scoped to that driver's config.
+    fn driver_context(&self, driver_id: &str) -> DriverContext;
 }
 
 /// Host capabilities exposed to drivers.
@@ -133,37 +182,11 @@ pub trait DriverHost: Send + Sync {
     /// Access limited runtime lifecycle actions.
     fn runtime(&self) -> &dyn DriverRuntimeActions;
 
-    /// Retain runtime actions for asynchronous device lifecycle notifications.
-    /// Hosts without background lifecycle support may leave this unavailable.
-    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
-        None
-    }
-
     /// Access discovery-oriented tracked state and caches.
     fn discovery_state(&self) -> &dyn DriverDiscoveryState;
 
     /// Access control-surface host services when the daemon supports them.
     fn control_host(&self) -> Option<&dyn DriverControlHost> {
-        None
-    }
-
-    /// Accept input from driver-owned devices when the daemon supports it.
-    fn device_input(&self) -> Option<Arc<dyn DeviceInputSink>> {
-        None
-    }
-
-    /// Stable identifier of this Hypercolor installation, when the host
-    /// persists one. Drivers mix it into identities that must be unique per
-    /// installation, such as protocol sender ids, so two hosts with the same
-    /// config never collide.
-    fn installation_id(&self) -> Option<&str> {
-        None
-    }
-
-    /// Retain a live view of driver config. Hosts without a config store
-    /// may leave this unavailable; drivers then fall back to the config
-    /// view they were built with.
-    fn config_source(&self) -> Option<Arc<dyn DriverConfigSource>> {
         None
     }
 }

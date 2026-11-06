@@ -3,10 +3,10 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
     ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceBackendFactory, DiscoveryBatch,
-    DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverControlProvider,
-    DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverError, DriverHost,
+    DiscoveryCapability, DiscoveryRequest, DriverConfigSource, DriverConfigView, DriverContext,
+    DriverContextProvider, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
     DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions,
-    OutputBinding, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
+    InstallationId, OutputBinding, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
@@ -23,27 +23,7 @@ use hypercolor_types::pairing::{
     ClearPairingOutcome, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
 };
 use std::collections::BTreeSet;
-use std::sync::{Arc, LazyLock};
-
-struct NullCredentialStore;
-
-#[async_trait]
-impl DriverCredentialStore for NullCredentialStore {
-    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
-        let _ = (driver_id, key);
-        Ok(None)
-    }
-
-    async fn set_json(&self, driver_id: &str, key: &str, value: serde_json::Value) -> Result<()> {
-        let _ = (driver_id, key, value);
-        Ok(())
-    }
-
-    async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
-        let _ = (driver_id, key);
-        Ok(())
-    }
-}
+use std::sync::{Arc, LazyLock, Mutex};
 
 struct NullRuntimeActions;
 
@@ -65,50 +45,30 @@ impl DriverRuntimeActions for NullRuntimeActions {
     }
 }
 
-struct NullHost {
-    credentials: NullCredentialStore,
-    runtime: NullRuntimeActions,
-}
+struct EmptyConfig;
 
-struct NullDiscoveryState;
-
-#[async_trait]
-impl DriverDiscoveryState for NullDiscoveryState {
-    async fn tracked_devices(
-        &self,
-        driver_id: &str,
-    ) -> Vec<hypercolor_driver_api::DriverTrackedDevice> {
-        let _ = driver_id;
-        Vec::new()
-    }
-
-    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
-        let _ = (driver_id, key);
-        Ok(None)
+impl DriverConfigSource for EmptyConfig {
+    fn current(&self) -> DriverConfigEntry {
+        DriverConfigEntry::default()
     }
 }
 
-impl NullHost {
-    fn new() -> Self {
-        Self {
-            credentials: NullCredentialStore,
-            runtime: NullRuntimeActions,
+/// Records which driver each context was built for.
+#[derive(Default)]
+struct RecordingContexts(Mutex<Vec<String>>);
+
+impl DriverContextProvider for RecordingContexts {
+    fn driver_context(&self, driver_id: &str) -> DriverContext {
+        self.0
+            .lock()
+            .expect("context log lock")
+            .push(driver_id.to_owned());
+        DriverContext {
+            config: Arc::new(EmptyConfig),
+            installation_id: InstallationId::new("registry-test"),
+            runtime: Arc::new(NullRuntimeActions),
+            device_input: None,
         }
-    }
-}
-
-impl DriverHost for NullHost {
-    fn credentials(&self) -> &dyn DriverCredentialStore {
-        &self.credentials
-    }
-
-    fn runtime(&self) -> &dyn DriverRuntimeActions {
-        &self.runtime
-    }
-
-    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
-        static DISCOVERY_STATE: NullDiscoveryState = NullDiscoveryState;
-        &DISCOVERY_STATE
     }
 }
 
@@ -294,10 +254,10 @@ impl DriverModule for DiscoveryOnlyDriver {
 impl DeviceBackendFactory for DiscoveryOnlyDriver {
     fn build(
         &self,
-        host: &dyn DriverHost,
+        context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        let _ = (host, config);
+        let _ = (context, config);
         Ok(Arc::new(TestBackend))
     }
 }
@@ -463,7 +423,7 @@ impl DriverModule for DuplicateTestProvider {
 impl DeviceBackendFactory for DuplicateTestProvider {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         Ok(Arc::new(TestBackend))
@@ -807,7 +767,7 @@ fn registry_rejects_module_descriptor_schema_version_mismatch() {
 
 #[test]
 fn drivers_can_build_output_backends_through_registry_lookup() {
-    let host = NullHost::new();
+    let contexts = RecordingContexts::default();
     let mut registry = DriverModuleRegistry::new();
     registry
         .register(DiscoveryOnlyDriver)
@@ -824,7 +784,7 @@ fn drivers_can_build_output_backends_through_registry_lookup() {
     let config = DriverConfigEntry::default();
     let backend = provider
         .build(
-            &host,
+            &contexts,
             DriverConfigView {
                 driver_id: "discovery-only",
                 entry: &config,
@@ -833,4 +793,9 @@ fn drivers_can_build_output_backends_through_registry_lookup() {
         .expect("backend build should succeed");
 
     assert_eq!(backend.info().id, "test");
+    assert_eq!(
+        *contexts.0.lock().expect("context log lock"),
+        ["discovery-only"],
+        "a provider asks for the context scoped to its own driver"
+    );
 }

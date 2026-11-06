@@ -151,18 +151,8 @@ impl Default for PixelConfig {
 
 impl PixelConfig {
     /// Device config with driver-level E1.31 defaults filled in.
-    ///
-    /// For E1.31 devices without an explicit `cid`, the sender CID is
-    /// derived from `installation_id` and the device id (see
-    /// [`crate::plan::derived_cid`]), so it differs between installations that
-    /// reuse a device id. Without an installation id the per-process
-    /// [`crate::plan::fallback_installation_id`] is used.
     #[must_use]
-    pub fn effective_device(
-        &self,
-        device: &PixelDeviceConfig,
-        installation_id: Option<&str>,
-    ) -> PixelDeviceConfig {
+    pub fn effective_device(&self, device: &PixelDeviceConfig) -> PixelDeviceConfig {
         let mut effective = device.clone();
         effective.host = device.host.to_canonical();
         if device.protocol == PixelProtocol::E131 {
@@ -170,11 +160,6 @@ impl PixelConfig {
             effective
                 .source_name
                 .get_or_insert_with(|| self.source_name.clone());
-            let installation_id =
-                installation_id.unwrap_or(crate::plan::fallback_installation_id());
-            effective
-                .cid
-                .get_or_insert_with(|| crate::plan::derived_cid(installation_id, &device.id));
         }
         effective
     }

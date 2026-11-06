@@ -8,7 +8,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use hypercolor_driver_api::DeviceBackend;
+use hypercolor_driver_api::{DeviceBackend, InstallationId};
 use hypercolor_driver_pixel::{PixelBackend, PixelConfig, configured_devices};
 use hypercolor_types::device::DeviceId;
 use serde_json::json;
@@ -36,7 +36,7 @@ async fn connect_artnet(backend: &PixelBackend, id: &str, receiver: SocketAddr) 
         "pixel_count": 1
     }]}))
     .expect("config fixture");
-    let device = configured_devices(&config, None)
+    let device = configured_devices(&config)
         .expect("config should resolve")
         .into_iter()
         .next()
@@ -68,7 +68,7 @@ fn bind_6454() -> std::io::Result<std::net::UdpSocket> {
 async fn artnet_sends_from_6454_when_the_port_is_free() {
     let _guard = PORT_6454.lock().await;
     let (receiver, addr) = loopback_receiver().await;
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(InstallationId::new("artnet-tests"));
     let id = connect_artnet(&backend, "free", addr).await;
 
     assert_eq!(
@@ -90,7 +90,7 @@ async fn artnet_falls_back_when_another_application_owns_6454() {
     let _guard = PORT_6454.lock().await;
     let other_application = bind_6454().expect("6454 should be free for the test to own");
     let (receiver, addr) = loopback_receiver().await;
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(InstallationId::new("artnet-tests"));
     let id = connect_artnet(&backend, "taken", addr).await;
 
     let port = source_port_of_next_packet(&backend, &id, &receiver).await;
@@ -130,7 +130,7 @@ async fn artnet_never_joins_another_applications_reuseport_group() {
         .expect("6454 should be free for the test to own");
 
     let (receiver, addr) = loopback_receiver().await;
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(InstallationId::new("artnet-tests"));
     let id = connect_artnet(&backend, "polite", addr).await;
     assert_ne!(
         backend
@@ -151,7 +151,7 @@ async fn artnet_never_joins_another_applications_reuseport_group() {
 async fn artnet_releases_6454_after_its_last_session() {
     let _guard = PORT_6454.lock().await;
     let (receiver, addr) = loopback_receiver().await;
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(InstallationId::new("artnet-tests"));
     let first = connect_artnet(&backend, "first", addr).await;
     let second = connect_artnet(&backend, "second", addr).await;
     assert_eq!(
@@ -176,7 +176,7 @@ async fn artnet_releases_6454_after_its_last_session() {
 async fn retained_sink_does_not_keep_6454_bound() {
     let _guard = PORT_6454.lock().await;
     let (receiver, addr) = loopback_receiver().await;
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(InstallationId::new("artnet-tests"));
     let id = connect_artnet(&backend, "retained", addr).await;
     assert_eq!(
         source_port_of_next_packet(&backend, &id, &receiver).await,
@@ -203,7 +203,7 @@ async fn retained_sink_does_not_keep_6454_bound() {
 async fn concurrent_reconnects_leave_one_open_session_and_release_6454() {
     let _guard = PORT_6454.lock().await;
     let (receiver, addr) = loopback_receiver().await;
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(InstallationId::new("artnet-tests"));
     let id = connect_artnet(&backend, "racing", addr).await;
     let first_sink = backend.frame_sink(&id).expect("sink");
 

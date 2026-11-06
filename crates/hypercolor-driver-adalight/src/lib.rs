@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
     DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider,
-    DriverConfigSource, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError,
+    DriverConfigView, DriverContext, DriverControlProvider, DriverDescriptor, DriverError,
     DriverHost, DriverModule, DriverPresentationProvider, OutputBinding, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
@@ -108,18 +108,10 @@ impl DriverModule for AdalightDriverModule {
 impl DeviceBackendFactory for AdalightDriverModule {
     fn build(
         &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
+        context: DriverContext,
+        _config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        // Every adoption and open is checked against the live config, so a
-        // removed entry can never be reopened from retained metadata. Hosts
-        // without a live config store fall back to the entry the backend is
-        // built from; the reconciler rebuilds it whenever that entry
-        // changes.
-        let source = host.config_source().unwrap_or_else(|| {
-            Arc::new(SnapshotConfig::new(config.entry.clone())) as Arc<dyn DriverConfigSource>
-        });
-        Ok(Arc::new(AdalightBackend::new(source)))
+        Ok(Arc::new(AdalightBackend::new(context.config)))
     }
 }
 

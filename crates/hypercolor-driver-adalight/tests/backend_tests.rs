@@ -68,17 +68,14 @@ impl TestConfig {
 }
 
 impl DriverConfigSource for TestConfig {
-    fn driver_config(&self, driver_id: &str) -> Option<DriverConfigEntry> {
-        if driver_id != "adalight" {
-            return None;
-        }
+    fn current(&self) -> DriverConfigEntry {
         let devices = Value::Array(self.devices.read().expect("config lock").clone());
         let settings = [("devices".to_owned(), devices)].into_iter().collect();
-        Some(if *self.disabled.read().expect("config lock") {
+        if *self.disabled.read().expect("config lock") {
             DriverConfigEntry::disabled(settings)
         } else {
             DriverConfigEntry::enabled(settings)
-        })
+        }
     }
 }
 

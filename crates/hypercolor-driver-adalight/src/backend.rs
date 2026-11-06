@@ -109,8 +109,8 @@ impl SnapshotConfig {
 }
 
 impl DriverConfigSource for SnapshotConfig {
-    fn driver_config(&self, driver_id: &str) -> Option<DriverConfigEntry> {
-        (driver_id == crate::DESCRIPTOR.id).then(|| self.entry.clone())
+    fn current(&self) -> DriverConfigEntry {
+        self.entry.clone()
     }
 }
 
@@ -171,10 +171,7 @@ impl AdalightBackend {
         let not_configured = |reason: &str| DeviceError::NotFound {
             device: format!("{id} ({reason})"),
         };
-        let entry = self
-            .config
-            .driver_config(crate::DESCRIPTOR.id)
-            .ok_or_else(|| not_configured("the adalight driver has no config"))?;
+        let entry = self.config.current();
         if !entry.enabled {
             return Err(not_configured("the adalight driver is disabled"));
         }

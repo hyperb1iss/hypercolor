@@ -25,6 +25,7 @@ use hypercolor_core::input::InputManager;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_driver_api::InstallationId;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -257,6 +258,9 @@ struct AppStateLibrary {
     store: Arc<dyn LibraryStore>,
     identity: Arc<dyn LibraryIdentityMigration>,
 }
+
+/// Instance id of a state composed by [`AppStateBuilder`].
+const ISOLATED_INSTANCE_ID: &str = "00000000-0000-7000-8000-000000000000";
 
 /// Test-facing composition builder for an isolated application state.
 ///
@@ -668,6 +672,7 @@ impl AppState {
                         driver_inventory,
                         Arc::clone(&driver_registry),
                         config_manager.clone(),
+                        InstallationId::new(ISOLATED_INSTANCE_ID),
                     )
                     .with_device_input(Arc::new(device_input.clone())),
                 ))
@@ -734,7 +739,7 @@ impl AppState {
             playlist_runtime,
             start_time,
             server_identity: ServerIdentity {
-                instance_id: "00000000-0000-7000-8000-000000000000".to_owned(),
+                instance_id: ISOLATED_INSTANCE_ID.to_owned(),
                 instance_name: "hypercolor".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },

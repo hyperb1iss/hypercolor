@@ -10,11 +10,11 @@ use std::time::Duration;
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    DeviceWriteOutcome, DiscoveredDevice, InstallationId, OutputCadence,
 };
 use hypercolor_driver_pixel::{
     KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG, PixelBackend, PixelConfig, configured_devices,
-    derived_cid, fallback_installation_id,
+    derived_cid,
 };
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde_json::json;
@@ -60,15 +60,19 @@ async fn assert_quiet(socket: &UdpSocket) {
     );
 }
 
+fn installation() -> InstallationId {
+    InstallationId::new("backend-tests")
+}
+
 fn config_for(device: serde_json::Value) -> PixelConfig {
     serde_json::from_value(json!({ "devices": [device] })).expect("config fixture")
 }
 
 /// Discover, adopt, and connect the single device in `config`.
 async fn connect(config: &PixelConfig) -> (PixelBackend, DeviceId) {
-    let discovered = configured_devices(config, None).expect("config should resolve");
+    let discovered = configured_devices(config).expect("config should resolve");
     let device = discovered.into_iter().next().expect("one device");
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(installation());
     backend.adopt_device(&device).expect("adopt");
     backend.connect(&device.info.id).await.expect("connect");
     (backend, device.info.id)
@@ -111,7 +115,7 @@ async fn e131_frames_split_into_universes_with_per_universe_sequences() {
             assert_eq!(&packet[4..16], b"ASC-E1.17\0\0\0");
             assert_eq!(
                 &packet[22..38],
-                derived_cid(fallback_installation_id(), "falcon").as_bytes()
+                derived_cid(&installation(), "falcon").as_bytes()
             );
             assert_eq!(&packet[44..54], b"Hypercolor");
             assert_eq!(packet[108], 100, "standard default priority");
@@ -252,6 +256,50 @@ async fn artnet_frames_address_port_and_zero_fill_lower_slots() {
     let black = recv(&receiver).await;
     assert!(black[18..].iter().all(|&slot| slot == 0));
     assert_quiet(&receiver).await;
+}
+
+/// The CID the connected device stamps on its first E1.31 packet.
+async fn wire_cid(installation: InstallationId, pinned: Option<&str>) -> Vec<u8> {
+    let (receiver, addr) = loopback_receiver().await;
+    let mut config = config_for(json!({
+        "id": "falcon", "host": "127.0.0.1", "port": addr.port(), "protocol": "e131",
+        "pixel_count": 1
+    }));
+    config.devices[0].cid = pinned.map(|cid| cid.parse().expect("valid UUID"));
+    let device = configured_devices(&config)
+        .expect("config should resolve")
+        .remove(0);
+    let backend = PixelBackend::new(installation);
+    backend.adopt_device(&device).expect("adopt");
+    backend.connect(&device.info.id).await.expect("connect");
+    backend
+        .write_colors(&device.info.id, &[[1, 2, 3]])
+        .await
+        .expect("write");
+    recv(&receiver).await[22..38].to_vec()
+}
+
+#[tokio::test]
+async fn derived_cids_are_scoped_to_the_installation_on_the_wire() {
+    let install_a = InstallationId::new("install-a");
+    let first = wire_cid(install_a.clone(), None).await;
+    assert_eq!(first, wire_cid(install_a.clone(), None).await, "stable");
+    assert_eq!(first, derived_cid(&install_a, "falcon").as_bytes());
+    assert_ne!(
+        first,
+        wire_cid(InstallationId::new("install-b"), None).await,
+        "another installation with the same device id differs"
+    );
+}
+
+#[tokio::test]
+async fn a_pinned_cid_survives_installation_scoping_on_the_wire() {
+    let pinned = "6f1c7a2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b";
+    let expected = uuid::Uuid::parse_str(pinned).expect("valid UUID");
+    assert_eq!(
+        wire_cid(InstallationId::new("install-a"), Some(pinned)).await,
+        expected.as_bytes()
+    );
 }
 
 #[tokio::test]
@@ -514,7 +562,7 @@ async fn reconnect_to_a_moved_receiver_shuts_down_the_old_one() {
         "id": "moved", "host": "127.0.0.1", "port": new_addr.port(), "protocol": "e131",
         "pixel_count": 1
     }));
-    let device = configured_devices(&moved, None)
+    let device = configured_devices(&moved)
         .expect("resolve")
         .into_iter()
         .next()
@@ -586,7 +634,7 @@ async fn cadence_follows_render_loop_with_keepalive() {
 
 #[tokio::test]
 async fn connect_requires_adoption() {
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(installation());
     let id = DeviceId::new();
     assert!(matches!(
         backend.connect(&id).await,
@@ -599,13 +647,13 @@ async fn adopt_rejects_devices_without_pixel_metadata() {
     let config = config_for(json!({
         "id": "meta", "host": "127.0.0.1", "protocol": "ddp", "pixel_count": 1
     }));
-    let mut device: DiscoveredDevice = configured_devices(&config, None)
+    let mut device: DiscoveredDevice = configured_devices(&config)
         .expect("resolve")
         .into_iter()
         .next()
         .expect("one device");
     device.metadata.remove(METADATA_DEVICE_CONFIG);
-    let backend = PixelBackend::new();
+    let backend = PixelBackend::new(installation());
     assert!(matches!(
         backend.adopt_device(&device),
         Err(DeviceError::NotAdopted { .. })

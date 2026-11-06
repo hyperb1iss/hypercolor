@@ -57,6 +57,7 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_driver_api::InstallationId;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::api::system::DaemonStartupPhase;
@@ -909,9 +910,9 @@ impl DaemonState {
                         driver_inventory,
                         Arc::clone(&driver_registry),
                         Some(Arc::clone(&config_manager)),
+                        InstallationId::new(server_identity.instance_id.as_str()),
                     )
-                    .with_device_input(Arc::new(device_input.clone()))
-                    .with_installation_id(server_identity.instance_id.as_str()),
+                    .with_device_input(Arc::new(device_input.clone())),
                 ))
             },
         )?;

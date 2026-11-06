@@ -15,8 +15,8 @@ use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceBackendFactory, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceFrameSink, DiscoveredDevice, DiscoveryBatch, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeActions, OutputBinding,
+    DriverContext, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverRuntimeActions, OutputBinding,
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
@@ -291,13 +291,11 @@ impl DriverModule for OpenRgbDriverModule {
 impl DeviceBackendFactory for OpenRgbDriverModule {
     fn build(
         &self,
-        host: &dyn DriverHost,
+        context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<OpenRgbConfig>()?;
-        let mut backend = OpenRgbBackend::new(config)?;
-        backend.runtime = host.runtime_handle();
-        Ok(Arc::new(backend))
+        Ok(Arc::new(OpenRgbBackend::new(config, context.runtime)?))
     }
 }
 
@@ -359,7 +357,7 @@ impl DiscoveryCapability for OpenRgbDriverModule {
 /// routes and the per-controller writer tasks layered on top of it.
 pub struct OpenRgbBackend {
     config: OpenRgbConfig,
-    runtime: Option<Arc<dyn DriverRuntimeActions>>,
+    runtime: Arc<dyn DriverRuntimeActions>,
     discovered: StdRwLock<HashMap<DeviceId, ControllerRoute>>,
     connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedOutput>>>,
 }
@@ -370,11 +368,11 @@ impl OpenRgbBackend {
     /// # Errors
     ///
     /// Returns an error when configuration is invalid.
-    pub fn new(config: OpenRgbConfig) -> Result<Self> {
+    pub fn new(config: OpenRgbConfig, runtime: Arc<dyn DriverRuntimeActions>) -> Result<Self> {
         validate_openrgb_config(&config)?;
         Ok(Self {
             config,
-            runtime: None,
+            runtime,
             discovered: StdRwLock::new(HashMap::new()),
             connected: StdRwLock::new(HashMap::new()),
         })
@@ -538,10 +536,10 @@ impl DeviceBackend for OpenRgbBackend {
         let pool = endpoint_pool();
         let pin = pool.acquire(route.endpoint, &self.config).await;
         let endpoint = Arc::clone(&pin.connection);
-        let connected = connect_controller(&endpoint, &route, &self.config).await;
+        let connected =
+            connect_controller(&endpoint, &route, &self.config, Arc::clone(&self.runtime)).await;
         let result = match connected {
-            Ok(mut controller) => {
-                controller.runtime.clone_from(&self.runtime);
+            Ok(controller) => {
                 let target_fps = controller.route.target_fps;
                 let controller = Arc::new(Mutex::new(controller));
                 endpoint.register_controller(*id, Arc::clone(&controller));
@@ -1782,6 +1780,7 @@ async fn connect_controller(
     endpoint: &EndpointConnection,
     discovered: &ControllerRoute,
     config: &OpenRgbConfig,
+    runtime: Arc<dyn DriverRuntimeActions>,
 ) -> Result<ConnectedController> {
     let mut link = endpoint.link.lock().await;
     if link.client.is_none() {
@@ -1830,7 +1829,7 @@ async fn connect_controller(
     }
     Ok(ConnectedController {
         previous_mode: route.previous_mode.clone(),
-        runtime: None,
+        runtime,
         reconnect_requested: Arc::new(AtomicBool::new(false)),
         reconnect_required: false,
         route,
@@ -1987,7 +1986,7 @@ fn is_link_error(error: &Error) -> bool {
 }
 
 struct ConnectedController {
-    runtime: Option<Arc<dyn DriverRuntimeActions>>,
+    runtime: Arc<dyn DriverRuntimeActions>,
     reconnect_requested: Arc<AtomicBool>,
     reconnect_required: bool,
     previous_mode: Option<(u32, ControllerMode)>,
@@ -1998,12 +1997,10 @@ struct ConnectedController {
 
 fn request_route_reconnect(id: DeviceId, controller: &mut ConnectedController) {
     controller.reconnect_required = true;
-    let Some(runtime) = controller.runtime.clone() else {
-        return;
-    };
     if controller.reconnect_requested.swap(true, Ordering::AcqRel) {
         return;
     }
+    let runtime = Arc::clone(&controller.runtime);
     let requested = Arc::clone(&controller.reconnect_requested);
     let updated = DiscoveredDevice::from(controller.route.clone());
     tokio::spawn(async move {
@@ -2900,6 +2897,20 @@ const fn default_per_led_mask() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    /// Runtime actions for backends these tests never connect.
+    struct NoRuntime;
+
+    #[async_trait::async_trait]
+    impl DriverRuntimeActions for NoRuntime {
+        async fn activate_device(&self, _: DeviceId, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn disconnect_device(&self, _: DeviceId, _: &str, _: bool) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
     use super::*;
     use hypercolor_openrgb_sdk::{ColorMode, ControllerMode, LedData, ZoneType};
 
@@ -3278,7 +3289,7 @@ mod tests {
             },
             ..OpenRgbConfig::default()
         };
-        let backend = OpenRgbBackend::new(config).expect("config should validate");
+        let backend = OpenRgbBackend::new(config, Arc::new(NoRuntime)).expect("valid config");
         let endpoint = default_endpoints()[0];
 
         let enabled = build_route(endpoint, 0, 5, sample_controller(), &backend.config);
@@ -3448,7 +3459,7 @@ mod tests {
         assert!(!discovered.metadata.contains_key("serial"));
         assert!(!discovered.metadata.contains_key("location"));
 
-        let backend = OpenRgbBackend::new(config).expect("config should validate");
+        let backend = OpenRgbBackend::new(config, Arc::new(NoRuntime)).expect("valid config");
         let mut controller = sample_controller();
         controller.location = "hidraw0".to_owned();
         let route = build_route(default_endpoints()[0], 0, 5, controller, &backend.config);

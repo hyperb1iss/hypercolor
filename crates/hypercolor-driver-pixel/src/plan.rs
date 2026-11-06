@@ -8,8 +8,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::ops::Range;
-use std::sync::LazyLock;
 
+use hypercolor_driver_api::InstallationId;
 use hypercolor_driver_support::network::validate_port;
 use hypercolor_pixel_protocols::artnet::ARTNET_MAX_PORT_ADDRESS;
 use hypercolor_pixel_protocols::ddp::{
@@ -123,8 +123,9 @@ pub struct E131Source {
     pub priority: u8,
     /// Source name shown by receivers.
     pub source_name: String,
-    /// Sender CID.
-    pub cid: Uuid,
+    /// Sender CID pinned by config. Without one, the session derives its CID
+    /// from the installation (see [`derived_cid`]).
+    pub cid: Option<Uuid>,
     /// Synchronization universe, if frames are synchronized.
     pub sync_universe: Option<u16>,
 }
@@ -208,30 +209,17 @@ fn range_label(start: u16, end: u16) -> String {
     }
 }
 
-/// Installation id used when the host persists none: a random UUID v4
-/// generated once per process, so derived CIDs stay unique to this running
-/// Hypercolor and stable for its lifetime.
-static PROCESS_INSTALLATION_ID: LazyLock<String> = LazyLock::new(|| Uuid::new_v4().to_string());
-
-/// The per-process fallback installation id (see [`derived_cid`]).
-#[must_use]
-pub fn fallback_installation_id() -> &'static str {
-    &PROCESS_INSTALLATION_ID
-}
-
 /// Derive the stable E1.31 CID for a device.
 ///
 /// E1.31 section 5.6 needs a CID unique to each source. The UUID v5 hashes
 /// the installation id together with the device id under a fixed Hypercolor
 /// namespace, so two installations that reuse a device id get different
-/// CIDs. The daemon supplies its persisted instance id, which keeps the CID
-/// stable across restarts; a host that persists none gets
-/// [`fallback_installation_id`], which is unique per process instead.
+/// CIDs, and one installation keeps its CID across restarts.
 #[must_use]
-pub fn derived_cid(installation_id: &str, device_id: &str) -> Uuid {
+pub fn derived_cid(installation_id: &InstallationId, device_id: &str) -> Uuid {
     Uuid::new_v5(
         &CID_NAMESPACE,
-        format!("{installation_id}/{device_id}").as_bytes(),
+        format!("{}/{device_id}", installation_id.as_str()).as_bytes(),
     )
 }
 
@@ -243,19 +231,6 @@ pub fn derived_cid(installation_id: &str, device_id: &str) -> Uuid {
 ///
 /// Returns the first validation failure found.
 pub fn resolve_config(config: &PixelConfig) -> Result<Vec<PixelDevicePlan>, PixelConfigError> {
-    resolve_config_for(config, None)
-}
-
-/// Validate a whole config and resolve every device's plan, deriving E1.31
-/// CIDs for `installation_id` (see [`derived_cid`]).
-///
-/// # Errors
-///
-/// Returns the first validation failure found.
-pub fn resolve_config_for(
-    config: &PixelConfig,
-    installation_id: Option<&str>,
-) -> Result<Vec<PixelDevicePlan>, PixelConfigError> {
     if config.devices.len() > MAX_DEVICES {
         return Err(PixelConfigError::TooManyDevices {
             count: config.devices.len(),
@@ -272,9 +247,7 @@ pub fn resolve_config_for(
                 id: device.id.clone(),
             });
         }
-        plans.push(resolve_device(
-            &config.effective_device(device, installation_id),
-        )?);
+        plans.push(resolve_device(&config.effective_device(device))?);
     }
     check_cross_device_conflicts(&plans)?;
     Ok(plans)
@@ -635,9 +608,7 @@ fn resolve_e131_source(device: &PixelDeviceConfig) -> Result<E131Source, String>
     Ok(E131Source {
         priority,
         source_name,
-        cid: device
-            .cid
-            .unwrap_or_else(|| derived_cid(fallback_installation_id(), &device.id)),
+        cid: device.cid,
         sync_universe: device.sync_universe,
     })
 }

@@ -35,8 +35,9 @@ pub use driver_discovery::{
 };
 pub use error::{DriverError, ErrorRecoverability};
 pub use host::{
-    DriverConfigSource, DriverCredentialStore, DriverDiscoveryState, DriverHost,
-    DriverRuntimeActions, DriverTrackedDevice, TrackedDeviceCtx,
+    DriverConfigSource, DriverContext, DriverContextProvider, DriverCredentialStore,
+    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice, InstallationId,
+    TrackedDeviceCtx,
 };
 pub use input::{DeviceInputPublisher, DeviceInputSink};
 pub use module::{

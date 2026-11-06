@@ -466,8 +466,8 @@ mod tests {
     use crate::app_state::AppState;
     use hypercolor_driver_api::{
         BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
-        DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
-        DriverHost, DriverModule, OutputBinding,
+        DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverContext, DriverDescriptor,
+        DriverError, DriverModule, OutputBinding,
     };
     use hypercolor_network::DriverModuleRegistry;
     use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -605,7 +605,7 @@ mod tests {
     impl DeviceBackendFactory for TestDriverModule {
         fn build(
             &self,
-            _host: &dyn DriverHost,
+            _context: DriverContext,
             _config: DriverConfigView<'_>,
         ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
             Ok(Arc::new(NoopBackend {

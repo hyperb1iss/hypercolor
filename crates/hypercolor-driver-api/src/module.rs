@@ -10,7 +10,7 @@ use hypercolor_types::identity::BackendId;
 
 use crate::DriverTrackedDevice;
 use crate::{
-    DeviceBackend, DiscoveryCapability, DriverConfigProvider, DriverConfigView,
+    DeviceBackend, DiscoveryCapability, DriverConfigProvider, DriverConfigView, DriverContext,
     DriverControlProvider, DriverDescriptor, DriverError, DriverHost, PairingCapability,
 };
 
@@ -50,12 +50,16 @@ impl OutputBinding<'_> {
 pub trait DeviceBackendFactory: Send + Sync {
     /// Construct the live backend after the registry validates all bindings.
     ///
+    /// `config` is the entry this backend is built for: the host rebuilds the
+    /// backend when that entry changes. `context` carries the host services
+    /// the backend may retain.
+    ///
     /// # Errors
     ///
     /// Returns an error if configuration or backend construction fails.
     fn build(
         &self,
-        host: &dyn DriverHost,
+        context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError>;
 }

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, InstallationId, OutputCadence,
 };
 use hypercolor_pixel_protocols::artnet::{
     ARTNET_PORT, ArtDmxPacket, ArtDmxSequenceTracker, PortAddress,
@@ -29,7 +29,7 @@ use tracing::{debug, info, warn};
 
 use crate::color::encode_pixels;
 use crate::config::{PixelDeviceConfig, PixelProtocol, is_unicast_target};
-use crate::plan::{DmxPlan, OutputPlan, PixelDevicePlan, resolve_device};
+use crate::plan::{DmxPlan, OutputPlan, PixelDevicePlan, derived_cid, resolve_device};
 
 /// Discovery metadata key carrying the device's effective config as JSON.
 pub const METADATA_DEVICE_CONFIG: &str = "pixel_device";
@@ -52,8 +52,9 @@ pub const E131_IDENTICAL_SENDS: u8 = 3;
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Backend for manually configured sACN, Art-Net, and DDP receivers.
-#[derive(Default)]
 pub struct PixelBackend {
+    /// Identity that scopes derived E1.31 CIDs to this installation.
+    installation_id: InstallationId,
     /// Plans for adopted devices, keyed by device id.
     adopted: StdRwLock<HashMap<DeviceId, Arc<PixelDevicePlan>>>,
     /// Connected sessions.
@@ -146,10 +147,18 @@ fn disconnected(device_id: DeviceId) -> DeviceError {
 }
 
 impl PixelBackend {
-    /// Create an empty backend.
+    /// Create an empty backend for this installation.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(installation_id: InstallationId) -> Self {
+        Self {
+            installation_id,
+            adopted: StdRwLock::default(),
+            sessions: StdRwLock::default(),
+            socket_v4: OnceCell::new(),
+            socket_v6: OnceCell::new(),
+            artnet_socket: StdMutex::default(),
+            artnet_fallback_warned: AtomicBool::new(false),
+        }
     }
 
     /// Local address of the socket a connected device sends from.
@@ -304,7 +313,7 @@ impl DeviceBackend for PixelBackend {
             "Connected pixel controller"
         );
         let target = plan.target;
-        let session = PixelSession::new(*id, plan, socket)
+        let session = PixelSession::new(*id, plan, socket, &self.installation_id)
             .map_err(|error| DeviceError::connection(id, error))?;
         let previous = self
             .sessions
@@ -520,36 +529,42 @@ impl PixelSession {
         device_id: DeviceId,
         plan: Arc<PixelDevicePlan>,
         socket: Arc<UdpSocket>,
+        installation_id: &InstallationId,
     ) -> Result<Self> {
         let wire = match &plan.output {
-            OutputPlan::E131 { dmx, source } => WireState::E131 {
-                universes: dmx
-                    .universes
-                    .iter()
-                    .map(|universe| {
-                        let mut packet = E131Packet::new(
-                            &source.source_name,
-                            source.cid,
-                            universe.universe,
-                            source.priority,
-                        );
-                        if let Some(sync) = source.sync_universe {
-                            packet.set_sync_address(sync);
-                        }
-                        E131Universe {
-                            universe: universe.universe,
-                            packet,
-                            data: vec![0; universe.channel_count],
-                        }
-                    })
-                    .collect(),
-                sequences: E131SequenceTracker::default(),
-                sync: source.sync_universe.map(|universe| E131Sync {
-                    universe,
-                    cid: source.cid,
+            OutputPlan::E131 { dmx, source } => {
+                let cid = source
+                    .cid
+                    .unwrap_or_else(|| derived_cid(installation_id, &plan.id));
+                WireState::E131 {
+                    universes: dmx
+                        .universes
+                        .iter()
+                        .map(|universe| {
+                            let mut packet = E131Packet::new(
+                                &source.source_name,
+                                cid,
+                                universe.universe,
+                                source.priority,
+                            );
+                            if let Some(sync) = source.sync_universe {
+                                packet.set_sync_address(sync);
+                            }
+                            E131Universe {
+                                universe: universe.universe,
+                                packet,
+                                data: vec![0; universe.channel_count],
+                            }
+                        })
+                        .collect(),
                     sequences: E131SequenceTracker::default(),
-                }),
-            },
+                    sync: source.sync_universe.map(|universe| E131Sync {
+                        universe,
+                        cid,
+                        sequences: E131SequenceTracker::default(),
+                    }),
+                }
+            }
             OutputPlan::ArtNet { dmx } => WireState::ArtNet {
                 universes: dmx
                     .universes

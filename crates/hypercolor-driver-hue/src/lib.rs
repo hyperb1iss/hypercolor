@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverContext, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
     DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
@@ -131,7 +131,7 @@ impl DriverModule for HueDriverModule {
 impl DeviceBackendFactory for HueDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<HueConfig>()?;

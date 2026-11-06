@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use hypercolor_core::device::{BackendManager, UnclaimedDeviceStore, UsbProtocolConfigStore};
 use hypercolor_driver_api::{
     DiscoveryBatch, DiscoveryCapability, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeCacheProvider, OutputBinding,
-    PairingCapability,
+    DriverContextProvider, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
+    DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeCacheProvider,
+    OutputBinding, PairingCapability,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -398,7 +398,7 @@ pub fn enabled_driver_module_ids(
 pub fn register_enabled_driver_output_backends(
     backend_manager: &mut BackendManager,
     registry: &DriverModuleRegistry,
-    host: &dyn DriverHost,
+    host: &dyn DriverContextProvider,
     config: &HypercolorConfig,
 ) -> Result<()> {
     let enabled_driver_ids = enabled_driver_module_ids(registry, config);
@@ -428,7 +428,7 @@ pub fn register_enabled_driver_output_backends(
 pub fn register_enabled_device_backends(
     backend_manager: &mut BackendManager,
     registry: &DriverModuleRegistry,
-    host: &dyn DriverHost,
+    host: &dyn DriverContextProvider,
     config: &HypercolorConfig,
 ) -> Result<()> {
     register_enabled_driver_output_backends(backend_manager, registry, host, config)

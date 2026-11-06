@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use hypercolor_core::device::BackendManager;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceBackendFactory, DriverConfigView, DriverCredentialStore,
-    DriverDescriptor, DriverDiscoveryState, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputBinding,
+    BackendInfo, DeviceBackend, DeviceBackendFactory, DriverConfigSource, DriverConfigView,
+    DriverContext, DriverContextProvider, DriverCredentialStore, DriverDescriptor,
+    DriverDiscoveryState, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverProtocolCatalog, DriverRuntimeActions, InstallationId, OutputBinding,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -232,7 +233,7 @@ impl DriverModule for FixtureOutputProvider {
 impl DeviceBackendFactory for FixtureOutputProvider {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         Ok(Arc::new(TestBackend {
@@ -374,6 +375,25 @@ impl DriverHost for NullHost {
     }
 }
 
+struct EmptyConfig;
+
+impl DriverConfigSource for EmptyConfig {
+    fn current(&self) -> DriverConfigEntry {
+        DriverConfigEntry::default()
+    }
+}
+
+impl DriverContextProvider for NullHost {
+    fn driver_context(&self, _driver_id: &str) -> DriverContext {
+        DriverContext {
+            config: Arc::new(EmptyConfig),
+            installation_id: InstallationId::new("network-test"),
+            runtime: Arc::new(NullRuntimeActions),
+            device_input: None,
+        }
+    }
+}
+
 struct TestBackend {
     id: &'static str,
 }
@@ -441,10 +461,9 @@ impl DriverModule for ConfiglessDriver {
 impl DeviceBackendFactory for ConfiglessDriver {
     fn build(
         &self,
-        host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        let _ = host;
         assert_eq!(config.driver_id, "external");
         assert!(config.enabled());
         assert!(config.entry.settings.is_empty());
@@ -489,7 +508,7 @@ impl DriverModule for UnavailableOutputDriver {
 impl DeviceBackendFactory for UnavailableOutputDriver {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         panic!("unavailable drivers must not build output backends");

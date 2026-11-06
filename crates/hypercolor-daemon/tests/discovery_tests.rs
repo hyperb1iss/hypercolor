@@ -36,7 +36,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_api::{
     DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView,
-    DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, InstallationId,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -894,6 +894,7 @@ fn make_runtime_with_registry_and_layout(
         driver_inventory,
         Arc::clone(&driver_registry),
         config_manager,
+        InstallationId::new("discovery-test"),
     ));
     TestDiscoveryRuntime {
         runtime,
@@ -2491,8 +2492,6 @@ fn disconnected_ids(
 
 #[tokio::test]
 async fn driver_scoped_scan_runs_beside_a_slow_full_scan() {
-    use hypercolor_driver_api::DriverRuntimeActions;
-
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let slow = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).blocking();
     let quick = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
@@ -2519,6 +2518,7 @@ async fn driver_scoped_scan_runs_beside_a_slow_full_scan() {
     quick.report(vec![arrival.clone()]);
     runtime
         .driver_host
+        .runtime()
         .request_discovery(LANE_QUICK_DRIVER.id)
         .await
         .expect("driver-scoped discovery should be scheduled");
@@ -2759,8 +2759,6 @@ async fn presence_renews_a_device_without_touching_what_was_verified() {
 
 #[tokio::test]
 async fn shutdown_joins_discovery_while_restore_retains_registry_writer() {
-    use hypercolor_driver_api::DriverRuntimeActions;
-
     let directory = tempfile::tempdir().expect("test directory");
     let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
     let runtime = lane_runtime(&directory, &[&driver]);
@@ -2771,6 +2769,7 @@ async fn shutdown_joins_discovery_while_restore_retains_registry_writer() {
         .expect("restore holds registry writer");
     runtime
         .driver_host
+        .runtime()
         .request_discovery(LANE_QUICK_DRIVER.id)
         .await
         .expect("schedule scan");
@@ -2796,8 +2795,6 @@ async fn shutdown_joins_discovery_while_restore_retains_registry_writer() {
 
 #[tokio::test]
 async fn shutdown_stops_an_active_driver_scoped_scan_and_refuses_new_ones() {
-    use hypercolor_driver_api::DriverRuntimeActions;
-
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let slow = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).blocking();
     let runtime = lane_runtime(&temp_dir, &[&slow]);
@@ -2805,6 +2802,7 @@ async fn shutdown_stops_an_active_driver_scoped_scan_and_refuses_new_ones() {
 
     runtime
         .driver_host
+        .runtime()
         .request_discovery(LANE_SLOW_DRIVER.id)
         .await
         .expect("driver-scoped discovery should be scheduled");
@@ -2824,6 +2822,7 @@ async fn shutdown_stops_an_active_driver_scoped_scan_and_refuses_new_ones() {
 
     let refused = runtime
         .driver_host
+        .runtime()
         .request_discovery(LANE_SLOW_DRIVER.id)
         .await
         .expect_err("discovery requests are refused after shutdown");
@@ -2842,8 +2841,6 @@ impl Drop for ReleaseOnDrop {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_waits_for_a_scanner_that_is_mid_work() {
-    use hypercolor_driver_api::DriverRuntimeActions;
-
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let busy = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).spinning();
     let runtime = lane_runtime(&temp_dir, &[&busy]);
@@ -2851,6 +2848,7 @@ async fn shutdown_waits_for_a_scanner_that_is_mid_work() {
 
     runtime
         .driver_host
+        .runtime()
         .request_discovery(LANE_SLOW_DRIVER.id)
         .await
         .expect("driver-scoped discovery should be scheduled");
@@ -2888,8 +2886,6 @@ async fn shutdown_waits_for_a_scanner_that_is_mid_work() {
 
 #[tokio::test]
 async fn a_sweep_does_not_reconnect_a_device_a_newer_lane_scan_retired() {
-    use hypercolor_driver_api::DriverRuntimeActions;
-
     // The ASUS DRAM stick is laid out under the identity minted before
     // driver scoping, so only the complete sweep's binding migration would
     // connect it.
@@ -2964,6 +2960,7 @@ async fn a_sweep_does_not_reconnect_a_device_a_newer_lane_scan_retired() {
     let mut events = runtime.event_bus.subscribe_all();
     runtime
         .driver_host
+        .runtime()
         .request_discovery(STATIC_ASUS_DISCOVERY_DRIVER.id)
         .await
         .expect("driver-scoped discovery should be scheduled");
@@ -3237,12 +3234,11 @@ impl GatedMigrationScenario {
 
     /// Report the stick gone and wait until a lane scan retires it.
     async fn retire_stick(&self) {
-        use hypercolor_driver_api::DriverRuntimeActions;
-
         self.asus.report(Vec::new());
         let mut events = self.runtime.event_bus.subscribe_all();
         self.runtime
             .driver_host
+            .runtime()
             .request_discovery(STATIC_ASUS_DISCOVERY_DRIVER.id)
             .await
             .expect("driver-scoped discovery should be scheduled");
@@ -3305,8 +3301,6 @@ async fn a_background_connect_maps_a_device_that_is_still_present() {
 
 #[tokio::test]
 async fn a_stale_teardown_holds_the_lane_until_the_stale_connection_closes() {
-    use hypercolor_driver_api::DriverRuntimeActions;
-
     let scenario = GatedMigrationScenario::start(true).await;
     scenario.retire_stick().await;
 
@@ -3332,6 +3326,7 @@ async fn a_stale_teardown_holds_the_lane_until_the_stale_connection_closes() {
     scenario
         .runtime
         .driver_host
+        .runtime()
         .request_discovery(STATIC_ASUS_DISCOVERY_DRIVER.id)
         .await
         .expect("driver-scoped discovery should be scheduled");
