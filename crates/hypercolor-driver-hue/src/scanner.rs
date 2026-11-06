@@ -1,6 +1,7 @@
 //! Hue bridge discovery scanner.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,13 +9,14 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tracing::warn;
 
-use hypercolor_driver_api::{
-    CoverageGap, DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation,
+use hypercolor_driver_api::{CoverageGap, DiscoveryBatch, DiscoveryConnectBehavior};
+use hypercolor_driver_support::discovery::{
+    DEFAULT_PROBE_CONCURRENCY, ProbeBudget, Probed, ScanOutcome, probe_candidates,
 };
-use hypercolor_driver_support::{CredentialStore, MdnsBrowser};
+use hypercolor_driver_support::{CredentialStore, MdnsBrowser, MdnsScope};
 use hypercolor_types::device::DeviceFingerprint;
 
 use super::bridge::{DEFAULT_HUE_API_PORT, HueBridgeClient};
@@ -25,6 +27,9 @@ use super::types::{
 
 const HUE_SERVICE_TYPE: &str = "_hue._tcp.local.";
 const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(2);
+/// One bridge probe at worst: three REST reads at the client's 5 s timeout,
+/// plus a moment so a probe's own timeout lands before the scan deadline.
+const PROBE_ROUND: Duration = Duration::from_secs(16);
 
 /// Persistable hint for a known Hue bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,17 +75,6 @@ impl HueKnownBridge {
     }
 }
 
-/// What a scan found.
-#[derive(Debug, Clone, Default)]
-pub struct HueScanOutcome {
-    /// Bridges described by this scan.
-    pub bridges: Vec<HueDiscoveredBridge>,
-    /// Tracked bridges that answered but could not be fully read.
-    pub present: Vec<DeviceFingerprint>,
-    /// What the scan may have missed.
-    pub gaps: Vec<CoverageGap>,
-}
-
 /// One bridge a scan will probe.
 struct HueCandidate {
     bridge: HueKnownBridge,
@@ -89,10 +83,10 @@ struct HueCandidate {
     advertised: bool,
 }
 
-/// What probing one bridge established.
-enum BridgeProbe {
-    Described(HueDiscoveredBridge),
-    Present(DeviceFingerprint),
+impl fmt::Display for HueCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.bridge.ip)
+    }
 }
 
 /// Hue bridge discovery via mDNS, N-UPnP, and direct bridge probing.
@@ -162,7 +156,9 @@ impl HueScanner {
     ///
     /// Returns an error when mDNS cannot run and no known bridge gives the
     /// scan anything else to look at.
-    pub async fn scan_bridges(&mut self) -> Result<HueScanOutcome> {
+    pub async fn scan_bridges(&mut self) -> Result<ScanOutcome<HueDiscoveredBridge>> {
+        let started = Instant::now();
+        let known_hosts: Vec<IpAddr> = self.known_bridges.iter().map(|bridge| bridge.ip).collect();
         let mut candidates: HashMap<IpAddr, HueCandidate> = self
             .known_bridges
             .iter()
@@ -177,37 +173,32 @@ impl HueScanner {
                 )
             })
             .collect();
-        let mut outcome = HueScanOutcome::default();
+        let mut gaps = Vec::new();
 
         if self.mdns_enabled {
-            let browse = async {
-                let browser = MdnsBrowser::new()?;
-                browser.browse(HUE_SERVICE_TYPE, self.scan_timeout).await
-            };
-            match browse.await {
-                Ok(services) => {
-                    for service in services {
-                        let discovered = HueKnownBridge {
-                            bridge_id: service
-                                .txt
-                                .get("bridgeid")
-                                .cloned()
-                                .unwrap_or_default()
-                                .to_ascii_lowercase(),
-                            ip: service.host,
-                            api_port: service.port,
-                            name: service.txt.get("name").cloned().unwrap_or(service.name),
-                            model_id: service.txt.get("modelid").cloned().unwrap_or_default(),
-                            sw_version: service.txt.get("swversion").cloned().unwrap_or_default(),
-                        };
-                        merge_advertised(&mut candidates, discovered);
-                    }
-                }
-                Err(error) if candidates.is_empty() => return Err(error),
-                Err(error) => outcome.gaps.push(CoverageGap::SourceFailed {
-                    source_name: "Hue mDNS browse".to_owned(),
-                    reason: format!("{error:#}"),
-                }),
+            let browse = MdnsBrowser::scan(
+                MdnsScope::Network,
+                HUE_SERVICE_TYPE,
+                self.scan_timeout,
+                &known_hosts,
+            )
+            .await?;
+            gaps = browse.gaps;
+            for service in browse.found {
+                let discovered = HueKnownBridge {
+                    bridge_id: service
+                        .txt
+                        .get("bridgeid")
+                        .cloned()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase(),
+                    ip: service.host,
+                    api_port: service.port,
+                    name: service.txt.get("name").cloned().unwrap_or(service.name),
+                    model_id: service.txt.get("modelid").cloned().unwrap_or_default(),
+                    sw_version: service.txt.get("swversion").cloned().unwrap_or_default(),
+                };
+                merge_advertised(&mut candidates, discovered);
             }
         }
 
@@ -228,7 +219,7 @@ impl HueScanner {
                 }
                 Err(error) => {
                     warn!(error = %error, "Hue N-UPnP discovery failed");
-                    outcome.gaps.push(CoverageGap::SourceFailed {
+                    gaps.push(CoverageGap::SourceFailed {
                         source_name: "Hue N-UPnP discovery".to_owned(),
                         reason: format!("{error:#}"),
                     });
@@ -236,48 +227,32 @@ impl HueScanner {
             }
         }
 
-        let mut tasks = JoinSet::new();
-        for (ip, candidate) in candidates {
+        // Known bridges go first, so the deadline falls on unsolicited ones.
+        let mut candidates: Vec<HueCandidate> = candidates.into_values().collect();
+        candidates.sort_by_key(|candidate| !known_hosts.contains(&candidate.bridge.ip));
+        let budget = ProbeBudget {
+            deadline: started + self.scan_timeout + PROBE_ROUND,
+            in_flight: DEFAULT_PROBE_CONCURRENCY,
+        };
+        let mut outcome = probe_candidates(candidates, budget, |candidate: HueCandidate| {
             let credential_store = Arc::clone(&self.credential_store);
             let preferred_entertainment_config = self.preferred_entertainment_config.clone();
-            let tracked = self.tracked.get(&ip).cloned();
-            tasks.spawn(async move {
-                let probe = build_discovered_bridge(
+            let tracked = self.tracked.get(&candidate.bridge.ip).cloned();
+            async move {
+                build_discovered_bridge(
                     candidate,
                     tracked,
                     credential_store,
                     preferred_entertainment_config,
                 )
-                .await;
-                (ip, probe)
-            });
-        }
-
-        while let Some(task) = tasks.join_next().await {
-            match task {
-                Ok((_, Ok(BridgeProbe::Described(bridge)))) => outcome.bridges.push(bridge),
-                Ok((_, Ok(BridgeProbe::Present(fingerprint)))) => {
-                    outcome.present.push(fingerprint);
-                }
-                Ok((ip, Err(error))) => {
-                    warn!(%ip, error = %error, "Hue bridge probe failed");
-                    outcome.gaps.push(CoverageGap::ProbeFailed {
-                        candidate: ip.to_string(),
-                        reason: format!("{error:#}"),
-                    });
-                }
-                Err(error) => {
-                    warn!(error = %error, "Hue scanner task failed");
-                    outcome.gaps.push(CoverageGap::ProbeFailed {
-                        candidate: "Hue scanner task".to_owned(),
-                        reason: error.to_string(),
-                    });
-                }
+                .await
             }
-        }
+        })
+        .await;
+        outcome.gaps.extend(gaps);
 
         outcome
-            .bridges
+            .found
             .sort_by(|left, right| left.info.name.cmp(&right.info.name));
         Ok(outcome)
     }
@@ -291,18 +266,7 @@ impl HueScanner {
     /// See [`HueScanner::scan_bridges`].
     pub async fn scan(&mut self) -> Result<DiscoveryBatch> {
         let outcome = self.scan_bridges().await?;
-        let observations = outcome
-            .bridges
-            .into_iter()
-            .map(|bridge| DiscoveryObservation::Device(bridge.into_discovered()))
-            .chain(
-                outcome
-                    .present
-                    .into_iter()
-                    .map(DiscoveryObservation::Present),
-            )
-            .collect();
-        Ok(DiscoveryBatch::new(observations, outcome.gaps))
+        Ok(outcome.into_batch(HueDiscoveredBridge::into_discovered))
     }
 }
 
@@ -331,7 +295,7 @@ async fn build_discovered_bridge(
     tracked: Option<DeviceFingerprint>,
     credential_store: Arc<CredentialStore>,
     preferred_entertainment_config: Option<String>,
-) -> Result<BridgeProbe> {
+) -> Result<Probed<HueDiscoveredBridge>> {
     let HueCandidate {
         bridge: candidate,
         advertised,
@@ -376,7 +340,7 @@ async fn build_discovered_bridge(
             None,
             &[],
         );
-        return Ok(BridgeProbe::Described(build_discovered_payload(
+        return Ok(Probed::Described(build_discovered_payload(
             &candidate,
             &bridge_id,
             &bridge_name,
@@ -401,7 +365,7 @@ async fn build_discovered_bridge(
             bridge_id = %bridge_id,
             "keeping tracked Hue bridge as it was; discovery could not read it"
         );
-        return Ok(BridgeProbe::Present(fingerprint));
+        return Ok(Probed::Present(fingerprint));
     }
     let lights = lights.unwrap_or_else(|error| {
         warn!(
@@ -433,7 +397,7 @@ async fn build_discovered_bridge(
         lights.as_slice(),
     );
 
-    Ok(BridgeProbe::Described(build_discovered_payload(
+    Ok(Probed::Described(build_discovered_payload(
         &candidate,
         &bridge_id,
         &bridge_name,

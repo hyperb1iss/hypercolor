@@ -1,6 +1,7 @@
 //! Nanoleaf discovery scanner.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,13 +9,14 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tracing::warn;
 
-use hypercolor_driver_api::{
-    CoverageGap, DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation,
+use hypercolor_driver_api::{DiscoveryBatch, DiscoveryConnectBehavior};
+use hypercolor_driver_support::discovery::{
+    DEFAULT_PROBE_CONCURRENCY, ProbeBudget, Probed, ScanOutcome, probe_candidates,
 };
-use hypercolor_driver_support::{CredentialStore, MdnsBrowser};
+use hypercolor_driver_support::{CredentialStore, MdnsBrowser, MdnsScope};
 use hypercolor_types::device::DeviceFingerprint;
 use hypercolor_types::portable::PortableIdentityClaim;
 
@@ -27,6 +29,9 @@ use super::types::{
 
 const NANOLEAF_SERVICE_TYPE: &str = "_nanoleafapi._tcp.local.";
 const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(2);
+/// One device probe at worst: two HTTP reads at the client's 5 s timeout,
+/// plus a moment so a probe's own timeout lands before the scan deadline.
+const PROBE_ROUND: Duration = Duration::from_secs(11);
 
 /// Persistable hint for a known Nanoleaf device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,17 +92,6 @@ impl NanoleafKnownDevice {
     }
 }
 
-/// What a scan found.
-#[derive(Debug, Clone, Default)]
-pub struct NanoleafScanOutcome {
-    /// Devices described by this scan.
-    pub devices: Vec<NanoleafDiscoveredDevice>,
-    /// Tracked devices that answered but could not be fully read.
-    pub present: Vec<DeviceFingerprint>,
-    /// What the scan may have missed.
-    pub gaps: Vec<CoverageGap>,
-}
-
 /// One device a scan will probe.
 struct NanoleafCandidate {
     device: NanoleafKnownDevice,
@@ -106,10 +100,10 @@ struct NanoleafCandidate {
     advertised: bool,
 }
 
-/// What probing one device established.
-enum DeviceProbe {
-    Described(NanoleafDiscoveredDevice),
-    Present(DeviceFingerprint),
+impl fmt::Display for NanoleafCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.device.ip)
+    }
 }
 
 /// Nanoleaf `mDNS` + HTTP discovery scanner.
@@ -193,7 +187,9 @@ impl NanoleafScanner {
     ///
     /// Returns an error when `mDNS` cannot run and no known device gives
     /// the scan anything else to look at.
-    pub async fn scan_devices(&mut self) -> Result<NanoleafScanOutcome> {
+    pub async fn scan_devices(&mut self) -> Result<ScanOutcome<NanoleafDiscoveredDevice>> {
+        let started = Instant::now();
+        let known_hosts: Vec<IpAddr> = self.known_devices.iter().map(|device| device.ip).collect();
         let mut candidates: HashMap<IpAddr, NanoleafCandidate> = self
             .known_devices
             .iter()
@@ -208,99 +204,74 @@ impl NanoleafScanner {
                 )
             })
             .collect();
-        let mut outcome = NanoleafScanOutcome::default();
+        let mut gaps = Vec::new();
 
         if self.mdns_enabled {
-            let browse = async {
-                let browser = MdnsBrowser::new()?;
-                browser
-                    .browse(NANOLEAF_SERVICE_TYPE, self.scan_timeout)
-                    .await
-            };
-            match browse.await {
-                Ok(services) => {
-                    for service in services {
-                        let mdns_id = service.txt.get("id").cloned().unwrap_or_default();
-                        let discovered = NanoleafKnownDevice {
-                            device_id_is_identifier: !mdns_id.is_empty(),
-                            device_id: mdns_id,
-                            ip: service.host,
-                            port: service.port,
-                            name: service
-                                .txt
-                                .get("name")
-                                .or_else(|| service.txt.get("nm"))
-                                .cloned()
-                                .unwrap_or(service.name),
-                            model: service
-                                .txt
-                                .get("model")
-                                .or_else(|| service.txt.get("md"))
-                                .cloned()
-                                .unwrap_or_default(),
-                            firmware: service
-                                .txt
-                                .get("firmware")
-                                .or_else(|| service.txt.get("fw"))
-                                .cloned()
-                                .unwrap_or_default(),
-                        };
+            let browse = MdnsBrowser::scan(
+                MdnsScope::Network,
+                NANOLEAF_SERVICE_TYPE,
+                self.scan_timeout,
+                &known_hosts,
+            )
+            .await?;
+            gaps = browse.gaps;
+            for service in browse.found {
+                let mdns_id = service.txt.get("id").cloned().unwrap_or_default();
+                let discovered = NanoleafKnownDevice {
+                    device_id_is_identifier: !mdns_id.is_empty(),
+                    device_id: mdns_id,
+                    ip: service.host,
+                    port: service.port,
+                    name: service
+                        .txt
+                        .get("name")
+                        .or_else(|| service.txt.get("nm"))
+                        .cloned()
+                        .unwrap_or(service.name),
+                    model: service
+                        .txt
+                        .get("model")
+                        .or_else(|| service.txt.get("md"))
+                        .cloned()
+                        .unwrap_or_default(),
+                    firmware: service
+                        .txt
+                        .get("firmware")
+                        .or_else(|| service.txt.get("fw"))
+                        .cloned()
+                        .unwrap_or_default(),
+                };
 
-                        candidates
-                            .entry(discovered.ip)
-                            .and_modify(|existing| {
-                                existing.device.merge_from(&discovered);
-                                existing.advertised = true;
-                            })
-                            .or_insert(NanoleafCandidate {
-                                device: discovered,
-                                advertised: true,
-                            });
-                    }
-                }
-                Err(error) if candidates.is_empty() => return Err(error),
-                Err(error) => outcome.gaps.push(CoverageGap::SourceFailed {
-                    source_name: "Nanoleaf mDNS browse".to_owned(),
-                    reason: format!("{error:#}"),
-                }),
+                candidates
+                    .entry(discovered.ip)
+                    .and_modify(|existing| {
+                        existing.device.merge_from(&discovered);
+                        existing.advertised = true;
+                    })
+                    .or_insert(NanoleafCandidate {
+                        device: discovered,
+                        advertised: true,
+                    });
             }
         }
 
-        let mut tasks = JoinSet::new();
-        for (ip, candidate) in candidates {
+        // Known devices go first, so the deadline falls on unsolicited ones.
+        let mut candidates: Vec<NanoleafCandidate> = candidates.into_values().collect();
+        candidates.sort_by_key(|candidate| !known_hosts.contains(&candidate.device.ip));
+        let budget = ProbeBudget {
+            deadline: started + self.scan_timeout + PROBE_ROUND,
+            in_flight: DEFAULT_PROBE_CONCURRENCY,
+        };
+        let mut outcome = probe_candidates(candidates, budget, |candidate: NanoleafCandidate| {
             let credential_store = Arc::clone(&self.credential_store);
-            let tracked = self.tracked.get(&ip).cloned();
-            tasks.spawn(async move {
-                let probe = build_discovered_device(candidate, tracked, credential_store).await;
-                (ip, probe)
-            });
-        }
-
-        while let Some(task) = tasks.join_next().await {
-            match task {
-                Ok((_, Ok(DeviceProbe::Described(device)))) => outcome.devices.push(device),
-                Ok((_, Ok(DeviceProbe::Present(fingerprint)))) => {
-                    outcome.present.push(fingerprint);
-                }
-                Ok((ip, Err(error))) => {
-                    warn!(%ip, error = %error, "Nanoleaf device probe failed");
-                    outcome.gaps.push(CoverageGap::ProbeFailed {
-                        candidate: ip.to_string(),
-                        reason: format!("{error:#}"),
-                    });
-                }
-                Err(error) => {
-                    warn!(error = %error, "Nanoleaf scanner task failed");
-                    outcome.gaps.push(CoverageGap::ProbeFailed {
-                        candidate: "Nanoleaf scanner task".to_owned(),
-                        reason: error.to_string(),
-                    });
-                }
-            }
-        }
+            let tracked = self.tracked.get(&candidate.device.ip).cloned();
+            async move { build_discovered_device(candidate, tracked, credential_store).await }
+        })
+        .await;
+        outcome.gaps.extend(gaps);
 
         outcome
-            .devices
+            .found
             .sort_by(|left, right| left.info.name.cmp(&right.info.name));
         Ok(outcome)
     }
@@ -314,18 +285,7 @@ impl NanoleafScanner {
     /// See [`NanoleafScanner::scan_devices`].
     pub async fn scan(&mut self) -> Result<DiscoveryBatch> {
         let outcome = self.scan_devices().await?;
-        let observations = outcome
-            .devices
-            .into_iter()
-            .map(|device| DiscoveryObservation::Device(device.into_discovered()))
-            .chain(
-                outcome
-                    .present
-                    .into_iter()
-                    .map(DiscoveryObservation::Present),
-            )
-            .collect();
-        Ok(DiscoveryBatch::new(observations, outcome.gaps))
+        Ok(outcome.into_batch(NanoleafDiscoveredDevice::into_discovered))
     }
 }
 
@@ -339,7 +299,7 @@ async fn build_discovered_device(
     candidate: NanoleafCandidate,
     tracked: Option<DeviceFingerprint>,
     credential_store: Arc<CredentialStore>,
-) -> Result<DeviceProbe> {
+) -> Result<Probed<NanoleafDiscoveredDevice>> {
     let NanoleafCandidate {
         device: candidate,
         advertised,
@@ -380,7 +340,7 @@ async fn build_discovered_device(
                             "failed to load Nanoleaf panel layout during discovery"
                         );
                         if let Some(fingerprint) = tracked {
-                            return Ok(DeviceProbe::Present(fingerprint));
+                            return Ok(Probed::Present(fingerprint));
                         }
                         DiscoveryConnectBehavior::Deferred
                     }
@@ -395,7 +355,7 @@ async fn build_discovered_device(
                     "failed to load Nanoleaf device info during discovery"
                 );
                 if let Some(fingerprint) = tracked {
-                    return Ok(DeviceProbe::Present(fingerprint));
+                    return Ok(Probed::Present(fingerprint));
                 }
                 DiscoveryConnectBehavior::Deferred
             }
@@ -449,7 +409,7 @@ async fn build_discovered_device(
         metadata.insert("firmware".to_owned(), firmware.clone());
     }
 
-    Ok(DeviceProbe::Described(NanoleafDiscoveredDevice {
+    Ok(Probed::Described(NanoleafDiscoveredDevice {
         device_key,
         ip: candidate.ip,
         api_port: candidate.port,

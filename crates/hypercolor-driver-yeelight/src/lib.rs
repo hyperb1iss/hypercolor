@@ -22,10 +22,9 @@ use async_trait::async_trait;
 
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
-    DiscoveryObservation, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
-    ValidatedControlChanges,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::{network_port_from_metadata, validate_ip};
 use hypercolor_driver_support::{control_apply, control_surface};
@@ -146,19 +145,14 @@ impl DiscoveryCapability for YeelightDriverModule {
             timeout: request.timeout,
         });
         let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
-        let observations = outcome
-            .profiles
-            .iter()
-            .map(|profile| {
-                let max_fps = if config.music_mode && profile.capabilities().music {
-                    config.max_fps
-                } else {
-                    1
-                };
-                DiscoveryObservation::Device(discovered_device(profile, max_fps, config.music_mode))
-            })
-            .collect();
-        Ok(DiscoveryBatch::new(observations, outcome.gaps))
+        Ok(outcome.into_batch(|profile| {
+            let max_fps = if config.music_mode && profile.capabilities().music {
+                config.max_fps
+            } else {
+                1
+            };
+            discovered_device(&profile, max_fps, config.music_mode)
+        }))
     }
 }
 

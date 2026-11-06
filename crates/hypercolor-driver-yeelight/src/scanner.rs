@@ -11,9 +11,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::discovery::{Admission, CandidateAdmission, ScanOutcome};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
@@ -49,15 +50,6 @@ const RECEIVE_BUFFER_LEN: usize = 2048;
 pub const MAX_SEARCH_REPLIES: usize = 256;
 /// Searches are UDP; repeat a few times inside the window.
 const SEARCH_ROUNDS: u32 = 3;
-
-/// What a scan or search found.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct YeelightScanOutcome {
-    /// Lights that answered.
-    pub profiles: Vec<YeelightDeviceProfile>,
-    /// What the search may have missed.
-    pub gaps: Vec<CoverageGap>,
-}
 
 /// Where a scan sends the search.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,7 +163,7 @@ impl YeelightScanner {
     /// # Errors
     ///
     /// Returns an error when the search socket cannot be bound.
-    pub async fn scan(&self) -> Result<YeelightScanOutcome> {
+    pub async fn scan(&self) -> Result<ScanOutcome<YeelightDeviceProfile>> {
         let mut targets: Vec<SocketAddr> = self
             .options
             .unicast_targets
@@ -183,12 +175,12 @@ impl YeelightScanner {
             targets.push(SEARCH_MULTICAST);
         }
         if targets.is_empty() {
-            return Ok(YeelightScanOutcome::default());
+            return Ok(ScanOutcome::default());
         }
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
         let replies = search(&targets, window).await?;
         let mut profiles: Vec<YeelightDeviceProfile> = Vec::new();
-        for profile in replies.profiles {
+        for profile in replies.found {
             if !profile.capabilities().drivable() {
                 debug!(id = %profile.reply.id, "skipping Yeelight device without a drivable light");
                 continue;
@@ -201,9 +193,9 @@ impl YeelightScanner {
             }
         }
         profiles.sort_by(|left, right| left.reply.id.cmp(&right.reply.id));
-        Ok(YeelightScanOutcome {
-            profiles,
-            gaps: replies.gaps,
+        Ok(ScanOutcome {
+            found: profiles,
+            ..replies
         })
     }
 }
@@ -214,7 +206,10 @@ impl YeelightScanner {
 /// # Errors
 ///
 /// Returns an error when the socket cannot be bound.
-pub async fn search(targets: &[SocketAddr], window: Duration) -> Result<YeelightScanOutcome> {
+pub async fn search(
+    targets: &[SocketAddr],
+    window: Duration,
+) -> Result<ScanOutcome<YeelightDeviceProfile>> {
     search_until(targets, window, None).await
 }
 
@@ -227,10 +222,10 @@ pub async fn search_until(
     targets: &[SocketAddr],
     window: Duration,
     limit: Option<usize>,
-) -> Result<YeelightScanOutcome> {
+) -> Result<ScanOutcome<YeelightDeviceProfile>> {
     let limit = limit.unwrap_or(MAX_SEARCH_REPLIES).min(MAX_SEARCH_REPLIES);
-    let mut admission = SearchAdmission::new(limit);
-    let mut refused = 0;
+    let mut admission =
+        CandidateAdmission::new(limit).reserving(targets.iter().map(SocketAddr::ip));
     let mut gaps = Vec::new();
     // A target stays unreached until one round's send to it succeeds.
     let mut unreached = targets.to_vec();
@@ -267,22 +262,16 @@ pub async fn search_until(
                 break;
             }
             Ok(Ok((len, source))) => match decode_search_reply(&buffer[..len]) {
-                Ok(reply) => match admission.offer(source, reply) {
-                    Offer::Admitted => {
-                        if limit < MAX_SEARCH_REPLIES && admission.len() >= limit {
-                            // A targeted lookup (the identity check) is done.
-                            break;
-                        }
+                Ok(reply) => {
+                    let offered = offer_reply(&mut admission, source, reply);
+                    // A targeted lookup (the identity check) is done.
+                    if offered == Some(Admission::Added)
+                        && limit < MAX_SEARCH_REPLIES
+                        && admission.len() >= limit
+                    {
+                        break;
                     }
-                    Offer::Replaced => {}
-                    Offer::Foreign => {
-                        debug!(%source, "ignoring a Yeelight reply naming another address");
-                    }
-                    Offer::Duplicate => {
-                        debug!(%source, "ignoring a Yeelight id another address reported");
-                    }
-                    Offer::Full => refused += 1,
-                },
+                }
                 Err(error) => debug!(%source, %error, "ignoring non-Yeelight search reply"),
             },
         }
@@ -290,103 +279,39 @@ pub async fn search_until(
     gaps.extend(unreached.iter().map(|target| CoverageGap::SendFailed {
         target: target.to_string(),
     }));
-    if refused > 0 {
-        warn!(
-            limit,
-            refused,
-            "Yeelight search stopped admitting lights at its limit; add the rest to device_ips"
-        );
-        gaps.push(CoverageGap::AdmissionFull { refused });
-    }
-    Ok(YeelightScanOutcome {
-        profiles: admission.into_profiles(),
-        gaps,
-    })
+    let mut outcome = admission.finish();
+    outcome.gaps.append(&mut gaps);
+    Ok(outcome)
 }
 
-/// What [`SearchAdmission::offer`] did with a reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Offer {
-    /// A new address and id, now tracked.
-    Admitted,
-    /// The address was tracked; its most recent reply replaced the last.
-    Replaced,
-    /// The reply names a control address other than its source.
-    Foreign,
-    /// Another tracked address already reported this id.
-    Duplicate,
-    /// The scan already tracks its limit of addresses.
-    Full,
-}
-
-/// Per-scan admission of search replies (Spec 94 §3.3).
+/// Offer one search reply from `source` (Spec 94 §3.3).
 ///
-/// Every check runs before any state changes, and the only state is one
-/// entry per admitted source address, so replies from spoofed sources
-/// cannot grow memory past the limit. Each address reports only its most
-/// recent id: one endpoint cannot hand a scan more than one identity.
-#[derive(Debug)]
-pub struct SearchAdmission {
-    limit: usize,
-    by_source: HashMap<IpAddr, YeelightDeviceProfile>,
-}
-
-impl SearchAdmission {
-    #[must_use]
-    pub fn new(limit: usize) -> Self {
-        Self {
-            limit,
-            by_source: HashMap::new(),
-        }
+/// Every check runs before any state changes. A light answers for itself, so
+/// a reply naming another control address is not admitted, and neither is an
+/// id another address already reported. Each address keeps only its most
+/// recent reply: one endpoint cannot hand a scan more than one identity.
+pub fn offer_reply(
+    admission: &mut CandidateAdmission<IpAddr, YeelightDeviceProfile>,
+    source: SocketAddr,
+    reply: SearchReply,
+) -> Option<Admission> {
+    let ip = source.ip();
+    if reply.location.ip() != ip {
+        debug!(%source, "ignoring a Yeelight reply naming another address");
+        return None;
     }
-
-    /// Consider one reply from `source`.
-    pub fn offer(&mut self, source: SocketAddr, reply: SearchReply) -> Offer {
-        // A light answers for itself: its control address is the source.
-        if reply.location.ip() != source.ip() {
-            return Offer::Foreign;
-        }
-        let ip = source.ip();
-        if self
-            .by_source
-            .iter()
-            .any(|(other, known)| *other != ip && known.reply.id == reply.id)
-        {
-            return Offer::Duplicate;
-        }
-        let profile = YeelightDeviceProfile {
-            reply,
-            search_port: source.port(),
-        };
-        if let Some(known) = self.by_source.get_mut(&ip) {
-            *known = profile;
-            return Offer::Replaced;
-        }
-        if self.by_source.len() >= self.limit {
-            return Offer::Full;
-        }
-        self.by_source.insert(ip, profile);
-        Offer::Admitted
+    if admission
+        .values()
+        .any(|known| known.reply.id == reply.id && known.reply.location.ip() != ip)
+    {
+        debug!(%source, "ignoring a Yeelight id another address reported");
+        return None;
     }
-
-    /// Addresses tracked so far.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.by_source.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.by_source.is_empty()
-    }
-
-    /// The admitted profiles, sorted by id.
-    #[must_use]
-    pub fn into_profiles(self) -> Vec<YeelightDeviceProfile> {
-        let mut profiles: Vec<YeelightDeviceProfile> = self.by_source.into_values().collect();
-        profiles.sort_by(|left, right| left.reply.id.cmp(&right.reply.id));
-        profiles
-    }
+    let profile = YeelightDeviceProfile {
+        reply,
+        search_port: source.port(),
+    };
+    Some(admission.offer_latest(ip, profile))
 }
 
 /// Metadata published for a device.

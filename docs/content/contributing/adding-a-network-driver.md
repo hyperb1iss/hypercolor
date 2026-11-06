@@ -250,6 +250,12 @@ A scan returns observations plus coverage, and the host treats them differently:
 - **Errors mean nothing ran.** Return `Err` only when discovery could not start at all. One
   failed source must not throw away what the others found.
 
+Bound what unsolicited replies can make a scan do with `hypercolor_driver_support::discovery`.
+`CandidateAdmission` caps retained candidates before any state grows and reserves room for
+configured and tracked targets. `probe_candidates` bounds concurrency under a deadline. Both
+hand back the gaps their bounds cost. Pass tracked targets to `MdnsBrowser::browse` so a flood
+of advertisements cannot crowd them out.
+
 ### Govee: UDP multicast + optional cloud fallback
 
 Govee has no mDNS. Discovery sends a JSON scan command to the multicast address

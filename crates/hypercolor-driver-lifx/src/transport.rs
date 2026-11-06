@@ -1,12 +1,13 @@
 //! UDP request and reply client (Spec 88 §2.4 and §4.4).
 
-use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::hash::{BuildHasher, RandomState};
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use hypercolor_driver_api::CoverageGap;
+use hypercolor_driver_support::discovery::CandidateAdmission;
 use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
@@ -68,10 +69,8 @@ pub struct DiscoveryRound {
     pub sends_failed: usize,
     /// The targets whose send was rejected.
     pub failed_targets: Vec<SocketAddr>,
-    /// Distinct serials ignored because the cap was reached.
-    pub dropped: usize,
-    /// The receive failure that ended the round early, if one did.
-    pub receive_gap: Option<CoverageGap>,
+    /// What the round may have missed beyond rejected sends.
+    pub gaps: Vec<CoverageGap>,
 }
 
 /// One StateService reply collected during discovery.
@@ -80,6 +79,12 @@ pub struct ServiceReply {
     pub serial: Serial,
     /// Reply source IP plus the advertised UDP port.
     pub addr: SocketAddr,
+}
+
+impl fmt::Display for ServiceReply {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} at {}", self.serial, self.addr)
+    }
 }
 
 /// Pick a client source id. Never 0 or 1 (Spec 88 §2.1).
@@ -180,7 +185,7 @@ impl LifxClient {
         &mut self,
         targets: &[SocketAddr],
         window: Duration,
-        max_replies: usize,
+        mut admission: CandidateAdmission<Serial, ServiceReply>,
     ) -> Result<DiscoveryRound, TransportError> {
         let address = self.next_address(Serial::BROADCAST, false);
         self.send_buf.clear();
@@ -198,9 +203,6 @@ impl LifxClient {
         }
 
         let deadline = Instant::now() + window;
-        let mut replies: HashMap<Serial, ServiceReply> = HashMap::new();
-        let mut dropped: HashSet<Serial> = HashSet::new();
-        let mut order = Vec::new();
         loop {
             let Ok(received) =
                 timeout_at(deadline, self.socket.recv_from(&mut self.recv_buf)).await
@@ -211,11 +213,11 @@ impl LifxClient {
                 Ok(received) => received,
                 Err(error) => {
                     trace!(%error, "LIFX discovery receive failed");
-                    round.receive_gap = CoverageGap::from_receive_error(&error);
-                    if round.receive_gap.is_some() {
-                        break;
-                    }
-                    continue;
+                    let Some(gap) = CoverageGap::from_receive_error(&error) else {
+                        continue;
+                    };
+                    round.gaps.push(gap);
+                    break;
                 }
             };
             let Ok(packet) = decode_packet(&self.recv_buf[..len]) else {
@@ -231,36 +233,23 @@ impl LifxClient {
                 continue;
             };
             let serial = packet.header.target;
-            if service.service != StateService::UDP
-                || service.port == 0
-                || serial.is_broadcast()
-                || replies.contains_key(&serial)
-            {
+            if service.service != StateService::UDP || service.port == 0 || serial.is_broadcast() {
                 continue;
             }
             let Ok(port) = u16::try_from(service.port) else {
                 continue;
             };
-            if replies.len() >= max_replies {
-                if dropped.len() < max_replies {
-                    dropped.insert(serial);
-                }
-                continue;
-            }
-            replies.insert(
+            admission.offer(
                 serial,
                 ServiceReply {
                     serial,
                     addr: SocketAddr::new(from.ip(), port),
                 },
             );
-            order.push(serial);
         }
-        round.dropped = dropped.len();
-        round.replies = order
-            .into_iter()
-            .filter_map(|serial| replies.remove(&serial))
-            .collect();
+        let admitted = admission.finish();
+        round.replies = admitted.found;
+        round.gaps.extend(admitted.gaps);
         Ok(round)
     }
 

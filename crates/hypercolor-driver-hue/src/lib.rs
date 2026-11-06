@@ -47,7 +47,7 @@ use hypercolor_types::pairing::{
 pub use backend::{HueBackend, HueConfig};
 pub use bridge::{DEFAULT_HUE_API_PORT, DEFAULT_HUE_STREAM_PORT, HueBridgeClient, HueNupnpBridge};
 pub use color::{CieXyb, ColorGamut, GAMUT_A, GAMUT_B, GAMUT_C, rgb_to_cie_xyb};
-pub use scanner::{HueKnownBridge, HueScanOutcome, HueScanner};
+pub use scanner::{HueKnownBridge, HueScanner};
 pub use streaming::{HueStreamSession, encode_packet_into, encode_rgb_packet_into};
 pub use types::{
     HueBridgeIdentity, HueChannel, HueChannelMember, HueDiscoveredBridge, HueEntertainmentConfig,

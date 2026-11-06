@@ -59,7 +59,7 @@ use self::api::AuthenticatedApi;
 use self::types::NanoleafPanelLayoutResponse;
 
 pub use backend::{NanoleafBackend, NanoleafConfig};
-pub use scanner::{NanoleafKnownDevice, NanoleafScanOutcome, NanoleafScanner};
+pub use scanner::{NanoleafKnownDevice, NanoleafScanner};
 pub use streaming::{
     DEFAULT_NANOLEAF_API_PORT, DEFAULT_NANOLEAF_STREAM_PORT, NanoleafStreamSession,
     encode_frame_into,

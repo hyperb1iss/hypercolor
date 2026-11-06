@@ -2,13 +2,17 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use tokio::task::JoinSet;
-use tracing::{debug, warn};
+use tokio::time::Instant;
+use tracing::debug;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::discovery::{
+    CandidateAdmission, ProbeBudget, Probed, ScanOutcome, probe_candidates,
+};
 use hypercolor_types::device::DeviceFingerprint;
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 
@@ -46,19 +50,14 @@ pub const MAX_DISCOVERY_CANDIDATES: usize = 512;
 /// Probes in flight at once, each holding one UDP socket. A healthy probe
 /// is four round trips, so 32 in flight clears 512 lights in well under a
 /// second while keeping descriptor and port use small.
-pub const MAX_CONCURRENT_PROBES: usize = 32;
+pub const MAX_CONCURRENT_PROBES: NonZeroUsize = NonZeroUsize::new(32).expect("32 is not zero");
 
-/// What a scan found.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct LifxScanOutcome {
-    /// Lights that answered and were probed.
-    pub profiles: Vec<LifxDeviceProfile>,
-    /// Tracked lights that answered from their verified route but failed
-    /// their probe. They are alive and nothing new is known about them.
-    pub present: Vec<DeviceFingerprint>,
-    /// What the scan may have missed.
-    pub gaps: Vec<CoverageGap>,
-}
+/// Requests in a healthy probe: version, firmware, label, and one topology
+/// read.
+const PROBE_REQUESTS: u32 = 4;
+/// Longest probe round the scan waits for, whatever retry policy a caller
+/// passes.
+const MAX_PROBE_ROUND: Duration = Duration::from_secs(10);
 
 /// Where a tracked light last proved itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +85,7 @@ pub struct LifxScanOptions {
     /// coverage.
     pub max_candidates: usize,
     /// Probes in flight at once.
-    pub max_concurrent_probes: usize,
+    pub max_concurrent_probes: NonZeroUsize,
 }
 
 impl Default for LifxScanOptions {
@@ -143,75 +142,58 @@ impl LifxScanner {
 
     /// Discover and probe devices.
     ///
+    /// A light that answers but fails its probe has not proven where it is:
+    /// a StateService reply is unverified, and anyone on the LAN can send
+    /// one that names a tracked serial. Only a reply from the light's last
+    /// verified endpoint counts as presence. Any other reply is an unknown
+    /// that keeps the scan partial, so it can neither prove a dead light
+    /// present nor have a live one retired.
+    ///
     /// # Errors
     ///
     /// Returns an error when no discovery pass with targets could start. An
     /// address family with no targets is simply skipped, and everything
     /// short of that is reported as a coverage gap.
-    pub async fn scan(&self) -> Result<LifxScanOutcome> {
+    pub async fn scan(&self) -> Result<ScanOutcome<LifxDeviceProfile>> {
+        let started = Instant::now();
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
         let (replies, gaps) = self.collect_services(window).await?;
 
-        let mut outcome = LifxScanOutcome {
-            gaps,
-            ..LifxScanOutcome::default()
+        let policy = self.options.request_policy;
+        let round = policy
+            .reply_timeout
+            .saturating_mul(policy.attempts.max(1).saturating_mul(PROBE_REQUESTS))
+            .min(MAX_PROBE_ROUND);
+        let budget = ProbeBudget {
+            deadline: started + self.options.timeout.max(window + round),
+            in_flight: self.options.max_concurrent_probes,
         };
-        let mut tasks = JoinSet::new();
-        let mut pending = replies.into_iter();
-        loop {
-            while tasks.len() < self.options.max_concurrent_probes.max(1) {
-                let Some(reply) = pending.next() else {
-                    break;
-                };
-                let policy = self.options.request_policy;
-                tasks.spawn(
-                    async move { (reply, probe_at(reply.addr, reply.serial, policy).await) },
-                );
-            }
-            let Some(joined) = tasks.join_next().await else {
-                break;
-            };
-            match joined {
-                Ok((_, Ok(Some(profile)))) => outcome.profiles.push(profile),
-                Ok((reply, Ok(None))) => {
-                    debug!(serial = %reply.serial, addr = %reply.addr, "LIFX device is not a light");
+        let mut outcome = probe_candidates(replies, budget, |reply: ServiceReply| {
+            let verified = self
+                .options
+                .tracked
+                .get(&reply.serial)
+                .filter(|route| route.addr == reply.addr)
+                .map(|route| route.fingerprint.clone());
+            async move {
+                match probe_at(reply.addr, reply.serial, policy).await {
+                    Ok(Some(profile)) => Ok(Probed::Described(profile)),
+                    Ok(None) => {
+                        debug!(serial = %reply.serial, addr = %reply.addr, "LIFX device is not a light");
+                        Ok(Probed::Nothing)
+                    }
+                    Err(error) => match verified {
+                        Some(fingerprint) => Ok(Probed::Present(fingerprint)),
+                        None => Err(error),
+                    },
                 }
-                Ok((reply, Err(error))) => {
-                    warn!(serial = %reply.serial, addr = %reply.addr, error = %error, "LIFX device probe failed");
-                    self.record_unprobed(&reply, &error, &mut outcome);
-                }
-                Err(error) => outcome.gaps.push(CoverageGap::ProbeFailed {
-                    candidate: "LIFX probe task".to_owned(),
-                    reason: error.to_string(),
-                }),
             }
-        }
-        outcome.profiles.sort_by_key(|profile| profile.serial);
-        Ok(outcome)
-    }
+        })
+        .await;
 
-    /// Account for a light that answered discovery but failed its probe.
-    ///
-    /// A StateService reply is unverified: anyone on the LAN can send one
-    /// that names a tracked serial. Only a reply from the light's last
-    /// verified endpoint counts as presence. Any other reply is an unknown
-    /// that keeps the scan partial, so it can neither prove a dead light
-    /// present nor have a live one retired.
-    fn record_unprobed(
-        &self,
-        reply: &ServiceReply,
-        error: &anyhow::Error,
-        outcome: &mut LifxScanOutcome,
-    ) {
-        match self.options.tracked.get(&reply.serial) {
-            Some(route) if route.addr == reply.addr => {
-                outcome.present.push(route.fingerprint.clone());
-            }
-            _ => outcome.gaps.push(CoverageGap::ProbeFailed {
-                candidate: format!("{} at {}", reply.serial, reply.addr),
-                reason: format!("{error:#}"),
-            }),
-        }
+        outcome.gaps.extend(gaps);
+        outcome.found.sort_by_key(|profile| profile.serial);
+        Ok(outcome)
     }
 
     async fn collect_services(
@@ -233,17 +215,19 @@ impl LifxScanner {
             .collect();
         let v4_targets: Vec<SocketAddr> = v4_unicast.iter().chain(&v4_broadcast).copied().collect();
 
-        let limit = self.options.max_candidates;
+        let admission = || {
+            CandidateAdmission::new(self.options.max_candidates)
+                .reserving(self.options.tracked.keys().copied())
+        };
         let (v4, v6) = tokio::join!(
-            discovery_pass("IPv4", &v4_targets, &v4_broadcast, window, limit),
-            discovery_pass("IPv6", &v6_unicast, &[], window, limit),
+            discovery_pass("IPv4", &v4_targets, &v4_broadcast, window, admission()),
+            discovery_pass("IPv6", &v6_unicast, &[], window, admission()),
         );
         let passes = [("IPv4", v4), ("IPv6", v6)];
         let any_ran = passes.iter().any(|(_, pass)| matches!(pass, Ok(Some(_))));
 
-        let mut collected: Vec<ServiceReply> = Vec::new();
+        let mut collected = admission();
         let mut gaps = Vec::new();
-        let mut refused = 0;
         for (family, pass) in passes {
             let round = match pass {
                 Ok(Some(round)) => round,
@@ -258,26 +242,13 @@ impl LifxScanner {
                 Err(error) => return Err(error),
             };
             gaps.extend(round_gaps(&round, &v4_broadcast));
-            refused += round.dropped;
             for reply in round.replies {
-                if collected.iter().any(|known| known.serial == reply.serial) {
-                    continue;
-                }
-                if collected.len() >= limit {
-                    refused += 1;
-                    continue;
-                }
-                collected.push(reply);
+                collected.offer(reply.serial, reply);
             }
         }
-        if refused > 0 {
-            warn!(
-                refused,
-                limit, "LIFX discovery stopped admitting lights at its limit"
-            );
-            gaps.push(CoverageGap::AdmissionFull { refused });
-        }
-        Ok((collected, gaps))
+        let mut outcome = collected.finish();
+        gaps.append(&mut outcome.gaps);
+        Ok((outcome.found, gaps))
     }
 }
 
@@ -289,7 +260,7 @@ async fn discovery_pass(
     targets: &[SocketAddr],
     broadcast: &[SocketAddr],
     window: Duration,
-    limit: usize,
+    admission: CandidateAdmission<Serial, ServiceReply>,
 ) -> Result<Option<DiscoveryRound>> {
     let Some(first) = targets.first() else {
         return Ok(None);
@@ -303,7 +274,7 @@ async fn discovery_pass(
             .with_context(|| format!("failed to enable broadcast on the LIFX {family} socket"))?;
     }
     client
-        .discover(targets, window, limit)
+        .discover(targets, window, admission)
         .await
         .with_context(|| format!("LIFX {family} discovery failed"))
         .map(Some)
@@ -316,7 +287,7 @@ async fn discovery_pass(
 /// - every broadcast send was rejected: nothing on the local networks was
 ///   asked (a single failed interface is tolerated, because each tracked
 ///   light also gets a unicast probe);
-/// - the socket failed before the collection window ended.
+/// - the round's own gaps: a socket failure or refused replies.
 #[must_use]
 pub fn round_gaps(round: &DiscoveryRound, broadcast: &[SocketAddr]) -> Vec<CoverageGap> {
     let (broadcast_failed, unicast_failed): (Vec<&SocketAddr>, Vec<&SocketAddr>) = round
@@ -338,7 +309,7 @@ pub fn round_gaps(round: &DiscoveryRound, broadcast: &[SocketAddr]) -> Vec<Cover
                 }),
         );
     }
-    gaps.extend(round.receive_gap.clone());
+    gaps.extend(round.gaps.iter().cloned());
     gaps
 }
 

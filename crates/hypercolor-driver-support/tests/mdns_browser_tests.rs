@@ -29,8 +29,9 @@ async fn mdns_browser_discovers_registered_service_with_txt() -> TestResult {
 
     let browser = MdnsBrowser::with_scope(MdnsScope::Loopback)?;
     let services = browser
-        .browse("_hypercolor-test._tcp.local.", Duration::from_secs(2))
-        .await?;
+        .browse("_hypercolor-test._tcp.local.", Duration::from_secs(2), &[])
+        .await?
+        .found;
     let discovered = services
         .into_iter()
         .find(|service| service.port == 42424)

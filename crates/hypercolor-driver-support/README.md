@@ -21,8 +21,13 @@ and wire values remain in `hypercolor-driver-api`.
 
 - `CredentialStore` implements `DriverCredentialStore` with encrypted,
   driver-scoped JSON values and private file permissions.
-- `MdnsBrowser` resolves deterministic IPv4 service endpoints.
+- `MdnsBrowser` resolves deterministic IPv4 service endpoints, keeping a
+  bounded set of hosts beyond the ones the caller already knows.
 - `MdnsService` carries one resolved endpoint and its TXT properties.
+- `discovery` bounds a scan: `CandidateAdmission` caps what unsolicited replies
+  can make it retain and gives known targets priority, `probe_candidates`
+  bounds concurrency under a deadline, and `ScanOutcome` carries what they
+  found beside the coverage gaps those bounds cost.
 - `control_apply` validates and persists driver-owned control changes.
 - `control_surface` builds canonical control documents and revisions.
 - `framing` reads bounded lines on absolute deadlines and writes whole frames

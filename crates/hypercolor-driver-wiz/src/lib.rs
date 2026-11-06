@@ -23,10 +23,9 @@ use async_trait::async_trait;
 
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveryBatch, DiscoveryCapability,
-    DiscoveryObservation, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
-    ValidatedControlChanges,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::{network_port_from_metadata, validate_ip};
 use hypercolor_driver_support::{control_apply, control_surface};
@@ -154,12 +153,7 @@ impl DiscoveryCapability for WizDriverModule {
             request_policy: RequestPolicy::default(),
         });
         let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
-        let observations = outcome
-            .profiles
-            .iter()
-            .map(|profile| DiscoveryObservation::Device(discovered_device(profile, config.max_fps)))
-            .collect();
-        Ok(DiscoveryBatch::new(observations, outcome.gaps))
+        Ok(outcome.into_batch(|profile| discovered_device(&profile, config.max_fps)))
     }
 }
 

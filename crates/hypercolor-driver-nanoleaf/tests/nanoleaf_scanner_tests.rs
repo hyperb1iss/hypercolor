@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveryConnectBehavior};
-use hypercolor_driver_nanoleaf::{NanoleafKnownDevice, NanoleafScanOutcome, NanoleafScanner};
+use hypercolor_driver_nanoleaf::{NanoleafDiscoveredDevice, NanoleafKnownDevice, NanoleafScanner};
 use hypercolor_driver_support::CredentialStore;
+use hypercolor_driver_support::discovery::ScanOutcome;
 use hypercolor_types::device::DeviceFingerprint;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -69,7 +70,7 @@ async fn scan(
     device: NanoleafKnownDevice,
     store: Arc<CredentialStore>,
     tracked: HashMap<IpAddr, DeviceFingerprint>,
-) -> TestResult<NanoleafScanOutcome> {
+) -> TestResult<ScanOutcome<NanoleafDiscoveredDevice>> {
     Ok(
         NanoleafScanner::with_options(vec![device], store, Duration::from_secs(1), false)
             .with_tracked(tracked)
@@ -92,7 +93,7 @@ async fn a_tracked_controller_that_cannot_be_read_is_renewed_not_rewritten() -> 
     .await?;
 
     assert!(
-        outcome.devices.is_empty(),
+        outcome.found.is_empty(),
         "a record with no panels must not replace what the host verified"
     );
     assert_eq!(outcome.present, vec![fingerprint]);
@@ -107,9 +108,9 @@ async fn an_untracked_controller_that_cannot_be_read_stays_visible_and_deferred(
 
     let outcome = scan(known(port)?, paired_store(&tempdir).await?, HashMap::new()).await?;
 
-    assert_eq!(outcome.devices.len(), 1);
+    assert_eq!(outcome.found.len(), 1);
     assert_eq!(
-        outcome.devices[0].connect_behavior,
+        outcome.found[0].connect_behavior,
         DiscoveryConnectBehavior::Deferred
     );
     Ok(())
@@ -124,7 +125,7 @@ async fn a_paired_controller_that_never_answers_is_a_gap_not_a_record() -> TestR
 
     let outcome = scan(known(port)?, paired_store(&tempdir).await?, HashMap::new()).await?;
 
-    assert!(outcome.devices.is_empty());
+    assert!(outcome.found.is_empty());
     assert!(outcome.present.is_empty());
     assert!(
         matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
@@ -148,9 +149,9 @@ async fn an_unpaired_controller_is_listed_without_contact_so_it_can_pair() -> Te
 
     let outcome = scan(known(port)?, store, HashMap::new()).await?;
 
-    assert_eq!(outcome.devices.len(), 1);
+    assert_eq!(outcome.found.len(), 1);
     assert_eq!(
-        outcome.devices[0].connect_behavior,
+        outcome.found[0].connect_behavior,
         DiscoveryConnectBehavior::Deferred
     );
     assert!(outcome.gaps.is_empty(), "{:?}", outcome.gaps);

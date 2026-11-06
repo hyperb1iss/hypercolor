@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use hypercolor_driver_api::CoverageGap;
+use hypercolor_driver_support::discovery::CandidateAdmission;
 use hypercolor_driver_support::http::HttpError;
 use hypercolor_driver_twinkly::api::{
     ApiError, AuthToken, Gestalt, MAX_REPLY_BYTES, TwinklyClient, decode_layout_reply, decode_reply,
@@ -225,7 +226,7 @@ async fn scans_skip_devices_reporting_impossible_counts() -> TestResult {
     ))
     .scan()
     .await?
-    .profiles;
+    .found;
     assert!(profiles.is_empty());
     Ok(())
 }
@@ -237,7 +238,7 @@ async fn discovery_replies_from_one_address_are_admitted_once() -> TestResult {
     let found = collect_discovery_replies(
         &[first.discovery_addr(), second.discovery_addr()],
         Duration::from_millis(300),
-        8,
+        CandidateAdmission::new(8),
     )
     .await?
     .found;
@@ -264,7 +265,12 @@ async fn discovery_stops_admitting_at_its_limit() -> TestResult {
             }
         }));
     }
-    let replies = collect_discovery_replies(&targets, Duration::from_millis(400), 2).await?;
+    let replies = collect_discovery_replies(
+        &targets,
+        Duration::from_millis(400),
+        CandidateAdmission::new(2),
+    )
+    .await?;
     for responder in responders {
         responder.abort();
     }
@@ -287,7 +293,7 @@ async fn probes_run_with_bounded_concurrency_inside_the_scan_budget() -> TestRes
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let mut endpoints = Vec::new();
-    for _ in 0..(MAX_CONCURRENT_PROBES * 3) {
+    for _ in 0..(MAX_CONCURRENT_PROBES.get() * 3) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         endpoints.push(endpoint(listener.local_addr()?.port()));
         let active = Arc::clone(&active);
@@ -313,10 +319,10 @@ async fn probes_run_with_bounded_concurrency_inside_the_scan_budget() -> TestRes
     ))
     .scan()
     .await?
-    .profiles;
+    .found;
     assert!(profiles.is_empty());
     assert!(
-        peak.load(Ordering::SeqCst) <= MAX_CONCURRENT_PROBES,
+        peak.load(Ordering::SeqCst) <= MAX_CONCURRENT_PROBES.get(),
         "at most {MAX_CONCURRENT_PROBES} probes at once, saw {}",
         peak.load(Ordering::SeqCst)
     );

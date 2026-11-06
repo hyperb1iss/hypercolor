@@ -110,7 +110,7 @@ async fn legacy_strip() -> TestResult<(FakeLifx, BackendManager)> {
     })
     .scan()
     .await?
-    .profiles;
+    .found;
     let config = LifxConfig::default();
     let discovered = discovered_device(&profiles[0], config.max_messages_per_second);
     let backend = LifxBackend::new(config).with_request_policy(policy);

@@ -2,8 +2,12 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use hypercolor_driver_api::CoverageGap;
+use hypercolor_driver_support::discovery::{Admission, CandidateAdmission};
 use hypercolor_driver_yeelight::protocol::SearchReply;
-use hypercolor_driver_yeelight::scanner::{Offer, SearchAdmission};
+use hypercolor_driver_yeelight::scanner::{YeelightDeviceProfile, offer_reply};
+
+type SearchAdmission = CandidateAdmission<IpAddr, YeelightDeviceProfile>;
 
 fn source(host: u32) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + host)), 1982)
@@ -26,13 +30,13 @@ fn reply(at: SocketAddr, id: &str) -> SearchReply {
 fn spoofed_sources_repeating_one_id_never_grow_state() {
     let mut admission = SearchAdmission::new(256);
     assert_eq!(
-        admission.offer(source(1), reply(source(1), "0x1")),
-        Offer::Admitted
+        offer_reply(&mut admission, source(1), reply(source(1), "0x1")),
+        Some(Admission::Added)
     );
     for host in 2..5_000 {
         assert_eq!(
-            admission.offer(source(host), reply(source(host), "0x1")),
-            Offer::Duplicate
+            offer_reply(&mut admission, source(host), reply(source(host), "0x1")),
+            None
         );
     }
     assert_eq!(admission.len(), 1);
@@ -42,52 +46,72 @@ fn spoofed_sources_repeating_one_id_never_grow_state() {
 fn each_address_reports_only_its_most_recent_id() {
     let mut admission = SearchAdmission::new(256);
     assert_eq!(
-        admission.offer(source(1), reply(source(1), "0xa")),
-        Offer::Admitted
+        offer_reply(&mut admission, source(1), reply(source(1), "0xa")),
+        Some(Admission::Added)
     );
     for id in ["0xb", "0xc", "0xd"] {
         assert_eq!(
-            admission.offer(source(1), reply(source(1), id)),
-            Offer::Replaced
+            offer_reply(&mut admission, source(1), reply(source(1), id)),
+            Some(Admission::Updated)
         );
     }
-    let profiles = admission.into_profiles();
-    assert_eq!(profiles.len(), 1);
-    assert_eq!(profiles[0].reply.id, "0xd");
+    let outcome = admission.finish();
+    assert_eq!(outcome.found.len(), 1);
+    assert_eq!(outcome.found[0].reply.id, "0xd");
+    assert!(outcome.gaps.is_empty());
 }
 
 #[test]
 fn admission_stops_at_the_limit_without_tracking_more() {
     let mut admission = SearchAdmission::new(2);
     assert_eq!(
-        admission.offer(source(1), reply(source(1), "0x1")),
-        Offer::Admitted
+        offer_reply(&mut admission, source(1), reply(source(1), "0x1")),
+        Some(Admission::Added)
     );
     assert_eq!(
-        admission.offer(source(2), reply(source(2), "0x2")),
-        Offer::Admitted
+        offer_reply(&mut admission, source(2), reply(source(2), "0x2")),
+        Some(Admission::Added)
     );
     for host in 3..1_000 {
         let id = format!("0x{host:x}");
         assert_eq!(
-            admission.offer(source(host), reply(source(host), &id)),
-            Offer::Full
+            offer_reply(&mut admission, source(host), reply(source(host), &id)),
+            Some(Admission::Full)
         );
     }
     assert_eq!(admission.len(), 2);
     // A tracked address can still update its id at the limit.
     assert_eq!(
-        admission.offer(source(2), reply(source(2), "0x99")),
-        Offer::Replaced
+        offer_reply(&mut admission, source(2), reply(source(2), "0x99")),
+        Some(Admission::Updated)
+    );
+    assert_eq!(
+        admission.finish().gaps,
+        vec![CoverageGap::AdmissionFull { refused: 997 }]
     );
 }
 
 #[test]
-fn replies_naming_another_address_are_foreign() {
+fn a_flood_cannot_crowd_out_a_tracked_light() {
+    let tracked = source(9_999);
+    let mut admission = SearchAdmission::new(2).reserving([tracked.ip()]);
+    for host in 1..1_000 {
+        let id = format!("0x{host:x}");
+        offer_reply(&mut admission, source(host), reply(source(host), &id));
+    }
+    assert_eq!(
+        offer_reply(&mut admission, tracked, reply(tracked, "0xbeef")),
+        Some(Admission::Added)
+    );
+    assert_eq!(admission.finish().found[0].reply.id, "0xbeef");
+}
+
+#[test]
+fn replies_naming_another_address_are_refused() {
     let mut admission = SearchAdmission::new(256);
     assert_eq!(
-        admission.offer(source(1), reply(source(7), "0x1")),
-        Offer::Foreign
+        offer_reply(&mut admission, source(1), reply(source(7), "0x1")),
+        None
     );
     assert!(admission.is_empty());
 }

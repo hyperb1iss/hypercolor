@@ -446,7 +446,7 @@ async fn confirm_identity(route: &AdoptedRoute) -> Result<YeelightDeviceProfile>
         search_port: route.search.port(),
     };
     match search_until(&[route.search], IDENTITY_SEARCH_WINDOW, Some(1)).await {
-        Ok(mut replies) if !replies.profiles.is_empty() => Ok(replies.profiles.remove(0)),
+        Ok(mut replies) if !replies.found.is_empty() => Ok(replies.found.remove(0)),
         Ok(_) => {
             debug!(search = %route.search, "Yeelight device did not answer the identity search");
             Ok(fallback())

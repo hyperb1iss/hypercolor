@@ -36,7 +36,7 @@ async fn discover(fake: &FakeWiz) -> TestResult<DiscoveredDevice> {
     })
     .scan()
     .await?
-    .profiles;
+    .found;
     let profile = profiles.first().ok_or("fake device was not discovered")?;
     Ok(discovered_device(profile, 20))
 }

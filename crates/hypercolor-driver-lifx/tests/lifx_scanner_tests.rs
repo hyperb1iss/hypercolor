@@ -5,6 +5,7 @@ mod support;
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use hypercolor_driver_api::CoverageGap;
@@ -15,6 +16,7 @@ use hypercolor_driver_lifx::scanner::{
 };
 use hypercolor_driver_lifx::topology::{LifxTopology, Orientation, fingerprint_for_serial};
 use hypercolor_driver_lifx::transport::{DiscoveryRound, LifxClient, RequestPolicy};
+use hypercolor_driver_support::discovery::CandidateAdmission;
 use hypercolor_types::portable::PortableIdentityClaim;
 use support::{FakeDevice, FakeKind, FakeLifx, FakeTile, TestResult};
 
@@ -69,7 +71,7 @@ async fn scan_finds_every_light_behind_one_port() -> TestResult {
     let profiles = LifxScanner::new(options(vec![fake.addr()]))
         .scan()
         .await?
-        .profiles;
+        .found;
 
     let serials: Vec<Serial> = profiles.iter().map(|profile| profile.serial).collect();
     assert_eq!(
@@ -154,7 +156,7 @@ async fn scan_merges_several_targets() -> TestResult {
     let profiles = LifxScanner::new(options(vec![first.addr(), second.addr(), first.addr()]))
         .scan()
         .await?
-        .profiles;
+        .found;
     assert_eq!(profiles.len(), 2);
     assert_eq!(profiles[0].addr, first.addr());
     assert_eq!(profiles[1].addr, second.addr());
@@ -167,7 +169,7 @@ async fn discovered_devices_carry_routing_metadata() -> TestResult {
     let profiles = LifxScanner::new(options(vec![fake.addr()]))
         .scan()
         .await?
-        .profiles;
+        .found;
     let chain = profiles
         .iter()
         .find(|profile| profile.serial == serial(5))
@@ -276,12 +278,12 @@ fn rounds_report_a_gap_when_any_light_could_not_be_asked() {
 }
 
 #[test]
-fn a_round_that_lost_its_socket_reports_the_receive_failure() {
+fn a_round_passes_on_what_cost_it_coverage() {
     let gap = CoverageGap::ReceiveFailed {
         reason: "socket failed".to_owned(),
     };
     let round = DiscoveryRound {
-        receive_gap: Some(gap.clone()),
+        gaps: vec![gap.clone()],
         ..DiscoveryRound::default()
     };
     assert_eq!(round_gaps(&round, &[]), vec![gap]);
@@ -299,7 +301,7 @@ async fn one_failed_unicast_send_leaves_the_scan_partial_and_keeps_its_finds() -
     let outcome = LifxScanner::new(options(vec![fake.addr(), rejected]))
         .scan()
         .await?;
-    assert_eq!(outcome.profiles.len(), 1, "the light that answered applies");
+    assert_eq!(outcome.found.len(), 1, "the light that answered applies");
     assert_eq!(
         outcome.gaps,
         vec![CoverageGap::SendFailed {
@@ -319,7 +321,7 @@ async fn a_scan_that_cannot_reach_the_network_is_partial_not_empty() -> TestResu
     // Sending to port 0 is rejected locally, so this never leaves the host.
     let unreachable = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
     let outcome = LifxScanner::new(options(vec![unreachable])).scan().await?;
-    assert!(outcome.profiles.is_empty());
+    assert!(outcome.found.is_empty());
     assert!(
         !outcome.gaps.is_empty(),
         "a scan whose only send failed must not look complete"
@@ -330,7 +332,7 @@ async fn a_scan_that_cannot_reach_the_network_is_partial_not_empty() -> TestResu
 #[tokio::test]
 async fn unused_address_families_still_scan_successfully() -> TestResult {
     let outcome = LifxScanner::new(options(Vec::new())).scan().await?;
-    assert!(outcome.profiles.is_empty());
+    assert!(outcome.found.is_empty());
     assert!(outcome.present.is_empty());
     assert!(outcome.gaps.is_empty());
     Ok(())
@@ -363,8 +365,8 @@ async fn a_tracked_light_failing_its_probe_at_its_verified_route_stays_present()
     })
     .scan()
     .await?;
-    assert_eq!(outcome.profiles.len(), 1);
-    assert_eq!(outcome.profiles[0].serial, serial(1));
+    assert_eq!(outcome.found.len(), 1);
+    assert_eq!(outcome.found[0].serial, serial(1));
     assert_eq!(outcome.present, vec![fingerprint]);
     assert!(outcome.gaps.is_empty(), "{:?}", outcome.gaps);
     Ok(())
@@ -386,7 +388,7 @@ async fn a_failed_probe_anywhere_else_is_a_gap_and_proves_nothing() -> TestResul
     })
     .scan()
     .await?;
-    assert_eq!(outcome.profiles.len(), 1);
+    assert_eq!(outcome.found.len(), 1);
     assert!(
         outcome.present.is_empty(),
         "an unverified endpoint neither keeps the light present nor moves it"
@@ -403,7 +405,7 @@ async fn a_failed_probe_anywhere_else_is_a_gap_and_proves_nothing() -> TestResul
 async fn an_unknown_light_failing_its_probe_is_a_gap() -> TestResult {
     let fake = half_silent_fleet().await?;
     let outcome = LifxScanner::new(options(vec![fake.addr()])).scan().await?;
-    assert_eq!(outcome.profiles.len(), 1);
+    assert_eq!(outcome.found.len(), 1);
     assert!(outcome.present.is_empty());
     assert!(
         matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
@@ -421,10 +423,14 @@ async fn discovery_rounds_keep_at_most_their_cap() -> TestResult {
     let fake = FakeLifx::spawn(fleet).await?;
     let mut client = LifxClient::bind_for(&fake.addr()).await?;
     let round = client
-        .discover(&[fake.addr()], Duration::from_millis(300), 3)
+        .discover(
+            &[fake.addr()],
+            Duration::from_millis(300),
+            CandidateAdmission::new(3),
+        )
         .await?;
     assert_eq!(round.replies.len(), 3);
-    assert_eq!(round.dropped, 2);
+    assert_eq!(round.gaps, vec![CoverageGap::AdmissionFull { refused: 2 }]);
     assert_eq!((round.sends_attempted, round.sends_failed), (1, 0));
     Ok(())
 }
@@ -453,11 +459,41 @@ fn default_limits_leave_headroom_for_large_homes() {
     assert_eq!(defaults.max_candidates, MAX_DISCOVERY_CANDIDATES);
     assert_eq!(MAX_DISCOVERY_CANDIDATES, 512);
     assert_eq!(defaults.max_concurrent_probes, MAX_CONCURRENT_PROBES);
-    assert_eq!(MAX_CONCURRENT_PROBES, 32);
+    assert_eq!(MAX_CONCURRENT_PROBES.get(), 32);
 }
 
 // The limit tests use small limits so they exercise the same code without
 // depending on a loaded machine draining hundreds of replies in time.
+
+#[tokio::test]
+async fn a_flood_past_the_cap_is_partial_and_a_tracked_light_still_gets_probed() -> TestResult {
+    let fleet = bulb_fleet(12);
+    let tracked = Serial(fleet[11].serial);
+    let fake = FakeLifx::spawn(fleet).await?;
+    let outcome = LifxScanner::new(LifxScanOptions {
+        max_candidates: 2,
+        tracked: HashMap::from([(
+            tracked,
+            TrackedRoute {
+                addr: fake.addr(),
+                fingerprint: fingerprint_for_serial(tracked),
+            },
+        )]),
+        ..options(vec![fake.addr()])
+    })
+    .scan()
+    .await?;
+    assert!(
+        outcome.found.iter().any(|light| light.serial == tracked),
+        "the flood must not crowd out the light the host tracks"
+    );
+    assert_eq!(outcome.found.len(), 3);
+    assert_eq!(
+        outcome.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 9 }]
+    );
+    Ok(())
+}
 
 #[tokio::test]
 async fn a_reply_flood_past_the_cap_reports_partial_coverage() -> TestResult {
@@ -468,7 +504,7 @@ async fn a_reply_flood_past_the_cap_reports_partial_coverage() -> TestResult {
     })
     .scan()
     .await?;
-    assert_eq!(outcome.profiles.len(), 8, "admitted lights still apply");
+    assert_eq!(outcome.found.len(), 8, "admitted lights still apply");
     assert_eq!(
         outcome.gaps,
         vec![CoverageGap::AdmissionFull { refused: 4 }],
@@ -482,12 +518,12 @@ async fn probes_never_exceed_the_concurrency_limit() -> TestResult {
     let fake = FakeLifx::spawn(bulb_fleet(24)).await?;
     let outcome = LifxScanner::new(LifxScanOptions {
         max_candidates: 24,
-        max_concurrent_probes: 4,
+        max_concurrent_probes: NonZeroUsize::new(4).expect("not zero"),
         ..options(vec![fake.addr()])
     })
     .scan()
     .await?;
-    assert_eq!(outcome.profiles.len() + outcome.gaps.len(), 24);
+    assert_eq!(outcome.found.len() + outcome.gaps.len(), 24);
 
     // Each probe owns one socket and one serial from its first request to
     // its last, so overlapping probe lifetimes measure the concurrency. The

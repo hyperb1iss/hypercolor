@@ -1,11 +1,12 @@
 //! Bounds on untrusted LAN input: registration replies, probe fanout, and
 //! the signing key's debug output (Spec 93 §3.1 and §5).
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::CoverageGap;
+use hypercolor_driver_support::discovery::CandidateAdmission;
 use hypercolor_driver_wiz::config::WizConfig;
 use hypercolor_driver_wiz::scanner::{
     MAX_CONCURRENT_PROBES, collect_registrations, registration_mac,
@@ -63,9 +64,13 @@ async fn invented_macs_from_many_ports_admit_nothing() -> TestResult {
         targets.push(addr);
         tasks.push(task);
     }
-    let found = collect_registrations(&targets, Duration::from_millis(300), 64)
-        .await?
-        .found;
+    let found = collect_registrations(
+        &targets,
+        Duration::from_millis(300),
+        CandidateAdmission::new(64),
+    )
+    .await?
+    .found;
     tasks.iter().for_each(JoinHandle::abort);
     assert!(
         found.is_empty(),
@@ -87,14 +92,55 @@ async fn one_source_address_is_admitted_once() -> TestResult {
         targets.push(addr);
         tasks.push(task);
     }
-    let found = collect_registrations(&targets, Duration::from_millis(300), 64)
-        .await?
-        .found;
+    let found = collect_registrations(
+        &targets,
+        Duration::from_millis(300),
+        CandidateAdmission::new(64),
+    )
+    .await?
+    .found;
     tasks.iter().for_each(JoinHandle::abort);
     assert_eq!(
         found.len(),
         1,
         "distinct MACs from one host count once: {found:?}"
+    );
+    Ok(())
+}
+
+/// Linux routes all of 127.0.0.0/8 to the loopback interface, so distinct
+/// source addresses can be tested there without leaving the host.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_flood_past_the_limit_is_partial_and_keeps_room_for_a_tracked_bulb() -> TestResult {
+    let tracked = Ipv4Addr::new(127, 0, 0, 10);
+    let mut targets = Vec::new();
+    let mut tasks = Vec::new();
+    for host in 2..=10_u8 {
+        let (addr, task) = responder(
+            Ipv4Addr::new(127, 0, 0, host),
+            registration(&format!("a8bb500000{host:02x}"), true),
+        )
+        .await?;
+        targets.push(addr);
+        tasks.push(task);
+    }
+    let registrations = collect_registrations(
+        &targets,
+        Duration::from_millis(400),
+        CandidateAdmission::new(2).reserving([IpAddr::V4(tracked)]),
+    )
+    .await?;
+    tasks.iter().for_each(JoinHandle::abort);
+    assert_eq!(registrations.found.len(), 3, "{registrations:?}");
+    assert_eq!(
+        registrations.found[0].ip(),
+        IpAddr::V4(tracked),
+        "the tracked bulb comes first, however late it answered"
+    );
+    assert_eq!(
+        registrations.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 6 }]
     );
     Ok(())
 }
@@ -115,7 +161,12 @@ async fn admission_stops_at_its_limit() -> TestResult {
         targets.push(addr);
         tasks.push(task);
     }
-    let registrations = collect_registrations(&targets, Duration::from_millis(400), 2).await?;
+    let registrations = collect_registrations(
+        &targets,
+        Duration::from_millis(400),
+        CandidateAdmission::new(2),
+    )
+    .await?;
     tasks.iter().for_each(JoinHandle::abort);
     assert_eq!(
         registrations.found.len(),
@@ -136,7 +187,7 @@ async fn probes_run_with_bounded_concurrency() -> TestResult {
     let first_seen: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
     let mut targets = Vec::new();
     let mut tasks = Vec::new();
-    for _ in 0..(MAX_CONCURRENT_PROBES * 3) {
+    for _ in 0..(MAX_CONCURRENT_PROBES.get() * 3) {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         targets.push(socket.local_addr()?);
         let first_seen = Arc::clone(&first_seen);
@@ -159,7 +210,7 @@ async fn probes_run_with_bounded_concurrency() -> TestResult {
     })
     .scan()
     .await?
-    .profiles;
+    .found;
     tasks.iter().for_each(JoinHandle::abort);
     assert!(profiles.is_empty());
     let early = first_seen
@@ -169,7 +220,7 @@ async fn probes_run_with_bounded_concurrency() -> TestResult {
         .filter(|seen| seen.duration_since(started) < Duration::from_millis(100))
         .count();
     assert!(
-        early <= MAX_CONCURRENT_PROBES,
+        early <= MAX_CONCURRENT_PROBES.get(),
         "at most {MAX_CONCURRENT_PROBES} probes start at once, saw {early}"
     );
     assert!(started.elapsed() < Duration::from_secs(4));
@@ -191,7 +242,7 @@ async fn a_bulb_that_registers_and_then_goes_quiet_leaves_a_gap() -> TestResult 
     .scan()
     .await?;
     task.abort();
-    assert!(outcome.profiles.is_empty());
+    assert!(outcome.found.is_empty());
     assert!(
         matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
         "a device that answered is alive, so absence proves nothing: {:?}",
@@ -228,7 +279,7 @@ async fn extreme_retry_policies_do_not_overflow() -> TestResult {
     })
     .scan()
     .await?
-    .profiles;
+    .found;
     assert!(profiles.is_empty());
     Ok(())
 }

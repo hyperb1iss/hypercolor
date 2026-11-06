@@ -78,7 +78,7 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
     .with_nupnp_url(format!("http://127.0.0.1:{api_port}/nupnp"));
     let outcome = scanner.scan_bridges().await?;
     assert!(outcome.gaps.is_empty(), "{:?}", outcome.gaps);
-    let bridges = outcome.bridges;
+    let bridges = outcome.found;
 
     assert_eq!(bridges.len(), 1);
     let bridge = &bridges[0];
@@ -172,7 +172,7 @@ async fn a_tracked_bridge_that_cannot_be_read_is_renewed_not_rewritten() -> Test
     .await?;
 
     assert!(
-        outcome.bridges.is_empty(),
+        outcome.found.is_empty(),
         "a record with no lights must not replace what the host verified"
     );
     assert_eq!(outcome.present, vec![fingerprint]);
@@ -198,9 +198,9 @@ async fn an_untracked_bridge_that_cannot_be_read_stays_visible_and_deferred() ->
     .scan_bridges()
     .await?;
 
-    assert_eq!(outcome.bridges.len(), 1);
+    assert_eq!(outcome.found.len(), 1);
     assert_eq!(
-        outcome.bridges[0].connect_behavior,
+        outcome.found[0].connect_behavior,
         DiscoveryConnectBehavior::Deferred
     );
     assert!(outcome.present.is_empty());
@@ -226,7 +226,7 @@ async fn a_known_bridge_that_never_answers_is_a_gap_not_a_record() -> TestResult
     .scan_bridges()
     .await?;
 
-    assert!(outcome.bridges.is_empty());
+    assert!(outcome.found.is_empty());
     assert!(outcome.present.is_empty());
     assert!(
         matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
@@ -280,7 +280,7 @@ async fn scanner_uses_nupnp_only_when_no_local_candidates_exist() -> TestResult 
             .with_nupnp_url(format!("http://127.0.0.1:{api_port}/nupnp"));
     let outcome = scanner.scan_bridges().await?;
 
-    assert!(outcome.bridges.is_empty());
+    assert!(outcome.found.is_empty());
     assert!(outcome.gaps.is_empty(), "{:?}", outcome.gaps);
     server_task.await?;
     Ok(())

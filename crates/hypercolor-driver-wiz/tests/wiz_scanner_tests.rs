@@ -4,6 +4,7 @@ mod support;
 
 use std::time::Duration;
 
+use hypercolor_driver_support::discovery::CandidateAdmission;
 use hypercolor_driver_wiz::scanner::{
     addr_from_metadata, collect_registrations, discovered_device, fingerprint_for_mac,
 };
@@ -38,7 +39,7 @@ async fn registration_finds_the_device_and_probes_it() -> TestResult {
     let profiles = WizScanner::new(options(Vec::new(), vec![fake.addr()]))
         .scan()
         .await?
-        .profiles;
+        .found;
     assert_eq!(profiles.len(), 1);
     let profile = &profiles[0];
     assert_eq!(profile.addr, fake.addr());
@@ -56,9 +57,13 @@ async fn registration_finds_the_device_and_probes_it() -> TestResult {
 #[tokio::test]
 async fn registration_replies_report_the_device_port() -> TestResult {
     let fake = FakeWiz::spawn(FakeSpec::color_bulb()).await?;
-    let found = collect_registrations(&[fake.addr()], Duration::from_millis(300), 8)
-        .await?
-        .found;
+    let found = collect_registrations(
+        &[fake.addr()],
+        Duration::from_millis(300),
+        CandidateAdmission::new(8),
+    )
+    .await?
+    .found;
     assert_eq!(found, [fake.addr()]);
     Ok(())
 }
@@ -74,7 +79,7 @@ async fn older_firmware_without_model_config_uses_the_default_floor() -> TestRes
     let profiles = WizScanner::new(options(vec![fake.addr()], Vec::new()))
         .scan()
         .await?
-        .profiles;
+        .found;
     assert_eq!(profiles[0].class, ModuleClass::TunableWhite);
     assert_eq!(profiles[0].min_dimming, 10);
     Ok(())
@@ -90,7 +95,7 @@ async fn smart_plugs_are_skipped() -> TestResult {
     let profiles = WizScanner::new(options(vec![fake.addr()], Vec::new()))
         .scan()
         .await?
-        .profiles;
+        .found;
     assert!(profiles.is_empty());
     Ok(())
 }
@@ -101,7 +106,7 @@ async fn silent_addresses_are_skipped() -> TestResult {
     let outcome = WizScanner::new(options(vec![silent.local_addr()?], Vec::new()))
         .scan()
         .await?;
-    assert!(outcome.profiles.is_empty());
+    assert!(outcome.found.is_empty());
     assert!(
         outcome.gaps.is_empty(),
         "a remembered address that never answers is gone: {:?}",
@@ -120,7 +125,7 @@ async fn discovered_device_is_one_point_light() -> TestResult {
     let profiles = WizScanner::new(options(vec![fake.addr(), fake.addr()], Vec::new()))
         .scan()
         .await?
-        .profiles;
+        .found;
     assert_eq!(profiles.len(), 1);
     let discovered = discovered_device(&profiles[0], 20);
     assert_eq!(

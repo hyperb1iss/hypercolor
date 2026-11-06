@@ -14,11 +14,11 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, CoverageGap, DeviceBackend, DeviceBackendFactory, DiscoveredDevice,
-    DiscoveryBatch, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryObservation,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
-    TrackedDeviceCtx, ValidatedControlChanges,
+    DiscoveryBatch, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
+    DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError,
+    DriverHost, DriverModule, DriverPresentationProvider, DriverRuntimeCacheProvider,
+    DriverTrackedDevice, OutputBinding, PairingCapability, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::validate_ip;
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
@@ -51,7 +51,7 @@ pub mod lan;
 
 use backend::GoveeBackend;
 use cloud::{CloudClient, V1Device};
-use lan::discovery::{GoveeLanScan, GoveeLanScanner, profile_led_count, topology_for_family};
+use lan::discovery::{GoveeLanScanner, profile_led_count, topology_for_family};
 
 pub use capabilities::{
     GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_cloud_sku_count,
@@ -59,7 +59,8 @@ pub use capabilities::{
 };
 pub use config::GoveeConfig;
 pub use lan::discovery::{
-    GoveeKnownDevice, GoveeLanDevice, build_device_info, parse_scan_response,
+    GoveeKnownDevice, GoveeLanDevice, MAX_SCAN_RESPONSES, build_device_info, offer_scan_response,
+    parse_scan_response, scan_admission,
 };
 
 const GOVEE_ACCOUNT_CREDENTIAL_KEY: &str = "account";
@@ -287,28 +288,21 @@ impl DiscoveryCapability for GoveeDriverModule {
         let known_devices =
             resolve_govee_probe_devices(&config, &tracked_devices, cached_devices.as_slice());
         let mut scanner = GoveeLanScanner::new(known_devices, request.timeout);
-        let GoveeLanScan {
-            mut devices,
-            mut gaps,
-        } = scanner.scan().await.map_err(DriverError::discovery)?;
+        let mut outcome = scanner.scan().await.map_err(DriverError::discovery)?;
 
         match self.cloud_inventory(host).await {
-            Ok(Some(cloud_devices)) => merge_cloud_inventory(&mut devices, cloud_devices),
+            Ok(Some(cloud_devices)) => merge_cloud_inventory(&mut outcome.found, cloud_devices),
             Ok(None) => {}
             Err(error) => {
                 warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
-                gaps.push(CoverageGap::SourceFailed {
+                outcome.gaps.push(CoverageGap::SourceFailed {
                     source_name: "Govee cloud inventory".to_owned(),
                     reason: format!("{error:#}"),
                 });
             }
         }
 
-        let observations = devices
-            .into_iter()
-            .map(DiscoveryObservation::Device)
-            .collect();
-        Ok(DiscoveryBatch::new(observations, gaps))
+        Ok(outcome.into_batch(|device| device))
     }
 }
 

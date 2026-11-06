@@ -169,7 +169,7 @@ async fn emulated_fleet_discovers_connects_and_renders() -> TestResult {
     })
     .scan()
     .await?
-    .profiles;
+    .found;
 
     let serials: Vec<Serial> = profiles.iter().map(|profile| profile.serial).collect();
     assert_eq!(

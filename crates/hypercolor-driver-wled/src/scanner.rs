@@ -1,18 +1,22 @@
 //! mDNS-based discovery for WLED devices.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::convert::Infallible;
 use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinSet;
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use hypercolor_driver_api::{
-    CoverageGap, DiscoveredDevice, DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation,
+    DiscoveredDevice, DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation,
 };
-use hypercolor_driver_support::{MdnsBrowser, MdnsScope};
+use hypercolor_driver_support::discovery::{
+    DEFAULT_PROBE_CONCURRENCY, ProbeBudget, Probed, ScanOutcome, probe_candidates,
+};
+use hypercolor_driver_support::{MdnsBrowser, MdnsScope, MdnsService};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,
@@ -25,6 +29,10 @@ const WLED_SERVICE_TYPE: &str = "_wled._tcp.local.";
 
 /// Default scan timeout for mDNS browsing.
 const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// One HTTP probe at worst: the client's 5 s timeout, plus a moment so a
+/// probe's own timeout lands before the scan deadline.
+const PROBE_ROUND: Duration = Duration::from_secs(6);
 
 /// Persistable scanner hint for known WLED devices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,26 +316,13 @@ impl WledScanner {
         )))
     }
 
-    async fn collect_mdns_candidates(&self) -> Result<HashMap<IpAddr, Option<String>>> {
+    async fn browse_mdns(&self, known_ips: &[IpAddr]) -> Result<ScanOutcome<MdnsService>> {
         let Some(scope) = self.mdns else {
-            return Ok(HashMap::new());
+            return Ok(ScanOutcome::default());
         };
-
-        let browser = MdnsBrowser::with_scope(scope)?;
-        let services = browser
-            .browse(WLED_SERVICE_TYPE, self.scan_timeout)
+        MdnsBrowser::scan(scope, WLED_SERVICE_TYPE, self.scan_timeout, known_ips)
             .await
-            .context("failed to browse WLED mDNS services")?;
-        let mut candidates = HashMap::new();
-        for service in services {
-            debug!(
-                ip = %service.host,
-                hostname = %service.name,
-                "Found WLED device via mDNS"
-            );
-            candidates.entry(service.host).or_insert(Some(service.name));
-        }
-        Ok(candidates)
+            .context("failed to browse WLED mDNS services")
     }
 }
 
@@ -349,61 +344,51 @@ impl WledScanner {
     /// Returns an error when mDNS cannot run and no known device gives the
     /// scan anything else to look at.
     pub async fn scan(&mut self) -> Result<DiscoveryBatch> {
+        let started = Instant::now();
         let mut candidates: HashMap<IpAddr, WledKnownTarget> = self
             .known_targets
             .iter()
             .cloned()
             .map(|target| (target.ip, target))
             .collect();
+        let known_ips: Vec<IpAddr> = candidates.keys().copied().collect();
+        let budget = ProbeBudget {
+            deadline: started + self.scan_timeout + PROBE_ROUND,
+            in_flight: DEFAULT_PROBE_CONCURRENCY,
+        };
+
+        // Known devices are probed while mDNS browses, so a long browse
+        // never delays them.
+        let (known_probes, browse) = tokio::join!(
+            probe_candidates(known_ips.iter().copied(), budget, enrich_candidate),
+            self.browse_mdns(&known_ips),
+        );
+        let browse = browse?;
+        let mut gaps = known_probes.gaps;
+        gaps.extend(browse.gaps);
+        let mut enriched: HashMap<IpAddr, _> = known_probes.found.into_iter().collect();
+
         let mut mdns_seen_ips = HashSet::new();
-        let known_ip_set = candidates
-            .keys()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
-        let mut enrichment_tasks = JoinSet::new();
-        let mut gaps = Vec::new();
-
-        for ip in known_ip_set.iter().copied() {
-            enrichment_tasks.spawn(async move { (ip, enrich_via_http(ip).await) });
-        }
-
-        match self.collect_mdns_candidates().await {
-            Ok(services) => {
-                for (ip, hostname) in services {
-                    mdns_seen_ips.insert(ip);
-                    let entry = candidates
-                        .entry(ip)
-                        .or_insert_with(|| WledKnownTarget::from_ip(ip));
-                    if entry.hostname.is_none() {
-                        entry.hostname = hostname;
-                    }
-                    if !known_ip_set.contains(&ip) {
-                        enrichment_tasks.spawn(async move { (ip, enrich_via_http(ip).await) });
-                    }
-                }
-            }
-            Err(error) if known_ip_set.is_empty() => return Err(error),
-            Err(error) => gaps.push(CoverageGap::SourceFailed {
-                source_name: "WLED mDNS browse".to_owned(),
-                reason: format!("{error:#}"),
-            }),
-        }
-
-        let mut enriched = HashMap::new();
-        while let Some(task) = enrichment_tasks.join_next().await {
-            match task {
-                Ok((ip, result)) => {
-                    enriched.insert(ip, result);
-                }
-                Err(error) => {
-                    warn!(error = %error, "WLED enrichment task failed");
-                    gaps.push(CoverageGap::ProbeFailed {
-                        candidate: "WLED enrichment task".to_owned(),
-                        reason: error.to_string(),
-                    });
-                }
+        let mut advertised_only = Vec::new();
+        for service in browse.found {
+            debug!(
+                ip = %service.host,
+                hostname = %service.name,
+                "Found WLED device via mDNS"
+            );
+            mdns_seen_ips.insert(service.host);
+            let entry = candidates.entry(service.host).or_insert_with(|| {
+                advertised_only.push(service.host);
+                WledKnownTarget::from_ip(service.host)
+            });
+            if entry.hostname.is_none() {
+                entry.hostname = Some(service.name);
             }
         }
+
+        let advertised_probes = probe_candidates(advertised_only, budget, enrich_candidate).await;
+        gaps.extend(advertised_probes.gaps);
+        enriched.extend(advertised_probes.found);
 
         let mut observations = Vec::with_capacity(candidates.len());
         for (ip, target) in candidates {
@@ -444,9 +429,12 @@ impl WledScanner {
     }
 }
 
-/// Fetch `/json/info` from a WLED device over HTTP.
-async fn enrich_via_http(ip: std::net::IpAddr) -> Result<super::backend::WledDeviceInfo> {
-    super::fetch_wled_info(ip).await
+/// Fetch `/json/info` from a WLED device over HTTP, keeping the outcome for
+/// the scan to weigh against what mDNS says.
+async fn enrich_candidate(
+    ip: IpAddr,
+) -> Result<Probed<(IpAddr, Result<super::backend::WledDeviceInfo>)>, Infallible> {
+    Ok(Probed::Described((ip, super::fetch_wled_info(ip).await)))
 }
 
 #[cfg(test)]
