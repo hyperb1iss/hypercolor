@@ -104,12 +104,6 @@ jobs:
             .cache/hypercolor/ccache
           cache-on-failure: "false"
 
-      - name: Download generated effects
-        uses: actions/download-artifact@v8
-        with:
-          name: generated-effects
-          path: effects/hypercolor
-
       - name: Build smoke binary
         run: >-
           ./scripts/cargo-cache-build.sh
