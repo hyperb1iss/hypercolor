@@ -16,7 +16,10 @@ hypercolor-driver-api = { workspace = true }
 hypercolor-persistence = { workspace = true }
 hypercolor-platform-fs = { workspace = true }
 hypercolor-types = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

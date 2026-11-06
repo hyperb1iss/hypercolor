@@ -13,7 +13,9 @@ and wire values remain in `hypercolor-driver-api`.
   `hypercolor-persistence`, and `hypercolor-platform-fs`; never
   `hypercolor-core` or the daemon.
 - Consumed by network drivers, `hypercolor-driver-builtin`, and the daemon.
-- Owns native dependencies such as `aes-gcm`, `mdns-sd`, and filesystem I/O.
+- Owns native dependencies such as `aes-gcm`, `mdns-sd`, `reqwest`, and
+  filesystem I/O. Drivers reach HTTP through this crate rather than depending
+  on `reqwest`, which keeps its unbounded readers out of driver code.
 
 ## Public Surface
 
@@ -23,6 +25,10 @@ and wire values remain in `hypercolor-driver-api`.
 - `MdnsService` carries one resolved endpoint and its TXT properties.
 - `control_apply` validates and persists driver-owned control changes.
 - `control_surface` builds canonical control documents and revisions.
+- `framing` reads bounded lines on absolute deadlines and writes whole frames
+  through a writer that gives up its stream when one fails.
+- `http` runs every exchange on a `ReadBudget`, an absolute deadline plus a
+  byte cap enforced as body chunks arrive.
 - `network` validates endpoints and extracts typed discovery metadata.
 - `pairing` coordinates post-pair activation and post-unpair disconnects.
 

@@ -6,6 +6,9 @@
 pub mod control_apply;
 pub mod control_surface;
 mod credentials;
+mod deadline;
+pub mod framing;
+pub mod http;
 mod mdns;
 pub mod network;
 pub mod pairing;
