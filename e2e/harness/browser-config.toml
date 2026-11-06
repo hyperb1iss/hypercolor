@@ -5,6 +5,9 @@ mdns_enabled = false
 background_enabled = false
 blocks_scan = false
 
+[drivers.adalight]
+enabled = false
+
 [drivers.asus]
 enabled = false
 
