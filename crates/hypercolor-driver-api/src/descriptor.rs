@@ -1,5 +1,5 @@
 use hypercolor_types::device::{
-    DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor,
+    DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor, DriverStability,
     DriverTransportDescriptor, DriverTransportKind,
 };
 
@@ -23,6 +23,8 @@ pub struct DriverDescriptor {
     /// Schema version of the driver API contract this driver implements.
     /// The host rejects load if this does not match [`DRIVER_API_SCHEMA_VERSION`].
     pub schema_version: u32,
+    /// Release label; set it with [`DriverDescriptor::experimental`].
+    pub stability: DriverStability,
 }
 
 impl DriverDescriptor {
@@ -68,7 +70,26 @@ impl DriverDescriptor {
             supports_discovery,
             supports_pairing,
             schema_version,
+            stability: DriverStability::Stable,
         }
+    }
+
+    /// Label this driver experimental: nobody has run it on real hardware
+    /// yet (Spec 89). The label changes nothing at runtime; the driver is
+    /// enabled and claims devices like any other.
+    ///
+    /// Usable in a `static` initializer:
+    /// `DriverDescriptor::new("lifx", "LIFX", DriverTransportKind::Network, true, false).experimental()`.
+    #[must_use]
+    pub const fn experimental(mut self) -> Self {
+        self.stability = DriverStability::Experimental;
+        self
+    }
+
+    /// Whether this driver carries the experimental label.
+    #[must_use]
+    pub const fn is_experimental(&self) -> bool {
+        self.stability.is_experimental()
     }
 
     /// Convert this driver-facing descriptor into the host-wide module
@@ -95,6 +116,7 @@ impl DriverDescriptor {
             api_schema_version: self.schema_version,
             config_version: 1,
             default_enabled: true,
+            stability: self.stability,
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::protocol::Protocol;
 use crate::registry::HidRawReportMode;
@@ -197,6 +197,7 @@ macro_rules! nollie_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         }
     };
 }
@@ -221,6 +222,7 @@ macro_rules! nollie_serial_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         }
     };
 }

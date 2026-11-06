@@ -68,6 +68,26 @@ pub fn module_enabled(config: &HypercolorConfig, descriptor: &DriverModuleDescri
     driver_enabled_with_default(config, &descriptor.id, descriptor.default_enabled)
 }
 
+/// Whether a device runs through a module or protocol labeled
+/// experimental (Spec 89).
+#[must_use]
+pub fn device_is_experimental(registry: &DriverModuleRegistry, device: &DeviceInfo) -> bool {
+    let Some(driver) = registry.get(device.driver_id()) else {
+        return false;
+    };
+    if driver.module_descriptor().stability.is_experimental() {
+        return true;
+    }
+    let Some(protocol_id) = device.origin.protocol_id.as_deref() else {
+        return false;
+    };
+    driver.protocol_catalog().is_some_and(|catalog| {
+        catalog.descriptors().iter().any(|protocol| {
+            protocol.protocol_id == protocol_id && protocol.stability.is_experimental()
+        })
+    })
+}
+
 /// Whether a driver module exposes at least one transport runnable on this host.
 #[must_use]
 pub fn module_has_available_transport(descriptor: &DriverModuleDescriptor) -> bool {

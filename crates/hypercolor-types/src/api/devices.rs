@@ -66,6 +66,11 @@ pub struct DeviceSummary {
     /// Bridge route facts; present only when `origin.transport` is `bridge`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge: Option<BridgeDeviceSummary>,
+    /// Whether the driver module or protocol driving this device is labeled
+    /// experimental: nobody has run it on real hardware yet (Spec 89).
+    /// Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub experimental: bool,
 }
 
 /// How an out-of-process bridge (OpenRGB) reaches one device.
@@ -459,6 +464,10 @@ pub struct UnclaimedDevice {
     pub interface_classes: Vec<u8>,
     #[serde(default)]
     pub claimable_by: Option<String>,
+    /// Whether the descriptor `claimable_by` refers to is labeled
+    /// experimental: nobody has run it on real hardware yet (Spec 89).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub experimental: bool,
 }
 
 impl UnclaimedDevice {

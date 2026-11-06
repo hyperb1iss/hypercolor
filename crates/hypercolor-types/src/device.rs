@@ -413,6 +413,45 @@ pub enum DriverModuleKind {
     Virtual,
 }
 
+/// Release label of a driver module or of one protocol it contributes.
+///
+/// A label, not a gate: experimental drivers are enabled and claim devices
+/// exactly like stable ones. It records that nobody has run the code on
+/// real hardware yet. A protocol with a known safety hazard is not
+/// registered at all until it is safe. See Spec 89.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DriverStability {
+    /// Run on real hardware by a maintainer or reported working by a user.
+    #[default]
+    Stable,
+
+    /// Built from a spec, captures, or reference code, but not yet run on
+    /// real hardware.
+    Experimental,
+}
+
+impl DriverStability {
+    /// Whether this is the experimental label.
+    #[must_use]
+    pub const fn is_experimental(self) -> bool {
+        matches!(self, Self::Experimental)
+    }
+}
+
+/// Serde skip predicate: the stable default is omitted on the wire, so a
+/// payload from a daemon that predates the label round-trips unchanged.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+fn is_stable(stability: &DriverStability) -> bool {
+    !stability.is_experimental()
+}
+
 /// Current schema version for value-shaped driver module descriptors.
 pub const DRIVER_MODULE_API_SCHEMA_VERSION: u32 = 3;
 
@@ -688,6 +727,11 @@ pub struct DriverModuleDescriptor {
 
     /// Whether this driver should be enabled by default.
     pub default_enabled: bool,
+
+    /// Release label of the module as a whole (Spec 89). Omitted when
+    /// stable.
+    #[serde(default, skip_serializing_if = "is_stable")]
+    pub stability: DriverStability,
 }
 
 /// Protocol descriptor contributed by a driver module.
@@ -727,6 +771,11 @@ pub struct DriverProtocolDescriptor {
     /// Optional presentation override for devices using this protocol.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation: Option<DriverPresentation>,
+
+    /// Release label of this protocol (Spec 89). A stable module can carry
+    /// experimental protocols. Omitted when stable.
+    #[serde(default, skip_serializing_if = "is_stable")]
+    pub stability: DriverStability,
 }
 
 /// Origin metadata that separates device ownership from output routing.

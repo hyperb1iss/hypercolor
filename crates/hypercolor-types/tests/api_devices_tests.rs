@@ -81,6 +81,7 @@ mod spec81 {
             bus_path: Some("1-1.2".to_owned()),
             interface_classes: vec![3],
             claimable_by: Some("razer".to_owned()),
+            experimental: false,
         };
         let value = serde_json::to_value(&device).expect("serialize unclaimed device");
         assert_eq!(value["vendor_id"], 0x1532);

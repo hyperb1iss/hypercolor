@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::protocol::Protocol;
 use crate::registry::{
@@ -187,6 +187,7 @@ macro_rules! ene_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         }
     };
 }
@@ -213,6 +214,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: Some(is_al_hid_firmware),
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
         DeviceDescriptor {
             vendor_id: LIANLI_ENE_VENDOR_ID,
@@ -226,6 +228,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: Some(is_al10_firmware),
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
         ene_descriptor!(
             pid: PID_UNI_HUB_SL_INFINITY,
@@ -269,6 +272,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
         DeviceDescriptor {
             vendor_id: LIANLI_TL_VENDOR_ID,
@@ -289,6 +293,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
         DeviceDescriptor {
             vendor_id: LIANLI_TL_LCD_VENDOR_ID,
@@ -303,6 +308,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: None,
             serial_quirk: Some(SerialQuirk::PlaceholderValues(TL_LCD_PLACEHOLDER_SERIALS)),
+            stability: DriverStability::Stable,
         },
         DeviceDescriptor {
             vendor_id: WIRELESS_VENDOR_ID,
@@ -326,6 +332,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
         DeviceDescriptor {
             vendor_id: WIRELESS_LCD_VENDOR_ID,
@@ -344,6 +351,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             // Serial uniqueness across receivers is unverified on hardware;
             // a placeholder list goes here the day one is observed.
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
         DeviceDescriptor {
             vendor_id: WIRELESS_LCD_VENDOR_ID,
@@ -360,6 +368,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
         DeviceDescriptor {
             vendor_id: UNIVERSAL_SCREEN_VENDOR_ID,
@@ -378,6 +387,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             // The one serial on record is a unique-looking 16-digit hex
             // string; no shared-serial quirk is known (spec 84 section 2).
             serial_quirk: None,
+            stability: DriverStability::Stable,
         },
     ]
 });

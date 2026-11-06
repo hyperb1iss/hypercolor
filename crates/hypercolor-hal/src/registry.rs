@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::protocol::Protocol;
 use crate::transport::input::TransportInputSink;
@@ -164,6 +164,12 @@ pub struct DeviceDescriptor {
 
     /// How to treat this device's reported USB serial, when it lies.
     pub serial_quirk: Option<SerialQuirk>,
+
+    /// Release label. Hardware nobody has run this descriptor on is
+    /// [`DriverStability::Experimental`]; it still claims devices like any
+    /// other descriptor (Spec 89). Descriptors that share a protocol id
+    /// must agree on it.
+    pub stability: DriverStability,
 }
 
 /// Known defects in a device family's reported USB serial number.

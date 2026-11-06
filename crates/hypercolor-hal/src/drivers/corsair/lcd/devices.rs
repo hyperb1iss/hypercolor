@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::drivers::corsair::CORSAIR_VID;
 use crate::drivers::corsair::framing::LCD_REPORT_SIZE;
@@ -104,6 +104,7 @@ macro_rules! lcd_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         }
     };
 }

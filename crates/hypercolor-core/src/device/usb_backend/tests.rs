@@ -4215,6 +4215,7 @@ fn driver_usb_descriptor(publishes_input: bool) -> &'static DeviceDescriptor {
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: hypercolor_types::device::DriverStability::Stable,
     }))
 }
 

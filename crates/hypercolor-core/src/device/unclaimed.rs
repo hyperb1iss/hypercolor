@@ -43,6 +43,9 @@ pub struct UsbObservation {
     pub device_class: u8,
     pub interface_classes: Vec<u8>,
     pub descriptor_driver_id: Option<String>,
+    /// Whether that matching descriptor is labeled experimental: nobody
+    /// has run it on real hardware yet (Spec 89).
+    pub descriptor_experimental: bool,
     /// Usage pages of the device's HID top-level collections, sorted and
     /// deduplicated, as the host HID stack reports them.
     ///
@@ -171,6 +174,7 @@ impl UsbObservation {
     }
 
     fn into_unclaimed(self, claimable_by: Option<String>) -> UnclaimedDevice {
+        let experimental = claimable_by.is_some() && self.descriptor_experimental;
         let mut interface_classes = self.interface_classes;
         interface_classes.sort_unstable();
         interface_classes.dedup();
@@ -187,6 +191,7 @@ impl UsbObservation {
             bus_path: self.bus_path,
             interface_classes,
             claimable_by,
+            experimental,
         }
     }
 }

@@ -920,6 +920,10 @@ pub(super) async fn summarize_device_for_response(
             .collect(),
         attachments: None,
         bridge: inventory::bridge_device_summary(state, info, metadata),
+        experimental: crate::network::device_is_experimental(
+            state.driver_registry().as_ref(),
+            info,
+        ),
     })
 }
 

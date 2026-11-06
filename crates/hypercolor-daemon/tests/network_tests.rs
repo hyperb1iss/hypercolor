@@ -535,6 +535,7 @@ static PROTOCOL_CATALOG_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> =
             transport: DriverTransportKind::Usb,
             route_backend_id: "usb".to_owned(),
             presentation: None,
+            stability: hypercolor_types::device::DriverStability::Stable,
         }]
     });
 

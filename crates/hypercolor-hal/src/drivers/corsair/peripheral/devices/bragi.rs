@@ -1,6 +1,6 @@
 //! Corsair Bragi peripheral descriptors.
 
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DriverStability};
 
 use crate::drivers::corsair::{CORSAIR_USAGE_PAGE, CORSAIR_VID};
 use crate::protocol::Protocol;
@@ -450,6 +450,7 @@ macro_rules! bragi_descriptor {
             },
             firmware_predicate: None,
             serial_quirk: None,
+            stability: DriverStability::Stable,
         }
     };
 }

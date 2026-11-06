@@ -301,6 +301,7 @@ fn driver_facts_take_usb_claims_from_the_published_protocol_catalog() {
         transport: DriverTransportKind::Usb,
         route_backend_id: "usb".to_owned(),
         presentation: None,
+        stability: hypercolor_types::device::DriverStability::Stable,
     };
     let summary = DriverSummary {
         descriptor: DriverModuleDescriptor {
@@ -313,6 +314,7 @@ fn driver_facts_take_usb_claims_from_the_published_protocol_catalog() {
             api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
             config_version: 1,
             default_enabled: true,
+            stability: hypercolor_types::device::DriverStability::Stable,
         },
         presentation: DriverPresentation {
             label: "Razer".to_owned(),

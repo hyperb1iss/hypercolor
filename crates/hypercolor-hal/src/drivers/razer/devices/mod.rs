@@ -20,7 +20,7 @@ mod peripherals;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceFamily, SegmentLayoutHint};
+use hypercolor_types::device::{DeviceFamily, DriverStability, SegmentLayoutHint};
 use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 
 use crate::protocol::Protocol;
@@ -981,6 +981,7 @@ fn hidapi_descriptor(
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: DriverStability::Stable,
     }
 }
 
@@ -1039,6 +1040,7 @@ fn kraken_descriptor(
         },
         firmware_predicate: None,
         serial_quirk: None,
+        stability: DriverStability::Stable,
     }
 }
 

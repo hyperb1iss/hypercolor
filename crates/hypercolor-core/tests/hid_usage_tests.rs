@@ -18,6 +18,7 @@ fn unit(product_id: u16, serial: Option<&str>, bus_path: &str) -> UsbObservation
         device_class: 0,
         interface_classes: vec![0x03],
         descriptor_driver_id: None,
+        descriptor_experimental: false,
         hid_usage_pages: Vec::new(),
     }
 }

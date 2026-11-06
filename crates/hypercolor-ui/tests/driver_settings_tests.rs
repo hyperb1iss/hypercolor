@@ -1,6 +1,7 @@
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor,
-    DriverModuleKind, DriverPresentation, DriverTransportDescriptor, DriverTransportKind,
+    DriverModuleKind, DriverPresentation, DriverStability, DriverTransportDescriptor,
+    DriverTransportKind,
 };
 
 use hypercolor_ui::api::{
@@ -30,6 +31,7 @@ fn driver(
             api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
             config_version: 1,
             default_enabled: true,
+            stability: DriverStability::Stable,
         },
         presentation: DriverPresentation {
             label: display_name.to_string(),

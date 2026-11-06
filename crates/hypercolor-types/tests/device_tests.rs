@@ -452,6 +452,7 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
         api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
         config_version: 1,
         default_enabled: true,
+        stability: hypercolor_types::device::DriverStability::Stable,
     };
 
     let json = serde_json::to_string(&descriptor).expect("serialize");
