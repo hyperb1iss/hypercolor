@@ -34,9 +34,10 @@ pub use direct_launchd::{
     MacosDirectLaunchdBootstrapSource, MacosDirectLaunchdExecutableExpectation,
     MacosDirectLaunchdInspector, MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator,
     MacosDirectLaunchdOwnerProof, MacosDirectLaunchdPublicationExpectation,
-    MacosDirectLaunchdState, corroborate_direct_launchd_owner,
-    corroborate_newer_direct_launchd_owner, parse_direct_launchd_autostart_state,
-    parse_direct_launchd_service_state, wait_for_exact_direct_launchd_publication,
+    MacosDirectLaunchdRetainedExecutable, MacosDirectLaunchdState, MacosLaunchdJob,
+    corroborate_direct_launchd_owner, corroborate_newer_direct_launchd_owner,
+    parse_direct_launchd_autostart_state, parse_direct_launchd_service_state,
+    parse_launchd_autostart_state, parse_launchd_job, wait_for_exact_direct_launchd_publication,
 };
 #[cfg(target_os = "macos")]
 pub use direct_launchd::{
@@ -75,7 +76,7 @@ pub use model::{
 #[cfg(target_os = "macos")]
 pub use process_identity::{request_macos_child_termination, request_macos_pid_termination};
 #[cfg(target_os = "macos")]
-pub use process_lifetime::wait_for_process_exit;
+pub use process_lifetime::{wait_for_process_exit, wait_for_process_exit_within};
 pub use publication::wait_for_owner_publication;
 pub use store::MacosOwnerStore;
 
