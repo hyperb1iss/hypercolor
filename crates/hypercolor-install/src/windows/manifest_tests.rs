@@ -148,6 +148,16 @@ fn manifests_that_a_windows_unit_cannot_honour_are_refused() {
             }),
         ),
         (
+            "final and medial sigma, which NTFS merges",
+            Box::new(|value| {
+                let members = value["members"].as_array_mut().expect("members");
+                for name in ["ui/\u{3c3}.js", "ui/\u{3c2}.js"] {
+                    members.push(json!({"path": name, "type": "file", "class": "data",
+                        "size": 0, "sha256": hex::encode(Sha256::digest(b""))}));
+                }
+            }),
+        ),
+        (
             "missing parent",
             Box::new(|value| {
                 value["members"].as_array_mut().expect("members").push(

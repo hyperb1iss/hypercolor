@@ -19,6 +19,7 @@ use sha2::{Digest as _, Sha256};
 use super::error::ReleasePayloadError;
 use super::manifest::{
     MANIFEST_NAME, MAX_RELEASE_MANIFEST_BYTES, Member, PermissionClass, ValidatedManifest,
+    fold_case,
 };
 use super::store::{InstallLock, InstallStore};
 use crate::model::{UnitId, UnitRecord};
@@ -337,10 +338,10 @@ fn require_exact_entries(
 ) -> Result<(), ReleasePayloadError> {
     let mut expected: Vec<String> = manifest.children[path]
         .iter()
-        .map(|name| name.to_lowercase())
+        .map(|name| fold_case(name))
         .collect();
     if path.is_empty() {
-        expected.push(MANIFEST_NAME.to_owned());
+        expected.push(fold_case(MANIFEST_NAME));
     }
     expected.sort();
     let mut actual = Vec::new();
@@ -363,7 +364,7 @@ fn require_exact_entries(
                 display(path)
             )));
         }
-        actual.push(text.to_lowercase());
+        actual.push(fold_case(text));
     }
     actual.sort();
     if actual == expected {

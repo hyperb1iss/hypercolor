@@ -167,7 +167,7 @@ impl RawManifest {
         let mut total_size = 0_u64;
         for raw in self.members {
             let path = validate_member_path(&raw.path)?;
-            if !folded.insert(path.to_lowercase()) {
+            if !folded.insert(fold_case(&path)) {
                 return invalid(format!(
                     "manifest member {path} repeats a path a case-insensitive volume merges"
                 ));
@@ -304,6 +304,14 @@ impl RawMember {
             )),
         }
     }
+}
+
+/// A path as a case-insensitive Windows volume compares it. NTFS folds each
+/// UTF-16 unit to its uppercase form, so `ς` and `σ` name one entry even
+/// though their lowercase forms differ. Full Unicode uppercasing also merges
+/// a few names NTFS keeps apart (`ß` with `SS`), which only refuses more.
+pub(super) fn fold_case(path: &str) -> String {
+    path.chars().flat_map(char::to_uppercase).collect()
 }
 
 /// Split a member path into its parent ("" at the root) and final name.
