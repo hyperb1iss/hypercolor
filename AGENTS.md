@@ -80,6 +80,10 @@ crates/
   hypercolor-driver-nanoleaf/      # Nanoleaf panels driver (HTTP pairing + UDP external control)
   hypercolor-driver-wled/          # WLED driver (DDP / E1.31 sACN streaming)
   hypercolor-driver-govee/         # Govee smart-lighting driver (LAN UDP + Govee Cloud API)
+  hypercolor-driver-lifx/          # LIFX LAN driver: bulbs, multizone strips, and matrix lights over UDP
+  hypercolor-driver-twinkly/       # Twinkly per-LED driver (REST login + real-time UDP frames)
+  hypercolor-driver-wiz/           # WiZ driver (UDP JSON setPilot, optional signed commands)
+  hypercolor-driver-yeelight/      # Yeelight driver (LAN control, music mode for frame streaming)
   hypercolor-driver-pixel/         # Generic pixel controller driver: E1.31 sACN, Art-Net, DDP to configured hosts
   hypercolor-pixel-protocols/      # Leaf: DDP, E1.31, Art-Net packet encoders and DMX universe math
   hypercolor-driver-adalight/      # Adalight and HyperSerial AWA serial LED driver: manually configured ports, no USB-id claiming
@@ -141,12 +145,15 @@ graph TD
     PP[hypercolor-pixel-protocols] --> WLED & PX[hypercolor-driver-pixel]
     DAPI & DS --> PX
     DAPI & DS --> ADA[hypercolor-driver-adalight]
+    DAPI & DS --> LX[hypercolor-driver-lifx]
+    DAPI & DS --> TW[hypercolor-driver-twinkly]
+    DAPI & DS --> WZ[hypercolor-driver-wiz]
+    DAPI & DS --> YL[hypercolor-driver-yeelight]
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
     ORS & PER --> OH[hypercolor-openrgb-host]
     OH --> APP & CLI
     DAPI --> NET[hypercolor-network]
-    CORE & DAPI & HAL & HUE & NL & WLED & GV & PX & ORD & DS --> DB[hypercolor-driver-builtin]
-    CORE & DAPI & HAL & HUE & NL & WLED & GV & ADA & ORD & DS --> DB[hypercolor-driver-builtin]
+    CORE & DAPI & HAL & HUE & NL & WLED & GV & LX & TW & WZ & YL & PX & ADA & ORD & DS --> DB[hypercolor-driver-builtin]
     CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     PFS --> INST[hypercolor-install] --> CLI
@@ -434,10 +441,16 @@ skills/                       # User-facing skills (shipped)
   effect-reviewer/            # Validates effects against LED hardware best practices
 ```
 
-**Driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD),
-Dygma, Ableton Push 2, QMK, PrismRGB, Nollie. Network backends: Hue, Nanoleaf, WLED, Govee,
-plus an opt-in OpenRGB SDK bridge as a fallback driver. Serial: Adalight and HyperSerial AWA
-boards on manually configured ports.
+**Driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD,
+peripherals), NZXT, Wooting, Dygma, Ableton Push 2, QMK, PrismRGB, Nollie. Network backends:
+Hue, Nanoleaf, WLED, Govee, LIFX, Twinkly, WiZ, Yeelight, and sACN/Art-Net/DDP pixel
+controllers, plus an opt-in OpenRGB SDK bridge as a fallback driver. Serial: Adalight and
+HyperSerial AWA boards on manually configured ports.
+
+**Adding a driver:** a standalone driver joins the bundle with one row in `BUILTIN_DRIVERS`
+(`hypercolor-driver-builtin/src/lib.rs`) plus its Cargo feature; registration and config
+seeding both read that table. The e2e fixture needs a disabled `[drivers.<id>]` entry, and
+the daemon's startup tests fail until it has one.
 
 For HAL driver implementation patterns (zerocopy structs, CommandBuffer, Protocol trait,
 wire-format gotchas), see the `hal-driver-development` skill. For protocol research

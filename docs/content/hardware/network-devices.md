@@ -4,11 +4,7 @@ description = "How Hypercolor discovers and pairs Wi-Fi and LAN RGB devices: mDN
 weight = 40
 +++
 
-Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and sACN, Art-Net, or DDP pixel controllers) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the built-in network drivers. Pixel controllers are the one exception to automatic discovery: you list them in the config, as described on their [setup page](@/hardware/pixel-controllers.md).
-Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and LIFX) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the five built-in network drivers.
-Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, and Twinkly) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the five built-in network drivers.
-Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, Twinkly, and WiZ) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the six built-in network drivers.
-Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, Twinkly, WiZ, and Yeelight) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the seven built-in network drivers.
+Network RGB devices (Philips Hue, Nanoleaf, WLED, Govee, LIFX, Twinkly, WiZ, Yeelight, and sACN, Art-Net, or DDP pixel controllers) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any built-in network driver. Pixel controllers are the one exception to automatic discovery: you list them in the config, as described on their [setup page](@/hardware/pixel-controllers.md).
 
 {{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
@@ -40,10 +36,7 @@ mDNS only works when devices and the Hypercolor host share a broadcast domain. V
 hypercolor devices discover --target wled --target hue --timeout 20
 ```
 
-The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `lifx`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
-The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `twinkly`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
-The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `twinkly`, `wiz`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
-The `--target` flag accepts any driver module ID (`wled`, `hue`, `nanoleaf`, `govee`, `twinkly`, `wiz`, `yeelight`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
+The `--target` flag accepts any driver module ID (see `hypercolor drivers list`) and the built-in local transport IDs (`usb`, `smbus`). You can mix them freely. Omitting `--target` runs everything.
 
 The `--timeout` value is in seconds and defaults to 10. The daemon clamps it between 0.1 s and 60 s regardless of what you pass.
 
