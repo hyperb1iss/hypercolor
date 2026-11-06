@@ -10,8 +10,9 @@
 //! The unit manifest is plain data, so its parser and the unit producer
 //! compile on every host, and a unit produced or checked on another
 //! platform meets the rules the Windows store enforces. So do the decisions
-//! the programs outside a unit make: which release runs and which process
-//! may serve the update pipe. Only their Win32 hosts and everything that touches the store
+//! the programs outside a unit make: which release runs, which process may
+//! serve the update pipe, and how the service manager recovers the update
+//! service. Only their Win32 hosts and everything that touches the store
 //! are Windows-only.
 
 mod error;
@@ -27,6 +28,7 @@ mod release_selection;
 pub(crate) mod store;
 mod unit;
 mod update_pipe;
+mod update_service;
 
 pub use error::ReleasePayloadError;
 pub use installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation, WindowsRuntimeMode};
@@ -47,6 +49,13 @@ pub use update_pipe::{
     UPDATE_PIPE_RECORD, UPDATE_SERVICE_NAME, UpdatePipeError, UpdatePipeHost, UpdatePipeName,
     VerifiedUpdatePipe, connect_update_pipe,
 };
+pub use update_service::{
+    BootstrapCommand, EXIT_NO_ACTIVATOR, EXIT_NO_PIPE, EXIT_NO_RELEASE, FAILURE_RESET_PERIOD,
+    FALLBACK_DELAY, INHERITED_PIPE_VARIABLE, PROBE_FLAG, RECOVER_FALLBACK_FLAG,
+    REGISTER_SERVICE_FLAG, RESTART_DELAY, UpdateServiceConfig, UpdateServiceExit,
+    UpdateServiceHost, UpdateServiceMode, fallback_command, install_bootstrap, recover_fallback,
+    restore_bootstrap, run_update_service, session_logon_notice, update_service_sddl,
+};
 
 #[cfg(windows)]
 pub use ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
@@ -56,3 +65,5 @@ pub use payload::{retain_installed_release_unit, stage_release_payload, validate
 pub use store::WindowsReleaseRecords;
 #[cfg(windows)]
 pub use update_pipe::WindowsUpdatePipeHost;
+#[cfg(windows)]
+pub use update_service::ScmUpdateService;
