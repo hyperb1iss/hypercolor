@@ -1,6 +1,56 @@
 #!/usr/bin/env sh
 set -eu
 
+URL=http://127.0.0.1:9420/
+PORT_HEX=24CC
+# The installer's exit status when another user's Hypercolor holds the
+# port (EX_TEMPFAIL).
+HELD_EXIT=75
+# Where the kernel's socket tables live. Tests point this at fixtures.
+NET_TABLES="${HYPERCOLOR_OPEN_NET_TABLES:-/proc/net}"
+
+# The uid behind the listener a browser on 127.0.0.1:9420 would reach,
+# read from the kernel's socket tables, which name the owner of every
+# socket to any user: one on 127.0.0.1 or 0.0.0.0, directly, IPv4-mapped,
+# or on the IPv6 wildcard. Prints nothing when nobody listens or the
+# tables cannot be read.
+listener_uid() {
+  for table in "${NET_TABLES}/tcp" "${NET_TABLES}/tcp6"; do
+    [ -r "${table}" ] || continue
+    awk -v port="${PORT_HEX}" '
+      NR > 1 && $4 == "0A" {
+        split($2, local, ":")
+        if (local[2] != port) next
+        address = local[1]
+        if (address == "0100007F" || address == "7F000001" || address == "00000000" ||
+            address == "0000000000000000FFFF00000100007F" ||
+            address == "0000000000000000FFFF000000000000" ||
+            address == "00000000000000000000000000000000") {
+          print $8
+          exit
+        }
+      }' "${table}"
+  done | head -n 1
+}
+
+# Every installation serves on the same port, so whatever answers there
+# may be another person's Hypercolor. Open it only when it is this
+# person's own.
+refuse_another_user() {
+  owner="$(listener_uid)"
+  [ -n "${owner}" ] || return 0
+  [ "${owner}" = "$(id -u)" ] && return 0
+  name="$(getent passwd "${owner}" 2>/dev/null | cut -d: -f1 || true)"
+  if [ -n "${name}" ]; then
+    printf 'Hypercolor is already running for %s, and only one installation can run at a time. Ask %s to stop it, then try again.\n' "${name}" "${name}" >&2
+  else
+    printf '%s\n' 'Hypercolor is already running for another user, and only one installation can run at a time. Ask them to stop it, then try again.' >&2
+  fi
+  exit "${HELD_EXIT}"
+}
+
+refuse_another_user
+
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user start hypercolor.service >/dev/null 2>&1 || true
 fi
@@ -8,7 +58,7 @@ fi
 if command -v curl >/dev/null 2>&1; then
   i=0
   while [ "$i" -lt 40 ]; do
-    if curl --silent --fail http://127.0.0.1:9420/health >/dev/null 2>&1; then
+    if curl --silent --fail "${URL}health" >/dev/null 2>&1; then
       break
     fi
     i=$((i + 1))
@@ -16,8 +66,12 @@ if command -v curl >/dev/null 2>&1; then
   done
 fi
 
+# Again, right before the hand-off: another person's Hypercolor can bind
+# while this one's start fails, and then it is the one answering health.
+refuse_another_user
+
 if command -v xdg-open >/dev/null 2>&1; then
-  exec xdg-open http://127.0.0.1:9420/
+  exec xdg-open "${URL}"
 fi
 
-printf '%s\n' 'Open http://127.0.0.1:9420/ in your browser.'
+printf 'Open %s in your browser.\n' "${URL}"

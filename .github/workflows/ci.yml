@@ -148,6 +148,7 @@ jobs:
               - 'scripts/get-hypercolor.sh'
               - 'scripts/install-release.sh'
               - 'scripts/tests/release-artifact-tests.sh'
+              - 'scripts/tests/hypercolor-open.test.mjs'
               - 'scripts/tests/docker-smoke.mjs'
               - 'scripts/tests/docker-workflow.test.mjs'
               - 'scripts/homebrew-formula.mjs'
@@ -365,6 +366,9 @@ jobs:
 
       - name: Test release artifact contracts
         run: ./scripts/tests/release-artifact-tests.sh
+
+      - name: Test the opener's owner check
+        run: node --test scripts/tests/hypercolor-open.test.mjs
 
       - name: Clippy shared crates
         run: >-
