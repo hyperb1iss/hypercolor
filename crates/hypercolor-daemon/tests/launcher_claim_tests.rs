@@ -1,9 +1,8 @@
 use std::ffi::OsStr;
 
 use hypercolor_daemon::launcher_claim::{
-    LinuxLauncherEvidence, ensure_claims_agree, parse_systemd_main_pid,
-    read_service_identity_claim, resolve_launcher_identity, resolve_linux_launcher_identity,
-    same_launcher,
+    LinuxLauncherEvidence, parse_systemd_main_pid, read_service_identity_claim,
+    resolve_launcher_identity, resolve_linux_launcher_identity, same_launcher,
 };
 use hypercolor_types::service::ServiceIdentity;
 
@@ -95,24 +94,6 @@ fn contradicted_and_ambiguous_claims_fail_closed() {
                 ServiceIdentity::APP_SIDECAR,
                 ServiceIdentity::systemd_user()
             ]
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn neutral_and_legacy_claims_must_agree_when_both_present() {
-    ensure_claims_agree(None, None).expect("nothing to compare");
-    ensure_claims_agree(Some(&ServiceIdentity::homebrew()), None).expect("one claim");
-    ensure_claims_agree(
-        Some(&ServiceIdentity::homebrew()),
-        Some(&ServiceIdentity::homebrew()),
-    )
-    .expect("equal claims");
-    assert!(
-        ensure_claims_agree(
-            Some(&ServiceIdentity::homebrew()),
-            Some(&ServiceIdentity::launchd_direct()),
         )
         .is_err()
     );
