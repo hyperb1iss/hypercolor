@@ -9,7 +9,10 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget};
 use tracing::{debug, warn};
+
+use crate::{WLED_JSON_REPLY_BYTES, fetch_json};
 
 use super::protocol::{
     WledColorFormat, WledDevice, WledProtocol, parse_wled_live_receiver_config,
@@ -21,17 +24,18 @@ const REALTIME_PRIME_FRAMES: usize = 3;
 const REALTIME_PRIME_DELAY: Duration = Duration::from_millis(50);
 
 async fn post_realtime_state(ip: IpAddr, body: serde_json::Value) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(REALTIME_HTTP_TIMEOUT)
-        .build()
-        .context("Failed to build WLED HTTP client")?;
+    let client = BoundedHttpClient::new().context("Failed to build WLED HTTP client")?;
 
+    // The reply is never read: the status is all that matters.
     client
         .post(format!("http://{ip}/json/state"))
         .json(&body)
-        .send()
+        .send(ReadBudget::new(
+            WLED_JSON_REPLY_BYTES,
+            REALTIME_HTTP_TIMEOUT,
+        ))
         .await
-        .and_then(reqwest::Response::error_for_status)
+        .and_then(BoundedResponse::error_for_status)
         .with_context(|| format!("Failed to update WLED realtime state for {ip}"))?;
 
     Ok(())
@@ -66,20 +70,9 @@ pub(super) async fn exit_realtime_mode(ip: IpAddr) -> Result<()> {
 async fn fetch_wled_live_receiver_config(
     ip: IpAddr,
 ) -> Result<Option<super::protocol::WledLiveReceiverConfig>> {
-    let client = reqwest::Client::builder()
-        .timeout(REALTIME_HTTP_TIMEOUT)
-        .build()
-        .context("Failed to build WLED HTTP client")?;
-
-    let json: serde_json::Value = client
-        .get(format!("http://{ip}/json/cfg"))
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("Failed to fetch WLED config for {ip}"))?
-        .json()
-        .await
-        .with_context(|| format!("Failed to parse WLED config JSON for {ip}"))?;
+    let client = BoundedHttpClient::new().context("Failed to build WLED HTTP client")?;
+    let url = format!("http://{ip}/json/cfg");
+    let json = fetch_json(&client, &url, REALTIME_HTTP_TIMEOUT).await?;
 
     parse_wled_live_receiver_config(&json)
 }

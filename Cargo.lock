@@ -4910,7 +4910,6 @@ dependencies = [
  "hypercolor-types",
  "log",
  "mdns-sd",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",

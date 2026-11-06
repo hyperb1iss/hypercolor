@@ -6,6 +6,8 @@
 //! overrides the driver-level default.
 
 pub mod backend;
+#[cfg(test)]
+mod bounds_tests;
 mod scanner;
 
 use std::collections::{BTreeMap, HashSet};
@@ -23,6 +25,7 @@ use hypercolor_driver_api::{
     DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget};
 use hypercolor_driver_support::network::validate_ip;
 use hypercolor_driver_support::{MdnsScope, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
@@ -67,35 +70,40 @@ const PROTOCOL_DESCRIPTION: &str =
     "Realtime pixel transport. DDP is preferred; use E1.31 only for sACN workflows.";
 const DEDUP_THRESHOLD_DESCRIPTION: &str = "UDP frame suppression tolerance. Keep the default unless network load is causing trouble; 0 disables it.";
 
-static WLED_INFO_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| error.to_string())
-});
+/// Largest `/json/info` or `/json/cfg` reply read. WLED serializes both
+/// from a fixed JSON buffer of at most 32 KiB, so this is four times the
+/// largest stock build, with room for forks that enlarge the buffer.
+const WLED_JSON_REPLY_BYTES: usize = 128 * 1024;
+const WLED_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn wled_info_http_client() -> Result<&'static reqwest::Client> {
+static WLED_INFO_HTTP_CLIENT: LazyLock<Result<BoundedHttpClient, String>> =
+    LazyLock::new(|| BoundedHttpClient::new().map_err(|error| error.to_string()));
+
+fn wled_info_http_client() -> Result<&'static BoundedHttpClient> {
     WLED_INFO_HTTP_CLIENT
         .as_ref()
         .map_err(|error| anyhow!("Failed to build shared WLED HTTP client: {error}"))
 }
 
-async fn fetch_wled_info(ip: IpAddr) -> Result<backend::WledDeviceInfo> {
-    let url = format!("http://{ip}/json/info");
-    let client = wled_info_http_client()?;
-
-    let resp = client
-        .get(&url)
-        .send()
+async fn fetch_json(
+    client: &BoundedHttpClient,
+    url: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    client
+        .get(url)
+        .send(ReadBudget::new(WLED_JSON_REPLY_BYTES, timeout))
         .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("HTTP request to {url} failed"))?;
-
-    let json: serde_json::Value = resp
+        .and_then(BoundedResponse::error_for_status)
+        .with_context(|| format!("HTTP request to {url} failed"))?
         .json()
         .await
-        .with_context(|| format!("Failed to parse JSON from {url}"))?;
+        .with_context(|| format!("Failed to parse JSON from {url}"))
+}
 
+async fn fetch_wled_info(ip: IpAddr) -> Result<backend::WledDeviceInfo> {
+    let url = format!("http://{ip}/json/info");
+    let json = fetch_json(wled_info_http_client()?, &url, WLED_INFO_TIMEOUT).await?;
     backend::parse_wled_info(&json)
 }
 

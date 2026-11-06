@@ -15,7 +15,7 @@ cache preserves probe IPs and device info across daemon restarts.
 
 - Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
   `hypercolor-pixel-protocols`, `hypercolor-types`, `anyhow`,
-  `async-trait`, `reqwest`, `serde`, `serde_json`, `tokio`, `tracing`,
+  `async-trait`, `serde`, `serde_json`, `tokio`, `tracing`,
   `uuid`
 - Consumed by: `hypercolor-driver-builtin` (via the `wled` feature)
 
