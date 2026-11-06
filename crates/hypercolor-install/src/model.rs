@@ -353,6 +353,10 @@ pub enum PlatformTransactionRecord {
         schema_version: u32,
         payload: Vec<u8>,
     },
+    WindowsMachine {
+        schema_version: u32,
+        payload: Vec<u8>,
+    },
 }
 
 impl PlatformTransactionRecord {
@@ -386,6 +390,18 @@ impl PlatformTransactionRecord {
         Ok(record)
     }
 
+    pub fn windows_machine(
+        schema_version: u32,
+        payload: Vec<u8>,
+    ) -> Result<Self, InstallModelError> {
+        let record = Self::WindowsMachine {
+            schema_version,
+            payload,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     pub fn validate(&self) -> Result<(), InstallModelError> {
         let (schema_version, payload) = match self {
             Self::Linux {
@@ -399,6 +415,10 @@ impl PlatformTransactionRecord {
             | Self::MacosAppBundle {
                 schema_version,
                 payload,
+            }
+            | Self::WindowsMachine {
+                schema_version,
+                payload,
             } => (*schema_version, payload),
         };
         if schema_version == 0 {
@@ -409,7 +429,7 @@ impl PlatformTransactionRecord {
         }
         let limit = match self {
             Self::Linux { .. } => MAX_LINUX_TRANSACTION_RECORD_BYTES,
-            Self::Macos { .. } | Self::MacosAppBundle { .. } => {
+            Self::Macos { .. } | Self::MacosAppBundle { .. } | Self::WindowsMachine { .. } => {
                 MAX_PLATFORM_TRANSACTION_RECORD_BYTES
             }
         };
@@ -424,7 +444,8 @@ impl PlatformTransactionRecord {
         match self {
             Self::Linux { payload, .. }
             | Self::Macos { payload, .. }
-            | Self::MacosAppBundle { payload, .. } => payload,
+            | Self::MacosAppBundle { payload, .. }
+            | Self::WindowsMachine { payload, .. } => payload,
         }
     }
 }
@@ -441,6 +462,10 @@ pub enum PlatformOwnerReceipt {
         payload: Vec<u8>,
     },
     MacosAppBundle {
+        schema_version: u32,
+        payload: Vec<u8>,
+    },
+    WindowsMachine {
         schema_version: u32,
         payload: Vec<u8>,
     },
@@ -477,6 +502,18 @@ impl PlatformOwnerReceipt {
         Ok(receipt)
     }
 
+    pub fn windows_machine(
+        schema_version: u32,
+        payload: Vec<u8>,
+    ) -> Result<Self, InstallModelError> {
+        let receipt = Self::WindowsMachine {
+            schema_version,
+            payload,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
     pub fn validate(&self) -> Result<(), InstallModelError> {
         let (schema_version, payload) = match self {
             Self::Linux {
@@ -488,6 +525,10 @@ impl PlatformOwnerReceipt {
                 payload,
             }
             | Self::MacosAppBundle {
+                schema_version,
+                payload,
+            }
+            | Self::WindowsMachine {
                 schema_version,
                 payload,
             } => (*schema_version, payload),
@@ -515,6 +556,10 @@ impl PlatformOwnerReceipt {
                     Self::MacosAppBundle { .. },
                     PlatformTransactionRecord::MacosAppBundle { .. }
                 )
+                | (
+                    Self::WindowsMachine { .. },
+                    PlatformTransactionRecord::WindowsMachine { .. }
+                )
         )
     }
 
@@ -523,7 +568,8 @@ impl PlatformOwnerReceipt {
         match self {
             Self::Linux { payload, .. }
             | Self::Macos { payload, .. }
-            | Self::MacosAppBundle { payload, .. } => payload,
+            | Self::MacosAppBundle { payload, .. }
+            | Self::WindowsMachine { payload, .. } => payload,
         }
     }
 }
@@ -600,6 +646,13 @@ pub struct InstallJournalV1 {
     /// serialized form.
     #[serde(default, skip_serializing_if = "is_false")]
     pub abandoned: bool,
+    /// Releases that would not stop when asked and were ended by force,
+    /// each at most once, in the order it happened.
+    ///
+    /// Written only when one was, so every other journal keeps its exact
+    /// serialized form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forced_stops: Vec<UnitId>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -661,6 +714,7 @@ impl InstallJournalV1 {
             candidate_owner_receipt: None,
             failure: None,
             abandoned: false,
+            forced_stops: Vec::new(),
         })
     }
 
@@ -801,6 +855,13 @@ impl InstallJournalV1 {
                 || self.layout_operation_index != 0)
         {
             return Err(InstallModelError::InvalidAbandonment);
+        }
+        let forced_stops_valid = self.forced_stops.iter().enumerate().all(|(index, unit)| {
+            !self.forced_stops[..index].contains(unit)
+                && (unit == &self.candidate_unit || Some(unit) == self.prior_active_unit.as_ref())
+        });
+        if !forced_stops_valid {
+            return Err(InstallModelError::InvalidForcedStop);
         }
         Ok(())
     }
@@ -985,6 +1046,8 @@ pub enum InstallModelError {
     InvalidOwnerReceipt,
     #[error("install journal abandonment is valid only for an effect-free rollback")]
     InvalidAbandonment,
+    #[error("install journal names a forced stop outside this transaction")]
+    InvalidForcedStop,
 }
 
 #[cfg(unix)]
