@@ -79,6 +79,8 @@ crates/
   hypercolor-driver-nanoleaf/      # Nanoleaf panels driver (HTTP pairing + UDP external control)
   hypercolor-driver-wled/          # WLED driver (DDP / E1.31 sACN streaming)
   hypercolor-driver-govee/         # Govee smart-lighting driver (LAN UDP + Govee Cloud API)
+  hypercolor-driver-pixel/         # Generic pixel controller driver: E1.31 sACN, Art-Net, DDP to configured hosts
+  hypercolor-pixel-protocols/      # Leaf: DDP, E1.31, Art-Net packet encoders and DMX universe math
   hypercolor-openrgb-sdk/          # Clean OpenRGB SDK protocol client
   hypercolor-driver-openrgb/       # OpenRGB fallback bridge driver (opt-in)
   hypercolor-openrgb-host/         # OpenRGB host integration: binary detection, server probe, install hints, permissions, managed config dir, headless server launch
@@ -134,11 +136,13 @@ graph TD
     DAPI & DS --> NL[hypercolor-driver-nanoleaf]
     DAPI & DS --> WLED[hypercolor-driver-wled]
     DAPI & DS --> GV[hypercolor-driver-govee]
+    PP[hypercolor-pixel-protocols] --> WLED & PX[hypercolor-driver-pixel]
+    DAPI & DS --> PX
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
     ORS & PER --> OH[hypercolor-openrgb-host]
     OH --> APP & CLI
     DAPI --> NET[hypercolor-network]
-    CORE & DAPI & HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
+    CORE & DAPI & HAL & HUE & NL & WLED & GV & PX & ORD & DS --> DB[hypercolor-driver-builtin]
     CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     PFS --> INST[hypercolor-install] --> CLI
