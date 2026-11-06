@@ -273,6 +273,7 @@ compat *args='':
 
 # Verify the compatibility matrix is up to date (gated by the `compat` CI job)
 compat-check:
+    bun test scripts/gen-compat.test.ts
     bun scripts/gen-compat.ts --check
 
 # Regenerate the OpenRGB detector USB id map from `openrgb --print-udev-rules` output

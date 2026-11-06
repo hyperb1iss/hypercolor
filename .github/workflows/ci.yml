@@ -218,6 +218,7 @@ jobs:
               - 'data/compat/**'
               - 'docs/content/hardware/compatibility.md'
               - 'scripts/gen-compat.ts'
+              - 'scripts/gen-compat.test.ts'
             docs:
               - 'docs/**'
               - '.agents/**/*.md'
@@ -1241,6 +1242,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Test the compatibility generator
+        run: bun test scripts/gen-compat.test.ts
       - name: Verify compatibility matrix is current
         run: bun scripts/gen-compat.ts --check
 

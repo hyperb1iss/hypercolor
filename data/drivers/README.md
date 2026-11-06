@@ -72,7 +72,9 @@ claims nothing.
 | `unverified` | Encoder, spec, or captures only                         | None                                                                     |
 
 The generator rejects unknown values and rejects `hardware` or `community` on
-a row without a `driver`. A row that covers several products under one PID
+a row without a `driver`. A `driver` that is present must be a real name: an
+empty, whitespace-only, or padded value is an error on any row, so leave the
+key out when a device has no driver. A row that covers several products under one PID
 needs evidence for the product it is named after. A device appearing in a
 protocol catalog, a capture from someone else's machine, or an issue closed
 without a user's confirmation is not evidence.
@@ -109,10 +111,11 @@ all of them from `data/drivers/vendors/*.toml`:
 | `data/compat/README-hardware.md` | Reusable hardware snippet |
 | The `<!-- BEGIN COMPAT -->` block in the root `README.md` | Front-door summary table |
 
-`just compat-check` verifies all four are current without writing anything, and
-it is a CI gate: the `compat` job runs `bun scripts/gen-compat.ts --check` on
+`just compat-check` runs the generator's own tests
+(`scripts/gen-compat.test.ts`) and then verifies all four are current without
+writing anything. It is a CI gate: the `compat` job runs both on
 any pull request touching `data/drivers/vendors/**`, `data/compat/**`,
-`docs/content/hardware/compatibility.md`, or `scripts/gen-compat.ts`. Skipping
+`docs/content/hardware/compatibility.md`, or the generator and its tests. Skipping
 the regeneration lands a red PR.
 
 Never hand-edit the generated files, including the block between the compat

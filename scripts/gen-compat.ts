@@ -101,7 +101,7 @@ const TRANSPORT_LABELS: Record<string, string> = {
     network_mdns: 'mDNS',
 }
 
-interface DeviceEntry {
+export interface DeviceEntry {
     pid: number | null
     pidHex: string | null
     /** Set only when the device does not use its vendor's default VID. */
@@ -117,7 +117,7 @@ interface DeviceEntry {
     notes: string | null
 }
 
-interface VendorEntry {
+export interface VendorEntry {
     slug: string
     name: string
     website: string | null
@@ -161,7 +161,7 @@ interface Report {
 // If the schema grows past this subset, upgrade to a real TOML library rather
 // than extending this parser.
 
-interface ParsedToml {
+export interface ParsedToml {
     vendor: Record<string, unknown>
     devices: Record<string, unknown>[]
 }
@@ -180,7 +180,7 @@ const DEVICE_KEYS = new Set([
     'notes',
 ])
 
-function parseToml(src: string, file: string): ParsedToml {
+export function parseToml(src: string, file: string): ParsedToml {
     const out: ParsedToml = { vendor: {}, devices: [] }
     let target: Record<string, unknown> | null = null
     let scope: 'vendor' | 'devices' | null = null
@@ -391,7 +391,7 @@ function loadVendors(): VendorEntry[] {
     return vendors
 }
 
-function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
+export function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
     const vendor = src.vendor
     const slug = basename(file, '.toml')
     const name = requireString(vendor, 'name', file)
@@ -413,7 +413,7 @@ function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
         const pid = typeof d.pid === 'number' ? d.pid : null
         const vid = typeof d.vid === 'number' ? d.vid : null
         const type = typeof d.type === 'string' ? d.type : null
-        const driver = typeof d.driver === 'string' ? d.driver : null
+        const driver = optionalDriver(d, `${file}[${i}] "${name}"`)
         const transport = typeof d.transport === 'string' ? d.transport : null
         const leds = typeof d.leds === 'number' ? d.leds : null
         const notes = typeof d.notes === 'string' && d.notes.length > 0 ? d.notes : null
@@ -476,6 +476,24 @@ function emptyCounts(): Record<Status, number> {
         known: 0,
         blocked: 0,
     }
+}
+
+// An empty or padded driver name would render as a placeholder, drop out of
+// the per-family totals, and still let the row claim a verified tier. Leave
+// the key out when a device has no driver.
+function optionalDriver(obj: Record<string, unknown>, where: string): string | null {
+    const v = obj.driver
+    if (v === undefined) return null
+    if (typeof v !== 'string') {
+        throw new Error(`${where}: expected string for "driver", got ${typeof v}`)
+    }
+    if (v.trim().length === 0) {
+        throw new Error(`${where}: "driver" is empty; omit the key when the device has no driver`)
+    }
+    if (v.trim() !== v) {
+        throw new Error(`${where}: "driver" has surrounding whitespace: "${v}"`)
+    }
+    return v
 }
 
 function emptyVerificationCounts(): Record<Verification, number> {
@@ -1026,4 +1044,8 @@ function main() {
     console.log(anyChanged ? '\n✓ Compatibility matrix regenerated.' : '\n✓ Compatibility matrix already current (no changes).')
 }
 
-main()
+// Only run when executed directly, so tests can import the parser and
+// normalizer without regenerating anything.
+if (import.meta.main) {
+    main()
+}
