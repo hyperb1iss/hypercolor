@@ -304,28 +304,27 @@ fn device_chain(device: &FakeDevice, tiles: &[FakeTile]) -> Vec<u8> {
     payload
 }
 
-/// Assert that no stretch of datagrams beats a token bucket of `burst`
-/// messages refilled every `interval`: `n` datagrams after the first need
-/// at least `(n - burst + 1) * interval`. `slack` absorbs receive jitter.
-pub fn assert_within_budget(
+/// Assert that datagrams arrived no faster than a token bucket of `burst`
+/// messages refilled every `interval` could have sent them, starting full
+/// at `started` (taken before the first send). Every datagram arrives after
+/// it was sent, so receiver scheduling delays only loosen this bound; it
+/// fails only when the sender really outran the budget.
+pub fn assert_budget_respected(
     messages: &[Received],
+    started: Instant,
     burst: usize,
     interval: Duration,
-    slack: Duration,
 ) {
-    for (index, first) in messages.iter().enumerate() {
-        for (offset, later) in messages[index..].iter().enumerate() {
-            if offset < burst {
-                continue;
-            }
-            let needed = interval * u32::try_from(offset + 1 - burst).expect("fits");
-            let spent = later.arrived.duration_since(first.arrived);
-            assert!(
-                spent + slack >= needed,
-                "{} datagrams arrived within {spent:?}, the budget needs {needed:?}",
-                offset + 1
-            );
-        }
+    for (index, message) in messages.iter().enumerate() {
+        let elapsed = message.arrived.saturating_duration_since(started);
+        let refilled =
+            usize::try_from(elapsed.as_nanos() / interval.as_nanos()).unwrap_or(usize::MAX);
+        let allowed = burst.saturating_add(refilled);
+        assert!(
+            index < allowed,
+            "{} datagrams had arrived {elapsed:?} after the first send; the budget allows {allowed}",
+            index + 1
+        );
     }
 }
 

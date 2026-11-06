@@ -18,7 +18,7 @@ use hypercolor_driver_lifx::scanner::{LifxScanOptions, LifxScanner, discovered_d
 use hypercolor_driver_lifx::transport::RequestPolicy;
 use hypercolor_types::device::DeviceError;
 use support::{
-    FakeDevice, FakeKind, FakeLifx, FakeTile, Received, TestResult, assert_within_budget,
+    FakeDevice, FakeKind, FakeLifx, FakeTile, Received, TestResult, assert_budget_respected,
 };
 
 const RED: [u8; 3] = [255, 0, 0];
@@ -164,12 +164,7 @@ async fn tile_chains_stream_one_set64_per_tile_at_the_budgeted_cadence() -> Test
     assert_eq!(frames.len(), 6);
     let tiles: Vec<u8> = frames.iter().map(|frame| frame.payload[0]).collect();
     assert_eq!(tiles, vec![0, 1, 0, 1, 0, 1]);
-    assert_within_budget(
-        &frames,
-        5,
-        Duration::from_millis(50),
-        Duration::from_millis(25),
-    );
+    assert_budget_respected(&frames, started, 5, Duration::from_millis(50));
     Ok(())
 }
 
@@ -222,17 +217,23 @@ async fn worst_case_legacy_frames_are_paced_message_by_message() -> TestResult {
     assert_eq!(runs.len(), 16);
     assert!(runs[..15].iter().all(|run| run.payload[14] == 0));
     assert_eq!(runs[15].payload[14], 1, "only the last run applies");
-    assert_within_budget(
-        &runs,
-        5,
-        Duration::from_millis(50),
-        Duration::from_millis(25),
-    );
+    assert_budget_respected(&runs, started, 5, Duration::from_millis(50));
     Ok(())
 }
 
+fn delivery(sequence: u64) -> DeviceDeliveryId {
+    DeviceDeliveryId {
+        queue_generation: 1,
+        sequence,
+    }
+}
+
+fn is_solid_run(run: &Received, zones: u8) -> bool {
+    run.payload[0] == 0 && run.payload[1] == zones - 1
+}
+
 #[tokio::test]
-async fn sink_declines_a_frame_while_the_budget_is_spent() -> TestResult {
+async fn a_cheaper_newer_frame_replaces_a_paced_tail() -> TestResult {
     let fake = FakeLifx::spawn(vec![FakeDevice::new(
         2,
         31,
@@ -243,35 +244,131 @@ async fn sink_declines_a_frame_while_the_budget_is_spent() -> TestResult {
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
     let sink = backend.frame_sink(&device_id).expect("frame sink");
     let observer = Arc::new(RecordingObserver::default());
-    let id = |sequence| DeviceDeliveryId {
-        queue_generation: 1,
-        sequence,
-    };
 
-    let first = sink
-        .deliver_colors_shared_observed(id(1), Arc::new(alternating(16)), observer.clone())
+    // Sixteen runs: five leave in the burst, the rest are paced 50 ms apart.
+    let old = sink
+        .deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
         .await;
-    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
-
-    let declined = sink
-        .deliver_colors_shared_observed(id(2), Arc::new(vec![RED; 16]), observer.clone())
-        .await;
-    assert_eq!(declined.status, DeviceDeliveryStatus::SuppressedCadence);
-    assert!(!declined.transport_started);
-
-    tokio::time::sleep(Duration::from_millis(60)).await;
-    let accepted = sink
-        .deliver_colors_shared_observed(id(3), Arc::new(vec![RED; 16]), observer.clone())
-        .await;
-    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
     assert_eq!(
-        observer.started.lock().expect("observer lock").as_slice(),
-        &[id(1), id(3)],
-        "a declined frame never starts transport"
+        old.status,
+        DeviceDeliveryStatus::Completed,
+        "handed to the sender"
     );
-    let runs = fake.wait_for(501, 17).await;
-    assert_eq!(runs.len(), 17);
-    assert_eq!((runs[16].payload[0], runs[16].payload[1]), (0, 15));
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let newer = sink
+        .deliver_colors_shared_observed(delivery(2), Arc::new(vec![RED; 16]), observer.clone())
+        .await;
+    assert_eq!(newer.status, DeviceDeliveryStatus::Completed);
+
+    let runs = loop {
+        let runs = fake.wait_for(501, 1).await;
+        if runs.iter().any(|run| is_solid_run(run, 16)) {
+            break runs;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let solid = runs
+        .iter()
+        .position(|run| is_solid_run(run, 16))
+        .expect("solid frame sent");
+    assert!(
+        solid < 15,
+        "the old frame's tail was abandoned after {solid} runs"
+    );
+    assert!(
+        runs[..solid].iter().all(|run| run.payload[14] == 0),
+        "the abandoned frame never applied"
+    );
+    assert_eq!(
+        runs[solid].payload[14], 1,
+        "the newer frame carries the apply"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        fake.received_of_type(501).len(),
+        solid + 1,
+        "nothing of the old frame follows"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_equally_costly_newer_frame_waits_so_frames_still_finish() -> TestResult {
+    let fake = FakeLifx::spawn(vec![FakeDevice::new(
+        2,
+        31,
+        (2, 60),
+        FakeKind::LegacyStrip { zones: 16 },
+    )])
+    .await?;
+    let (backend, device_id) = connect_legacy_strip(&fake).await?;
+    let sink = backend.frame_sink(&device_id).expect("frame sink");
+    let observer = Arc::new(RecordingObserver::default());
+
+    let mut flipped = alternating(16);
+    flipped.reverse();
+    sink.deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
+        .await;
+    for sequence in 2..12 {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let colors = if sequence % 2 == 0 {
+            flipped.clone()
+        } else {
+            alternating(16)
+        };
+        sink.deliver_colors_shared_observed(delivery(sequence), Arc::new(colors), observer.clone())
+            .await;
+    }
+
+    let runs = fake.wait_for(501, 32).await;
+    assert!(runs.len() >= 32, "{} runs", runs.len());
+    assert_eq!(runs[15].payload[14], 1, "the first frame finished");
+    assert_eq!(
+        runs[31].payload[14], 1,
+        "the newest frame finished after it"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn direct_writes_preempt_a_paced_tail_and_wait_for_their_frame() -> TestResult {
+    let fake = FakeLifx::spawn(vec![FakeDevice::new(
+        2,
+        31,
+        (2, 60),
+        FakeKind::LegacyStrip { zones: 16 },
+    )])
+    .await?;
+    let (backend, device_id) = connect_legacy_strip(&fake).await?;
+    let sink = backend.frame_sink(&device_id).expect("frame sink");
+    sink.deliver_colors_shared_observed(
+        delivery(1),
+        Arc::new(alternating(16)),
+        Arc::new(RecordingObserver::default()),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // An identify flash: a solid frame written directly. write_colors only
+    // returns once that frame (or a newer one) is on the wire.
+    backend.write_colors(&device_id, &[BLUE; 16]).await?;
+    let runs = loop {
+        let runs = fake.wait_for(501, 1).await;
+        if runs.iter().any(|run| is_solid_run(run, 16)) {
+            break runs;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let last = runs.last().expect("runs sent");
+    assert!(
+        is_solid_run(last, 16),
+        "the identify frame is the last thing sent"
+    );
+    assert_eq!(last.payload[14], 1);
+    assert!(
+        runs.len() < 16,
+        "the identify frame did not wait for the old tail"
+    );
     Ok(())
 }
 

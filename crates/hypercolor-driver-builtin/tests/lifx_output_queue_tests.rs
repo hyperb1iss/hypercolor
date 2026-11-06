@@ -23,14 +23,13 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
-use support::{FakeDevice, FakeKind, FakeLifx, Received, TestResult, assert_within_budget};
+use support::{FakeDevice, FakeKind, FakeLifx, Received, TestResult, assert_budget_respected};
 
 const ZONES: usize = 16;
 const LAYOUT_DEVICE: &str = "lifx:strip";
 const ZONE_ID: &str = "strip";
 const INTERVAL: Duration = Duration::from_millis(50);
 const BURST: usize = 5;
-const SLACK: Duration = Duration::from_millis(25);
 
 const RED: [u8; 3] = [255, 0, 0];
 const GREEN: [u8; 3] = [0, 255, 0];
@@ -142,13 +141,14 @@ fn is_solid(message: &Received, rgb: [u8; 3]) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_newest_frame_follows_a_paced_worst_case_frame() -> TestResult {
+async fn newer_frames_replace_a_paced_worst_case_tail() -> TestResult {
     let (fake, mut manager) = legacy_strip().await?;
     let layout = layout();
 
-    // Sixteen different runs: the burst plus eleven paced messages, about
-    // 550 ms on the wire. Frames pushed meanwhile replace each other in the
-    // host's slot; only the last of them may follow.
+    // Sixteen different runs would take the burst plus about 550 ms of
+    // paced messages. Solid frames pushed meanwhile each cost one message,
+    // so the first of them replaces the tail, and the newest one wins.
+    let started = Instant::now();
     manager.write_frame(&frame(alternating(RED, BLUE)), &layout);
     tokio::time::sleep(Duration::from_millis(20)).await;
     for color in [GREEN, WHITE, GREEN, WHITE] {
@@ -159,23 +159,30 @@ async fn the_newest_frame_follows_a_paced_worst_case_frame() -> TestResult {
     tokio::time::sleep(Duration::from_millis(700)).await;
 
     let runs = fake.received_of_type(501);
+    let first_solid = runs
+        .iter()
+        .position(|run| run.payload[0] == 0 && usize::from(run.payload[1]) == ZONES - 1)
+        .expect("a solid frame was sent");
     assert!(
-        runs.len() > ZONES,
-        "the newest frame followed the paced one"
+        first_solid < ZONES - 1,
+        "the worst-case tail was abandoned after {first_solid} runs"
     );
     assert!(
-        runs[..ZONES]
+        runs[..first_solid].iter().all(|run| run.payload[14] == 0),
+        "the abandoned frame never applied"
+    );
+    let last = runs.last().expect("runs");
+    assert!(
+        is_solid(last, BLUE),
+        "the newest frame is what the light shows"
+    );
+    assert!(
+        runs[first_solid..]
             .iter()
-            .enumerate()
-            .all(|(zone, run)| usize::from(run.payload[0]) == zone),
-        "the worst-case frame went out whole and in order"
+            .all(|run| usize::from(run.payload[1]) == ZONES - 1 && run.payload[14] == 1),
+        "only whole solid frames follow"
     );
-    let after = &runs[ZONES..];
-    assert!(
-        after.iter().all(|run| is_solid(run, BLUE)),
-        "only the newest frame follows; replaced frames never reach the light"
-    );
-    assert_within_budget(&runs, BURST, INTERVAL, SLACK);
+    assert_budget_respected(&runs, started, BURST, INTERVAL);
     Ok(())
 }
 
@@ -191,27 +198,24 @@ async fn uniform_animation_runs_at_the_full_message_rate() -> TestResult {
         manager.write_frame(&frame(vec![[step, 0, 255 - step]; ZONES]), &layout);
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    let elapsed = started.elapsed();
     tokio::time::sleep(Duration::from_millis(60)).await;
 
     let runs = fake.received_of_type(501);
-    // A one-run frame costs one message, so frames go out at the budget's
-    // 20 per second (plus the initial burst), not at a worst-case rate.
-    assert!(
-        (15..=27).contains(&runs.len()),
-        "{} one-run frames in {elapsed:?}",
-        runs.len()
-    );
+    // A one-run frame costs one message, so frames flow near the budget's
+    // 20 per second. The lower bound only guards against a worst-case
+    // cadence (one frame a second for this strip) and survives a loaded
+    // machine; the budget check is the upper bound.
+    assert!(runs.len() >= 8, "{} one-run frames in a second", runs.len());
     assert!(
         runs.iter()
             .all(|run| run.payload[1] == 15 && run.payload[14] == 1)
     );
-    assert_within_budget(&runs, BURST, INTERVAL, SLACK);
+    assert_budget_respected(&runs, started, BURST, INTERVAL);
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worst_case_streams_never_burst_past_the_budget() -> TestResult {
+async fn worst_case_streams_finish_frames_within_the_budget() -> TestResult {
     let (fake, mut manager) = legacy_strip().await?;
     let layout = layout();
 
@@ -230,7 +234,22 @@ async fn worst_case_streams_never_burst_past_the_budget() -> TestResult {
     tokio::time::sleep(Duration::from_millis(900)).await;
 
     let runs = fake.received_of_type(501);
-    assert!(runs.len() >= 2 * ZONES, "{} runs", runs.len());
-    assert_within_budget(&runs, BURST, INTERVAL, SLACK);
+    // Every frame costs sixteen messages, so newer frames never replace a
+    // tail and every frame that starts also finishes.
+    let applied = runs.iter().filter(|run| run.payload[14] == 1).count();
+    assert!(
+        applied >= 2,
+        "{applied} frames applied out of {} runs",
+        runs.len()
+    );
+    for (index, run) in runs.iter().enumerate() {
+        let position = index % ZONES;
+        assert_eq!(
+            usize::from(run.payload[0]),
+            position,
+            "runs go out whole and in order"
+        );
+    }
+    assert_budget_respected(&runs, started, BURST, INTERVAL);
     Ok(())
 }

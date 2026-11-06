@@ -88,8 +88,9 @@ hypercolor devices action <device-id> refresh_topology --yes
 LIFX recommends sending a light no more than **20 messages per second**. Hypercolor counts
 every message it sends a light against that budget, lets at most five go out back to back
 (one frame of a five-tile chain), and spaces the rest. It always sends the newest frame:
-frames that arrive while a light is busy replace each other instead of queueing, so a light
-never lags behind the effect. The render loop itself keeps running at full rate; only the
+frames that arrive while a light is busy replace each other instead of queueing, and a
+quick frame (a solid color, an identify flash) takes over from a long one mid-way, so a
+light never lags behind the effect. The render loop itself keeps running at full rate; only the
 light's own update rate depends on how many messages each frame needs:
 
 | Device | Messages per frame | Updates per second |

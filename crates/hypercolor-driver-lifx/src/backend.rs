@@ -1,22 +1,25 @@
 //! LIFX output backend: device sessions, frame sink, and the per-device
-//! message budget (Spec 88 §9 and §11.5).
+//! sender (Spec 88 §9 and §11.5).
 //!
-//! Every datagram is charged against the budget as it is sent. A frame from
-//! the host's latest-value queue only starts when the budget has room for
-//! its first message; otherwise the sink declines it at once, the frame
-//! stays replaceable in the host queue, and the host offers the newest frame
-//! again after one message interval. Once a frame starts, its remaining
-//! datagrams are paced by the budget, so a frame costs exactly as long as
-//! its message count requires.
+//! Each connected light gets one sender task with its own latest-frame
+//! slot. The host's frame sink and direct writes both hand frames to that
+//! slot; the sender always transmits the newest frame, charging every
+//! datagram to the message budget as it goes. While a frame's tail is being
+//! paced, a newer frame that would finish sooner than the remaining tail
+//! replaces it, so stale content never keeps the light busy, and a newer
+//! frame that costs as much waits its turn, so an animation of expensive
+//! frames still completes every frame it starts.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use hypercolor_driver_api::{
@@ -46,34 +49,250 @@ struct AdoptedDevice {
     serial: Serial,
 }
 
-/// Connected device: immutable facts plus the mutable stream session.
+/// One frame waiting in a device's latest-frame slot.
+#[derive(Debug)]
+struct FrameRequest {
+    sequence: u64,
+    colors: Arc<Vec<[u8; 3]>>,
+}
+
+/// State the sender task and its callers share.
+#[derive(Debug, Default)]
+struct SenderShared {
+    brightness: AtomicU8,
+    failure: StdMutex<Option<String>>,
+}
+
+/// Connected device: immutable facts plus the handle to its sender task.
 struct SessionHandle {
     profile: LifxDeviceProfile,
     info: DeviceInfo,
     cadence: OutputCadence,
-    session: Mutex<LifxSession>,
+    shared: Arc<SenderShared>,
+    frames: watch::Sender<Option<Arc<FrameRequest>>>,
+    settled: watch::Receiver<u64>,
+    next_sequence: AtomicU64,
+    task: JoinHandle<()>,
 }
 
-struct LifxSession {
+impl SessionHandle {
+    fn is_closed(&self) -> bool {
+        self.task.is_finished()
+    }
+
+    /// Hand a frame to the sender, replacing any frame not yet started.
+    fn submit(&self, device_id: DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<u64, DeviceError> {
+        if self.is_closed() {
+            return Err(DeviceError::Disconnected {
+                device: device_id.to_string(),
+            });
+        }
+        if let Some(failure) = self
+            .shared
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            return Err(DeviceError::write(device_id, failure));
+        }
+        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        self.frames
+            .send_replace(Some(Arc::new(FrameRequest { sequence, colors })));
+        Ok(sequence)
+    }
+
+    /// Wait until `sequence`, or a newer frame that replaced it, is on the
+    /// wire.
+    async fn settle(&self, device_id: DeviceId, sequence: u64) -> Result<(), DeviceError> {
+        let mut settled = self.settled.clone();
+        settled
+            .wait_for(|done| *done >= sequence)
+            .await
+            .map_err(|_| DeviceError::Disconnected {
+                device: device_id.to_string(),
+            })?;
+        if let Some(failure) = self
+            .shared
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            return Err(DeviceError::write(device_id, failure));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SessionHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The per-device sender task.
+struct DeviceSender {
+    device_id: DeviceId,
     socket: UdpSocket,
     led_count: usize,
-    encoder: FrameEncoder,
-    converter: HsbkEncoder,
+    active: FrameEncoder,
+    candidate: FrameEncoder,
+    kelvin: u16,
+    color_capable: bool,
     address: StreamAddress,
     duration_ms: u32,
     budget: MessageBudget,
+    shared: Arc<SenderShared>,
+    settled: watch::Sender<u64>,
     last_size_mismatch_warn_at: Option<Instant>,
 }
 
-/// What a write does when the budget has no room for its first message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BudgetPolicy {
-    /// Decline with [`DeviceWriteOutcome::SuppressedCadence`] so the frame
-    /// stays in the host's latest-value slot, where a newer one can replace
-    /// it before the host offers it again.
-    DeclineWhenSpent,
-    /// Wait for room. Used for direct writes, which have no queue behind them.
-    Wait,
+impl DeviceSender {
+    async fn run(mut self, mut frames: watch::Receiver<Option<Arc<FrameRequest>>>) {
+        let mut last_settled = 0_u64;
+        loop {
+            let latest = frames.borrow_and_update().clone();
+            if let Some(request) = latest
+                && request.sequence > last_settled
+            {
+                match self.transmit(request, &mut frames).await {
+                    Some(sequence) => {
+                        last_settled = sequence;
+                        self.settled.send_replace(sequence);
+                    }
+                    None => return,
+                }
+                continue;
+            }
+            if frames.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    fn converter(&self) -> HsbkEncoder {
+        HsbkEncoder {
+            kelvin: self.kelvin,
+            color_capable: self.color_capable,
+            brightness: self.shared.brightness.load(Ordering::Relaxed),
+        }
+    }
+
+    fn warn_on_size_mismatch(&mut self, colors: &[[u8; 3]]) {
+        if colors.len() == self.led_count {
+            return;
+        }
+        let should_warn = self
+            .last_size_mismatch_warn_at
+            .is_none_or(|warned_at| warned_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+        if should_warn {
+            warn!(
+                device_id = %self.device_id,
+                expected_led_count = self.led_count,
+                actual_led_count = colors.len(),
+                "LIFX frame size mismatch; padding or truncating to the zone count"
+            );
+            self.last_size_mismatch_warn_at = Some(Instant::now());
+        }
+    }
+
+    /// Encode `request` into the candidate encoder. Returns its cost.
+    fn prepare(&mut self, request: &FrameRequest) -> Option<usize> {
+        self.warn_on_size_mismatch(&request.colors);
+        let converter = self.converter();
+        let mut address = self.address;
+        match self
+            .candidate
+            .encode(&request.colors, &converter, self.duration_ms, &mut address)
+        {
+            Ok(count) => Some(count),
+            Err(error) => {
+                self.record_failure(format!("LIFX frame could not be encoded: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Make the candidate the active frame, committing its sequence numbers.
+    fn activate(&mut self) {
+        std::mem::swap(&mut self.active, &mut self.candidate);
+        let count = u8::try_from(self.active.datagram_count() % 256).unwrap_or(0);
+        self.address.sequence = self.address.sequence.wrapping_add(count);
+    }
+
+    fn record_failure(&self, failure: String) {
+        warn!(device_id = %self.device_id, error = %failure, "LIFX output failed");
+        *self
+            .shared
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+    }
+
+    /// Send the newest frame to completion. Returns the sequence of the
+    /// frame that completed, or `None` when the session closed.
+    async fn transmit(
+        &mut self,
+        request: Arc<FrameRequest>,
+        frames: &mut watch::Receiver<Option<Arc<FrameRequest>>>,
+    ) -> Option<u64> {
+        let mut current = request;
+        if self.prepare(&current).is_none() {
+            return Some(current.sequence);
+        }
+        self.activate();
+        let mut sent = 0_usize;
+        let mut considered = current.sequence;
+
+        loop {
+            let total = self.active.datagram_count();
+            if sent >= total {
+                return Some(current.sequence);
+            }
+
+            // A newer frame replaces the tail only when it finishes sooner
+            // than the tail would: it repaints every zone and carries the
+            // final apply, so nothing the tail would have shown is lost.
+            let newest = frames.borrow_and_update().clone();
+            if let Some(newer) = newest
+                && newer.sequence > considered
+            {
+                considered = newer.sequence;
+                if let Some(cost) = self.prepare(&newer)
+                    && (sent == 0 || cost < total - sent)
+                {
+                    self.activate();
+                    current = newer;
+                    sent = 0;
+                    continue;
+                }
+            }
+
+            let delay = self.budget.delay_at(Instant::now());
+            if !delay.is_zero() {
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    changed = frames.changed() => {
+                        if changed.is_err() {
+                            return None;
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            let Some(datagram) = self.active.datagram(sent) else {
+                return Some(current.sequence);
+            };
+            if let Err(error) = self.socket.send(datagram).await {
+                self.record_failure(format!("LIFX datagram send failed: {error}"));
+                return Some(current.sequence);
+            }
+            self.budget.record(Instant::now());
+            sent += 1;
+        }
+    }
 }
 
 /// LIFX backend implementing [`DeviceBackend`].
@@ -116,7 +335,11 @@ impl LifxBackend {
         })
     }
 
-    async fn open_session(&self, route: &AdoptedDevice) -> Result<SessionHandle> {
+    async fn open_session(
+        &self,
+        device_id: DeviceId,
+        route: &AdoptedDevice,
+    ) -> Result<SessionHandle> {
         let mut client = LifxClient::bind_for(&route.addr)
             .await
             .with_context(|| format!("failed to bind LIFX socket for {}", route.addr))?;
@@ -145,8 +368,8 @@ impl LifxBackend {
             .with_context(|| format!("failed to connect LIFX socket to {}", route.addr))?;
 
         let plan = OutputPlan::from_topology(&profile.topology);
-        // The host spaces offers by the cheapest frame's cost; dearer frames
-        // are paced message by message inside the session.
+        // The host spaces offers by the cheapest frame's cost; the sender
+        // paces dearer frames message by message.
         let interval = frame_interval(
             self.config.max_messages_per_second,
             plan.best_case_messages(),
@@ -155,16 +378,21 @@ impl LifxBackend {
         let cadence = OutputCadence::from_min_interval(interval, max_fps)
             .with_max_frame_silence(MIN_FRAME_SILENCE.max(interval.saturating_mul(2)));
         let info = profile.device_info(max_fps);
-        let converter = HsbkEncoder::new(
-            clamp_kelvin(self.config.white_kelvin, profile.kelvin_range()),
-            profile.color_capable(),
-        );
 
-        let session = LifxSession {
+        let shared = Arc::new(SenderShared {
+            brightness: AtomicU8::new(u8::MAX),
+            failure: StdMutex::new(None),
+        });
+        let (frames, frames_rx) = watch::channel(None);
+        let (settled_tx, settled) = watch::channel(0);
+        let sender = DeviceSender {
+            device_id,
             socket,
             led_count: plan.led_count(),
-            encoder: FrameEncoder::new(plan),
-            converter,
+            active: FrameEncoder::new(plan.clone()),
+            candidate: FrameEncoder::new(plan),
+            kelvin: clamp_kelvin(self.config.white_kelvin, profile.kelvin_range()),
+            color_capable: profile.color_capable(),
             address: StreamAddress {
                 source,
                 target: route.serial,
@@ -172,73 +400,22 @@ impl LifxBackend {
             },
             duration_ms: u32::from(self.config.transition_ms),
             budget: MessageBudget::new(self.config.max_messages_per_second),
+            shared: Arc::clone(&shared),
+            settled: settled_tx,
             last_size_mismatch_warn_at: None,
         };
+        let task = tokio::spawn(sender.run(frames_rx));
+
         Ok(SessionHandle {
             profile,
             info,
             cadence,
-            session: Mutex::new(session),
+            shared,
+            frames,
+            settled,
+            next_sequence: AtomicU64::new(0),
+            task,
         })
-    }
-
-    async fn write_session(
-        device_id: &DeviceId,
-        handle: &SessionHandle,
-        colors: &[[u8; 3]],
-        policy: BudgetPolicy,
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<DeviceWriteOutcome> {
-        let mut guard = handle.session.lock().await;
-        let session = &mut *guard;
-
-        if policy == BudgetPolicy::DeclineWhenSpent && !session.budget.ready_at(Instant::now()) {
-            return Ok(DeviceWriteOutcome::SuppressedCadence);
-        }
-
-        if colors.len() != session.led_count {
-            let should_warn = session
-                .last_size_mismatch_warn_at
-                .is_none_or(|warned_at| warned_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
-            if should_warn {
-                warn!(
-                    device_id = %device_id,
-                    expected_led_count = session.led_count,
-                    actual_led_count = colors.len(),
-                    "LIFX frame size mismatch; padding or truncating to the zone count"
-                );
-                session.last_size_mismatch_warn_at = Some(Instant::now());
-            }
-        }
-
-        session.encoder.encode(
-            colors,
-            &session.converter,
-            session.duration_ms,
-            &mut session.address,
-        )?;
-
-        if let Some((id, observer)) = delivery {
-            observer.transport_started(id);
-        }
-        let LifxSession {
-            socket,
-            encoder,
-            budget,
-            ..
-        } = session;
-        for datagram in encoder.datagrams() {
-            let delay = budget.delay_at(Instant::now());
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            socket
-                .send(datagram)
-                .await
-                .context("LIFX datagram send failed")?;
-            budget.record(Instant::now());
-        }
-        Ok(DeviceWriteOutcome::Sent)
     }
 }
 
@@ -249,32 +426,12 @@ struct LifxFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for LifxFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        LifxBackend::write_session(
-            &self.device_id,
-            &self.handle,
-            colors.as_slice(),
-            BudgetPolicy::Wait,
-            None,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| DeviceError::write(self.device_id, error))
+    fn is_closed(&self) -> bool {
+        self.handle.is_closed()
     }
 
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        LifxBackend::write_session(
-            &self.device_id,
-            &self.handle,
-            colors.as_slice(),
-            BudgetPolicy::DeclineWhenSpent,
-            None,
-        )
-        .await
-        .map_err(|error| DeviceError::write(self.device_id, error))
+    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
+        self.handle.submit(self.device_id, colors).map(|_| ())
     }
 
     async fn deliver_colors_shared_observed(
@@ -285,15 +442,12 @@ impl DeviceFrameSink for LifxFrameSink {
     ) -> DeviceDeliveryAck {
         let payload_bytes = colors.len().saturating_mul(3);
         let started_at = Instant::now();
-        let result = LifxBackend::write_session(
-            &self.device_id,
-            &self.handle,
-            colors.as_slice(),
-            BudgetPolicy::DeclineWhenSpent,
-            Some((id, observer.as_ref())),
-        )
-        .await
-        .map_err(|error| DeviceError::write(self.device_id, error));
+        let result = self.handle.submit(self.device_id, colors).map(|_| {
+            // The frame is handed to the device's sender, which owns the
+            // transport from here (DeviceWriteOutcome::Sent).
+            observer.transport_started(id);
+            DeviceWriteOutcome::Sent
+        });
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
@@ -345,7 +499,7 @@ impl DeviceBackend for LifxBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        if self.session(id).is_some() {
+        if self.session(id).is_some_and(|handle| !handle.is_closed()) {
             return Ok(());
         }
         let route = self
@@ -357,7 +511,7 @@ impl DeviceBackend for LifxBackend {
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
 
         let handle = self
-            .open_session(&route)
+            .open_session(*id, &route)
             .await
             .map_err(|error| DeviceError::connection(id, error))?;
         info!(
@@ -384,6 +538,8 @@ impl DeviceBackend for LifxBackend {
             .remove(id);
         match removed {
             Some(handle) => {
+                // Sinks the host still holds see a closed lane from here on.
+                handle.task.abort();
                 info!(device_id = %id, serial = %handle.profile.serial, "Disconnected from LIFX device");
                 Ok(())
             }
@@ -395,15 +551,16 @@ impl DeviceBackend for LifxBackend {
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let handle = self.connected(id)?;
-        Self::write_session(id, &handle, colors, BudgetPolicy::Wait, None)
-            .await
-            .map(|_| ())
-            .map_err(|error| DeviceError::write(id, error))
+        let sequence = handle.submit(*id, Arc::new(colors.to_vec()))?;
+        handle.settle(*id, sequence).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
         let handle = self.connected(id)?;
-        handle.session.lock().await.converter.brightness = brightness;
+        handle
+            .shared
+            .brightness
+            .store(brightness, Ordering::Relaxed);
         Ok(())
     }
 

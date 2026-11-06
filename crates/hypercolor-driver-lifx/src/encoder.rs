@@ -285,6 +285,20 @@ impl FrameEncoder {
         Ok(self.datagrams.len())
     }
 
+    /// Number of datagrams the last [`FrameEncoder::encode`] call produced.
+    #[must_use]
+    pub fn datagram_count(&self) -> usize {
+        self.datagrams.len()
+    }
+
+    /// One datagram from the last [`FrameEncoder::encode`] call.
+    #[must_use]
+    pub fn datagram(&self, index: usize) -> Option<&[u8]> {
+        self.datagrams
+            .get(index)
+            .map(|range| &self.buf[range.clone()])
+    }
+
     /// Datagrams produced by the last [`FrameEncoder::encode`] call.
     pub fn datagrams(&self) -> impl ExactSizeIterator<Item = &[u8]> + '_ {
         self.datagrams.iter().map(|range| &self.buf[range.clone()])

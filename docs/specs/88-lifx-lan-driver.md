@@ -606,30 +606,53 @@ A frame costs what its own messages cost. A solid legacy strip frame is one
 message and runs at the full 20 per second; a frame of 80 different zones is
 80 messages and takes about 3.8 s, and nothing else goes out meanwhile.
 
-### 9.4 Coalescing, never queueing
+### 9.4 The device sender: newest frame, never a stale tail
 
-The host runs one latest-value output queue per device (Spec 51 section 16):
-while a device waits for its cadence slot, newer frames replace older ones
-and only the newest is offered. The driver reports a cadence whose minimum
-interval is the cheapest frame's cost (one message interval for bulbs and
-legacy strips, `tiles` intervals for a chain), so the host never offers
-frames faster than the device can take its cheapest one.
+Each connected light has one sender task with its own latest-frame slot.
+The host's output queue (Spec 51 section 16) and direct writes both hand
+frames to that slot and return; the slot keeps only the newest frame. The
+driver reports a cadence whose minimum interval is the cheapest frame's
+cost (one message interval for bulbs and legacy strips, `tiles` intervals
+for a chain), so the host never offers frames faster than the light can
+take its cheapest one.
 
-Waiting for the budget only ever happens where the frame is still
-replaceable:
+The sender always works on the newest frame:
 
-1. When the host offers a frame and the budget has no room for its first
-   message, the sink declines it at once with `SuppressedCadence`. Nothing is
-   encoded or sent, the frame stays in the host's slot (where a newer frame
-   can replace it), and the host offers the newest frame again after one
-   cadence interval.
-2. Once a frame's first message leaves, its remaining messages are paced by
-   the budget inside the same delivery. The frame is committed at that point
-   (its earlier zones are already on the wire), and frames pushed meanwhile
-   keep replacing each other in the host's slot; only the newest follows.
+1. A frame waiting for the budget before its first message is simply
+   replaced when a newer frame arrives.
+2. While a started frame's tail is being paced, the sender looks at the
+   slot before every message and whenever a newer frame arrives during a
+   wait. It switches to the newer frame when that frame costs fewer
+   messages than the tail still to send, and keeps going otherwise.
 
-Direct writes outside the queue (identify flashes, temporary direct control)
-have no slot behind them, so they wait for the budget instead of declining.
+The cost rule keeps two properties at once. Old content never holds the
+light while something cheaper is waiting: a solid frame or an identify
+flash replaces an 80-run tail at the next message slot instead of waiting
+the 3.75 s (79 s at 1 message per second) the tail would take. And frames
+still finish: every switch lowers the time until some frame completes, so
+an animation whose every frame costs the same (an 80-run legacy pattern,
+an extended strip over 82 zones, a Tile chain) completes each frame it
+starts instead of restarting forever. Switching on any newer frame would
+starve such an animation, because the host offers a new frame every
+cadence interval while each frame needs many intervals to send.
+
+Abandoning a tail is safe on every paint path, because the replacing frame
+always repaints every zone and carries its own commit:
+
+| Path | What the abandoned tail leaves behind | Why the newer frame makes it whole |
+|---|---|---|
+| Legacy SetColorZones | runs buffered with NO_APPLY, never shown | the newer frame's runs cover zones 0 to N-1 and its last run applies |
+| SetExtendedColorZones over 82 zones | chunks buffered with NO_APPLY, never shown | the newer frame sends every chunk from zone 0 and its last chunk applies |
+| Set64 to the visible buffer | earlier tiles already show the old frame | the newer frame writes every tile |
+| Set64 to the hidden buffer, then CopyFrameBuffer | part of buffer 1 holds the old frame, nothing shown | the newer frame rewrites all of buffer 1 before its own copy |
+
+With the cost rule, only legacy strips switch mid-frame in practice: every
+other class has a fixed cost, so a newer frame never costs less than a
+started tail. The table is why it would stay correct if that changed.
+
+Direct writes (identify flashes, temporary direct control) go through the
+same slot, so they also replace a paced tail, and `write_colors` returns
+once its frame, or a newer one that replaced it, is on the wire.
 
 ### 9.5 Reassertion
 
@@ -970,13 +993,15 @@ serial as a MAC address.
   changed since discovery), sends SetLightPower on with an acknowledgement,
   and builds the session: a UDP socket, header template, output plan, and
   message budget. Connect timeout is 8 seconds.
-- **Write** declines the frame when the budget has no room for its first
-  message (section 9.4); otherwise it converts the frame to HSBK, pads or
-  truncates to the device's LED count (warning at most once a minute),
+- **Write** hands the frame to the device sender's latest-frame slot
+  (section 9.4). The sender converts the newest frame to HSBK, pads or
+  truncates it to the device's LED count (warning at most once a minute),
   encodes the plan's datagrams into a reused buffer, and sends them, each
-  one charged to the budget and paced by it.
+  one charged to the budget and paced by it. Send failures are reported on
+  the next write.
 - **Brightness** scales HSBK brightness (section 8).
-- **Disconnect** drops the session.
+- **Disconnect** stops the sender; sinks the host still holds report a
+  closed lane.
 - `connected_device_info` returns the topology read at connect.
 - Output cadence and `target_fps` follow section 9.
 
@@ -1001,6 +1026,13 @@ No test sends a packet anywhere but loopback. Broadcast discovery is never
 exercised in tests; scanner tests pass explicit loopback targets with
 broadcast disabled.
 
+Precise budget guarantees (burst size, spacing, the window bound) are
+checked as token-bucket arithmetic with explicit instants. Tests over real
+sockets only assert bounds that receiver scheduling cannot break: each
+datagram is compared against what the budget could have sent between a
+clock read before the first send and that datagram's arrival, so a slow
+receiver can only make the check looser.
+
 | Suite | Asserts |
 |---|---|
 | `lifx_protocol_tests.rs` | golden bytes for the header and every sent message (the documentation's SetColor vector plus one vector per type in section 3.3), parsing of every received State message including the documentation's StateLabel reply and reserved-bit tolerance |
@@ -1008,9 +1040,9 @@ broadcast disabled.
 | `lifx_products_tests.rs` | lookup, extended multizone thresholds (product 32 at 2.76 vs 2.77), non-light rejection, unknown product fallback |
 | `lifx_topology_tests.rs` | segments for each class, chain positions with rotation, candle and uplight maps, messages per frame and cadence |
 | `lifx_encoder_tests.rs` | datagram plans: run merging and apply flags for legacy, 82-zone chunking, Set64 per tile, frame buffer path above 64 zones, single-buffer fallback; best and worst frame costs; the token bucket's burst, pacing, and window bound |
-| `lifx_scanner_tests.rs` | an in-repo fake LIFX responder on 127.0.0.1 answers discovery and probes for bulb, legacy strip, extended strip, tile chain, and 16 x 8 ceiling; several devices behind one port; a scan whose sends all fail is an error; lights that miss their probe are reported; a flood of 552 serials is capped at 512 with at most 32 probes in flight |
-| `lifx_backend_tests.rs` | adopt, connect (power ack), write, brightness, cadence, refreshed info, worst-case frames paced message by message, a sink declining while the budget is spent, against the fake responder |
-| `hypercolor-driver-builtin` `lifx_output_queue_tests.rs` | the real host output queue (`BackendManager`) in front of the backend: the newest frame follows a paced worst-case frame and replaced frames never reach the light, a uniform animation runs at the full message rate, and no stretch of datagrams beats the budget |
+| `lifx_scanner_tests.rs` | an in-repo fake LIFX responder on 127.0.0.1 answers discovery and probes for bulb, legacy strip, extended strip, tile chain, and 16 x 8 ceiling; several devices behind one port; every coverage gap (one failed unicast send, all broadcast sends failed, replies past the limit) is an error; lights that miss their probe are reported as unprobed; probes never exceed the concurrency limit |
+| `lifx_backend_tests.rs` | adopt, connect (power ack), write, brightness, cadence, refreshed info, worst-case frames paced message by message, a cheaper newer frame replacing a paced tail, equally costly frames all finishing, a direct write replacing a tail and returning once sent, against the fake responder |
+| `hypercolor-driver-builtin` `lifx_output_queue_tests.rs` | the real host output queue (`BackendManager`) in front of the backend: newer frames replace a paced worst-case tail and the newest one is what the light shows, a uniform animation flows near the full message rate, and a worst-case stream finishes whole frames in order; every run is checked against the budget |
 | `lifx_driver_tests.rs` | descriptor, default-enabled module, config validation, driver and device control surfaces, probe target merging |
 | `lifx_emulator_tests.rs` | opt-in run against lifx-emulator bound to 127.0.0.1 (section 12.1) |
 
