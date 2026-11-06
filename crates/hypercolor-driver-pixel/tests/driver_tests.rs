@@ -398,12 +398,28 @@ async fn discovery_scopes_derived_cids_to_the_installation() {
     );
     assert_eq!(
         first,
-        hypercolor_driver_pixel::derived_cid(Some("install-a"), "roofline").to_string()
+        hypercolor_driver_pixel::derived_cid("install-a", "roofline").to_string()
+    );
+
+    // A host without an installation id gets a random per-process id, never
+    // a hash of the device id alone that every such host would share.
+    let fallback = hypercolor_driver_pixel::fallback_installation_id();
+    assert_eq!(
+        uuid::Uuid::parse_str(fallback)
+            .expect("fallback is a UUID")
+            .get_version(),
+        Some(uuid::Version::Random)
     );
     assert_eq!(
         anonymous,
-        hypercolor_driver_pixel::derived_cid(None, "roofline").to_string()
+        hypercolor_driver_pixel::derived_cid(fallback, "roofline").to_string()
     );
+    assert_eq!(
+        anonymous,
+        discovered_cid(&InstallationHost(None), &config).await,
+        "the fallback is stable for the process lifetime"
+    );
+    assert_ne!(anonymous, first);
 }
 
 #[tokio::test]

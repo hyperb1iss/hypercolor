@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::ops::Range;
+use std::sync::LazyLock;
 
 use hypercolor_driver_support::network::validate_port;
 use hypercolor_pixel_protocols::artnet::ARTNET_MAX_PORT_ADDRESS;
@@ -206,20 +207,31 @@ fn range_label(start: u16, end: u16) -> String {
     }
 }
 
+/// Installation id used when the host persists none: a random UUID v4
+/// generated once per process, so derived CIDs stay unique to this running
+/// Hypercolor and stable for its lifetime.
+static PROCESS_INSTALLATION_ID: LazyLock<String> = LazyLock::new(|| Uuid::new_v4().to_string());
+
+/// The per-process fallback installation id (see [`derived_cid`]).
+#[must_use]
+pub fn fallback_installation_id() -> &'static str {
+    &PROCESS_INSTALLATION_ID
+}
+
 /// Derive the stable E1.31 CID for a device.
 ///
-/// E1.31 section 5.6 needs a CID unique to each source. The name hashed
-/// into the UUID v5 combines the host's persistent installation id with the
-/// device id, so two installations that reuse a device id get different
-/// CIDs and each stays stable across restarts. Without an installation id
-/// (a host that persists none) the device id alone is hashed.
+/// E1.31 section 5.6 needs a CID unique to each source. The UUID v5 hashes
+/// the installation id together with the device id under a fixed Hypercolor
+/// namespace, so two installations that reuse a device id get different
+/// CIDs. The daemon supplies its persisted instance id, which keeps the CID
+/// stable across restarts; a host that persists none gets
+/// [`fallback_installation_id`], which is unique per process instead.
 #[must_use]
-pub fn derived_cid(installation_id: Option<&str>, device_id: &str) -> Uuid {
-    let name = match installation_id {
-        Some(installation_id) => format!("{installation_id}/{device_id}"),
-        None => device_id.to_owned(),
-    };
-    Uuid::new_v5(&CID_NAMESPACE, name.as_bytes())
+pub fn derived_cid(installation_id: &str, device_id: &str) -> Uuid {
+    Uuid::new_v5(
+        &CID_NAMESPACE,
+        format!("{installation_id}/{device_id}").as_bytes(),
+    )
 }
 
 /// Validate a whole config and resolve every device's plan.
@@ -624,7 +636,9 @@ fn resolve_e131_source(device: &PixelDeviceConfig) -> Result<E131Source, String>
     Ok(E131Source {
         priority,
         source_name,
-        cid: device.cid.unwrap_or_else(|| derived_cid(None, &device.id)),
+        cid: device
+            .cid
+            .unwrap_or_else(|| derived_cid(fallback_installation_id(), &device.id)),
         sync_universe: device.sync_universe,
     })
 }
