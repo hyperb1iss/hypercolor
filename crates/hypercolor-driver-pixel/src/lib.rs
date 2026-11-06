@@ -34,7 +34,7 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
     DriverPresentation, DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::identity::BackendId;
@@ -107,7 +107,10 @@ impl DeviceBackendFactory for PixelDriverModule {
         context: DriverContext,
         _config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
-        Ok(Arc::new(PixelBackend::new(context.installation_id)))
+        Ok(Arc::new(PixelBackend::new(
+            context.config,
+            context.installation_id,
+        )))
     }
 }
 
@@ -160,8 +163,23 @@ pub fn configured_devices(
         .collect())
 }
 
+/// Fingerprint of the device a config entry describes.
+///
+/// Identity comes from the user's config id, so a device keeps it when its
+/// receiver moves.
+#[must_use]
+pub fn device_fingerprint(config_id: &str) -> DeviceFingerprint {
+    DeviceFingerprint::mint(FingerprintNamespace::Net, DESCRIPTOR.id, config_id)
+}
+
+/// Device id of the device a config entry describes.
+#[must_use]
+pub fn device_id_for(config_id: &str) -> DeviceId {
+    device_fingerprint(config_id).stable_device_id()
+}
+
 fn discovered_device(effective: &PixelDeviceConfig, plan: &PixelDevicePlan) -> DiscoveredDevice {
-    let fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Net, DESCRIPTOR.id, &plan.id);
+    let fingerprint = device_fingerprint(&plan.id);
     let color_format = if plan.color_order.has_white() {
         DeviceColorFormat::Rgbw
     } else {

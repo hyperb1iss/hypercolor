@@ -5,6 +5,10 @@
 //! are built once. Every frame encodes colors into the stream, copies
 //! stream ranges into universe buffers or DDP spans, and unicasts the
 //! packets to the configured receiver.
+//!
+//! Only the live driver config decides where packets go: every adoption and
+//! every connect resolves the device from the config at that moment, and
+//! discovery metadata never names a receiver here.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -15,8 +19,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, InstallationId, OutputCadence,
+    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, DriverConfigView,
+    DriverError, InstallationId, OutputCadence,
 };
+use hypercolor_driver_support::ConfiguredDevices;
 use hypercolor_pixel_protocols::artnet::{
     ARTNET_PORT, ArtDmxPacket, ArtDmxSequenceTracker, PortAddress,
 };
@@ -28,10 +34,10 @@ use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info, warn};
 
 use crate::color::encode_pixels;
-use crate::config::{PixelDeviceConfig, PixelProtocol, is_unicast_target};
-use crate::plan::{DmxPlan, OutputPlan, PixelDevicePlan, derived_cid, resolve_device};
+use crate::config::{PixelConfig, PixelProtocol};
+use crate::plan::{DmxPlan, OutputPlan, PixelDevicePlan, derived_cid, resolve_config};
 
-/// Discovery metadata key carrying the device's effective config as JSON.
+/// Discovery metadata key describing the device's effective config as JSON.
 pub const METADATA_DEVICE_CONFIG: &str = "pixel_device";
 
 /// Longest silence before the last frame is resent.
@@ -53,10 +59,10 @@ const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Backend for manually configured sACN, Art-Net, and DDP receivers.
 pub struct PixelBackend {
+    /// The live config, the only authority on where packets may go.
+    devices: ConfiguredDevices<PixelDevicePlan>,
     /// Identity that scopes derived E1.31 CIDs to this installation.
     installation_id: InstallationId,
-    /// Plans for adopted devices, keyed by device id.
-    adopted: StdRwLock<HashMap<DeviceId, Arc<PixelDevicePlan>>>,
     /// Connected sessions.
     sessions: StdRwLock<HashMap<DeviceId, Arc<SessionSlot>>>,
     /// Shared IPv4 socket on an ephemeral port (E1.31 and DDP).
@@ -71,13 +77,14 @@ pub struct PixelBackend {
     artnet_fallback_warned: AtomicBool,
 }
 
-/// A connected session plus its closed flag.
+/// A connected session plus its plan and closed flag.
 ///
 /// The flag lives outside the mutex so frame sinks can answer `is_closed`
 /// without blocking, and disconnect sets it while holding the session lock
 /// so no write can slip in after the shutdown frames.
 struct SessionSlot {
     closed: AtomicBool,
+    plan: Arc<PixelDevicePlan>,
     session: Mutex<PixelSession>,
 }
 
@@ -85,6 +92,7 @@ impl SessionSlot {
     fn open(session: PixelSession) -> Arc<Self> {
         Arc::new(Self {
             closed: AtomicBool::new(false),
+            plan: Arc::clone(&session.plan),
             session: Mutex::new(session),
         })
     }
@@ -146,13 +154,27 @@ fn disconnected(device_id: DeviceId) -> DeviceError {
     }
 }
 
+/// Every configured device with its plan, for [`ConfiguredDevices`].
+fn configured_plans(
+    config: DriverConfigView<'_>,
+) -> Result<Vec<(DeviceId, PixelDevicePlan)>, DriverError> {
+    let config = config.parse_settings::<PixelConfig>()?;
+    let plans = resolve_config(&config).map_err(|error| DriverError::Configuration {
+        message: error.to_string(),
+    })?;
+    Ok(plans
+        .into_iter()
+        .map(|plan| (crate::device_id_for(&plan.id), plan))
+        .collect())
+}
+
 impl PixelBackend {
-    /// Create an empty backend for this installation.
+    /// Create a backend for this installation, authorized by `config`.
     #[must_use]
-    pub fn new(installation_id: InstallationId) -> Self {
+    pub fn new(config: Arc<dyn DriverConfigSource>, installation_id: InstallationId) -> Self {
         Self {
+            devices: ConfiguredDevices::new(crate::DESCRIPTOR.id, config, configured_plans),
             installation_id,
-            adopted: StdRwLock::default(),
             sessions: StdRwLock::default(),
             socket_v4: OnceCell::new(),
             socket_v6: OnceCell::new(),
@@ -167,16 +189,6 @@ impl PixelBackend {
         self.session(id)
             .and_then(|slot| slot.session.try_lock().ok().and_then(|s| s.socket.clone()))
             .and_then(|socket| socket.local_addr().ok())
-    }
-
-    /// Resolved plan for an adopted device.
-    #[must_use]
-    pub fn adopted_plan(&self, id: &DeviceId) -> Option<Arc<PixelDevicePlan>> {
-        self.adopted
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
     }
 
     fn session(&self, id: &DeviceId) -> Option<Arc<SessionSlot>> {
@@ -268,20 +280,7 @@ impl DeviceBackend for PixelBackend {
     }
 
     fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
-        let device_id = discovered.info.id;
-        let Some(raw) = discovered.metadata.get(METADATA_DEVICE_CONFIG) else {
-            return Err(DeviceError::NotAdopted { device_id });
-        };
-        let config: PixelDeviceConfig = serde_json::from_str(raw).map_err(|error| {
-            DeviceError::protocol(device_id, format!("invalid pixel device metadata: {error}"))
-        })?;
-        let plan = resolve_device(&config)
-            .map_err(|error| DeviceError::protocol(device_id, error.to_string()))?;
-        self.adopted
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(device_id, Arc::new(plan));
-        Ok(())
+        self.devices.current(&discovered.info.id).map(|_| ())
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
@@ -289,19 +288,14 @@ impl DeviceBackend for PixelBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let plan = self
-            .adopted_plan(id)
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        if !is_unicast_target(plan.target.ip()) {
-            return Err(DeviceError::connection(
-                id,
-                format!("{} is not a unicast address", plan.target.ip()),
-            ));
-        }
+        let device = self.devices.current(id)?;
+        let plan = Arc::clone(device.plan());
         let socket = self
             .socket_for(&plan)
             .await
             .map_err(|error| DeviceError::connection(id, error))?;
+        // A session only ever goes live under the config it resolved.
+        self.devices.confirm(id, &device)?;
 
         info!(
             device_id = %id,
@@ -392,13 +386,14 @@ impl DeviceBackend for PixelBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.adopted_plan(id)
-            .map(|plan| plan.max_fps)
+        self.session(id)
+            .map(|slot| slot.plan.max_fps)
             .filter(|fps| *fps > 0)
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.adopted_plan(id).map(|plan| {
+        self.session(id).map(|slot| {
+            let plan = &slot.plan;
             let identical_sends = if plan.protocol == PixelProtocol::E131 {
                 E131_IDENTICAL_SENDS
             } else {

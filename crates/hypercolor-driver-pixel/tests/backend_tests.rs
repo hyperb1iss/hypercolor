@@ -3,19 +3,22 @@
 //! Every test binds its receiver on 127.0.0.1 and configures the device to
 //! stream there. Nothing leaves the host: no LAN, multicast, or broadcast.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, InstallationId, OutputCadence,
+    DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, InstallationId, OutputCadence,
 };
+use hypercolor_driver_pixel::controls::{pixel_config_values, values_entry};
 use hypercolor_driver_pixel::{
     KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG, PixelBackend, PixelConfig, configured_devices,
     derived_cid,
 };
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde_json::json;
 use tokio::net::UdpSocket;
@@ -68,14 +71,80 @@ fn config_for(device: serde_json::Value) -> PixelConfig {
     serde_json::from_value(json!({ "devices": [device] })).expect("config fixture")
 }
 
+fn entry_for(config: &PixelConfig) -> DriverConfigEntry {
+    values_entry(&pixel_config_values(config)).expect("entry")
+}
+
+/// The first discovery result a scan of `config` produces.
+fn first_device(config: &PixelConfig) -> DiscoveredDevice {
+    configured_devices(config)
+        .expect("config should resolve")
+        .remove(0)
+}
+
+/// A live driver config the test edits while the backend runs, standing in
+/// for the daemon's config manager.
+#[derive(Default)]
+struct LiveConfig(StdMutex<DriverConfigEntry>);
+
+impl LiveConfig {
+    fn set(&self, config: &PixelConfig) {
+        *self.0.lock().expect("config lock") = entry_for(config);
+    }
+
+    fn clear(&self) {
+        self.set(&PixelConfig::default());
+    }
+
+    fn disable(&self) {
+        self.0.lock().expect("config lock").enabled = false;
+    }
+}
+
+impl DriverConfigSource for LiveConfig {
+    fn current(&self) -> DriverConfigEntry {
+        self.0.lock().expect("config lock").clone()
+    }
+}
+
+/// A backend authorized by a [`LiveConfig`] the test controls.
+struct Rig {
+    config: Arc<LiveConfig>,
+    backend: PixelBackend,
+}
+
+impl Rig {
+    fn new() -> Self {
+        Self::with_installation(installation())
+    }
+
+    fn with_installation(installation_id: InstallationId) -> Self {
+        let config = Arc::new(LiveConfig::default());
+        let backend = PixelBackend::new(
+            Arc::clone(&config) as Arc<dyn DriverConfigSource>,
+            installation_id,
+        );
+        Self { config, backend }
+    }
+
+    /// Configure `config`, then discover, adopt, and connect its first device.
+    async fn connected(&self, config: &PixelConfig) -> DiscoveredDevice {
+        self.config.set(config);
+        let device = first_device(config);
+        self.backend.adopt_device(&device).expect("adopt");
+        self.backend
+            .connect(&device.info.id)
+            .await
+            .expect("connect");
+        device
+    }
+}
+
 /// Discover, adopt, and connect the single device in `config`.
 async fn connect(config: &PixelConfig) -> (PixelBackend, DeviceId) {
-    let discovered = configured_devices(config).expect("config should resolve");
-    let device = discovered.into_iter().next().expect("one device");
-    let backend = PixelBackend::new(installation());
-    backend.adopt_device(&device).expect("adopt");
-    backend.connect(&device.info.id).await.expect("connect");
-    (backend, device.info.id)
+    let rig = Rig::new();
+    let id = rig.connected(config).await.info.id;
+    (rig.backend, id)
 }
 
 fn gradient(count: usize) -> Vec<[u8; 3]> {
@@ -266,14 +335,10 @@ async fn wire_cid(installation: InstallationId, pinned: Option<&str>) -> Vec<u8>
         "pixel_count": 1
     }));
     config.devices[0].cid = pinned.map(|cid| cid.parse().expect("valid UUID"));
-    let device = configured_devices(&config)
-        .expect("config should resolve")
-        .remove(0);
-    let backend = PixelBackend::new(installation);
-    backend.adopt_device(&device).expect("adopt");
-    backend.connect(&device.info.id).await.expect("connect");
-    backend
-        .write_colors(&device.info.id, &[[1, 2, 3]])
+    let rig = Rig::with_installation(installation);
+    let id = rig.connected(&config).await.info.id;
+    rig.backend
+        .write_colors(&id, &[[1, 2, 3]])
         .await
         .expect("write");
     recv(&receiver).await[22..38].to_vec()
@@ -550,25 +615,22 @@ async fn reconnect_to_a_moved_receiver_shuts_down_the_old_one() {
         "id": "moved", "host": "127.0.0.1", "port": old_addr.port(), "protocol": "e131",
         "pixel_count": 1
     }));
-    let (backend, id) = connect(&config).await;
+    let rig = Rig::new();
+    let retained = rig.connected(&config).await;
+    let id = retained.info.id;
+    let backend = &rig.backend;
     backend
         .write_colors(&id, &[[9, 9, 9]])
         .await
         .expect("write");
     recv(&old_receiver).await;
 
-    // The same device id, re-adopted with a new port, then reconnected.
-    let moved = config_for(json!({
+    // The entry moves; the retained record still names the old port.
+    rig.config.set(&config_for(json!({
         "id": "moved", "host": "127.0.0.1", "port": new_addr.port(), "protocol": "e131",
         "pixel_count": 1
-    }));
-    let device = configured_devices(&moved)
-        .expect("resolve")
-        .into_iter()
-        .next()
-        .expect("one device");
-    assert_eq!(device.info.id, id);
-    backend.adopt_device(&device).expect("re-adopt");
+    })));
+    backend.adopt_device(&retained).expect("still configured");
     backend.connect(&id).await.expect("reconnect");
 
     let shutdown = recv_n(&old_receiver, 1 + 3).await;
@@ -632,40 +694,200 @@ async fn cadence_follows_render_loop_with_keepalive() {
     assert_eq!(backend.target_fps(&id), Some(40));
 }
 
-#[tokio::test]
-async fn connect_requires_adoption() {
-    let backend = PixelBackend::new(installation());
-    let id = DeviceId::new();
-    assert!(matches!(
-        backend.connect(&id).await,
-        Err(DeviceError::NotAdopted { .. })
-    ));
+// ── Authorization by the live config ────────────────────────────────────
+
+fn assert_not_configured(error: &DeviceError) {
+    assert!(matches!(error, DeviceError::NotFound { .. }), "{error:?}");
 }
 
 #[tokio::test]
-async fn adopt_rejects_devices_without_pixel_metadata() {
-    let config = config_for(json!({
-        "id": "meta", "host": "127.0.0.1", "protocol": "ddp", "pixel_count": 1
-    }));
-    let mut device: DiscoveredDevice = configured_devices(&config)
-        .expect("resolve")
-        .into_iter()
-        .next()
-        .expect("one device");
-    device.metadata.remove(METADATA_DEVICE_CONFIG);
-    let backend = PixelBackend::new(installation());
-    assert!(matches!(
-        backend.adopt_device(&device),
-        Err(DeviceError::NotAdopted { .. })
-    ));
+async fn unconfigured_devices_cannot_connect() {
+    let rig = Rig::new();
+    assert_not_configured(
+        &rig.backend
+            .connect(&DeviceId::new())
+            .await
+            .expect_err("nothing configures this id"),
+    );
+}
 
-    device
-        .metadata
-        .insert(METADATA_DEVICE_CONFIG.to_owned(), "{\"id\":1}".to_owned());
-    assert!(matches!(
-        backend.adopt_device(&device),
-        Err(DeviceError::ProtocolError { .. })
-    ));
+#[tokio::test]
+async fn a_removed_device_cannot_be_reached_from_retained_metadata() {
+    let (receiver, addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "roof", "host": "127.0.0.1", "port": addr.port(), "protocol": "ddp",
+        "pixel_count": 1
+    }));
+    let rig = Rig::new();
+    let retained = rig.connected(&config).await;
+    let id = retained.info.id;
+    rig.backend
+        .write_colors(&id, &[[7, 7, 7]])
+        .await
+        .expect("write");
+    recv(&receiver).await;
+
+    // The user deletes the entry; the rescan disconnects the device, but the
+    // registry keeps its last discovery metadata.
+    rig.config.clear();
+    rig.backend.disconnect(&id).await.expect("departure");
+    recv(&receiver).await;
+
+    // Identify re-adopts the retained record and connects. Both steps must
+    // refuse, and not one packet may reach the old receiver.
+    assert_not_configured(
+        &rig.backend
+            .adopt_device(&retained)
+            .expect_err("adoption must check the live config"),
+    );
+    assert_not_configured(
+        &rig.backend
+            .connect(&id)
+            .await
+            .expect_err("connect must check the live config"),
+    );
+    assert!(rig.backend.frame_sink(&id).is_none());
+    assert_quiet(&receiver).await;
+}
+
+#[tokio::test]
+async fn an_adopted_device_removed_before_connect_is_refused() {
+    let (receiver, addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "roof", "host": "127.0.0.1", "port": addr.port(), "protocol": "ddp",
+        "pixel_count": 1
+    }));
+    let rig = Rig::new();
+    rig.config.set(&config);
+    let device = first_device(&config);
+    rig.backend.adopt_device(&device).expect("adopt");
+
+    rig.config.clear();
+    assert_not_configured(
+        &rig.backend
+            .connect(&device.info.id)
+            .await
+            .expect_err("entry is gone"),
+    );
+    assert_quiet(&receiver).await;
+}
+
+#[tokio::test]
+async fn a_disabled_driver_reaches_nothing() {
+    let config = config_for(json!({
+        "id": "roof", "host": "127.0.0.1", "protocol": "ddp", "pixel_count": 1
+    }));
+    let rig = Rig::new();
+    rig.config.set(&config);
+    rig.config.disable();
+    let device = first_device(&config);
+    assert_not_configured(
+        &rig.backend
+            .adopt_device(&device)
+            .expect_err("disabled driver"),
+    );
+    assert_not_configured(
+        &rig.backend
+            .connect(&device.info.id)
+            .await
+            .expect_err("disabled driver"),
+    );
+}
+
+#[tokio::test]
+async fn metadata_neither_authorizes_nor_redirects_a_send() {
+    let (configured, configured_addr) = loopback_receiver().await;
+    let (elsewhere, elsewhere_addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "roof", "host": "127.0.0.1", "port": configured_addr.port(), "protocol": "ddp",
+        "pixel_count": 1
+    }));
+    let rig = Rig::new();
+    rig.config.set(&config);
+
+    let mut device = first_device(&config);
+    device.metadata.insert(
+        METADATA_DEVICE_CONFIG.to_owned(),
+        json!({
+            "id": "roof", "host": "127.0.0.1", "port": elsewhere_addr.port(), "protocol": "ddp",
+            "pixel_count": 1
+        })
+        .to_string(),
+    );
+    rig.backend.adopt_device(&device).expect("configured");
+    rig.backend.connect(&device.info.id).await.expect("connect");
+    rig.backend
+        .write_colors(&device.info.id, &[[1, 2, 3]])
+        .await
+        .expect("write");
+    recv(&configured).await;
+    assert_quiet(&elsewhere).await;
+
+    device.metadata.clear();
+    rig.backend
+        .adopt_device(&device)
+        .expect("config alone authorizes adoption");
+
+    let unconfigured = first_device(&config_for(json!({
+        "id": "other", "host": "127.0.0.1", "port": elsewhere_addr.port(), "protocol": "ddp",
+        "pixel_count": 1
+    })));
+    assert_not_configured(
+        &rig.backend
+            .adopt_device(&unconfigured)
+            .expect_err("metadata alone authorizes nothing"),
+    );
+    assert_quiet(&elsewhere).await;
+}
+
+/// A config that moves on its own: each read takes the next entry, and the
+/// last entry stays.
+struct SteppingConfig(StdMutex<VecDeque<DriverConfigEntry>>);
+
+impl DriverConfigSource for SteppingConfig {
+    fn current(&self) -> DriverConfigEntry {
+        let mut entries = self.0.lock().expect("config lock");
+        if entries.len() > 1 {
+            entries.pop_front().expect("more than one entry")
+        } else {
+            entries.front().cloned().expect("one entry")
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_config_edit_during_connect_publishes_no_session() {
+    let (receiver, addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "roof", "host": "127.0.0.1", "port": addr.port(), "protocol": "ddp",
+        "pixel_count": 1
+    }));
+    let moved = config_for(json!({
+        "id": "roof", "host": "127.0.0.1", "port": addr.port(), "protocol": "ddp",
+        "pixel_count": 2
+    }));
+    let backend = PixelBackend::new(
+        Arc::new(SteppingConfig(StdMutex::new(VecDeque::from([
+            entry_for(&config),
+            entry_for(&moved),
+        ])))),
+        installation(),
+    );
+    let id = first_device(&config).info.id;
+
+    let error = backend.connect(&id).await.expect_err("the config moved");
+    assert!(
+        matches!(error, DeviceError::ConnectionFailed { .. }),
+        "{error:?}"
+    );
+    assert!(backend.frame_sink(&id).is_none());
+    assert_quiet(&receiver).await;
+
+    backend
+        .connect(&id)
+        .await
+        .expect("the retry sees one config");
+    assert!(backend.frame_sink(&id).is_some());
 }
 
 /// Records one frame, plus shutdown frames, of every packet type the
@@ -709,8 +931,9 @@ async fn wire_capture_fixture() {
         let (receiver, addr) = loopback_receiver().await;
         device["host"] = json!("127.0.0.1");
         device["port"] = json!(addr.port());
+        let pixels =
+            usize::try_from(device["pixel_count"].as_u64().expect("pixel count")).expect("fits");
         let (backend, id) = connect(&config_for(device)).await;
-        let pixels = backend.adopted_plan(&id).expect("adopted").total_pixels() as usize;
         backend
             .write_colors(&id, &gradient(pixels))
             .await

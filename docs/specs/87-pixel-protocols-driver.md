@@ -213,15 +213,12 @@ immediately and ignore the property values.
 - **CID:** section 5.6 requires a UUID per source and says equipment
   "should maintain the same CID for its entire lifetime". The daemon already
   persists an instance id (a UUID in its data directory, also used for its
-  mDNS identity) and exposes it to drivers as `DriverHost::installation_id`.
-  Discovery derives each device's CID as a UUID v5, under a fixed Hypercolor
-  namespace, of `<installation id>/<device id>`, and writes it into the
-  device's effective config. The CID is therefore stable across restarts,
-  and two installations that reuse a device id still get different CIDs. A
-  device may pin an explicit `cid`. A host that persists no installation id
-  gets a random UUID v4 generated once per process in its place, so its CIDs
-  stay unique and are stable for that process's lifetime; hashing the device
-  id alone would give every such host the same CID.
+  mDNS identity) and hands it to every backend it builds as
+  `DriverContext::installation_id`, which is required. A session derives its
+  CID as a UUID v5, under a fixed Hypercolor namespace, of
+  `<installation id>/<device id>`. The CID is therefore stable across
+  restarts, and two installations that reuse a device id still get different
+  CIDs. A device may pin an explicit `cid`.
 
 ---
 
@@ -570,7 +567,7 @@ start_universe = 4
 | `priority` | e131 | driver `priority` | 0-200 |
 | `source_name` | e131 | driver `source_name` | At most 63 bytes |
 | `sync_universe` | e131 | none | 1-63999 |
-| `cid` | e131 | UUID v5 of the installation id (or a per-process random id) and `id` | UUID string |
+| `cid` | e131 | UUID v5 of the installation id and `id` | UUID string |
 | `max_fps` | all | 0 | 0-1000, 0 follows the render loop |
 
 Fields that do not apply to the device's protocol are rejected rather than
@@ -644,13 +641,25 @@ backend. No pairing, no credentials, no runtime cache.
 | Metadata | `ip`, `port`, `protocol`, `universes`, and `pixel_device` |
 
 `pixel_device` is the device's effective config as JSON, with the
-driver-level E1.31 defaults already applied. The daemon adopts a device from
-its stored discovery metadata before every connect, so the backend resolves
-the plan from that JSON and needs no config of its own.
+driver-level E1.31 defaults already applied. The device surface reads it, but
+it only describes the device: the registry retains a removed device's last
+metadata, so the backend never treats metadata as permission (section 11.4).
 
 ### 11.4 Backend
 
-`PixelBackend` keeps adopted plans and connected sessions. A session holds
+`PixelBackend` keeps connected sessions and a required live view of the
+driver config (`DriverContext::config`). Adoption and every connect resolve
+the device through `ConfiguredDevices`: the driver must be enabled, its config
+valid, and an entry must derive this device id, or the backend refuses with
+`NotFound`, which the lifecycle does not retry. So identify on a removed
+device sends nothing, however much metadata the registry retained. A connect
+confirms the config did not move during socket setup before it publishes a
+session; a config that moved but still names the device fails with a
+retryable connection error. A live session is not re-checked per frame: a
+config edit reaches it through the reconciler, which rebuilds the backend and
+retires its devices.
+
+A session holds
 the plan, a reusable channel stream buffer, and per-universe packets whose
 fixed headers are built once at connect. E1.31 and DDP share one IPv4 and
 one IPv6 socket, bound lazily on the unspecified address with an ephemeral
@@ -702,9 +711,9 @@ million-universe device on the universe check before any run exists.
 Address tests reject IPv4-mapped multicast, broadcast, and unspecified forms
 plus 0.0.0.0/8 and IPv6 multicast, resolve `::ffff:10.0.0.5` to IPv4, catch
 its universe conflict with `10.0.0.5`, and reject IPv6 Art-Net hosts.
-`driver_tests.rs` runs discovery through a host with an installation id and
-checks that derived CIDs are stable per installation, differ across
-installations, and yield to an explicit `cid`.
+`backend_tests.rs` reads CIDs off the wire and checks that derived CIDs are
+stable per installation, differ across installations, and yield to an explicit
+`cid`.
 
 **Loopback integration** (`backend_tests.rs`). The real backend is adopted
 from discovery output and streams to a loopback receiver: multi-universe
@@ -715,7 +724,12 @@ lower slots, E1.31 on an ephemeral source port, DDP fragmentation with per-packe
 on the last packet, segment offsets, black padding, frame sink delivery, a
 retained sink rejected after disconnect with no transport start and no
 packet, and cadence (no cap plus 800 ms keep-alive, or a 25 ms interval at
-`max_fps = 40`, and three identical sends for E1.31 only).
+`max_fps = 40`, and three identical sends for E1.31 only). Authorization: a
+removed device refused from retained metadata with a silent receiver, a device
+removed between adoption and connect, a disabled driver, metadata that names
+another receiver, and a config that moves during connect.
+`crates/hypercolor-daemon/tests/manual_device_identify_tests.rs` drives the
+identify route itself against a removed device.
 
 **Art-Net source port** (`artnet_source_port_tests.rs`, one test at a time
 because each binds 6454). ArtDmx leaves from 6454 when the port is free; it
