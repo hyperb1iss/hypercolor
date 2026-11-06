@@ -44,6 +44,8 @@ const RAZER_CONSUMER_USAGE_PAGE: u16 = 0x000C;
 const RAZER_CONSUMER_USAGE: u16 = 0x0001;
 const RAZER_VENDOR_USAGE_PAGE: u16 = 0xFF53;
 const RAZER_VENDOR_USAGE: u16 = 0x0004;
+const RAZER_MOUSE_USAGE_PAGE: u16 = 0x0001;
+const RAZER_MOUSE_USAGE: u16 = 0x0002;
 const HID_REPORT_ID_DEFAULT: u8 = 0x00;
 const HID_REPORT_ID_ALT_0X07: u8 = 0x07;
 
@@ -70,6 +72,15 @@ pub const PID_KRAKEN_ULTIMATE: u16 = 0x0527;
 
 /// HID interface carrying the Kraken memory-access reports.
 const KRAKEN_HID_INTERFACE: u8 = 3;
+
+/// HID interface carrying the Blade and Book lighting feature report.
+///
+/// Interface 2 on these laptops is a live HID input interface bound by
+/// `usbhid` (class 3, mouse protocol, its own interrupt endpoint), next to
+/// the two keyboard interfaces 0 and 1. The 90-byte report rides its mouse
+/// collection, so it must be reached through the host HID stack and never
+/// claimed.
+const RAZER_LAPTOP_HID_INTERFACE: u8 = 2;
 
 /// Razer Blade 14 (2021).
 pub const PID_BLADE_14_2021: u16 = 0x0270;
@@ -993,28 +1004,26 @@ fn kraken_descriptor(
     }
 }
 
-fn control_descriptor(
+/// Blade and Book laptops send the shared 90-byte feature report to the
+/// mouse collection of interface 2 through the host HID stack, the same
+/// path the `BlackWidow` keyboards use, so `usbhid` stays bound and the
+/// keyboard and touchpad keep working.
+fn laptop_descriptor(
     product_id: u16,
     name: &'static str,
     protocol_id: &'static str,
     build: ProtocolFactory,
 ) -> DeviceDescriptor {
-    DeviceDescriptor {
-        vendor_id: RAZER_VENDOR_ID,
+    hidapi_descriptor(
         product_id,
         name,
-        family: DeviceFamily::new_static("razer", "Razer"),
-        transport: TransportType::UsbControl {
-            interface: 2,
-            report_id: HID_REPORT_ID_DEFAULT,
-        },
-        protocol: ProtocolBinding {
-            id: protocol_id,
-            build,
-        },
-        firmware_predicate: None,
-        serial_quirk: None,
-    }
+        protocol_id,
+        Some(RAZER_LAPTOP_HID_INTERFACE),
+        HID_REPORT_ID_DEFAULT,
+        Some(RAZER_MOUSE_USAGE_PAGE),
+        Some(RAZER_MOUSE_USAGE),
+        build,
+    )
 }
 
 #[expect(
@@ -1045,7 +1054,7 @@ fn push_hidapi_group(
     }));
 }
 
-fn push_control_group(
+fn push_laptop_group(
     descriptors: &mut Vec<DeviceDescriptor>,
     protocol_id: &'static str,
     build: ProtocolFactory,
@@ -1054,7 +1063,7 @@ fn push_control_group(
     descriptors.extend(
         devices
             .iter()
-            .map(|&(product_id, name)| control_descriptor(product_id, name, protocol_id, build)),
+            .map(|&(product_id, name)| laptop_descriptor(product_id, name, protocol_id, build)),
     );
 }
 
