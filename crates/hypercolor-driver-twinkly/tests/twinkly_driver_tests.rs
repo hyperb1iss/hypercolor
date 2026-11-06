@@ -203,6 +203,10 @@ fn device_surface_shows_diagnostics_and_layout_refresh() {
         ("rt_protocol".to_owned(), "v3".to_owned()),
         ("led_profile".to_owned(), "RGB".to_owned()),
         ("layout_source".to_owned(), "3d".to_owned()),
+        (
+            "control_state".to_owned(),
+            "yielded_to_another_app".to_owned(),
+        ),
     ]);
     let state = DeviceState::Known;
     let surface = twinkly_device_control_surface(&TrackedDeviceCtx {

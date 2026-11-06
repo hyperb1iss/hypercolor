@@ -1,7 +1,7 @@
 //! Twinkly output backend: login, real-time sessions, the frame sink, and
 //! session upkeep (Spec 92 §8 and §10.5).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
@@ -40,6 +40,35 @@ pub const RT_KEEPALIVE: Duration = Duration::from_secs(1);
 pub const TOKEN_REFRESH_MARGIN: Duration = Duration::from_mins(5);
 /// Consecutive upkeep failures before the session reports itself broken.
 pub const MAX_UPKEEP_FAILURES: u32 = 3;
+/// Longest a disconnect waits to put the device back in its prior mode.
+pub const RESTORE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Metadata key reporting whether Hypercolor holds the lights.
+pub const CONTROL_STATE_KEY: &str = "control_state";
+
+/// How the session reacts when another client keeps taking the device's
+/// single login (Spec 92 §5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentionPolicy {
+    /// Takeovers inside `window` that make the session step back.
+    pub max_takeovers: usize,
+    /// Window the takeovers are counted in.
+    pub window: Duration,
+    /// First pause before taking the lights back.
+    pub initial_backoff: Duration,
+    /// Longest pause; each repeat of the contention doubles it up to this.
+    pub max_backoff: Duration,
+}
+
+impl Default for ContentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_takeovers: 3,
+            window: Duration::from_mins(2),
+            initial_backoff: Duration::from_secs(30),
+            max_backoff: Duration::from_mins(10),
+        }
+    }
+}
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
@@ -49,6 +78,9 @@ struct SessionHandle {
     info: DeviceInfo,
     layout_source: LayoutSource,
     cadence: OutputCadence,
+    client: TwinklyClient,
+    /// Mode the device was in before connect, restored on disconnect.
+    previous_mode: Option<String>,
     shared: Arc<SessionShared>,
     upkeep: StdMutex<Option<JoinHandle<()>>>,
 }
@@ -72,7 +104,36 @@ impl SessionHandle {
             metadata_key::LAYOUT_SOURCE.to_owned(),
             self.layout_source.as_str().to_owned(),
         );
+        metadata.insert(
+            CONTROL_STATE_KEY.to_owned(),
+            if self.shared.yielded.load(Ordering::Acquire) {
+                "yielded_to_another_app"
+            } else {
+                "streaming"
+            }
+            .to_owned(),
+        );
         metadata
+    }
+
+    /// Put the device back in the mode it had before connect, bounded by
+    /// [`RESTORE_TIMEOUT`]. Skipped when another app holds the lights or the
+    /// session already failed.
+    async fn restore_previous_mode(&self, device_id: &DeviceId) {
+        let Some(mode) = self.previous_mode.as_deref() else {
+            return;
+        };
+        if self.shared.yielded.load(Ordering::Acquire) || self.shared.failure().is_some() {
+            return;
+        }
+        let token = self.shared.token();
+        match tokio::time::timeout(RESTORE_TIMEOUT, self.client.set_mode(&token, mode)).await {
+            Ok(Ok(())) => debug!(%device_id, mode, "Restored the Twinkly LED mode"),
+            Ok(Err(error)) => {
+                debug!(%device_id, mode, error = %error, "Twinkly LED mode not restored");
+            }
+            Err(_) => debug!(%device_id, mode, "Twinkly LED mode restore timed out"),
+        }
     }
 }
 
@@ -86,10 +147,21 @@ impl Drop for SessionHandle {
 struct SessionShared {
     stream: Mutex<StreamState>,
     closed: AtomicBool,
+    /// Another client keeps taking the login; frames are declined until
+    /// the upkeep takes the lights back.
+    yielded: AtomicBool,
+    token: StdMutex<AuthToken>,
     failure: StdMutex<Option<String>>,
 }
 
 impl SessionShared {
+    fn token(&self) -> AuthToken {
+        self.token
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn failure(&self) -> Option<String> {
         self.failure
             .lock()
@@ -115,6 +187,7 @@ pub struct TwinklyBackend {
     config: TwinklyConfig,
     request_timeout: Duration,
     upkeep_interval: Duration,
+    contention: ContentionPolicy,
     adopted: StdRwLock<HashMap<DeviceId, TwinklyEndpoint>>,
     sessions: StdRwLock<HashMap<DeviceId, Arc<SessionHandle>>>,
 }
@@ -126,6 +199,7 @@ impl TwinklyBackend {
             config,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             upkeep_interval: DEFAULT_UPKEEP_INTERVAL,
+            contention: ContentionPolicy::default(),
             adopted: StdRwLock::new(HashMap::new()),
             sessions: StdRwLock::new(HashMap::new()),
         }
@@ -142,6 +216,13 @@ impl TwinklyBackend {
     #[must_use]
     pub const fn with_upkeep_interval(mut self, interval: Duration) -> Self {
         self.upkeep_interval = interval;
+        self
+    }
+
+    /// Override how the session reacts to another client taking the login.
+    #[must_use]
+    pub const fn with_contention_policy(mut self, policy: ContentionPolicy) -> Self {
+        self.contention = policy;
         self
     }
 
@@ -177,6 +258,14 @@ impl TwinklyBackend {
         }
 
         let token = client.login().await?;
+        let previous_mode = match client.mode(&token).await {
+            Ok(reply) if reply.mode != RT_MODE => Some(reply.mode),
+            Ok(_) => None,
+            Err(error) => {
+                debug!(device_id = %id, error = %error, "Twinkly LED mode unreadable; nothing to restore");
+                None
+            }
+        };
         let layout = match client.layout(&token).await {
             Ok(layout) => Some(layout),
             Err(error) => {
@@ -212,20 +301,25 @@ impl TwinklyBackend {
                 last_size_mismatch_warn_at: None,
             }),
             closed: AtomicBool::new(false),
+            yielded: AtomicBool::new(false),
+            token: StdMutex::new(token.clone()),
             failure: StdMutex::new(None),
         });
         let upkeep = tokio::spawn(run_upkeep(
             *id,
-            client,
+            client.clone(),
             token,
             Arc::clone(&shared),
             self.upkeep_interval,
+            self.contention,
         ));
         Ok(SessionHandle {
             profile,
             info,
             layout_source,
             cadence,
+            client,
+            previous_mode,
             shared,
             upkeep: StdMutex::new(Some(upkeep)),
         })
@@ -236,7 +330,7 @@ impl TwinklyBackend {
         handle: &SessionHandle,
         colors: &[[u8; 3]],
         delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
         if handle.shared.closed.load(Ordering::Acquire) {
             return Err(DeviceError::Disconnected {
                 device: device_id.to_string(),
@@ -244,6 +338,10 @@ impl TwinklyBackend {
         }
         if let Some(reason) = handle.shared.failure() {
             return Err(DeviceError::write(device_id, reason));
+        }
+        if handle.shared.yielded.load(Ordering::Acquire) {
+            // Another app holds the login: frames would carry a dead token.
+            return Ok(DeviceWriteOutcome::Declined);
         }
 
         let mut guard = handle.shared.stream.lock().await;
@@ -284,7 +382,7 @@ impl TwinklyBackend {
                 DeviceError::write(device_id, format!("Twinkly datagram send failed: {error}"))
             })?;
         }
-        Ok(())
+        Ok(DeviceWriteOutcome::Sent)
     }
 }
 
@@ -303,42 +401,103 @@ async fn bind_rt_socket(peer: SocketAddr) -> Result<UdpSocket> {
     Ok(socket)
 }
 
+/// Takeover bookkeeping for [`ContentionPolicy`].
+struct Contention {
+    policy: ContentionPolicy,
+    takeovers: VecDeque<Instant>,
+    backoff: Duration,
+    resume_at: Option<Instant>,
+}
+
+impl Contention {
+    fn new(policy: ContentionPolicy) -> Self {
+        Self {
+            backoff: policy.initial_backoff,
+            policy,
+            takeovers: VecDeque::new(),
+            resume_at: None,
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self
+            .takeovers
+            .front()
+            .is_some_and(|at| now.saturating_duration_since(*at) > self.policy.window)
+        {
+            self.takeovers.pop_front();
+        }
+        if self.takeovers.is_empty() && self.resume_at.is_none() {
+            self.backoff = self.policy.initial_backoff;
+        }
+    }
+
+    /// Record losing the login. Returns the pause to take when the losses
+    /// add up to contention, else `None` to log in again now.
+    fn lost_login(&mut self, now: Instant) -> Option<Duration> {
+        self.prune(now);
+        self.takeovers.push_back(now);
+        if self.takeovers.len() < self.policy.max_takeovers.max(1) {
+            return None;
+        }
+        let pause = self.backoff;
+        self.backoff = (self.backoff * 2).min(self.policy.max_backoff);
+        self.resume_at = Some(now + pause);
+        Some(pause)
+    }
+}
+
 /// Keep a session streamable: refresh the token before it expires, log in
 /// again when the device rejects it (another client logged in), and put
 /// the device back in real-time mode when something switched it away.
+/// When another client keeps taking the login, step back for a growing
+/// pause instead of fighting over it (Spec 92 §5.4).
 async fn run_upkeep(
     device_id: DeviceId,
     client: TwinklyClient,
     mut token: AuthToken,
     shared: Arc<SessionShared>,
     interval: Duration,
+    policy: ContentionPolicy,
 ) {
     let mut obtained_at = Instant::now();
     let mut failures = 0_u32;
+    let mut contention = Contention::new(policy);
     loop {
         tokio::time::sleep(interval).await;
         if shared.closed.load(Ordering::Acquire) {
             return;
         }
-        let refresh_due = token.expires_in.is_some_and(|lifetime| {
-            obtained_at.elapsed() + TOKEN_REFRESH_MARGIN.min(lifetime / 2) >= lifetime
-        });
-        let outcome = if refresh_due {
-            debug!(%device_id, "Twinkly token near expiry; logging in again");
+        let now = Instant::now();
+        contention.prune(now);
+        let outcome = if let Some(resume_at) = contention.resume_at {
+            if now < resume_at {
+                continue;
+            }
+            info!(%device_id, "Taking the Twinkly lights back after another app's quiet period");
+            contention.resume_at = None;
+            contention.takeovers.push_back(now);
             relogin(&client, &shared).await
         } else {
-            check_mode(&client, &token).await.map(|()| None)
-        };
-        let outcome = match outcome {
-            Err(error)
-                if error
-                    .downcast_ref::<ApiError>()
-                    .is_some_and(ApiError::is_unauthorized) =>
-            {
-                info!(%device_id, "Twinkly token rejected, likely another login; logging in again");
+            let refresh_due = token.expires_in.is_some_and(|lifetime| {
+                obtained_at.elapsed() + TOKEN_REFRESH_MARGIN.min(lifetime / 2) >= lifetime
+            });
+            let outcome = if refresh_due {
+                debug!(%device_id, "Twinkly token near expiry; logging in again");
                 relogin(&client, &shared).await
+            } else {
+                check_mode(&client, &token).await.map(|()| None)
+            };
+            match outcome {
+                Err(error) if is_unauthorized(&error) => {
+                    if yield_if_contended(&device_id, &mut contention, &shared, now) {
+                        continue;
+                    }
+                    info!(%device_id, "Twinkly token rejected, likely another login; logging in again");
+                    relogin(&client, &shared).await
+                }
+                other => other,
             }
-            other => other,
         };
         match outcome {
             Ok(refreshed) => {
@@ -346,7 +505,12 @@ async fn run_upkeep(
                 if let Some(fresh) = refreshed {
                     token = fresh;
                     obtained_at = Instant::now();
+                    shared.yielded.store(false, Ordering::Release);
                 }
+            }
+            // Signed out again mid-login: contention, not a broken device.
+            Err(error) if is_unauthorized(&error) => {
+                yield_if_contended(&device_id, &mut contention, &shared, now);
             }
             Err(error) => {
                 failures += 1;
@@ -358,6 +522,32 @@ async fn run_upkeep(
             }
         }
     }
+}
+
+fn is_unauthorized(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ApiError>()
+        .is_some_and(ApiError::is_unauthorized)
+}
+
+/// Record a lost login and step back when losses add up to contention.
+/// Returns whether the session is now paused.
+fn yield_if_contended(
+    device_id: &DeviceId,
+    contention: &mut Contention,
+    shared: &SessionShared,
+    now: Instant,
+) -> bool {
+    let Some(pause) = contention.lost_login(now) else {
+        return false;
+    };
+    shared.yielded.store(true, Ordering::Release);
+    warn!(
+        %device_id,
+        pause_secs = pause.as_secs(),
+        "Another app keeps taking control of the Twinkly lights; Hypercolor is pausing instead of fighting for the login"
+    );
+    true
 }
 
 async fn check_mode(client: &TwinklyClient, token: &AuthToken) -> Result<()> {
@@ -372,6 +562,7 @@ async fn check_mode(client: &TwinklyClient, token: &AuthToken) -> Result<()> {
 async fn relogin(client: &TwinklyClient, shared: &SessionShared) -> Result<Option<AuthToken>> {
     let token = client.login().await?;
     shared.stream.lock().await.encoder.set_token(token.bytes);
+    token.clone_into(&mut shared.token.lock().unwrap_or_else(PoisonError::into_inner));
     client.set_mode(&token, RT_MODE).await?;
     Ok(Some(token))
 }
@@ -388,6 +579,15 @@ impl DeviceFrameSink for TwinklyFrameSink {
     }
 
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
+        TwinklyBackend::write_session(&self.device_id, &self.handle, colors.as_slice(), None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn write_colors_shared_outcome(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
         TwinklyBackend::write_session(&self.device_id, &self.handle, colors.as_slice(), None).await
     }
 
@@ -405,8 +605,7 @@ impl DeviceFrameSink for TwinklyFrameSink {
             colors.as_slice(),
             Some((id, observer.as_ref())),
         )
-        .await
-        .map(|()| DeviceWriteOutcome::Sent);
+        .await;
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
@@ -502,6 +701,7 @@ impl DeviceBackend for TwinklyBackend {
         match removed {
             Some(handle) => {
                 handle.shut_down();
+                handle.restore_previous_mode(id).await;
                 info!(device_id = %id, mac = %handle.profile.mac, "Disconnected from Twinkly device");
                 Ok(())
             }
@@ -513,7 +713,18 @@ impl DeviceBackend for TwinklyBackend {
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let handle = self.connected(id)?;
-        Self::write_session(id, &handle, colors, None).await
+        Self::write_session(id, &handle, colors, None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn write_colors_shared_outcome(
+        &self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        let handle = self.connected(id)?;
+        Self::write_session(id, &handle, colors.as_slice(), None).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {

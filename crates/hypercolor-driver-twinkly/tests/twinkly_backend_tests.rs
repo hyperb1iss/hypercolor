@@ -5,10 +5,12 @@ mod support;
 
 use std::time::Duration;
 
+use hypercolor_driver_api::DeviceWriteOutcome;
 use hypercolor_driver_api::{DeviceBackend, DiscoveredDevice};
 use hypercolor_driver_twinkly::config::TwinklyConfig;
 use hypercolor_driver_twinkly::{
-    TwinklyBackend, TwinklyEndpoint, TwinklyScanOptions, TwinklyScanner, discovered_device,
+    ContentionPolicy, TwinklyBackend, TwinklyEndpoint, TwinklyScanOptions, TwinklyScanner,
+    discovered_device,
 };
 use hypercolor_types::device::{DeviceError, DeviceTopologyHint};
 use hypercolor_types::spatial::LedTopology;
@@ -66,7 +68,7 @@ async fn connect_logs_in_reads_layout_and_enters_realtime() -> TestResult {
     let tail: Vec<(&str, &str)> = paths
         .iter()
         .rev()
-        .take(4)
+        .take(5)
         .rev()
         .map(|(method, path)| (method.as_str(), path.as_str()))
         .collect();
@@ -75,6 +77,7 @@ async fn connect_logs_in_reads_layout_and_enters_realtime() -> TestResult {
         [
             ("POST", "/xled/v1/login"),
             ("POST", "/xled/v1/verify"),
+            ("GET", "/xled/v1/led/mode"),
             ("GET", "/xled/v1/led/layout/full"),
             ("POST", "/xled/v1/led/mode"),
         ]
@@ -337,4 +340,126 @@ async fn unadopted_devices_cannot_connect() {
         backend().connect(&discovered_id).await,
         Err(DeviceError::NotAdopted { .. })
     ));
+}
+
+fn logins(fake: &FakeTwinkly) -> usize {
+    fake.requests()
+        .iter()
+        .filter(|request| request.path == "/xled/v1/login")
+        .count()
+}
+
+async fn control_state(
+    backend: &TwinklyBackend,
+    id: &hypercolor_types::device::DeviceId,
+) -> String {
+    backend
+        .connected_device_metadata(id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|metadata| metadata.get("control_state").cloned())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn repeated_takeovers_pause_instead_of_fighting_then_resume() -> TestResult {
+    let fake = std::sync::Arc::new(FakeTwinkly::spawn(FakeSpec::gen2_rgb(3)).await?);
+    let discovered = discover(fake.endpoint()).await?;
+    let device_id = discovered.info.id;
+    let backend = backend()
+        .with_upkeep_interval(Duration::from_millis(20))
+        .with_contention_policy(ContentionPolicy {
+            max_takeovers: 2,
+            window: Duration::from_secs(10),
+            initial_backoff: Duration::from_millis(400),
+            max_backoff: Duration::from_secs(2),
+        });
+    backend.adopt_device(&discovered)?;
+    backend.connect(&device_id).await?;
+    assert_eq!(control_state(&backend, &device_id).await, "streaming");
+
+    // A rival client keeps logging in, which signs Hypercolor out.
+    let rival_fake = std::sync::Arc::clone(&fake);
+    let rival = tokio::spawn(async move {
+        loop {
+            rival_fake.revoke_token();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let mut yielded = false;
+    for _ in 0..200 {
+        if control_state(&backend, &device_id).await == "yielded_to_another_app" {
+            yielded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    rival.abort();
+    assert!(yielded, "the session steps back after repeated takeovers");
+    let logins_while_paused = logins(&fake);
+    assert_eq!(
+        logins_while_paused, 2,
+        "one re-login, then no more fighting"
+    );
+    assert_eq!(
+        backend
+            .write_colors_shared_outcome(&device_id, std::sync::Arc::new(vec![[1, 2, 3]; 3]))
+            .await?,
+        DeviceWriteOutcome::Declined
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        logins(&fake),
+        logins_while_paused,
+        "no logins during the pause"
+    );
+
+    // The rival went quiet; after the pause the session takes the lights back.
+    let mut resumed = false;
+    for _ in 0..200 {
+        if control_state(&backend, &device_id).await == "streaming" {
+            resumed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(resumed, "the session resumes after a quiet period");
+    assert_eq!(logins(&fake), logins_while_paused + 1);
+    assert_eq!(fake.mode(), "rt");
+    assert_eq!(
+        backend
+            .write_colors_shared_outcome(&device_id, std::sync::Arc::new(vec![[1, 2, 3]; 3]))
+            .await?,
+        DeviceWriteOutcome::Sent
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn disconnect_restores_the_previous_mode() -> TestResult {
+    let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(3)).await?;
+    fake.set_mode("color");
+    let discovered = discover(fake.endpoint()).await?;
+    let backend = backend();
+    backend.adopt_device(&discovered)?;
+    backend.connect(&discovered.info.id).await?;
+    assert_eq!(fake.mode(), "rt");
+    backend.disconnect(&discovered.info.id).await?;
+    assert_eq!(fake.mode(), "color");
+    Ok(())
+}
+
+#[tokio::test]
+async fn disconnect_leaves_a_device_that_was_already_realtime() -> TestResult {
+    let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(3)).await?;
+    fake.set_mode("rt");
+    let discovered = discover(fake.endpoint()).await?;
+    let backend = backend();
+    backend.adopt_device(&discovered)?;
+    backend.connect(&discovered.info.id).await?;
+    let before = fake.requests().len();
+    backend.disconnect(&discovered.info.id).await?;
+    assert_eq!(fake.requests().len(), before, "nothing to restore");
+    Ok(())
 }
