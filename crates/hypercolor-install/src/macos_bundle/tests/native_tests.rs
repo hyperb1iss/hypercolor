@@ -9,6 +9,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::coordinator_tests::identity_of;
 use super::fakes::{Boundaries, SharedBoundaries, boundary, lock, survive};
@@ -260,15 +261,22 @@ impl MacosBundleService for DiskService {
         Ok(())
     }
 
-    fn start(&mut self) -> Result<(), InstallPlatformError> {
+    fn start(&mut self, cdhash: &str) -> Result<(), InstallPlatformError> {
         boundary(&self.boundaries, "start:before");
         let daemon = self.installed_daemon();
+        assert_eq!(daemon.cdhash, cdhash, "the installed bundle's daemon");
         lock(&self.state).running = Some(daemon);
         boundary(&self.boundaries, "start:after");
         Ok(())
     }
 
-    fn stop(&mut self, daemon: &MacosBundleRunningDaemon) -> Result<(), InstallPlatformError> {
+    fn stop(
+        &mut self,
+        daemon: Option<&MacosBundleRunningDaemon>,
+    ) -> Result<(), InstallPlatformError> {
+        let Some(daemon) = daemon else {
+            return Ok(());
+        };
         boundary(&self.boundaries, "stop:before");
         {
             let mut state = lock(&self.state);
@@ -287,6 +295,7 @@ impl MacosBundleService for DiskService {
         &mut self,
         daemon: &MacosBundleRunningDaemon,
         _version: &str,
+        _probation: Duration,
     ) -> Result<(), InstallPlatformError> {
         boundary(&self.boundaries, "prove");
         if lock(&self.state).failing_proof.as_deref() == Some(daemon.cdhash.as_str()) {

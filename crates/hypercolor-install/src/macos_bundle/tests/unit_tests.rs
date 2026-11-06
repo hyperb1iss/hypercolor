@@ -228,3 +228,32 @@ fn retaining_a_bundle_unit_rehashes_every_member() {
     fs::set_permissions(&plist, fs::Permissions::from_mode(0o444)).expect("relock member");
     assert!(crate::retain_macos_bundle_unit(&store, &lock, &id).is_err());
 }
+
+#[test]
+fn a_bundle_config_refuses_a_translocated_bundle_and_an_unbounded_window() {
+    let config = |installed_bundle: &str, probation| crate::macos_bundle::MacosBundleConfig {
+        installed_bundle: std::path::PathBuf::from(installed_bundle),
+        release_root: std::path::PathBuf::from("/Users/player/releases"),
+        probation,
+    };
+    config(
+        "/Applications/Hypercolor.app",
+        crate::DEFAULT_PROBATION_WINDOW,
+    )
+    .validate()
+    .expect("the installed bundle");
+    let translocated = config(
+        "/private/var/folders/ab/cdef/T/AppTranslocation/0F3A/d/Hypercolor.app",
+        crate::DEFAULT_PROBATION_WINDOW,
+    )
+    .validate()
+    .expect_err("a translocated bundle vanishes with the app");
+    assert!(translocated.to_string().contains("translocated"));
+    let unbounded = config(
+        "/Applications/Hypercolor.app",
+        crate::MAX_PROBATION_WINDOW + std::time::Duration::from_secs(1),
+    )
+    .validate()
+    .expect_err("an unbounded window");
+    assert!(unbounded.to_string().contains("probation"));
+}

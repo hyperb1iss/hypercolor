@@ -1,4 +1,5 @@
 use std::path::{Component, Path};
+use std::time::Duration;
 
 use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
 
@@ -178,6 +179,12 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> MacosBundleInstallPlatform<E
     /// The coordinator's coarse view: the layout and the agent follow the
     /// active pointer, as on every platform, while the exact checkpoints
     /// below judge which bundle sits where.
+    ///
+    /// Autostart reads as the agent's registration, which no transaction
+    /// changes. launchd's own gate is closed in the guard step before each
+    /// swap and opened by the start that follows it, or by the final proof
+    /// when nothing starts, so it moves inside journaled steps and never
+    /// changes a checkpoint.
     fn state_from(inspection: &Inspection) -> Result<PlatformState, InstallPlatformError> {
         let service = &inspection.service;
         let running_unit = match &service.running {
@@ -199,7 +206,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> MacosBundleInstallPlatform<E
                 .flatten(),
             loaded: service.running.is_some(),
             running_unit,
-            autostart_enabled: service.registered && service.enabled,
+            autostart_enabled: service.registered,
         })
     }
 
@@ -389,7 +396,9 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
                  before updating it",
             ));
         }
-        if target.launcher_unit.is_some() != prior.platform.launcher_unit.is_some() {
+        if target.launcher_unit.is_some() != prior.platform.launcher_unit.is_some()
+            || target.autostart_enabled != prior.platform.autostart_enabled
+        {
             return Err(error(
                 "registering or removing the daemon agent belongs to the installer, not to an \
                  update",
@@ -413,6 +422,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
             staging_name,
             candidate: BundleBinding::of(&candidate_unit),
             prior: prior_unit.as_ref().map(BundleBinding::of),
+            autostart: inspection.service.enabled,
             baseline,
         };
         Ok(PreparedPlatformTransaction {
@@ -537,6 +547,13 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
     ) -> Result<(), InstallPlatformError> {
         self.record(platform_record)?;
         Self::require_quiescent(unloaded)?;
+        // Both swaps follow this step, so an interrupted one never starts a
+        // half-finished change at the next login. launchd keeps the closed
+        // gate across a restart.
+        let service = self.service.observe()?;
+        if service.registered && service.enabled {
+            self.service.set_enabled(false)?;
+        }
         self.service.wait_for_release()?;
         self.last = None;
         Ok(())
@@ -613,31 +630,27 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
         expected: &PlatformState,
         platform_record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        // launchd reads an agent's definition when it bootstraps it; there
-        // is no separate reload to run.
+        // launchd reads an agent's definition when it bootstraps it, so
+        // there is no reload to run. Unloading here removes a crashed
+        // daemon's job, which launchd would otherwise restart on its own
+        // around the swap.
         self.record(platform_record)?;
         Self::require_quiescent(expected)?;
+        self.service.stop(None)?;
         self.last = None;
         Ok(())
     }
 
     fn restore_autostart(
         &mut self,
-        expected: &PlatformState,
-        platform_record: &PlatformTransactionRecord,
+        _expected: &PlatformState,
+        _platform_record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
-        self.record(platform_record)?;
-        Self::require_quiescent(expected)?;
-        let inspection = self.inspect_exact()?;
-        if inspection.service.registered {
-            self.service.set_enabled(expected.autostart_enabled)?;
-        } else if expected.autostart_enabled {
-            return Err(error(
-                "an unregistered macOS daemon agent cannot be enabled",
-            ));
-        }
-        self.last = None;
-        Ok(())
+        // Every plan keeps the agent's registration, which is all the
+        // coordinator sees of autostart, so no transaction step changes it.
+        Err(error(
+            "the macOS daemon agent's autostart does not change within a bundle transaction",
+        ))
     }
 
     fn restore_runtime(
@@ -656,7 +669,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
                             "the running macOS daemon belongs to neither side of this transaction",
                         ));
                     }
-                    self.service.stop(running)?;
+                    self.service.stop(Some(running))?;
                 }
             }
             Some(unit) => {
@@ -670,7 +683,12 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
                         "the macOS daemon can start only from its own installed bundle, alone",
                     ));
                 }
-                self.service.start()?;
+                // launchd refuses to load a disabled agent, and this start
+                // is the only thing that needs it open.
+                if !inspection.service.enabled {
+                    self.service.set_enabled(true)?;
+                }
+                self.service.start(&binding.identity.daemon)?;
             }
         }
         self.last = None;
@@ -688,11 +706,15 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
         let receipt = decode_receipt(candidate_owner_receipt)?;
         let inspection = self.inspect_exact()?;
         let Some(unit) = &expected.running_unit else {
-            return if inspection.service.running.is_none() {
-                Ok(())
-            } else {
-                Err(error("a macOS daemon runs where none is expected"))
-            };
+            if inspection.service.running.is_some() {
+                return Err(error("a macOS daemon runs where none is expected"));
+            }
+            // Nothing starts here, so nothing else reopens what this
+            // transaction closed.
+            if record.autostart && inspection.service.registered && !inspection.service.enabled {
+                self.service.set_enabled(true)?;
+            }
+            return Ok(());
         };
         let running = inspection
             .service
@@ -714,7 +736,12 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
             .binding(unit)
             .cloned()
             .ok_or_else(|| error("macOS proof target is outside this transaction"))?;
-        self.service.prove(&running, &binding.version)?;
+        let probation = if checkpoint == PlatformCheckpoint::CandidateRuntime {
+            self.config.probation
+        } else {
+            Duration::ZERO
+        };
+        self.service.prove(&running, &binding.version, probation)?;
         let after = self.inspect_exact()?;
         if after.service.running.as_ref() != Some(&running) {
             return Err(error("the macOS daemon changed during its proof"));
@@ -746,7 +773,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
                 "the running macOS daemon is not provably this transaction's",
             ));
         }
-        self.service.stop(running)?;
+        self.service.stop(Some(running))?;
         self.last = None;
         Ok(true)
     }
@@ -786,7 +813,6 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
             &inspection.bundles,
             &record.staging_name,
         ) && service.registered == prior.launcher_unit.is_some()
-            && (service.registered && service.enabled) == prior.autostart_enabled
             && (!restarted
                 || service.running.as_ref().is_some_and(|running| {
                     record

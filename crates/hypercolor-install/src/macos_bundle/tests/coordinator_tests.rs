@@ -2,12 +2,13 @@
 //! installation, including a crash at every effect boundary.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::fakes::{
     Boundaries, Crash, FakeExecutor, FakeService, SharedBoundaries, SharedWorld, World, lock,
     survive,
 };
-use super::fixture::{Fixture, UnitTree};
+use super::fixture::{Fixture, PROBATION, UnitTree};
 use crate::macos_bundle::{MacosBundleIdentity, MacosBundleInstallPlatform, MacosBundleSlot};
 use crate::{
     InstallCoordinator, InstallCoordinatorError, InstallDisposition, InstallOutcome,
@@ -192,6 +193,7 @@ impl Harness {
             Some(self.candidate.daemon.as_str())
         );
         assert!(world.enabled);
+        assert!(!world.idle);
     }
 
     fn assert_rolled_back(&self, outcome: &InstallOutcome) {
@@ -216,6 +218,7 @@ impl Harness {
         let running = world.running.as_ref().expect("the prior runs again");
         assert_eq!(running.cdhash, self.prior.daemon);
         assert_ne!(running.pid, 100, "a new run of the prior");
+        assert!(world.enabled, "the gate reopened with the prior");
     }
 }
 
@@ -287,11 +290,16 @@ fn clean_runs_take_exactly_the_journaled_steps_in_order() {
         [
             "stop:before",
             "stop:after",
+            // launchd may not load the agent across the swap.
+            "disable:before",
+            "disable:after",
             "materialize:before",
             "materialize:partial",
             "materialize:after",
             "exchange:before",
             "exchange:after",
+            "enable:before",
+            "enable:after",
             "start:before",
             "start:after",
             "prove",
@@ -309,22 +317,31 @@ fn clean_runs_take_exactly_the_journaled_steps_in_order() {
         [
             "stop:before",
             "stop:after",
+            "disable:before",
+            "disable:after",
             "materialize:before",
             "materialize:partial",
             "materialize:after",
             "exchange:before",
             "exchange:after",
+            "enable:before",
+            "enable:after",
             "start:before",
             "start:after",
             "prove",
-            // The candidate fails its proof: stop it, swap back and retire
-            // its copy in one rename, then restart the prior.
+            // The candidate fails its proof: stop it, swap back with the
+            // gate closed again and retire its copy in one rename, then
+            // reopen the gate and restart the prior.
             "stop:before",
             "stop:after",
+            "disable:before",
+            "disable:after",
             "exchange:before",
             "exchange:after",
             "retire:before",
             "retire:after",
+            "enable:before",
+            "enable:after",
             "start:before",
             "start:after",
             "prove",
@@ -395,21 +412,148 @@ fn successive_crashes_at_every_next_boundary_still_converge() {
 }
 
 #[test]
-fn an_autostarted_candidate_after_a_power_cut_is_stopped_and_the_swap_counts_as_done() {
+fn a_power_cut_between_the_swap_and_the_proof_starts_nothing_at_login() {
     let harness = Harness::new();
     let at = boundary_of("exchange:after");
     harness.crash_at(Some(at));
     assert!(harness.install(InstallTargetPolicy::Preserve).is_err());
-    lock(&harness.world).autostart();
+    {
+        let mut world = lock(&harness.world);
+        world.login();
+        assert!(world.running.is_none(), "the gate holds across a restart");
+        assert!(!world.enabled);
+    }
     harness.crash_at(None);
     let outcome = harness.finish(|| harness.recover().map(|result| result.expect("recover")));
     harness.assert_committed(&outcome);
     assert_eq!(harness.effects("exchange:after"), 1);
+    assert_eq!(harness.effects("stop:after"), 1, "only the prior ever ran");
+}
+
+#[test]
+fn a_power_cut_after_the_gate_reopened_stops_the_autostarted_candidate() {
+    let harness = Harness::new();
+    let at = boundary_of("enable:after");
+    harness.crash_at(Some(at));
+    assert!(harness.install(InstallTargetPolicy::Preserve).is_err());
+    lock(&harness.world).login();
+    harness.crash_at(None);
+    let outcome = harness.finish(|| harness.recover().map(|result| result.expect("recover")));
+    harness.assert_committed(&outcome);
+    assert_eq!(harness.effects("exchange:after"), 1);
+}
+
+#[test]
+fn a_power_cut_during_probation_rolls_back_the_candidate_that_comes_back() {
+    let harness = Harness::new();
+    let at = boundary_of("prove");
+    harness.crash_at(Some(at));
+    assert!(harness.install(InstallTargetPolicy::Preserve).is_err());
+    {
+        // The candidate started once and holds an open gate, so login runs
+        // it again under a fresh process.
+        let mut world = lock(&harness.world);
+        world.running = None;
+        world.login();
+    }
+    harness.crash_at(None);
+    let outcome = harness.finish(|| harness.recover().map(|result| result.expect("recover")));
+    harness.assert_rolled_back(&outcome);
+}
+
+#[test]
+fn an_installer_killed_during_probation_holds_the_same_candidate_a_whole_window_again() {
+    let harness = Harness::new();
+    let at = boundary_of("prove");
+    harness.crash_at(Some(at));
+    assert!(harness.install(InstallTargetPolicy::Preserve).is_err());
+    harness.crash_at(None);
+    let outcome = harness.finish(|| harness.recover().map(|result| result.expect("recover")));
+    harness.assert_committed(&outcome);
     assert_eq!(
-        harness.effects("stop:after"),
-        2,
-        "the prior, then the autostarted candidate"
+        harness.effects("start:after"),
+        1,
+        "the candidate kept running"
     );
+    assert_eq!(lock(&harness.world).probations, [PROBATION]);
+}
+
+#[test]
+fn only_a_candidate_is_held_through_probation() {
+    let harness = Harness::new();
+    let outcome = failing_run(&harness);
+    harness.assert_rolled_back(&outcome);
+    assert_eq!(
+        lock(&harness.world).probations,
+        [PROBATION, Duration::ZERO],
+        "the restored prior is proven once"
+    );
+}
+
+#[test]
+fn a_prior_whose_gate_was_closed_keeps_it_closed() {
+    let harness = Harness::new();
+    {
+        let mut world = lock(&harness.world);
+        world.enabled = false;
+        world.running = None;
+    }
+    let outcome = harness.finish(|| {
+        harness
+            .install(InstallTargetPolicy::Preserve)
+            .map(|result| Some(result.expect("install")))
+    });
+    assert_eq!(
+        outcome,
+        InstallOutcome::Committed {
+            active_unit: harness.fixture.candidate.id().clone()
+        }
+    );
+    let world = lock(&harness.world);
+    assert!(!world.enabled, "an installation that does not autostart");
+    assert!(world.running.is_none());
+    assert!(world.probations.is_empty(), "nothing ran to prove");
+}
+
+#[test]
+fn a_stopped_prior_gets_its_open_gate_back_at_every_crash_with_nothing_to_start() {
+    let run = |harness: &Harness| {
+        lock(&harness.world).running = None;
+        committed_run(harness)
+    };
+    let probe = Harness::new();
+    run(&probe);
+    let total = lock(&probe.boundaries).passed;
+    assert_eq!(probe.effects("disable:after"), 1, "held shut for the swap");
+    for crash in 0..=total {
+        let harness = Harness::new();
+        harness.crash_at((crash > 0).then_some(crash));
+        let outcome = run(&harness);
+        assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+        let world = lock(&harness.world);
+        assert!(world.enabled, "crash at {crash} must give the gate back");
+        assert!(world.running.is_none());
+        assert!(world.probations.is_empty(), "nothing ran to prove");
+    }
+}
+
+#[test]
+fn a_crashed_daemons_job_is_unloaded_before_the_swap_back() {
+    let harness = Harness::new();
+    lock(&harness.world).failing_proof = Some(harness.candidate.daemon.clone());
+    let at = boundary_of("prove");
+    harness.crash_at(Some(at));
+    assert!(harness.install(InstallTargetPolicy::Preserve).is_err());
+    {
+        // The candidate crashed: launchd keeps its job loaded and idle.
+        let mut world = lock(&harness.world);
+        world.running = None;
+        world.idle = true;
+    }
+    harness.crash_at(None);
+    let outcome = harness.finish(|| harness.recover().map(|result| result.expect("recover")));
+    harness.assert_rolled_back(&outcome);
+    assert!(!lock(&harness.world).idle, "the job was unloaded");
 }
 
 #[test]
@@ -418,7 +562,7 @@ fn a_prior_restarted_before_its_unload_was_journaled_abandons_with_no_effect() {
     let at = boundary_of("stop:after");
     harness.crash_at(Some(at));
     assert!(harness.install(InstallTargetPolicy::Preserve).is_err());
-    lock(&harness.world).autostart();
+    lock(&harness.world).login();
     harness.crash_at(None);
     let outcome = harness
         .recover()
@@ -441,6 +585,10 @@ fn a_prior_restarted_before_its_unload_was_journaled_abandons_with_no_effect() {
         MacosBundleSlot::Bundle(harness.prior.clone())
     );
     assert!(world.staged.is_empty() && world.interrupted.is_empty());
+    assert!(
+        world.enabled,
+        "an abandoned transaction never closed the gate"
+    );
 }
 
 #[test]
@@ -592,6 +740,13 @@ fn preparation_refuses_daemons_it_could_not_tell_apart_and_agent_registration() 
         .install(InstallTargetPolicy::EnabledAndRunning)
         .expect("no crash")
         .expect_err("registering the agent");
+    assert!(error.to_string().contains("installer"), "{error}");
+
+    let harness = Harness::new();
+    let error = harness
+        .install(InstallTargetPolicy::Disabled)
+        .expect("no crash")
+        .expect_err("disabling the agent");
     assert!(error.to_string().contains("installer"), "{error}");
 }
 

@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use crate::macos_bundle::{
     MACOS_BUNDLE_DISCARD_SUFFIX, MACOS_BUNDLE_PARTIAL_SUFFIX, MacosBundleExecutor,
@@ -65,9 +66,13 @@ pub(super) struct World {
     pub(super) registered: bool,
     pub(super) enabled: bool,
     pub(super) running: Option<MacosBundleRunningDaemon>,
+    /// launchd holds the agent loaded with no process.
+    pub(super) idle: bool,
     pub(super) next_pid: u32,
     /// Proofs of a daemon with this cdhash fail.
     pub(super) failing_proof: Option<String>,
+    /// Every probation window a proof asked for.
+    pub(super) probations: Vec<Duration>,
     pub(super) installed_daemon: PathBuf,
 }
 
@@ -86,17 +91,26 @@ impl World {
                 executable: installed_daemon.clone(),
                 cdhash: installed.daemon.clone(),
             }),
+            idle: false,
             next_pid: 101,
             failing_proof: None,
+            probations: Vec::new(),
             installed_daemon,
         }
     }
 
-    /// The service manager starts the installed bundle's daemon on its own,
-    /// as launchd does at login.
-    pub(super) fn autostart(&mut self) {
+    /// Log in: launchd loads the agent, and so starts the installed bundle's
+    /// daemon, unless its gate is closed.
+    pub(super) fn login(&mut self) {
+        if self.registered && self.enabled {
+            self.relaunch();
+        }
+    }
+
+    /// launchd starts the installed bundle's daemon under a fresh process.
+    pub(super) fn relaunch(&mut self) {
         let MacosBundleSlot::Bundle(identity) = &self.installed else {
-            panic!("nothing installed to autostart");
+            panic!("nothing installed to start");
         };
         self.running = Some(MacosBundleRunningDaemon {
             pid: self.next_pid,
@@ -104,6 +118,12 @@ impl World {
             cdhash: identity.daemon.clone(),
         });
         self.next_pid += 1;
+    }
+}
+
+impl MacosBundleSlot {
+    fn holds_daemon(&self, cdhash: &str) -> bool {
+        matches!(self, Self::Bundle(identity) if identity.daemon == cdhash)
     }
 }
 
@@ -275,27 +295,50 @@ impl MacosBundleService for FakeService {
     }
 
     fn set_enabled(&mut self, enabled: bool) -> Result<(), InstallPlatformError> {
-        boundary(&self.boundaries, "enable:before");
+        if lock(&self.world).enabled == enabled {
+            return Ok(());
+        }
+        let label = if enabled { "enable" } else { "disable" };
+        boundary(&self.boundaries, &format!("{label}:before"));
         lock(&self.world).enabled = enabled;
-        boundary(&self.boundaries, "enable:after");
+        boundary(&self.boundaries, &format!("{label}:after"));
         Ok(())
     }
 
-    fn start(&mut self) -> Result<(), InstallPlatformError> {
+    fn start(&mut self, cdhash: &str) -> Result<(), InstallPlatformError> {
         boundary(&self.boundaries, "start:before");
-        lock(&self.world).autostart();
+        {
+            let mut world = lock(&self.world);
+            if !world.enabled {
+                return Err(fail("launchd refuses to load a disabled agent"));
+            }
+            if !world.installed.holds_daemon(cdhash) {
+                return Err(fail("the installed bundle runs another daemon"));
+            }
+            world.relaunch();
+        }
         boundary(&self.boundaries, "start:after");
         Ok(())
     }
 
-    fn stop(&mut self, daemon: &MacosBundleRunningDaemon) -> Result<(), InstallPlatformError> {
+    fn stop(
+        &mut self,
+        daemon: Option<&MacosBundleRunningDaemon>,
+    ) -> Result<(), InstallPlatformError> {
+        {
+            let world = lock(&self.world);
+            if world.running.as_ref() != daemon {
+                return Err(fail("stop names another daemon"));
+            }
+            if daemon.is_none() && !world.idle {
+                return Ok(());
+            }
+        }
         boundary(&self.boundaries, "stop:before");
         {
             let mut world = lock(&self.world);
-            if world.running.as_ref() != Some(daemon) {
-                return Err(fail("stop names another daemon"));
-            }
             world.running = None;
+            world.idle = false;
         }
         boundary(&self.boundaries, "stop:after");
         Ok(())
@@ -309,9 +352,12 @@ impl MacosBundleService for FakeService {
         &mut self,
         daemon: &MacosBundleRunningDaemon,
         _version: &str,
+        probation: Duration,
     ) -> Result<(), InstallPlatformError> {
         boundary(&self.boundaries, "prove");
-        if lock(&self.world).failing_proof.as_deref() == Some(daemon.cdhash.as_str()) {
+        let mut world = lock(&self.world);
+        world.probations.push(probation);
+        if world.failing_proof.as_deref() == Some(daemon.cdhash.as_str()) {
             return Err(fail("the daemon never became ready"));
         }
         Ok(())

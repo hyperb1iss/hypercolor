@@ -89,6 +89,18 @@ pub fn write_secret(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
 }
 
+/// Whether `path` lies under macOS App Translocation: the private read-only
+/// mount Gatekeeper runs a quarantined app from when Finder did not move it.
+/// The mount, and so the path, is gone once the app exits, so nothing may
+/// ever record one.
+#[must_use]
+pub fn is_macos_translocated_path(path: &Path) -> bool {
+    (path.starts_with("/private/var/folders") || path.starts_with("/var/folders"))
+        && path
+            .components()
+            .any(|component| component.as_os_str() == "AppTranslocation")
+}
+
 /// Open an existing file for reading without following a final symlink.
 ///
 /// # Errors
