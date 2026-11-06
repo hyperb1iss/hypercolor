@@ -169,6 +169,36 @@ fn zero_maximum_frame_silence_disables_cached_payload_replay() {
 }
 
 #[test]
+fn output_cadence_defaults_to_one_identical_send() {
+    assert_eq!(OutputCadence::from_fps(60).min_identical_sends(), 1);
+    assert_eq!(OutputCadence::from_fps(0).min_identical_sends(), 1);
+    assert_eq!(
+        OutputCadence::from_min_interval(Duration::from_millis(25), 40).min_identical_sends(),
+        1
+    );
+    assert_eq!(OutputCadence::default().min_identical_sends(), 1);
+}
+
+#[test]
+fn output_cadence_min_identical_sends_opt_in_and_floor() {
+    let cadence = OutputCadence::from_fps(0)
+        .with_max_frame_silence(Duration::from_millis(800))
+        .with_min_identical_sends(3);
+    assert_eq!(cadence.min_identical_sends(), 3);
+    assert_eq!(
+        cadence.max_frame_silence(),
+        Some(Duration::from_millis(800))
+    );
+    assert_eq!(
+        OutputCadence::from_fps(60)
+            .with_min_identical_sends(0)
+            .min_identical_sends(),
+        1,
+        "zero is treated as the default of one"
+    );
+}
+
+#[test]
 fn driver_descriptor_constructor_sets_expected_flags() {
     let descriptor = DriverDescriptor::new(
         "fixture-network",

@@ -1511,6 +1511,9 @@ pub(super) struct OutputQueue {
     worker_phase: Arc<AtomicU8>,
     active_sequence: Arc<AtomicU64>,
     failure_fence: Arc<AsyncWriteFailureFence>,
+    /// Identical copies of the latest payload still owed before duplicate
+    /// suppression applies (see `OutputCadence::with_min_identical_sends`).
+    identical_sends_owed: u8,
 }
 
 impl OutputQueue {
@@ -1734,6 +1737,7 @@ impl OutputQueue {
             worker_phase,
             active_sequence,
             failure_fence,
+            identical_sends_owed: 0,
         }
     }
 
@@ -1793,8 +1797,15 @@ impl OutputQueue {
         self.metrics.record_accepted(id);
 
         if self.should_suppress_duplicate(&colors) {
-            self.metrics.record_accepted_duplicate(id);
-            return Some(colors);
+            if self.identical_sends_owed > 0 && self.latest_delivered() {
+                // A protocol-required redundant copy: send it like a new frame.
+                self.identical_sends_owed -= 1;
+            } else {
+                self.metrics.record_accepted_duplicate(id);
+                return Some(colors);
+            }
+        } else if !self.latest_matches(&colors) {
+            self.identical_sends_owed = self.cadence.min_identical_sends().saturating_sub(1);
         }
         self.metrics.record_received(id);
 
@@ -1844,6 +1855,25 @@ impl OutputQueue {
         });
 
         recycled
+    }
+
+    /// Whether the latest queued payload carries exactly `colors`.
+    fn latest_matches(&self, colors: &[[u8; 3]]) -> bool {
+        self.tx
+            .borrow()
+            .as_ref()
+            .is_some_and(|payload| payload.colors.as_slice() == colors)
+    }
+
+    /// Whether the latest queued payload was handled without a later error.
+    fn latest_delivered(&self) -> bool {
+        let current = self.tx.borrow();
+        let Some(payload) = current.as_ref() else {
+            return false;
+        };
+        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
+        let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
+        payload.id.sequence == last_handled_sequence && last_handled_sequence >= last_error_sequence
     }
 
     fn should_suppress_duplicate(&self, colors: &[[u8; 3]]) -> bool {
