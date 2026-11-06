@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::protocol::{HTTP_PORT, RT_PORT, TOKEN_LEN};
+use crate::protocol::{HTTP_PORT, MAX_LED_COUNT, RT_PORT, TOKEN_LEN};
 
 /// Application code every successful reply carries.
 pub const CODE_OK: i64 = 1000;
@@ -22,6 +22,11 @@ pub const AUTH_HEADER: &str = "X-Auth-Token";
 pub const CHALLENGE_LEN: usize = 32;
 /// Default timeout for one REST request.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// Largest reply body the client reads. The biggest legitimate reply is a
+/// layout: a few dozen bytes per coordinate for at most
+/// [`MAX_LED_COUNT`] LEDs, about 200 KiB. Anything larger is refused while
+/// it streams in, before it is buffered or parsed.
+pub const MAX_REPLY_BYTES: usize = 256 * 1024;
 
 /// Where one device's REST API and real-time listener live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,6 +89,8 @@ pub enum ApiError {
     Code { endpoint: String, code: i64 },
     #[error("Twinkly reply from {endpoint} is malformed: {message}")]
     Malformed { endpoint: String, message: String },
+    #[error("Twinkly reply from {endpoint} exceeds {limit} bytes")]
+    TooLarge { endpoint: String, limit: usize },
 }
 
 impl ApiError {
@@ -243,9 +250,13 @@ impl TwinklyClient {
     ///
     /// Returns an error if the HTTP client cannot be built.
     pub fn new(endpoint: TwinklyEndpoint, timeout: Duration) -> Result<Self, ApiError> {
+        // The API lives at one fixed address. Redirects are never followed:
+        // reqwest strips standard credentials across origins but would
+        // forward the custom X-Auth-Token header.
         let http = reqwest::Client::builder()
             .timeout(timeout)
             .connect_timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()
             .map_err(|source| ApiError::Transport {
@@ -342,7 +353,19 @@ impl TwinklyClient {
     ///
     /// Returns [`ApiError::Unauthorized`] when the token is no longer valid.
     pub async fn layout(&self, token: &AuthToken) -> Result<LayoutReply, ApiError> {
-        self.get("led/layout/full", Some(&token.text)).await
+        let url = self.url("led/layout/full");
+        let response = self
+            .http
+            .get(&url)
+            .header(AUTH_HEADER, &token.text)
+            .send()
+            .await
+            .map_err(|source| ApiError::Transport {
+                endpoint: url.clone(),
+                source,
+            })?;
+        let body = Self::read_body(&url, response).await?;
+        decode_layout_reply(&url, &body)
     }
 
     fn url(&self, path: &str) -> String {
@@ -388,24 +411,50 @@ impl TwinklyClient {
         url: String,
         response: reqwest::Response,
     ) -> Result<T, ApiError> {
+        let body = Self::read_body(&url, response).await?;
+        decode_reply(&url, &body)
+    }
+
+    /// Check the status and read the body, refusing anything over
+    /// [`MAX_REPLY_BYTES`] as it arrives.
+    async fn read_body(url: &str, mut response: reqwest::Response) -> Result<Vec<u8>, ApiError> {
         let status = response.status();
         if status == StatusCode::UNAUTHORIZED {
-            return Err(ApiError::Unauthorized { endpoint: url });
+            return Err(ApiError::Unauthorized {
+                endpoint: url.to_owned(),
+            });
         }
         if !status.is_success() {
             return Err(ApiError::Status {
-                endpoint: url,
+                endpoint: url.to_owned(),
                 status: status.as_u16(),
             });
         }
-        let body = response
-            .bytes()
+        let too_large = || ApiError::TooLarge {
+            endpoint: url.to_owned(),
+            limit: MAX_REPLY_BYTES,
+        };
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_REPLY_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
             .map_err(|source| ApiError::Transport {
-                endpoint: url.clone(),
+                endpoint: url.to_owned(),
                 source,
-            })?;
-        decode_reply(&url, &body)
+            })?
+        {
+            if body.len() + chunk.len() > MAX_REPLY_BYTES {
+                return Err(too_large());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
 }
 
@@ -421,6 +470,39 @@ pub fn decode_reply<T: DeserializeOwned>(endpoint: &str, body: &[u8]) -> Result<
             endpoint: endpoint.to_owned(),
             message: error.to_string(),
         })?;
+    decode_value(endpoint, value)
+}
+
+/// Decode a layout reply, refusing more coordinates than any device can
+/// have before the typed coordinate list is built.
+///
+/// # Errors
+///
+/// Returns [`ApiError::Malformed`] for bad JSON or an oversized
+/// coordinate list, and [`ApiError::Code`] for a non-1000 code.
+pub fn decode_layout_reply(endpoint: &str, body: &[u8]) -> Result<LayoutReply, ApiError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|error| ApiError::Malformed {
+            endpoint: endpoint.to_owned(),
+            message: error.to_string(),
+        })?;
+    let coordinates = value
+        .get("coordinates")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    if coordinates > MAX_LED_COUNT {
+        return Err(ApiError::Malformed {
+            endpoint: endpoint.to_owned(),
+            message: format!("layout lists {coordinates} coordinates, more than {MAX_LED_COUNT}"),
+        });
+    }
+    decode_value(endpoint, value)
+}
+
+fn decode_value<T: DeserializeOwned>(
+    endpoint: &str,
+    value: serde_json::Value,
+) -> Result<T, ApiError> {
     if let Some(code) = value.get("code").and_then(serde_json::Value::as_i64)
         && code != CODE_OK
     {
