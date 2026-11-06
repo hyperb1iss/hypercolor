@@ -107,6 +107,11 @@ module by default. Run `just udev-install` from the checkout to install both
 udev rules, including input capture, and retrigger connected devices. Re-plug
 USB devices or log out and back in for session access changes to take effect.
 
+Copies in `/etc/udev/rules.d/` do not update with Hypercolor, so install them
+again after every upgrade, then replug your USB devices. [Reinstall the rules
+after upgrading](@/hardware/usb-devices.md#reinstall-the-rules-after-upgrading)
+covers each install method and why newer rules grant less on purpose.
+
 ---
 
 ## Windows
