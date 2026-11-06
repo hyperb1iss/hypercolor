@@ -2,14 +2,14 @@
   "schemaVersion": 1,
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
-    "vendors": 32,
-    "devices": 420,
+    "vendors": 33,
+    "devices": 427,
     "byStatus": {
-      "supported": 184,
+      "supported": 189,
       "in_progress": 1,
       "planned": 0,
       "researched": 95,
-      "known": 138,
+      "known": 140,
       "blocked": 2
     },
     "drivers": [
@@ -24,6 +24,7 @@
       "push2",
       "qmk",
       "razer",
+      "twinkly",
       "wled"
     ]
   },
@@ -6453,6 +6454,129 @@
         "other"
       ],
       "sourceFile": "data/drivers/vendors/thermaltake.toml"
+    },
+    {
+      "slug": "twinkly",
+      "name": "Twinkly",
+      "website": "https://twinkly.com",
+      "vids": [],
+      "vidsHex": [],
+      "notes": "Driven over the local REST API (login and verify handshake, gestalt, LED layout) and the real-time UDP frame protocol on port 7777, in datagram version 1, 2, or 3 by firmware. Discovered by the UDP discovery datagram on port 5555 or configured IPs; no account or pairing. Every LED is addressable, and the layout mapped in the Twinkly app becomes spatial positions. Experimental: tested against an in-repo fake device, not yet verified on real Twinkly hardware.",
+      "devices": [
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Twinkly Curtain and Wall",
+          "type": "other",
+          "status": "supported",
+          "driver": "twinkly",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Parallel-string curtains such as the 210-LED RGBW Special Edition. The 2D layout from the Twinkly app sets each LED's position. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Twinkly Flex and Line",
+          "type": "strip",
+          "status": "supported",
+          "driver": "twinkly",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Flexible tubes and light lines, streamed per LED in wiring order or along the mapped layout. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Twinkly Matrix and Tree",
+          "type": "other",
+          "status": "supported",
+          "driver": "twinkly",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Matrix lights and pre-lit trees; 3D tree layouts are viewed from the front. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Twinkly Squares",
+          "type": "other",
+          "status": "supported",
+          "driver": "twinkly",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "8x8 RGB panels, up to 16 per chain. Map the panels in the Twinkly app first so the layout carries their arrangement. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Twinkly Strings",
+          "type": "strip",
+          "status": "supported",
+          "driver": "twinkly",
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Generation I and II strings, RGB and RGBW, including Festoon, Cluster, and Icicle. LED count, profile, and firmware are read from the device. Experimental, unverified on hardware."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Twinkly Gold Edition (AWW)",
+          "type": "strip",
+          "status": "known",
+          "driver": null,
+          "transport": "network_udp",
+          "leds": null,
+          "notes": "Amber, warm, and cold white LEDs (AWW profile). The per-LED byte order is undocumented, so these are skipped until it is."
+        },
+        {
+          "pid": null,
+          "pidHex": null,
+          "vid": null,
+          "vidHex": null,
+          "name": "Twinkly Pro controllers",
+          "type": "argb_controller",
+          "status": "known",
+          "driver": null,
+          "transport": "network_http",
+          "leds": null,
+          "notes": "Pro controllers speak a separate /xled/v2 API that the driver does not implement yet."
+        }
+      ],
+      "counts": {
+        "supported": 5,
+        "in_progress": 0,
+        "planned": 0,
+        "researched": 0,
+        "known": 2,
+        "blocked": 0
+      },
+      "totalDevices": 7,
+      "drivers": [
+        "twinkly"
+      ],
+      "transports": [
+        "network_http",
+        "network_udp"
+      ],
+      "deviceTypes": [
+        "argb_controller",
+        "other",
+        "strip"
+      ],
+      "sourceFile": "data/drivers/vendors/twinkly.toml"
     },
     {
       "slug": "wled",
