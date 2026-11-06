@@ -184,6 +184,7 @@ hypercolor-driver-openrgb = { path = "crates/hypercolor-driver-openrgb", version
 hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled", version = "0.9.0" }
 hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee", version = "0.9.0" }
 hypercolor-driver-twinkly = { path = "crates/hypercolor-driver-twinkly", version = "0.9.0" }
+hypercolor-driver-wiz = { path = "crates/hypercolor-driver-wiz", version = "0.9.0" }
 hypercolor-network = { path = "crates/hypercolor-network", version = "0.9.0" }
 hypercolor-openrgb-sdk = { path = "crates/hypercolor-openrgb-sdk", version = "0.9.0" }
 hypercolor-openrgb-host = { path = "crates/hypercolor-openrgb-host", version = "0.9.0" }
