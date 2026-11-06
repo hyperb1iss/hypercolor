@@ -40,10 +40,11 @@ one request shape: "read or write N bytes at address A".
 It selects transaction ID `0x60` for the newer Kraken V4 family, which does
 speak the 90-byte report. Nothing in this spec applies to it.
 
-This driver currently registers the Kraken Ultimate only, prompted by
-GitHub issue #362. The protocol encoder is keyed by a `KrakenModel` enum so
-that the sibling headsets on the same address map become new variants plus
-descriptors, not new modules.
+This driver first registered the Kraken Ultimate, prompted by GitHub issue
+#362. The protocol encoder is keyed by a `KrakenModel` enum so sibling
+headsets become new variants plus descriptors, not new modules. Since
+2026-11-05 the Kraken 7.1 V2, Tournament Edition, Kitty V2, and 7.1 Chroma
+register the same way. None of them has been run on hardware.
 
 The implementation is a clean-room port built from the protocol knowledge
 documented in OpenRazer's `razerkraken_driver` kernel module and OpenRGB's
@@ -60,16 +61,17 @@ what a capture should confirm.
 |---|---|---|---|
 | Kraken 7.1 (Classic) | `0x0501` | Rainie (on/off only) | Not registered |
 | Kraken 7.1 (Classic alt) | `0x0506` | Rainie (on/off only) | Not registered |
-| Kraken 7.1 Chroma | `0x0504` | Rainie | Not registered |
-| Kraken 7.1 V2 | `0x0510` | Kylie | Not registered |
-| Kraken Tournament Edition | `0x0520` | Kylie | Not registered |
+| Kraken 7.1 Chroma | `0x0504` | Rainie | Registered, unverified (`KrakenModel::Chroma`) |
+| Kraken 7.1 V2 | `0x0510` | Kylie | Registered, unverified (`KrakenModel::V2`) |
+| Kraken Tournament Edition | `0x0520` | Kylie | Registered, unverified (`KrakenModel::TournamentEdition`) |
 | **Kraken Ultimate** | **`0x0527`** | **Kylie** | **Registered** |
-| Kraken Kitty V2 (Black Edition V2) | `0x0560` | Kylie | Not registered |
+| Kraken Kitty V2 (Black Edition V2) | `0x0560` | Kylie | Registered, unverified (`KrakenModel::KittyV2`) |
 
 "Rainie" and "Kylie" are OpenRazer's codenames for the Kraken 7.1 Chroma and
 Kraken V2 register layouts. Every Kylie device shares the Ultimate's
-addresses, so registering one is a `KrakenModel` variant and a descriptor
-once someone can test it.
+addresses. The Rainie map shares the custom-color registers at `0x1189` and
+moves the LED effect byte to `0x1008`; OpenRazer and OpenRGB agree on both.
+The Classic models stay unregistered because their LED is on/off only.
 
 There is no firmware split on the Ultimate PID, so the descriptor carries no
 firmware predicate.
@@ -96,7 +98,7 @@ firmware predicate.
 | `0x1745` | 8 | Two-color breathing: two R, G, B, intensity slots |
 | `0x174D` | 12 | Three-color breathing: three R, G, B, intensity slots |
 
-### Rainie RAM registers (reference only)
+### Rainie RAM registers (Kraken 7.1 Chroma)
 
 | Address | Size | Register |
 |---|---|---|
@@ -237,7 +239,9 @@ TransportType::UsbHidApi {
 }
 ```
 
-Protocol ID `razer/kraken-ultimate`, driver ID `razer`, family
+Protocol IDs `razer/kraken-ultimate`, `razer/kraken-v2`,
+`razer/kraken-tournament-edition`, `razer/kraken-kitty-v2`, and
+`razer/kraken-7-1-chroma`, all on this transport; driver ID `razer`, family
 `DeviceFamily::new_static("razer", "Razer")`. The descriptor helper is
 `kraken_descriptor` in `drivers/razer/devices/mod.rs`, and the registration
 sits next to the Seiren V3 Chroma in `devices/peripherals.rs`. Like the rest
@@ -284,7 +288,7 @@ field.
 | File | Contents |
 |---|---|
 | `drivers/razer/kraken.rs` | `KrakenRequest`, `KrakenResponse`, `KrakenModel`, `KrakenProtocol` |
-| `drivers/razer/devices/mod.rs` | `PID_KRAKEN_ULTIMATE`, `build_kraken_ultimate_protocol`, `kraken_descriptor` |
+| `drivers/razer/devices/mod.rs` | `PID_KRAKEN_ULTIMATE`, the per-model `build_kraken_*_protocol` builders, `kraken_descriptor` |
 | `drivers/razer/devices/peripherals.rs` | Descriptor registration |
 | `data/drivers/vendors/razer.toml` | Compatibility matrix entry |
 

@@ -53,6 +53,10 @@ const CUSTOM_COLOR_ADDRESS: u16 = 0x1189;
 /// RAM address of the LED effect bitfield on the Kraken V2 ("Kylie") map.
 const KYLIE_LED_MODE_ADDRESS: u16 = 0x172D;
 
+/// RAM address of the LED effect bitfield on the Kraken 7.1 Chroma
+/// ("Rainie") map.
+const RAINIE_LED_MODE_ADDRESS: u16 = 0x1008;
+
 /// EEPROM address of the two-byte BCD firmware version.
 const FIRMWARE_VERSION_ADDRESS: u16 = 0x0030;
 
@@ -135,18 +139,30 @@ struct KrakenResponse {
 
 /// Kraken models driven by this protocol.
 ///
-/// Every model shares the request format; they differ in where the LED mode
-/// register lives.
+/// Every model shares the request format and the custom-color registers;
+/// they differ in where the LED mode register lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KrakenModel {
     /// Razer Kraken Ultimate (`1532:0527`), Kraken V2 address map.
     Ultimate,
+    /// Razer Kraken 7.1 V2 (`1532:0510`), Kraken V2 address map.
+    V2,
+    /// Razer Kraken Tournament Edition (`1532:0520`), Kraken V2 address map.
+    TournamentEdition,
+    /// Razer Kraken Kitty V2, sold as the Kitty Black Edition V2
+    /// (`1532:0560`), Kraken V2 address map.
+    KittyV2,
+    /// Razer Kraken 7.1 Chroma (`1532:0504`), Kraken 7.1 Chroma address map.
+    Chroma,
 }
 
 impl KrakenModel {
     const fn led_mode_address(self) -> u16 {
         match self {
-            Self::Ultimate => KYLIE_LED_MODE_ADDRESS,
+            Self::Ultimate | Self::V2 | Self::TournamentEdition | Self::KittyV2 => {
+                KYLIE_LED_MODE_ADDRESS
+            }
+            Self::Chroma => RAINIE_LED_MODE_ADDRESS,
         }
     }
 }
