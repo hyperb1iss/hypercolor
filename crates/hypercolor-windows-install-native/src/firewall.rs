@@ -75,7 +75,8 @@ impl Drop for ComThread {
     fn drop(&mut self) {
         if self.release {
             // SAFETY: This balances the successful `CoInitializeEx` of
-            // `join` on the same thread; `ComThread` is not `Send`.
+            // `join`. The guard never leaves the call that made it, so it
+            // drops on the thread that joined.
             unsafe { CoUninitialize() };
         }
     }
