@@ -7,7 +7,9 @@ use hypercolor_types::device::{
 use hypercolor_ui::api::{
     DriverConfigResponse, DriverListResponse, DriverSummary, driver_config_url,
 };
-use hypercolor_ui::driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
+use hypercolor_ui::driver_settings::{
+    DiscoveryDriverSetting, EXPERIMENTAL_DRIVER_HINT, discovery_driver_settings,
+};
 
 fn driver(
     id: &str,
@@ -112,6 +114,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.leaf.enabled".to_string(),
                 transport_labels: vec!["Network".to_string()],
                 supports_pairing: true,
+                hint: None,
                 enabled: true,
             },
             DiscoveryDriverSetting {
@@ -120,6 +123,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.bridge.enabled".to_string(),
                 transport_labels: vec!["Bridge".to_string()],
                 supports_pairing: false,
+                hint: None,
                 enabled: true,
             },
             DiscoveryDriverSetting {
@@ -128,6 +132,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.external.enabled".to_string(),
                 transport_labels: vec!["Open Link Hub".to_string()],
                 supports_pairing: false,
+                hint: None,
                 enabled: true,
             },
             DiscoveryDriverSetting {
@@ -139,10 +144,53 @@ fn discovery_settings_follow_driver_descriptors() {
                     "SMBus (not available on macOS)".to_string(),
                 ],
                 supports_pairing: false,
+                hint: None,
                 enabled: true,
             }
         ]
     );
+}
+
+#[test]
+fn experimental_drivers_get_one_quiet_hint_and_an_ordinary_toggle() {
+    let network = vec![DriverTransportDescriptor::available(
+        DriverTransportKind::Network,
+    )];
+    let mut untested = driver("untested", "Untested Lights", true, false, network.clone());
+    untested.descriptor.stability = DriverStability::Experimental;
+    let proven = driver("proven", "Proven Lights", true, false, network);
+
+    let settings = discovery_driver_settings(&[untested, proven]);
+
+    assert_eq!(settings.len(), 2);
+    assert_eq!(settings[0].id, "untested");
+    assert_eq!(settings[0].key, "drivers.untested.enabled");
+    assert!(settings[0].enabled, "experimental drivers default on");
+    assert_eq!(settings[0].hint, Some(EXPERIMENTAL_DRIVER_HINT));
+    assert_eq!(settings[1].id, "proven");
+    assert_eq!(settings[1].hint, None);
+}
+
+#[test]
+fn experimental_protocols_add_no_settings_rows() {
+    let usb = vec![DriverTransportDescriptor::available(
+        DriverTransportKind::Usb,
+    )];
+    let mut family = driver("family", "Family", false, false, usb);
+    family.protocols = vec![
+        serde_json::from_value(serde_json::json!({
+            "driver_id": "family",
+            "protocol_id": "family/untested",
+            "display_name": "Untested",
+            "family_id": "family",
+            "transport": "usb",
+            "route_backend_id": "usb",
+            "stability": "experimental"
+        }))
+        .expect("protocol descriptor"),
+    ];
+
+    assert!(discovery_driver_settings(&[family]).is_empty());
 }
 
 #[test]
