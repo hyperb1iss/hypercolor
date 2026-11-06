@@ -219,6 +219,58 @@ fn names_that_win32_reads_differently_are_refused() {
 }
 
 #[test]
+fn appending_creates_once_then_only_adds_to_the_end() {
+    let (_guard, root) = scratch();
+    let directory = open_write(&root);
+    let mut first = directory
+        .open_append_file(OsStr::new("broker.log"))
+        .expect("create for append");
+    first.write_all(b"one\n").expect("first write");
+    drop(first);
+    let mut second = directory
+        .open_append_file(OsStr::new("broker.log"))
+        .expect("reopen for append");
+    second.write_all(b"two\n").expect("second write");
+    drop(second);
+    assert_eq!(
+        fs::read(root.join("broker.log")).expect("log"),
+        b"one\ntwo\n"
+    );
+
+    directory
+        .create_child_directory(OsStr::new("folder"))
+        .expect("folder");
+    assert!(
+        directory.open_append_file(OsStr::new("folder")).is_err(),
+        "a directory is never opened as a log"
+    );
+    fs::hard_link(root.join("broker.log"), root.join("second-name.log")).expect("hard link");
+    assert!(
+        directory
+            .open_append_file(OsStr::new("broker.log"))
+            .is_err(),
+        "a file with a second name is refused"
+    );
+    assert!(
+        WindowsDirectory::open(&root, WindowsDirectoryAccess::Read)
+            .expect("read-only")
+            .open_append_file(OsStr::new("other.log"))
+            .is_err(),
+        "a read-only authority cannot append"
+    );
+    assert!(!root.join("other.log").exists());
+
+    let target = root.join("target.log");
+    fs::write(&target, b"target").expect("target");
+    if let Err(error) = std::os::windows::fs::symlink_file(&target, root.join("link.log")) {
+        eprintln!("skipping the link refusal: {error}");
+        return;
+    }
+    assert!(directory.open_append_file(OsStr::new("link.log")).is_err());
+    assert_eq!(fs::read(&target).expect("target"), b"target");
+}
+
+#[test]
 fn reparse_points_are_refused_at_the_path_and_inside() {
     let (_guard, root) = scratch();
     let target = root.join("target");

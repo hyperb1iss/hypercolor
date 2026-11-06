@@ -715,6 +715,36 @@ impl WindowsDirectory {
         Ok(File::from(handle))
     }
 
+    /// Open a regular child file for appending, creating it when it is
+    /// missing. The handle can only add bytes at the end. A child that is a
+    /// reparse point, a directory, or a file with a second name (a hard link
+    /// to something elsewhere) is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, a refused child, a read-only
+    /// authority, or an open failure.
+    pub fn open_append_file(&self, name: &OsStr) -> io::Result<File> {
+        self.require_write()?;
+        let handle = self.nt_open(
+            name,
+            FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_OPEN_IF,
+            FILE_NON_DIRECTORY_FILE,
+        )?;
+        let metadata = metadata(&handle)?;
+        if metadata.kind != WindowsEntryKind::File {
+            return Err(reparse_refused());
+        }
+        if metadata.links != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to append to a file with more than one name",
+            ));
+        }
+        Ok(File::from(handle))
+    }
+
     /// Open or create a regular child file and lock it exclusively without
     /// waiting. Returns `None` when another handle holds the lock.
     ///
