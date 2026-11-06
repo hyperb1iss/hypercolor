@@ -1,4 +1,4 @@
-//! Corsair peripheral device descriptors.
+//! Corsair Bragi peripheral descriptors.
 
 use hypercolor_types::device::DeviceFamily;
 
@@ -6,8 +6,8 @@ use crate::drivers::corsair::{CORSAIR_USAGE_PAGE, CORSAIR_VID};
 use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
-use super::bragi::CorsairBragiProtocol;
-use super::types::{
+use crate::drivers::corsair::peripheral::bragi::CorsairBragiProtocol;
+use crate::drivers::corsair::peripheral::types::{
     BRAGI_JUMBO_PACKET_SIZE, BRAGI_LARGE_PACKET_SIZE, BRAGI_MAGIC, BRAGI_PACKET_SIZE,
     BragiDeviceConfig, CorsairPeripheralClass, CorsairPeripheralTopology,
 };
@@ -454,7 +454,7 @@ macro_rules! bragi_descriptor {
     };
 }
 
-static PERIPHERAL_DESCRIPTORS: &[DeviceDescriptor] = &[
+pub(super) static BRAGI_DESCRIPTORS: &[DeviceDescriptor] = &[
     bragi_descriptor!(
         pid: PID_K55_RGB_PRO,
         name: "Corsair K55 RGB Pro",
@@ -701,8 +701,3 @@ static PERIPHERAL_DESCRIPTORS: &[DeviceDescriptor] = &[
         builder: build_mm700_3xl_protocol
     ),
 ];
-
-#[must_use]
-pub fn descriptors() -> &'static [DeviceDescriptor] {
-    PERIPHERAL_DESCRIPTORS
-}
