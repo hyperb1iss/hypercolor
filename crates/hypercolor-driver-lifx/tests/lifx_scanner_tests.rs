@@ -3,15 +3,18 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use hypercolor_driver_lifx::protocol::Serial;
 use hypercolor_driver_lifx::scanner::{
-    LifxScanOptions, LifxScanner, discovered_device, metadata_key, probe_at, route_from_metadata,
+    LifxScanOptions, LifxScanner, MAX_CONCURRENT_PROBES, MAX_DISCOVERY_CANDIDATES,
+    discovered_device, ensure_round_reached_the_network, metadata_key, probe_at,
+    route_from_metadata,
 };
 use hypercolor_driver_lifx::topology::{LifxTopology, Orientation};
-use hypercolor_driver_lifx::transport::RequestPolicy;
+use hypercolor_driver_lifx::transport::{DiscoveryRound, LifxClient, RequestPolicy};
 use hypercolor_types::portable::PortableIdentityClaim;
 use support::{FakeDevice, FakeKind, FakeLifx, FakeTile, TestResult};
 
@@ -224,5 +227,141 @@ async fn probing_a_wrong_serial_gets_no_answer() -> TestResult {
     )
     .await;
     assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn a_round_whose_sends_all_failed_is_an_error() {
+    let round = |attempted, failed| DiscoveryRound {
+        sends_attempted: attempted,
+        sends_failed: failed,
+        ..DiscoveryRound::default()
+    };
+    assert!(ensure_round_reached_the_network("IPv4", &round(3, 3)).is_err());
+    assert!(ensure_round_reached_the_network("IPv4", &round(3, 2)).is_ok());
+    assert!(
+        ensure_round_reached_the_network("IPv6", &round(0, 0)).is_ok(),
+        "an unused family is not a failure"
+    );
+}
+
+#[tokio::test]
+async fn a_scan_that_cannot_reach_the_network_fails_instead_of_finding_nothing() -> TestResult {
+    // Sending to port 0 is rejected locally, so this never leaves the host.
+    let unreachable = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let error = LifxScanner::new(options(vec![unreachable]))
+        .scan()
+        .await
+        .expect_err("a scan whose only send failed must not look empty");
+    assert!(
+        error.to_string().contains("GetService send failed"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unused_address_families_still_scan_successfully() -> TestResult {
+    let outcome = LifxScanner::new(options(Vec::new())).scan().await?;
+    assert!(outcome.profiles.is_empty());
+    assert!(outcome.unprobed.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn lights_that_answer_but_fail_their_probe_are_reported_as_unprobed() -> TestResult {
+    let mut silent = FakeDevice::new(2, 27, (3, 70), FakeKind::Bulb);
+    silent.silent_after_discovery = true;
+    let fake = FakeLifx::spawn(vec![
+        FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb),
+        silent,
+    ])
+    .await?;
+    let outcome = LifxScanner::new(options(vec![fake.addr()])).scan().await?;
+    assert_eq!(outcome.profiles.len(), 1);
+    assert_eq!(outcome.profiles[0].serial, serial(1));
+    assert_eq!(outcome.unprobed.len(), 1);
+    assert_eq!(outcome.unprobed[0].serial, serial(2));
+    assert_eq!(outcome.unprobed[0].addr, fake.addr());
+    Ok(())
+}
+
+#[tokio::test]
+async fn discovery_rounds_keep_at_most_their_cap() -> TestResult {
+    let fleet = (1..=5)
+        .map(|tail| FakeDevice::new(tail, 27, (3, 70), FakeKind::Bulb))
+        .collect();
+    let fake = FakeLifx::spawn(fleet).await?;
+    let mut client = LifxClient::bind_for(&fake.addr()).await?;
+    let round = client
+        .discover(&[fake.addr()], Duration::from_millis(300), 3)
+        .await?;
+    assert_eq!(round.replies.len(), 3);
+    assert_eq!(round.dropped, 2);
+    assert_eq!((round.sends_attempted, round.sends_failed), (1, 0));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reply_floods_are_capped_and_probes_stay_bounded() -> TestResult {
+    let total = MAX_DISCOVERY_CANDIDATES + 40;
+    let fleet = (0..total)
+        .map(|index| {
+            let mut device = FakeDevice::new(0, 27, (3, 70), FakeKind::Bulb);
+            let index = u16::try_from(index).expect("fits");
+            device.serial = [
+                0xd0,
+                0x73,
+                0xd5,
+                0x01,
+                (index >> 8) as u8,
+                (index & 0xff) as u8,
+            ];
+            device
+        })
+        .collect();
+    let fake = FakeLifx::spawn(fleet).await?;
+    let outcome = LifxScanner::new(LifxScanOptions {
+        timeout: Duration::from_secs(4),
+        ..options(vec![fake.addr()])
+    })
+    .scan()
+    .await?;
+    assert_eq!(
+        outcome.profiles.len() + outcome.unprobed.len(),
+        MAX_DISCOVERY_CANDIDATES,
+        "replies beyond the cap are never probed"
+    );
+
+    // Each probe owns one socket and one serial from its first request to
+    // its last, so overlapping probe lifetimes measure the concurrency. The
+    // key includes the serial because a closed probe's port can be reused.
+    let mut lifetimes: HashMap<(SocketAddr, [u8; 6]), (std::time::Instant, std::time::Instant)> =
+        HashMap::new();
+    for message in fake.received() {
+        if message.message_type == 2 {
+            continue;
+        }
+        let entry = lifetimes
+            .entry((message.from, message.target))
+            .or_insert((message.arrived, message.arrived));
+        entry.1 = message.arrived;
+    }
+    assert_eq!(lifetimes.len(), MAX_DISCOVERY_CANDIDATES);
+    let mut edges: Vec<(std::time::Instant, i32)> = lifetimes
+        .values()
+        .flat_map(|(start, end)| [(*start, 1), (*end, -1)])
+        .collect();
+    edges.sort_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
+    let mut live = 0;
+    let mut peak = 0;
+    for (_, delta) in edges {
+        live += delta;
+        peak = peak.max(live);
+    }
+    assert!(
+        usize::try_from(peak).expect("positive") <= MAX_CONCURRENT_PROBES,
+        "{peak} probes overlapped"
+    );
     Ok(())
 }

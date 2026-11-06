@@ -10,7 +10,9 @@ use hypercolor_driver_api::{
 use hypercolor_driver_lifx::config::LifxConfig;
 use hypercolor_driver_lifx::products::lookup_product;
 use hypercolor_driver_lifx::protocol::{FirmwareVersion, Serial};
+use hypercolor_driver_lifx::scanner::remembered_device;
 use hypercolor_driver_lifx::topology::{LifxDeviceProfile, LifxTopology};
+use hypercolor_driver_lifx::transport::ServiceReply;
 use hypercolor_driver_lifx::{
     DESCRIPTOR, LifxDriverModule, lifx_device_control_surface, lifx_driver_control_surface,
     resolve_lifx_probe_targets,
@@ -230,4 +232,28 @@ fn device_surface_shows_diagnostics_and_the_refresh_action() {
     assert_eq!(surface.actions.len(), 1);
     assert_eq!(surface.actions[0].id, "refresh_topology");
     assert_ne!(surface.revision, 0);
+}
+
+#[test]
+fn tracked_lights_that_miss_their_probe_are_reported_at_their_new_address() {
+    let tracked = tracked("192.168.1.40", "56700");
+    let mut metadata = tracked.metadata.clone();
+    metadata.insert("serial".to_owned(), "d073d5010203".to_owned());
+    let reply = ServiceReply {
+        serial: Serial([0xd0, 0x73, 0xd5, 1, 2, 3]),
+        addr: SocketAddr::from((Ipv4Addr::new(192, 168, 1, 77), 56_700)),
+    };
+    let discovered = remembered_device(&reply, &tracked.info, &metadata);
+    assert_eq!(discovered.info.id, tracked.info.id);
+    assert_eq!(discovered.metadata["ip"], "192.168.1.77");
+    assert_eq!(discovered.metadata["serial"], "d073d5010203");
+    assert_eq!(
+        discovered.fingerprint,
+        hypercolor_driver_lifx::topology::fingerprint_for_serial(reply.serial)
+    );
+    assert_eq!(
+        hypercolor_driver_lifx::scanner::route_from_metadata(&discovered.metadata)
+            .expect("routable"),
+        (reply.addr, reply.serial)
+    );
 }

@@ -9,13 +9,14 @@ use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_types::device::DeviceInfo;
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 
 use crate::encoder::OutputPlan;
 use crate::products::{LIFX_VENDOR_ID, ProductKind, lookup_product};
 use crate::protocol::{DEFAULT_PORT, Message, Serial, State, message_type};
 use crate::topology::{LifxDeviceProfile, LifxTopology, TileGeometry, fingerprint_for_serial};
-use crate::transport::{LifxClient, RequestPolicy, ServiceReply};
+use crate::transport::{DiscoveryRound, LifxClient, RequestPolicy, ServiceReply};
 
 /// Metadata keys published for each device.
 pub mod metadata_key {
@@ -35,6 +36,26 @@ pub mod metadata_key {
 /// for probing.
 const MIN_COLLECTION_WINDOW: Duration = Duration::from_millis(300);
 const MAX_COLLECTION_WINDOW: Duration = Duration::from_secs(2);
+
+/// Distinct serials one scan will probe. A large LIFX home runs dozens to a
+/// couple of hundred lights, so 512 leaves headroom while bounding the work
+/// a burst of forged StateService replies can cause.
+pub const MAX_DISCOVERY_CANDIDATES: usize = 512;
+
+/// Probes in flight at once, each holding one UDP socket. A healthy probe
+/// is four round trips, so 32 in flight clears 512 lights in well under a
+/// second while keeping descriptor and port use small.
+pub const MAX_CONCURRENT_PROBES: usize = 32;
+
+/// What a scan found.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LifxScanOutcome {
+    /// Lights that answered and were probed.
+    pub profiles: Vec<LifxDeviceProfile>,
+    /// Devices that answered discovery but whose probe failed. They are
+    /// alive, so a caller that already tracks one should keep it.
+    pub unprobed: Vec<ServiceReply>,
+}
 
 /// Where and how a scan looks for devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,36 +108,59 @@ impl LifxScanner {
         Self { options }
     }
 
+    /// Discover and probe devices, keeping only the probed lights.
+    ///
+    /// # Errors
+    ///
+    /// See [`LifxScanner::scan`].
+    pub async fn scan_profiles(&self) -> Result<Vec<LifxDeviceProfile>> {
+        Ok(self.scan().await?.profiles)
+    }
+
     /// Discover and probe devices.
     ///
     /// # Errors
     ///
-    /// Returns an error when no discovery socket can be bound.
-    pub async fn scan_profiles(&self) -> Result<Vec<LifxDeviceProfile>> {
+    /// Returns an error when a discovery pass that had targets could not
+    /// run: its socket could not be bound or set up, or every GetService
+    /// send failed. An address family with no targets is simply skipped.
+    /// A failed scan must not look like an empty one, because the host
+    /// retires tracked devices a successful scan does not report.
+    pub async fn scan(&self) -> Result<LifxScanOutcome> {
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
         let replies = self.collect_services(window).await?;
 
+        let mut outcome = LifxScanOutcome::default();
         let mut tasks = JoinSet::new();
-        for reply in replies {
-            let policy = self.options.request_policy;
-            tasks.spawn(async move { (reply, probe_at(reply.addr, reply.serial, policy).await) });
-        }
-
-        let mut profiles = Vec::new();
-        while let Some(joined) = tasks.join_next().await {
+        let mut pending = replies.into_iter();
+        loop {
+            while tasks.len() < MAX_CONCURRENT_PROBES {
+                let Some(reply) = pending.next() else {
+                    break;
+                };
+                let policy = self.options.request_policy;
+                tasks.spawn(
+                    async move { (reply, probe_at(reply.addr, reply.serial, policy).await) },
+                );
+            }
+            let Some(joined) = tasks.join_next().await else {
+                break;
+            };
             match joined {
-                Ok((_, Ok(Some(profile)))) => profiles.push(profile),
+                Ok((_, Ok(Some(profile)))) => outcome.profiles.push(profile),
                 Ok((reply, Ok(None))) => {
                     debug!(serial = %reply.serial, addr = %reply.addr, "LIFX device is not a light");
                 }
                 Ok((reply, Err(error))) => {
                     warn!(serial = %reply.serial, addr = %reply.addr, error = %error, "LIFX device probe failed");
+                    outcome.unprobed.push(reply);
                 }
                 Err(error) => warn!(error = %error, "LIFX probe task failed"),
             }
         }
-        profiles.sort_by_key(|profile| profile.serial);
-        Ok(profiles)
+        outcome.profiles.sort_by_key(|profile| profile.serial);
+        outcome.unprobed.sort_by_key(|reply| reply.serial);
+        Ok(outcome)
     }
 
     async fn collect_services(&self, window: Duration) -> Result<Vec<ServiceReply>> {
@@ -133,53 +177,80 @@ impl LifxScanner {
             .copied()
             .filter(SocketAddr::is_ipv4)
             .collect();
+        let v4_targets: Vec<SocketAddr> = v4_unicast.iter().chain(&v4_broadcast).copied().collect();
+
+        let (v4, v6) = tokio::join!(
+            discovery_pass("IPv4", &v4_targets, !v4_broadcast.is_empty(), window),
+            discovery_pass("IPv6", &v6_unicast, false, window),
+        );
+        let (v4, v6) = (v4?, v6?);
 
         let mut collected: Vec<ServiceReply> = Vec::new();
-        let v4_targets: Vec<SocketAddr> = v4_unicast.iter().chain(&v4_broadcast).copied().collect();
-        let v4 = async {
-            if v4_targets.is_empty() {
-                return Ok(Vec::new());
+        let mut dropped = v4.dropped + v6.dropped;
+        for reply in v4.replies.into_iter().chain(v6.replies) {
+            if collected.iter().any(|known| known.serial == reply.serial) {
+                continue;
             }
-            let mut client = LifxClient::bind_for(&v4_targets[0])
-                .await
-                .context("failed to bind LIFX IPv4 discovery socket")?;
-            if !v4_broadcast.is_empty() {
-                client
-                    .enable_broadcast()
-                    .context("failed to enable broadcast on the LIFX discovery socket")?;
+            if collected.len() >= MAX_DISCOVERY_CANDIDATES {
+                dropped += 1;
+                continue;
             }
-            client
-                .discover(&v4_targets, window)
-                .await
-                .map_err(anyhow::Error::from)
-        };
-        let v6 = async {
-            if v6_unicast.is_empty() {
-                return Ok(Vec::new());
-            }
-            let mut client = LifxClient::bind_for(&v6_unicast[0])
-                .await
-                .context("failed to bind LIFX IPv6 discovery socket")?;
-            client
-                .discover(&v6_unicast, window)
-                .await
-                .map_err(anyhow::Error::from)
-        };
-        let (v4, v6): (Result<Vec<ServiceReply>>, Result<Vec<ServiceReply>>) = tokio::join!(v4, v6);
-        for replies in [v4, v6] {
-            match replies {
-                Ok(replies) => {
-                    for reply in replies {
-                        if !collected.iter().any(|known| known.serial == reply.serial) {
-                            collected.push(reply);
-                        }
-                    }
-                }
-                Err(error) => warn!(error = %error, "LIFX discovery pass failed"),
-            }
+            collected.push(reply);
+        }
+        if dropped > 0 {
+            warn!(
+                kept = collected.len(),
+                dropped,
+                limit = MAX_DISCOVERY_CANDIDATES,
+                "LIFX discovery reached its candidate limit; extra replies were ignored"
+            );
         }
         Ok(collected)
     }
+}
+
+/// Run one address family's GetService round, or skip it when it has no
+/// targets.
+async fn discovery_pass(
+    family: &'static str,
+    targets: &[SocketAddr],
+    broadcast: bool,
+    window: Duration,
+) -> Result<DiscoveryRound> {
+    let Some(first) = targets.first() else {
+        return Ok(DiscoveryRound::default());
+    };
+    let mut client = LifxClient::bind_for(first)
+        .await
+        .with_context(|| format!("failed to bind the LIFX {family} discovery socket"))?;
+    if broadcast {
+        client
+            .enable_broadcast()
+            .with_context(|| format!("failed to enable broadcast on the LIFX {family} socket"))?;
+    }
+    let round = client
+        .discover(targets, window, MAX_DISCOVERY_CANDIDATES)
+        .await
+        .with_context(|| format!("LIFX {family} discovery failed"))?;
+    ensure_round_reached_the_network(family, &round)?;
+    Ok(round)
+}
+
+/// Fail a discovery round whose every GetService send was rejected: the
+/// scan never reached the network, so an empty result says nothing about
+/// which lights are present.
+///
+/// # Errors
+///
+/// Returns an error when the round attempted sends and none succeeded.
+pub fn ensure_round_reached_the_network(family: &str, round: &DiscoveryRound) -> Result<()> {
+    if round.sends_attempted > 0 && round.sends_failed == round.sends_attempted {
+        bail!(
+            "every LIFX {family} GetService send failed ({} targets)",
+            round.sends_attempted
+        );
+    }
+    Ok(())
 }
 
 /// Probe one device at a known address and serial.
@@ -423,6 +494,32 @@ pub fn discovered_device(
         claim: PortableIdentityClaim::mac_address(
             &profile.serial.to_string(),
             NetworkAttachment::Peer(profile.addr.ip()),
+        ),
+    }
+}
+
+/// Discovery record for a light the host already tracks that answered
+/// discovery but failed its probe this scan. It is alive at `reply.addr`,
+/// so it is reported with its last known info instead of being left out,
+/// which the host would read as the light having gone away.
+#[must_use]
+pub fn remembered_device(
+    reply: &ServiceReply,
+    info: &DeviceInfo,
+    metadata: &HashMap<String, String>,
+) -> DiscoveredDevice {
+    let mut metadata = metadata.clone();
+    metadata.insert(metadata_key::IP.to_owned(), reply.addr.ip().to_string());
+    metadata.insert(metadata_key::PORT.to_owned(), reply.addr.port().to_string());
+    metadata.insert(metadata_key::SERIAL.to_owned(), reply.serial.to_string());
+    DiscoveredDevice {
+        fingerprint: fingerprint_for_serial(reply.serial),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info: info.clone(),
+        metadata,
+        claim: PortableIdentityClaim::mac_address(
+            &reply.serial.to_string(),
+            NetworkAttachment::Peer(reply.addr.ip()),
         ),
     }
 }

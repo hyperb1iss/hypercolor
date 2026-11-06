@@ -1,6 +1,6 @@
 //! UDP request and reply client (Spec 88 §2.4 and §4.4).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, RandomState};
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -54,6 +54,19 @@ pub enum TransportError {
     Unsupported { target: Serial, message_type: u16 },
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
+}
+
+/// Outcome of one GetService round.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiscoveryRound {
+    /// Accepted replies, in arrival order, at most the round's cap.
+    pub replies: Vec<ServiceReply>,
+    /// Targets GetService was sent to.
+    pub sends_attempted: usize,
+    /// Sends the socket rejected (no route, interface down, and so on).
+    pub sends_failed: usize,
+    /// Distinct serials ignored because the cap was reached.
+    pub dropped: usize,
 }
 
 /// One StateService reply collected during discovery.
@@ -151,28 +164,36 @@ impl LifxClient {
 
     /// Send GetService to every target, then collect StateService replies
     /// until `window` elapses. Replies are keyed by serial; the first UDP
-    /// service seen for a serial wins.
+    /// service seen for a serial wins, and at most `max_replies` distinct
+    /// serials are kept so a flood of replies cannot grow without bound.
     ///
     /// # Errors
     ///
     /// Returns an error only when encoding fails; per-target send errors
-    /// are logged and skipped.
+    /// are counted in the returned round.
     pub async fn discover(
         &mut self,
         targets: &[SocketAddr],
         window: Duration,
-    ) -> Result<Vec<ServiceReply>, TransportError> {
+        max_replies: usize,
+    ) -> Result<DiscoveryRound, TransportError> {
         let address = self.next_address(Serial::BROADCAST, false);
         self.send_buf.clear();
         encode_message(&mut self.send_buf, &address, &Message::GetService)?;
+        let mut round = DiscoveryRound {
+            sends_attempted: targets.len(),
+            ..DiscoveryRound::default()
+        };
         for target in targets {
             if let Err(error) = self.socket.send_to(&self.send_buf, target).await {
                 trace!(%target, %error, "LIFX GetService send failed");
+                round.sends_failed += 1;
             }
         }
 
         let deadline = Instant::now() + window;
         let mut replies: HashMap<Serial, ServiceReply> = HashMap::new();
+        let mut dropped: HashSet<Serial> = HashSet::new();
         let mut order = Vec::new();
         loop {
             let Ok(received) =
@@ -210,6 +231,12 @@ impl LifxClient {
             let Ok(port) = u16::try_from(service.port) else {
                 continue;
             };
+            if replies.len() >= max_replies {
+                if dropped.len() < max_replies {
+                    dropped.insert(serial);
+                }
+                continue;
+            }
             replies.insert(
                 serial,
                 ServiceReply {
@@ -219,10 +246,12 @@ impl LifxClient {
             );
             order.push(serial);
         }
-        Ok(order
+        round.dropped = dropped.len();
+        round.replies = order
             .into_iter()
             .filter_map(|serial| replies.remove(&serial))
-            .collect())
+            .collect();
+        Ok(round)
     }
 
     /// Send a request and wait for a reply of one of `expected` types.
@@ -291,9 +320,14 @@ impl LifxClient {
                 else {
                     break;
                 };
-                let Ok((len, _from)) = received else {
+                let Ok((len, from)) = received else {
                     continue;
                 };
+                // Only the probed endpoint may answer; compare address and
+                // port, not IPv6 scope or flow labels.
+                if from.ip() != addr.ip() || from.port() != addr.port() {
+                    continue;
+                }
                 let Ok(packet) = decode_packet(&self.recv_buf[..len]) else {
                     continue;
                 };

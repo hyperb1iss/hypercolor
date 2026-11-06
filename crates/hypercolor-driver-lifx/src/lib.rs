@@ -158,14 +158,25 @@ impl DiscoveryCapability for LifxDriverModule {
             timeout: request.timeout,
             request_policy: RequestPolicy::default(),
         });
-        let profiles = scanner
-            .scan_profiles()
-            .await
-            .map_err(DriverError::discovery)?;
-        Ok(profiles
+        let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
+        let mut devices: Vec<DiscoveredDevice> = outcome
+            .profiles
             .iter()
             .map(|profile| discovered_device(profile, config.max_messages_per_second))
-            .collect())
+            .collect();
+        for reply in &outcome.unprobed {
+            let serial = reply.serial.to_string();
+            if let Some(tracked) = tracked_devices.iter().find(|tracked| {
+                tracked.metadata.get(scanner::metadata_key::SERIAL) == Some(&serial)
+            }) {
+                devices.push(scanner::remembered_device(
+                    reply,
+                    &tracked.info,
+                    &tracked.metadata,
+                ));
+            }
+        }
+        Ok(devices)
     }
 }
 

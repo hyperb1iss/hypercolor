@@ -125,7 +125,8 @@ A reply belongs to a request when its `source`, `sequence`, and `target`
 match (for discovery the target is the replying device's serial, so only
 source and sequence are compared). Devices reply to the address and port the
 request came from, so a client socket bound to an ephemeral port receives
-its own replies. Get messages always produce their State reply;
+its own replies. Probe replies must also come from the probed address and
+port; anything else on the socket is ignored. Get messages always produce their State reply;
 `res_required` only matters for Set messages. Set64 and SetUserPosition never
 reply.
 
@@ -264,8 +265,15 @@ negative answer rather than waiting for a timeout.
 
 Probing a device issues GetVersion, GetHostFirmware, GetLabel, and one
 topology request. Each request is retried up to three times with a 300 ms
-reply timeout, since UDP drops packets. Probes of different devices run
-concurrently.
+reply timeout, since UDP drops packets.
+
+Anyone on the LAN can send StateService, so a scan bounds the work replies
+can cause:
+
+| Limit | Value | Why |
+|---|---|---|
+| Distinct serials kept per scan | 512 | A large LIFX home runs dozens to a couple of hundred lights; extra serials are dropped and the drop is logged |
+| Probes in flight | 32 | Each probe holds one UDP socket; a healthy probe is four round trips, so 512 lights clear in well under a second |
 
 ---
 
@@ -918,9 +926,19 @@ address too, so a light keeps working on networks that filter broadcast.
 4. Collect StateService replies for half the request timeout, clamped to
    300 ms through 2 s (lights answer within milliseconds, so the rest of
    the budget is left for probing), keeping the first UDP service per
-   serial.
-5. Probe each serial concurrently (section 4.4) and drop non-lights, foreign
-   vendors, and devices whose probe fails.
+   serial, up to the candidate limit of section 4.4.
+5. Probe the serials, at most 32 at a time, and drop non-lights and foreign
+   vendors.
+
+A scan fails, rather than returning an empty list, when an address family
+that had targets could not run: its socket could not be bound or set up for
+broadcast, or every GetService send was rejected. An address family with no
+targets is skipped. The distinction matters because the host retires
+tracked devices that a successful scan does not report.
+
+A light that answers GetService but fails its probe is alive. If the host
+already tracks it (matched by serial), the scan reports it with its last
+known info at its current address instead of leaving it out.
 
 Metadata published per device: `ip`, `port`, `serial`, `vendor_id`,
 `product_id`, `firmware`, `device_class`, `zones`, and `tiles` for matrices.
@@ -970,9 +988,10 @@ broadcast disabled.
 | `lifx_color_tests.rs` | primaries are fully saturated, greys have zero saturation, pastels keep linear-light saturation, hue scaling, brightness scaling, white-only luminance path, kelvin clamping |
 | `lifx_products_tests.rs` | lookup, extended multizone thresholds (product 32 at 2.76 vs 2.77), non-light rejection, unknown product fallback |
 | `lifx_topology_tests.rs` | segments for each class, chain positions with rotation, candle and uplight maps, messages per frame and cadence |
-| `lifx_encoder_tests.rs` | datagram plans: run merging and apply flags for legacy, 82-zone chunking, Set64 per tile, frame buffer path above 64 zones, single-buffer fallback |
-| `lifx_scanner_tests.rs` | an in-repo fake LIFX responder on 127.0.0.1 answers discovery and probes for bulb, legacy strip, extended strip, tile chain, and 16 x 8 ceiling; several devices behind one port |
-| `lifx_backend_tests.rs` | adopt, connect (power ack), write, brightness, cadence, refreshed info, against the fake responder |
+| `lifx_encoder_tests.rs` | datagram plans: run merging and apply flags for legacy, 82-zone chunking, Set64 per tile, frame buffer path above 64 zones, single-buffer fallback; best and worst frame costs; the token bucket's burst, pacing, and window bound |
+| `lifx_scanner_tests.rs` | an in-repo fake LIFX responder on 127.0.0.1 answers discovery and probes for bulb, legacy strip, extended strip, tile chain, and 16 x 8 ceiling; several devices behind one port; a scan whose sends all fail is an error; lights that miss their probe are reported; a flood of 552 serials is capped at 512 with at most 32 probes in flight |
+| `lifx_backend_tests.rs` | adopt, connect (power ack), write, brightness, cadence, refreshed info, worst-case frames paced message by message, a sink declining while the budget is spent, against the fake responder |
+| `hypercolor-driver-builtin` `lifx_output_queue_tests.rs` | the real host output queue (`BackendManager`) in front of the backend: the newest frame follows a paced worst-case frame and replaced frames never reach the light, a uniform animation runs at the full message rate, and no stretch of datagrams beats the budget |
 | `lifx_driver_tests.rs` | descriptor, default-enabled module, config validation, driver and device control surfaces, probe target merging |
 | `lifx_emulator_tests.rs` | opt-in run against lifx-emulator bound to 127.0.0.1 (section 12.1) |
 
