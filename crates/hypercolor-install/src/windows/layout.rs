@@ -113,9 +113,10 @@ impl WindowsRecord {
     /// Whether the observed broker registration and firewall rules are
     /// exactly `position`.
     ///
-    /// A firewall that was running when the transaction was prepared and
-    /// has stopped since enforces nothing, so it is no drift; it is judged
-    /// again whenever it answers.
+    /// A firewall that answered when the transaction was prepared and is
+    /// gone now proves no position at all. Its stored rules outlive it, so
+    /// treating it as matched would skip a compensation for good; the
+    /// transaction rests until it answers again.
     pub(super) fn layout_holds(
         &self,
         position: u16,
@@ -129,8 +130,11 @@ impl WindowsRecord {
             })
         });
         let rule_holds = |rule| {
-            let (Some(baseline), Some(firewall)) = (self.firewall.as_ref(), firewall) else {
+            let Some(baseline) = self.firewall.as_ref() else {
                 return true;
+            };
+            let Some(firewall) = firewall else {
+                return false;
             };
             match (
                 self.rule_program_at(baseline, rule, position),
@@ -265,14 +269,10 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_firewall_is_no_drift() {
+    fn a_firewall_that_stopped_proves_no_position() {
         let record = record();
-        let (broker, _) = positions()[0].clone();
-        for position in 0..=1 {
-            assert_eq!(
-                record.layout_holds(position, Some(&broker), None),
-                position == 0
-            );
+        for (position, (broker, _)) in (0_u16..).zip(positions()) {
+            assert!(!record.layout_holds(position, Some(&broker), None));
         }
     }
 

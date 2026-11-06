@@ -50,6 +50,9 @@ impl Harness {
             session: true,
             app_reachable: true,
             app_obeys: true,
+            app_hangs_on_quit: false,
+            dies_after_start: false,
+            looks_left: None,
             unhealthy_version: None,
             never_ready_version: None,
             failing_broker: None,
@@ -377,6 +380,175 @@ fn a_power_loss_at_every_boundary_restores_the_prior_for_its_owner() {
         assert!(is_rolled_back(&outcome), "boundary {crash_at}: {outcome:?}");
         harness.assert_restored();
     }
+}
+
+#[test]
+fn a_power_loss_at_every_boundary_of_a_rollback_restores_the_prior_for_its_owner() {
+    let total = {
+        let harness = Harness::new();
+        fail_the_candidate(&harness);
+        assert!(is_rolled_back(&harness.outcome()));
+        harness.passed()
+    };
+    for crash_at in 1..=total {
+        let harness = Harness::new();
+        fail_the_candidate(&harness);
+        harness.crash_at(Some(crash_at));
+        assert!(
+            matches!(harness.install(), Err(Crash)),
+            "boundary {crash_at} never ran"
+        );
+        harness.with_world(World::reboot);
+
+        let (booted, waiting) = harness.recover();
+        let booted = booted.expect("no crash armed for this run");
+        assert!(
+            waiting || matches!(booted, Ok(Some(_))),
+            "boundary {crash_at} wedged: {booted:?}"
+        );
+
+        harness.with_world(|world| world.session = true);
+        let outcome = harness.converge();
+        assert!(is_rolled_back(&outcome), "boundary {crash_at}: {outcome:?}");
+        harness.assert_restored();
+    }
+}
+
+/// A journal resting at the prior's proof, with nothing running.
+fn prior_lost_at_its_proof() -> Harness {
+    // The candidate fails its first request; the second is the prior's.
+    let proof = boundary_of(fail_the_candidate, "http", 2);
+    let harness = Harness::new();
+    fail_the_candidate(&harness);
+    harness.crash_at(Some(proof));
+    assert!(matches!(harness.install(), Err(Crash)));
+    harness.crash_at(None);
+    assert_eq!(
+        harness.journal().next_action,
+        Some(InstallAction::ProvePrior)
+    );
+    harness.with_world(|world| {
+        world.apps.clear();
+        world.daemons.clear();
+    });
+    harness
+}
+
+#[test]
+fn a_prior_lost_at_its_proof_is_started_again() {
+    let harness = prior_lost_at_its_proof();
+    let starts = harness.effects("start:before");
+
+    let outcome = harness.converge();
+
+    assert!(is_rolled_back(&outcome), "{outcome:?}");
+    harness.assert_restored();
+    assert_eq!(harness.effects("start:before"), starts + 1);
+}
+
+#[test]
+fn a_prior_that_keeps_dying_at_its_proof_ends_the_run() {
+    let harness = prior_lost_at_its_proof();
+    harness.with_world(|world| world.dies_after_start = true);
+    let starts = harness.effects("start:before");
+
+    let (result, _) = harness.recover();
+
+    assert!(result.expect("no crash armed").is_err());
+    assert_eq!(harness.effects("start:before"), starts + 1);
+
+    harness.with_world(|world| world.dies_after_start = false);
+    let outcome = harness.converge();
+    assert!(is_rolled_back(&outcome), "{outcome:?}");
+    harness.assert_restored();
+}
+
+#[test]
+fn a_crash_inside_a_partial_stop_finishes_that_stop() {
+    let quit = boundary_of(|_| {}, "quit:after", 1);
+    let harness = Harness::new();
+    harness.with_world(|world| world.app_hangs_on_quit = true);
+    harness.crash_at(Some(quit));
+    assert!(matches!(harness.install(), Err(Crash)));
+    harness.crash_at(None);
+    {
+        let world = lock(&harness.world);
+        assert_eq!((world.apps.len(), world.daemons.len()), (1, 0));
+    }
+
+    let outcome = harness.converge();
+
+    harness.assert_committed(&outcome);
+    assert_eq!(
+        harness.journal().forced_stops,
+        [harness.prior()],
+        "the app that hung is forced down and said so"
+    );
+}
+
+#[test]
+fn a_prior_that_restarted_before_its_stop_abandons_the_transaction() {
+    let harness = Harness::new();
+    harness.crash_at(Some(1));
+    assert!(matches!(harness.install(), Err(Crash)));
+    harness.crash_at(None);
+    assert_eq!(
+        harness.journal().next_action,
+        Some(InstallAction::UnloadPrior)
+    );
+
+    // The owner closed the app and opened it again before the stop landed.
+    let prior = harness.prior();
+    harness.with_world(|world| {
+        world.apps.clear();
+        world.daemons.clear();
+        world.launch(&prior);
+    });
+    let running = lock(&harness.world).daemons[0].id;
+
+    let outcome = harness.converge();
+
+    assert!(
+        matches!(
+            outcome,
+            InstallOutcome::RolledBack {
+                abandoned: true,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    harness.assert_restored();
+    assert_eq!(
+        lock(&harness.world).daemons[0].id,
+        running,
+        "a release the transaction never touched keeps running"
+    );
+}
+
+#[test]
+fn a_firewall_lost_in_a_rollback_holds_it_until_the_rules_can_be_restored() {
+    let stop = boundary_of(fail_the_candidate, "quit:before", 2);
+    let harness = Harness::new();
+    fail_the_candidate(&harness);
+    harness.crash_at(Some(stop));
+    assert!(matches!(harness.install(), Err(Crash)));
+    harness.crash_at(None);
+    let rules = lock(&harness.world).firewall.take();
+
+    let (result, _) = harness.recover();
+
+    assert!(result.expect("no crash armed").is_err());
+    assert_ne!(
+        harness.journal().disposition,
+        InstallDisposition::RolledBack,
+        "a rollback must not finish over rules it could not restore"
+    );
+
+    harness.with_world(|world| world.firewall = rules);
+    let outcome = harness.converge();
+    assert!(is_rolled_back(&outcome), "{outcome:?}");
+    harness.assert_restored();
 }
 
 #[test]
