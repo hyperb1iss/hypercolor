@@ -75,7 +75,7 @@ crates/
   hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd, macOS launchd and Windows machine platforms, payload validation
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
-  hypercolor-driver-support/       # Native credential and discovery services layered on the driver API
+  hypercolor-driver-support/       # Native credential, discovery, bounded HTTP, and framing services layered on the driver API
   hypercolor-driver-builtin/       # Compile-time bundle assembling HAL + network drivers into a registry via feature flags
   hypercolor-driver-hue/           # Philips Hue Bridge driver (Entertainment API over DTLS)
   hypercolor-driver-nanoleaf/      # Nanoleaf panels driver (HTTP pairing + UDP external control)
@@ -345,6 +345,7 @@ without the runtime cliffs of unoptimized Servo.
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden**: use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors
+- **Bounded I/O:** drivers read HTTP through `hypercolor_driver_support::http` and delimited streams through `framing`. `deny.toml` bans a direct `reqwest` dependency in driver crates, so every reply has a deadline and a byte cap
 - **`tracing`** for all logging (never `println!` in library code)
 - **Serde** with `#[serde(rename_all = "snake_case")]` on enums, `#[serde(default)]` for compat
 - **Conventional commits**: `feat(scope):`, `fix(scope):`, `refactor(scope):`, etc.

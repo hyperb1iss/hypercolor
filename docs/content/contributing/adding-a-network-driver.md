@@ -385,29 +385,59 @@ Govee uses a JSON-over-UDP control protocol on port `4003`. For SKUs with the
 25 fps, with a cap of 255 LEDs per frame. Plain LAN devices without Razer streaming support
 run at up to 10 fps.
 
-### Shared HTTP clients
+### Bounded HTTP and framing
 
-Drivers that make HTTP calls for pairing or discovery enrichment (WLED's `GET /json/info`,
-Govee's cloud API) should share a single `reqwest::Client` rather than building one per
-call. Store it in a `LazyLock` at crate root:
+Every reply from a device is untrusted, so a driver never reads one without a limit. Drivers
+that make HTTP calls for pairing or discovery enrichment (WLED's `GET /json/info`, Govee's
+cloud API) use `hypercolor_driver_support::http` and do not depend on `reqwest` directly;
+`deny.toml` fails CI if one does.
+
+A request cannot go out without a `ReadBudget`, which sets an absolute deadline for the whole
+exchange and a byte cap the body is held to as it arrives, whatever `Content-Length` claims.
+Choose the cap per endpoint from what that endpoint can legitimately return, and say why in a
+comment: one small global cap breaks large inventories. Share a single client in a `LazyLock`
+at crate root rather than building one per call:
 
 ```rust
 use std::sync::LazyLock;
 use std::time::Duration;
 
-static HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())
-});
+use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget};
 
-fn http_client() -> anyhow::Result<&'static reqwest::Client> {
+const INFO_TIMEOUT: Duration = Duration::from_secs(5);
+/// Largest info reply read. The device serializes it from a 32 KiB buffer.
+const INFO_REPLY_BYTES: usize = 128 * 1024;
+
+static HTTP_CLIENT: LazyLock<Result<BoundedHttpClient, String>> =
+    LazyLock::new(|| BoundedHttpClient::new().map_err(|e| e.to_string()));
+
+fn http_client() -> anyhow::Result<&'static BoundedHttpClient> {
     HTTP_CLIENT
         .as_ref()
         .map_err(|e| anyhow::anyhow!("HTTP client unavailable: {e}"))
 }
+
+async fn fetch_info(url: &str) -> anyhow::Result<serde_json::Value> {
+    let info = http_client()?
+        .get(url)
+        .send(ReadBudget::new(INFO_REPLY_BYTES, INFO_TIMEOUT))
+        .await
+        .and_then(BoundedResponse::error_for_status)?
+        .json()
+        .await?;
+    Ok(info)
+}
 ```
+
+Protocols that speak delimited lines or frames over TCP use
+`hypercolor_driver_support::framing`. `BoundedLines` caps every line and reads on an absolute
+deadline; pass the same deadline to every call of a multi-line reply so a slow peer cannot
+extend it. `next_after_idle` is for a long-lived connection that may legitimately stay silent:
+it waits as long as the peer does, then holds any line the peer starts to a completion bound.
+
+`FramedWriter` owns its stream and drops it when a frame fails, times out, or is abandoned, so
+a half-written frame can never be followed by anything. It flushes every frame, which makes it
+wrong for serial ports: flushing a tty blocks a runtime thread until the UART drains.
 
 ---
 
