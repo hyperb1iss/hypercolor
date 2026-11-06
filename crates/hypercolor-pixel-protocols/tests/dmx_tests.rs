@@ -1,9 +1,13 @@
 //! DMX512 universe math shared by E1.31 and Art-Net.
 
 use hypercolor_pixel_protocols::dmx::{
-    DMX_UNIVERSE_CHANNELS, UniverseRun, pixel_aligned_universe_channels, split_into_universes,
-    universes_spanned,
+    DMX_UNIVERSE_CHANNELS, UniverseRun, last_universe_offset, pixel_aligned_universe_channels,
+    split_into_universes, universes_spanned,
 };
+
+fn runs(start_slot: usize, channel_count: usize, per_universe: usize) -> Vec<UniverseRun> {
+    split_into_universes(start_slot, channel_count, per_universe).collect()
+}
 
 #[test]
 fn pixel_aligned_universes_hold_whole_pixels() {
@@ -17,7 +21,7 @@ fn pixel_aligned_universes_hold_whole_pixels() {
 #[test]
 fn rgb_strip_wraps_at_170_pixels() {
     // 300 RGB pixels = 900 channels across 510-channel universes.
-    let runs = split_into_universes(0, 900, 510);
+    let runs = runs(0, 900, 510);
     assert_eq!(
         runs,
         vec![
@@ -38,7 +42,7 @@ fn rgb_strip_wraps_at_170_pixels() {
 #[test]
 fn start_slot_offsets_first_universe() {
     // Start at DMX channel 501 (slot 500) of a 512-channel universe.
-    let runs = split_into_universes(500, 30, 512);
+    let runs = runs(500, 30, 512);
     assert_eq!(
         runs,
         vec![
@@ -58,7 +62,7 @@ fn start_slot_offsets_first_universe() {
 
 #[test]
 fn start_slot_beyond_one_universe_lands_later() {
-    let runs = split_into_universes(1020 + 3, 6, 510);
+    let runs = runs(1020 + 3, 6, 510);
     assert_eq!(
         runs,
         vec![UniverseRun {
@@ -79,5 +83,33 @@ fn universes_spanned_counts_partial_universes() {
 
 #[test]
 fn empty_stream_has_no_runs() {
-    assert!(split_into_universes(0, 0, 510).is_empty());
+    assert!(runs(0, 0, 510).is_empty());
+}
+
+#[test]
+fn last_universe_is_computed_without_allocating_impossible_runs() {
+    // usize::MAX one-channel universes could never be allocated as runs; the
+    // check is pure arithmetic, which is what lets callers reject first.
+    assert_eq!(last_universe_offset(0, usize::MAX, 1), Some(usize::MAX - 1));
+    assert_eq!(last_universe_offset(0, 510, 510), Some(0));
+    assert_eq!(last_universe_offset(1, 510, 510), Some(1));
+    assert_eq!(
+        last_universe_offset(usize::MAX, 2, 1),
+        None,
+        "overflowing end"
+    );
+    assert_eq!(last_universe_offset(0, 0, 510), None, "empty run");
+    assert_eq!(last_universe_offset(0, 10, 0), None, "zero stride");
+}
+
+#[test]
+fn split_is_lazy_for_streams_no_allocator_could_hold() {
+    let mut runs = split_into_universes(0, usize::MAX, 1);
+    assert_eq!(runs.next().map(|run| run.universe_offset), Some(0));
+    assert_eq!(runs.next().map(|run| run.source), Some(1..2));
+}
+
+#[test]
+fn split_stops_where_the_absolute_slot_would_overflow() {
+    assert!(split_into_universes(usize::MAX, 3, 512).nth(1).is_none());
 }

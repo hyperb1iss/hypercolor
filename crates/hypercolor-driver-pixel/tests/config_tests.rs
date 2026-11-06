@@ -723,3 +723,103 @@ fn artnet_hosts_must_be_ipv4() {
     }));
     assert!(resolve_config(&mapped).is_ok());
 }
+
+// ── Cap boundaries ──────────────────────────────────────────────────────
+
+#[test]
+fn channel_cap_accepts_exactly_the_limit() {
+    // 1,048,576 RGBW pixels = 4,194,304 channels, the per-device limit.
+    let at_limit = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp", "pixel_count": 1_048_576,
+        "color_order": "rgbw"
+    }));
+    let plans = resolve_config(&at_limit).expect("the exact limit is accepted");
+    assert_eq!(plans[0].total_channels(), 4_194_304);
+
+    let over = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp", "pixel_count": 1_048_577,
+        "color_order": "rgbw"
+    }));
+    assert!(resolve_error(&over).contains("device needs 4194308 channels"));
+}
+
+#[test]
+fn segment_cap_accepts_exactly_the_limit() {
+    let segments: Vec<_> = (0..256).map(|_| json!({ "pixel_count": 1 })).collect();
+    let config = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp", "segments": segments
+    }));
+    assert_eq!(
+        resolve_config(&config).expect("256 segments are accepted")[0]
+            .segments
+            .len(),
+        256
+    );
+}
+
+#[test]
+fn last_e131_universe_is_addressable_to_its_final_slot() {
+    let fits = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "e131", "pixel_count": 170,
+        "start_universe": 63_999
+    }));
+    assert_eq!(
+        resolve_config(&fits).expect("170 RGB pixels fill universe 63999")[0].universes(),
+        vec![63_999]
+    );
+
+    let spills = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "e131", "pixel_count": 171,
+        "start_universe": 63_999
+    }));
+    assert!(resolve_error(&spills).contains("runs past E1.31 (sACN) universe 63999"));
+}
+
+#[test]
+fn last_artnet_port_address_is_addressable_to_its_final_slot() {
+    let fits = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "artnet", "pixel_count": 128,
+        "color_order": "rgbw", "start_universe": 32_767
+    }));
+    assert_eq!(
+        resolve_config(&fits).expect("128 RGBW pixels fill Port-Address 32767")[0].universes(),
+        vec![32_767]
+    );
+
+    let spills = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "artnet", "pixel_count": 129,
+        "color_order": "rgbw", "start_universe": 32_767
+    }));
+    assert!(resolve_error(&spills).contains("runs past Art-Net universe 32767"));
+}
+
+#[test]
+fn max_cap_device_past_the_universe_range_is_rejected_without_runs() {
+    // 1,398,101 RGB pixels sit just under the channel cap, so only the
+    // last-universe check can reject this; it runs before any universe run
+    // exists, on arithmetic alone.
+    let config = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "e131", "pixel_count": 1_398_101,
+        "channels_per_universe": 3, "start_universe": 63_999
+    }));
+    assert!(resolve_error(&config).contains("runs past E1.31 (sACN) universe 63999"));
+}
+
+#[test]
+fn ddp_offset_space_is_usable_to_its_final_byte() {
+    let fits = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp", "pixel_count": 1,
+        "ddp_offset": u32::MAX - 2
+    }));
+    let plans = resolve_config(&fits).expect("bytes up to offset 2^32 - 1 are addressable");
+    let OutputPlan::Ddp(ddp) = &plans[0].output else {
+        panic!("expected a DDP plan");
+    };
+    assert_eq!(ddp.spans[0].offset, u32::MAX - 2);
+
+    let spills = one_device(json!({
+        "id": "a", "host": "10.0.0.5", "protocol": "ddp", "pixel_count": 1,
+        "ddp_offset": u32::MAX - 1
+    }));
+    assert!(resolve_error(&spills).contains("runs past the 32-bit DDP offset space"));
+}
