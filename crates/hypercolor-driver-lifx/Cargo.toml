@@ -1,0 +1,27 @@
+[package]
+name = "hypercolor-driver-lifx"
+description = "LIFX LAN network driver for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-driver-api = { workspace = true }
+hypercolor-driver-support = { workspace = true }
+hypercolor-color = { workspace = true }
+hypercolor-types = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+if-addrs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
