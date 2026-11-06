@@ -3,6 +3,7 @@
 //! Driver boundary traits and values live in `hypercolor-driver-api`. This
 //! crate owns concrete host services that implement or support that boundary.
 
+mod configured;
 pub mod control_apply;
 pub mod control_surface;
 mod credentials;
@@ -14,5 +15,6 @@ mod mdns;
 pub mod network;
 pub mod pairing;
 
+pub use configured::{ConfiguredDevice, ConfiguredDevices, ResolveDevices};
 pub use credentials::CredentialStore;
 pub use mdns::{MdnsBrowser, MdnsScope, MdnsService};

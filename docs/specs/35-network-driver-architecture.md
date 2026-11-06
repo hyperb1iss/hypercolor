@@ -298,6 +298,10 @@ pub trait DriverHost {
 }
 ```
 
+A backend is built from a `DriverContext` value instead of the host: a live
+driver-scoped config handle, the installation identity, and retained runtime
+actions are required fields, and device input stays optional.
+
 ### 7.2 TrackedDeviceCtx
 
 Pairing and auth summary logic needs a read-only device context:

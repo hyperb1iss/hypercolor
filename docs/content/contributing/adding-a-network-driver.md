@@ -47,6 +47,7 @@ and reusable driver policy never leak into the stable trait boundary.
 | `DriverModule` | `driver_api::module` | Capability root: the entry point the host sees |
 | `DriverDescriptor` | `driver_api::descriptor` | Static ID, display name, transport kind, schema version |
 | `DeviceBackendFactory` | `driver_api::module` | Constructs one finalized output backend |
+| `DriverContext` | `driver_api::host` | Host services a backend is built with: live config, installation identity, runtime actions, optional device input |
 | `DeviceBackend` | `driver_api::backend` | Adopts discoveries and owns connected-device output |
 | `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning a `DiscoveryBatch` of observations plus coverage |
 | `PairingCapability` | `driver_api::pairing` | `auth_summary`, `pair`, `clear_credentials` |
@@ -87,8 +88,8 @@ use std::sync::Arc;
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceBackendFactory, DiscoveryCapability,
-    DriverConfigProvider, DriverConfigView, DriverDescriptor, DriverError,
-    DriverHost, DriverModule, OutputBinding,
+    DriverConfigProvider, DriverConfigView, DriverContext, DriverDescriptor,
+    DriverError, DriverModule, OutputBinding,
 };
 use hypercolor_types::identity::BackendId;
 
@@ -120,7 +121,7 @@ impl DriverModule for AcmeDriverModule {
 impl DeviceBackendFactory for AcmeDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        _context: DriverContext,
         config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
         let cfg = config.parse_settings::<AcmeConfig>()?;
@@ -128,6 +129,13 @@ impl DeviceBackendFactory for AcmeDriverModule {
     }
 }
 ```
+
+`config` is the entry this backend is built for, and the host rebuilds the backend when that
+entry changes. `context` carries the host services a backend may keep: a live view of this
+driver's config, the installation identity, and retained runtime actions. A driver whose
+devices exist only because config names them keeps `context.config` in a
+`hypercolor_driver_support::ConfiguredDevices` and resolves every device through it right
+before opening; discovery metadata may describe such a device but never authorizes one.
 
 Methods you do not need (`pairing`, `controls`, `runtime_cache`, `presentation`,
 `protocol_catalog`) have default implementations that return `None`. Override only what you
