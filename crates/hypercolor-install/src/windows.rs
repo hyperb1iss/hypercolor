@@ -3,21 +3,36 @@
 //! Releases live as immutable units under `%ProgramFiles%\Hypercolor\units`,
 //! and the transaction state under `%ProgramData%\Hypercolor\update`: the
 //! journal, the lock and `active.json`, the pointer that names the active
-//! unit. Both roots are machine-wide. [`WindowsOwnershipPolicy`] proves that
+//! unit. Both roots are machine-wide. `WindowsOwnershipPolicy` proves that
 //! only the principals it trusts can change them, or replace anything on
 //! the path to them, before a transaction relies on either.
+//!
+//! The unit manifest is plain data, so its parser and the unit producer
+//! compile on every host, and a unit produced or checked on another
+//! platform meets the rules the Windows store enforces. Everything that
+//! touches the store is Windows-only.
 
+mod error;
 mod manifest;
+#[cfg(windows)]
 mod ownership;
+#[cfg(windows)]
 mod payload;
+#[cfg(windows)]
 pub(crate) mod store;
+mod unit;
 
+pub use error::ReleasePayloadError;
 pub use manifest::{
     MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
-    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, PermissionClass,
+    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, MAX_VENDOR_SIGNED, PermissionClass,
+    WindowsVendor,
 };
+#[cfg(windows)]
 pub use ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
-pub use payload::{
-    ReleasePayloadError, retain_installed_release_unit, stage_release_payload,
-    validate_release_payload,
+#[cfg(windows)]
+pub use payload::{retain_installed_release_unit, stage_release_payload, validate_release_payload};
+pub use unit::{
+    WINDOWS_DURABLE_STORES_PATH, WindowsUnit, WindowsUnitError, WindowsUnitSources,
+    produce_windows_unit,
 };

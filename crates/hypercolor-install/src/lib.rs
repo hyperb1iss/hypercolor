@@ -6,7 +6,7 @@
 //! systemd service, the `macos` module a launchd agent over a standalone
 //! tree, and the `macos_bundle` module a signed app bundle. The `windows`
 //! module holds the machine-wide store and release units a Windows
-//! platform transacts on. The raw `hypercolor __install-release` command is
+//! platform transacts on; its unit manifest compiles on every host. The raw `hypercolor __install-release` command is
 //! one host of this library; others (an update activator, a daemon that
 //! observes its own installation) link it directly.
 
@@ -26,7 +26,6 @@ mod ownership;
 mod payload;
 #[cfg(unix)]
 mod store;
-#[cfg(windows)]
 pub mod windows;
 #[cfg(windows)]
 use windows::store;
