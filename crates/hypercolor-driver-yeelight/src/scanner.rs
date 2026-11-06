@@ -4,14 +4,14 @@
 //! id, model, supported methods), so a scan never opens a control
 //! connection: each device allows only four.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
@@ -43,6 +43,10 @@ pub mod metadata_key {
 const MIN_COLLECTION_WINDOW: Duration = Duration::from_millis(500);
 const MAX_COLLECTION_WINDOW: Duration = Duration::from_secs(3);
 const RECEIVE_BUFFER_LEN: usize = 2048;
+/// Most lights one search admits. Yeelight homes run from a handful to a
+/// few dozen lights; 256 leaves headroom while capping how many invented
+/// identities one scan can hand the device registry.
+pub const MAX_SEARCH_REPLIES: usize = 256;
 /// Searches are UDP; repeat a few times inside the window.
 const SEARCH_ROUNDS: u32 = 3;
 
@@ -89,8 +93,9 @@ impl YeelightDeviceProfile {
         {
             return name.to_owned();
         }
-        let id = self.reply.id.trim_start_matches("0x");
-        let tail = &id[id.len().saturating_sub(6)..];
+        // Character-wise, so no byte index ever lands inside a character.
+        let digits: Vec<char> = self.reply.id.trim_start_matches("0x").chars().collect();
+        let tail: String = digits[digits.len().saturating_sub(6)..].iter().collect();
         format!(
             "Yeelight {} {}",
             self.reply.model.as_deref().unwrap_or("light"),
@@ -214,6 +219,9 @@ pub async fn search_until(
     window: Duration,
     limit: Option<usize>,
 ) -> Result<Vec<YeelightDeviceProfile>> {
+    let limit = limit.unwrap_or(MAX_SEARCH_REPLIES).min(MAX_SEARCH_REPLIES);
+    let mut sources = HashSet::new();
+    let mut ids = HashSet::new();
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .await
         .context("failed to bind the Yeelight search socket")?;
@@ -247,15 +255,28 @@ pub async fn search_until(
             }
             Ok(Ok((len, source))) => match decode_search_reply(&buffer[..len]) {
                 Ok(reply) => {
-                    if !found.iter().any(|known| known.reply.id == reply.id) {
-                        debug!(%source, id = %reply.id, model = ?reply.model, "Yeelight search reply");
-                        found.push(YeelightDeviceProfile {
-                            reply,
-                            search_port: source.port(),
-                        });
-                        if limit.is_some_and(|limit| found.len() >= limit) {
-                            break;
+                    // A light answers for itself: its control address is
+                    // the reply's source, and one address is one light.
+                    if reply.location.ip() != source.ip() {
+                        debug!(%source, location = %reply.location, "ignoring a Yeelight reply for another address");
+                        continue;
+                    }
+                    if !sources.insert(source.ip()) || !ids.insert(reply.id.clone()) {
+                        continue;
+                    }
+                    debug!(%source, id = %reply.id, model = ?reply.model, "Yeelight search reply");
+                    found.push(YeelightDeviceProfile {
+                        reply,
+                        search_port: source.port(),
+                    });
+                    if found.len() >= limit {
+                        if limit == MAX_SEARCH_REPLIES {
+                            warn!(
+                                limit,
+                                "Yeelight search stopped admitting lights at its limit; add the rest to device_ips"
+                            );
                         }
+                        break;
                     }
                 }
                 Err(error) => debug!(%source, %error, "ignoring non-Yeelight search reply"),

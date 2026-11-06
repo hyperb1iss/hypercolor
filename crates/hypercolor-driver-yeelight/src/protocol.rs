@@ -38,6 +38,38 @@ pub enum ProtocolError {
     Location(String),
     #[error("Yeelight reply is not JSON: {0}")]
     Json(String),
+    #[error("Yeelight id '{0}' is not 0x followed by 1 to 16 hexadecimal digits")]
+    InvalidId(String),
+}
+
+/// Longest `name` or `model` value kept from a search reply, in
+/// characters. The specification caps device names at 64 bytes.
+pub const MAX_TEXT_CHARS: usize = 64;
+
+/// The canonical (lowercase) form of a device id, which the specification
+/// defines as a 64-bit hexadecimal number written `0x...`.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::InvalidId`] for anything else.
+pub fn canonical_id(raw: &str) -> Result<String, ProtocolError> {
+    let invalid = || ProtocolError::InvalidId(raw.chars().take(24).collect());
+    let digits = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .ok_or_else(invalid)?;
+    if digits.is_empty()
+        || digits.len() > 16
+        || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid());
+    }
+    Ok(format!("0x{}", digits.to_ascii_lowercase()))
+}
+
+fn bounded_text(value: &str) -> Option<String> {
+    let text: String = value.chars().take(MAX_TEXT_CHARS).collect();
+    (!text.is_empty()).then_some(text)
 }
 
 /// One answer to the search (or a `NOTIFY` advertisement).
@@ -90,7 +122,7 @@ pub fn decode_search_reply(datagram: &[u8]) -> Result<SearchReply, ProtocolError
             continue;
         };
         let value = value.trim();
-        let present = || (!value.is_empty()).then(|| value.to_owned());
+        let present = || bounded_text(value);
         match name.trim().to_ascii_lowercase().as_str() {
             "location" => location = Some(parse_location(value)?),
             "id" => reply.id = value.to_ascii_lowercase(),
@@ -109,6 +141,7 @@ pub fn decode_search_reply(datagram: &[u8]) -> Result<SearchReply, ProtocolError
     if reply.id.is_empty() {
         return Err(ProtocolError::MissingHeader("id"));
     }
+    reply.id = canonical_id(&reply.id)?;
     Ok(reply)
 }
 
