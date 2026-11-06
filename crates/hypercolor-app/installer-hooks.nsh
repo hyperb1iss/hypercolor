@@ -62,6 +62,10 @@
   ; Turning file system redirection off for these calls runs the native
   ; 64-bit PowerShell instead, the same one the app's Install support
   ; button and a manual elevated run use.
+  ; The broker and this setup log to the machine log directory, outside the
+  ; installed release, which the messages below point at.
+  ReadEnvStr $R2 "ProgramData"
+
   DetailPrint "Installing Hypercolor hardware access (this may take a moment)..."
   ${DisableX64FSRedirection}
   nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -ModuleDestination "$INSTDIR\tools\pawnio\modules" -Silent -ReinstallService'
@@ -85,13 +89,13 @@
   ; as a failure instead of passing as zero.
   ${If} $R1 != 0
     DetailPrint "  The HypercolorSmBus broker is not running. USB and network"
-    DetailPrint "  lighting still work; the setup log is in $INSTDIR\tools\logs."
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but its SMBus hardware broker (HypercolorSmBus) is not running, so motherboard and RAM lighting and CPU temperature are unavailable. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $INSTDIR\tools\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support, or run Start-Service HypercolorSmBus in an elevated PowerShell." /SD IDOK
+    DetailPrint "  lighting still work; the setup log is in $R2\Hypercolor\logs."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but its SMBus hardware broker (HypercolorSmBus) is not running, so motherboard and RAM lighting and CPU temperature are unavailable. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $R2\Hypercolor\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support, or run Start-Service HypercolorSmBus in an elevated PowerShell." /SD IDOK
   ${ElseIf} $R0 != 0
   ${AndIf} $R0 != 3010
     DetailPrint "  Hardware access setup did not complete (exit code $R0). USB and"
-    DetailPrint "  network lighting still work; the setup log is in $INSTDIR\tools\logs."
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but part of its hardware access setup failed (exit code $R0). The SMBus broker is running, but motherboard and RAM lighting and CPU temperature may not work until PawnIO is set up. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $INSTDIR\tools\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support." /SD IDOK
+    DetailPrint "  network lighting still work; the setup log is in $R2\Hypercolor\logs."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but part of its hardware access setup failed (exit code $R0). The SMBus broker is running, but motherboard and RAM lighting and CPU temperature may not work until PawnIO is set up. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $R2\Hypercolor\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support." /SD IDOK
   ${EndIf}
 
   ; Windows Firewall — pre-grant the daemon so mDNS discovery and any
@@ -193,9 +197,20 @@
   nsExec::ExecToLog 'sc.exe delete HypercolorSmBus'
   Pop $0
 
-  ; The broker and the hardware support setup write their logs here, so
-  ; the uninstaller never listed them. The broker is stopped by now.
-  RMDir /r "$INSTDIR\tools\logs"
+  ; The broker and the hardware support setup log to the machine log
+  ; directory, which the installer never listed. The broker is stopped by
+  ; now. Only the four log names are deleted, never the tree, so a link
+  ; planted there cannot steer the elevated uninstaller anywhere else;
+  ; RMDir without /r leaves either directory if anything else is inside.
+  ReadEnvStr $0 "ProgramData"
+  ${If} $0 != ""
+    Delete "$0\Hypercolor\logs\smbus-broker.log"
+    Delete "$0\Hypercolor\logs\smbus-broker.log.1"
+    Delete "$0\Hypercolor\logs\hardware-support.log"
+    Delete "$0\Hypercolor\logs\hardware-support.log.1"
+    RMDir "$0\Hypercolor\logs"
+    RMDir "$0\Hypercolor"
+  ${EndIf}
 
   ; Drop Windows Firewall exceptions so an uninstall doesn't leave
   ; rules pointing at a path that no longer exists.

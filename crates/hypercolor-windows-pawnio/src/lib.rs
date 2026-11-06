@@ -84,7 +84,7 @@ pub use windows::{
     BrokerServiceState, BrokerServiceStatus, CpuTempReader, CpuVendor, PawnIoError, PawnIoResult,
     SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
     WindowsSmBusBusInfo, broker_log_path, broker_service_status, enumerate_smbus_buses,
-    open_smbus_bus, run_smbus_service,
+    machine_log_directory, open_smbus_bus, run_smbus_service,
 };
 
 #[cfg(not(target_os = "windows"))]

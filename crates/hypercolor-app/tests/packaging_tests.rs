@@ -1717,11 +1717,25 @@ fn installer_hook_cleans_up_the_broker_on_uninstall() {
         .find("!insertmacro HYPERCOLOR_STOP_BROKER")
         .expect("uninstall stops the broker");
     let logs_removed = uninstall
-        .find(r#"RMDir /r "$INSTDIR\tools\logs""#)
+        .find(r#"Delete "$0\Hypercolor\logs\smbus-broker.log""#)
         .expect("uninstall removes the logs the broker and setup wrote");
     assert!(
         stopped < logs_removed,
         "the broker holds its log open until it stops"
+    );
+    for step in [
+        r#"ReadEnvStr $0 "ProgramData""#,
+        r#"Delete "$0\Hypercolor\logs\smbus-broker.log.1""#,
+        r#"Delete "$0\Hypercolor\logs\hardware-support.log""#,
+        r#"Delete "$0\Hypercolor\logs\hardware-support.log.1""#,
+        r#"RMDir "$0\Hypercolor\logs""#,
+        r#"RMDir "$0\Hypercolor""#,
+    ] {
+        assert!(uninstall.contains(step), "uninstall is missing {step}");
+    }
+    assert!(
+        !uninstall.contains(r#"RMDir /r "$0"#),
+        "the elevated uninstaller never removes the machine log tree recursively"
     );
 }
 
@@ -1759,7 +1773,8 @@ fn installer_tells_the_user_when_the_broker_is_not_running() {
         "${If} $R1 != 0",
         "MessageBox MB_OK|MB_ICONEXCLAMATION",
         "its SMBus hardware broker (HypercolorSmBus) is not running",
-        r"The setup log is in $INSTDIR\tools\logs.",
+        r#"ReadEnvStr $R2 "ProgramData""#,
+        r"The setup log is in $R2\Hypercolor\logs.",
         "Start-Service HypercolorSmBus",
         "/SD IDOK",
         // A broker that runs after a failed PawnIO step is not the whole
@@ -1859,7 +1874,7 @@ fn smbus_service_installer_bounds_waits_and_explains_a_failed_start() {
         "Write-Host \"  Service: $(Get-ServiceExitSummary $Name)\"",
         "Get-Content -LiteralPath $logPath -Tail 20",
         "throw \"$Name did not start: $failure\"",
-        "Join-Path (Split-Path -Parent $BrokerPath) \"logs\\smbus-broker.log\"",
+        "Join-Path $env:ProgramData \"Hypercolor\\logs\\smbus-broker.log\"",
         "sc.exe failureflag $ServiceName 1",
         "is still marked for deletion",
     ] {
@@ -1908,13 +1923,27 @@ fn hardware_setup_registers_the_broker_even_when_pawnio_fails() {
     assert!(broker_caught < reboot && reboot < failed);
 }
 
-/// The hardware setup keeps a transcript beside the broker's own log, which
-/// outlives the installer's details pane and lands in the diagnostics
-/// bundle and `diagnose-windows.ps1`.
+/// The hardware setup keeps a transcript beside the broker's own log, in the
+/// machine log directory outside the installed release, which outlives the
+/// installer's details pane and lands in the diagnostics bundle and
+/// `diagnose-windows.ps1`. The elevated script writes there only after the
+/// broker has created or checked the directory.
 #[test]
 fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
+    let script = INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1;
+    let position = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("hardware setup is missing {needle}"))
+    };
+    let prepared = position("-ArgumentList \"--prepare-log-directory\"");
+    let gated = position("if ($logDirectoryReady) {");
+    let transcript = position("Start-Transcript -LiteralPath $transcriptPath -Append");
+    assert!(prepared < gated && gated < transcript);
     for step in [
-        "$transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) \"logs\\hardware-support.log\"",
+        "$logDirectory = Join-Path $env:ProgramData \"Hypercolor\\logs\"",
+        "$transcriptPath = Join-Path $logDirectory \"hardware-support.log\"",
+        "$logDirectoryReady = $prepare.ExitCode -eq 0",
         "Move-Item -LiteralPath $transcriptPath -Destination \"$transcriptPath.1\" -Force",
         "Start-Transcript -LiteralPath $transcriptPath -Append",
         "Stop-Transcript",
@@ -1925,6 +1954,7 @@ fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
         );
     }
     for step in [
+        "$machineLogDir = Join-Path $env:ProgramData \"Hypercolor\\logs\"",
         "foreach ($log in @(\"smbus-broker.log\", \"hardware-support.log\"))",
         "service-specific exit code $($broker.ServiceSpecificExitCode)",
         "ProviderName = \"Service Control Manager\"",

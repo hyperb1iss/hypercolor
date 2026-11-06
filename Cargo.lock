@@ -5282,9 +5282,11 @@ name = "hypercolor-windows-pawnio"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "hypercolor-platform-fs",
  "libloading 0.9.0",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

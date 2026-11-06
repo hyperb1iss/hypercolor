@@ -8,7 +8,7 @@ use hypercolor_daemon::domain::hardware_broker_diagnostics::{
 use hypercolor_types::host_software::{HardwareBrokerReport, HardwareBrokerState};
 
 const REMEDY: &str = "Start it with Start-Service HypercolorSmBus.";
-const LOG: &str = r"C:\Program Files\Hypercolor\tools\logs\smbus-broker.log";
+const LOG: &str = r"C:\ProgramData\Hypercolor\logs\smbus-broker.log";
 
 fn report(state: HardwareBrokerState) -> HardwareBrokerReport {
     HardwareBrokerReport {

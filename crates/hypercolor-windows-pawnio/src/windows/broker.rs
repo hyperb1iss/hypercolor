@@ -19,10 +19,10 @@
 //!   at the HAL boundary. Upstream consumers decide whether to retry or
 //!   degrade.
 //! - **Every start and stop is on record.** As a service the broker logs
-//!   to `logs\smbus-broker.log` beside its executable: the PawnIO runtime
-//!   and modules it found, each state it reports, why it stopped (Stop,
-//!   system shutdown, or a failure with its exit code), any panic, and
-//!   the first request failure of each kind. Failures after the control
+//!   to `smbus-broker.log` in `%ProgramData%\Hypercolor\logs`: the
+//!   PawnIO runtime and modules it found, each state it reports, why it
+//!   stopped (Stop, system shutdown, or a failure with its exit code), any
+//!   panic, and the first request failure of each kind. Failures after the control
 //!   handler registers report `SERVICE_STOPPED` with a service-specific
 //!   exit code instead of leaving the service in `START_PENDING`.
 //!
@@ -61,7 +61,8 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
-use super::service_log::{broker_log_path, open_broker_log};
+use super::log_directory::open_machine_log_directory;
+use super::service_log::open_broker_log;
 use super::{
     CpuVendor, IOCTL_READ_MSR, IOCTL_READ_SMN, PAWNIO_MODULE_AMD_FAMILY_17,
     PAWNIO_MODULE_INTEL_MSR, PawnIoError, PawnIoHandle, PawnIoResult, PawnIoRuntime,
@@ -251,6 +252,14 @@ pub(super) fn run_smbus_service() -> Result<()> {
         return run_console();
     }
 
+    // The elevated hardware setup keeps its transcript in the same
+    // directory, so it borrows the broker's checked open instead of trusting
+    // a path a standard user could have prepared.
+    if std::env::args_os().any(|arg| arg == "--prepare-log-directory") {
+        open_machine_log_directory().context("the machine log directory cannot be used safely")?;
+        return Ok(());
+    }
+
     let log_path = init_service_tracing();
     install_panic_logger();
     info!(
@@ -278,7 +287,7 @@ pub(super) fn run_smbus_service() -> Result<()> {
 
 fn print_help() {
     println!(
-        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon.\nAs a service it logs to logs\\smbus-broker.log beside this executable."
+        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console | --prepare-log-directory]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon.\nAs a service it logs to %ProgramData%\\Hypercolor\\logs\\smbus-broker.log.\n--prepare-log-directory creates that directory, or checks the one there, and\nexits non-zero when a standard user could change it."
     );
 }
 
@@ -294,16 +303,13 @@ fn init_console_tracing() {
         .try_init();
 }
 
-/// Route tracing to the broker log beside the executable. A service has no
-/// console, so without this every message, failures included, is dropped.
-/// Falls back to console output when the log cannot be opened, which keeps
-/// a misconfigured install from also losing the broker itself.
+/// Route tracing to the broker log in the machine log directory. A service
+/// has no console, so without this every message, failures included, is
+/// dropped. Falls back to console output when the log cannot be opened,
+/// which keeps a misconfigured install from also losing the broker itself.
 fn init_service_tracing() -> Option<PathBuf> {
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| broker_log_path(&exe))?;
-    match open_broker_log(&path) {
-        Ok(file) => {
+    match open_broker_log() {
+        Ok((path, file)) => {
             let _ = tracing_subscriber::fmt()
                 .with_env_filter(broker_env_filter())
                 .with_target(true)
