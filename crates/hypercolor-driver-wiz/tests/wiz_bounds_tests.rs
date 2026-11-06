@@ -175,3 +175,20 @@ fn debug_output_redacts_the_signing_key() {
     assert!(debug.contains("<redacted>"), "{debug}");
     assert!(format!("{:?}", WizConfig::default()).contains("signing_key: None"));
 }
+
+#[tokio::test]
+async fn extreme_retry_policies_do_not_overflow() -> TestResult {
+    let profiles = WizScanner::new(WizScanOptions {
+        unicast_targets: Vec::new(),
+        broadcast_targets: Vec::new(),
+        timeout: Duration::from_millis(100),
+        request_policy: RequestPolicy {
+            reply_timeout: Duration::MAX,
+            attempts: u32::MAX,
+        },
+    })
+    .scan_profiles()
+    .await?;
+    assert!(profiles.is_empty());
+    Ok(())
+}

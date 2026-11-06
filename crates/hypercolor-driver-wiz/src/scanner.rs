@@ -45,6 +45,9 @@ const RECEIVE_BUFFER_LEN: usize = 2048;
 pub const MAX_DISCOVERY_CANDIDATES: usize = 512;
 /// Probes in flight at once, each one socket and two short requests.
 pub const MAX_CONCURRENT_PROBES: usize = 32;
+/// Longest probe round the scan waits for, whatever retry policy a caller
+/// passes.
+const MAX_PROBE_ROUND: Duration = Duration::from_secs(10);
 
 /// Where and how a scan looks for devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,8 +251,18 @@ impl WizScanner {
             .options
             .request_policy
             .reply_timeout
-            .saturating_mul(self.options.request_policy.attempts.max(1) * 2);
-        let deadline = started + self.options.timeout.max(window + round);
+            .saturating_mul(
+                self.options
+                    .request_policy
+                    .attempts
+                    .max(1)
+                    .saturating_mul(2),
+            )
+            .min(MAX_PROBE_ROUND);
+        let budget = self.options.timeout.max(window.saturating_add(round));
+        let deadline = started
+            .checked_add(budget)
+            .unwrap_or(started + MAX_PROBE_ROUND);
         let policy = self.options.request_policy;
         let mut pending = targets.into_iter();
         let mut tasks = JoinSet::new();
