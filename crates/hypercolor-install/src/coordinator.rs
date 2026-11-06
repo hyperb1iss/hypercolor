@@ -180,6 +180,15 @@ pub trait InstallPlatform {
     fn take_restored_release(&mut self) -> Option<RestoredRelease> {
         None
     }
+
+    /// The release a stop had to end by force since this was last asked,
+    /// taken so the coordinator journals each one once.
+    ///
+    /// The default names none: a platform whose service manager stops the
+    /// service has nothing to report.
+    fn take_forced_stop(&mut self) -> Option<UnitId> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -373,7 +382,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 .ok_or(InstallCoordinatorError::MissingNextAction)?;
             if action == InstallAction::Commit {
                 journal.advance(InstallDisposition::Committed, None)?;
-                self.store.write_journal(&journal, lock)?;
+                self.persist(&mut journal, lock)?;
                 return Ok(InstallOutcome::Committed {
                     active_unit: journal.candidate_unit,
                 });
@@ -390,7 +399,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                                 action
                             };
                         journal.advance(InstallDisposition::Forward, Some(next_action))?;
-                        self.store.write_journal(&journal, lock)?;
+                        self.persist(&mut journal, lock)?;
                     }
                     Err(StepError::Effect(error)) => {
                         let failure = truncate_detail(error.to_string());
@@ -402,7 +411,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                             InstallAction::RestorePriorLayout
                         };
                         journal.advance(InstallDisposition::Rollback, Some(next_action))?;
-                        self.store.write_journal(&journal, lock)?;
+                        self.persist(&mut journal, lock)?;
                         return self.drive_rollback(journal, lock);
                     }
                     Err(StepError::Fatal(error)) => return Err(error),
@@ -422,7 +431,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             match step {
                 Ok(()) => {
                     journal.advance(InstallDisposition::Forward, Some(next_forward(action)?))?;
-                    self.store.write_journal(&journal, lock)?;
+                    self.persist(&mut journal, lock)?;
                 }
                 Err(StepError::Effect(error)) => {
                     let failure = truncate_detail(error.to_string());
@@ -430,7 +439,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                         RollbackEntry::Action(next_action) => {
                             journal.failure = Some(failure);
                             journal.advance(InstallDisposition::Rollback, Some(next_action))?;
-                            self.store.write_journal(&journal, lock)?;
+                            self.persist(&mut journal, lock)?;
                             return self.drive_rollback(journal, lock);
                         }
                         RollbackEntry::Abandon(detail) => {
@@ -444,6 +453,22 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 Err(StepError::Fatal(error)) => return Err(error),
             }
         }
+    }
+
+    /// Durably write `journal`, with any forced stop the platform has to
+    /// report since the last write.
+    fn persist(
+        &mut self,
+        journal: &mut InstallJournalV1,
+        lock: &super::store::InstallLock,
+    ) -> Result<(), InstallCoordinatorError> {
+        if let Some(unit) = self.platform.take_forced_stop()
+            && !journal.forced_stops.contains(&unit)
+        {
+            journal.forced_stops.push(unit);
+        }
+        self.store.write_journal(journal, lock)?;
+        Ok(())
     }
 
     fn capture_candidate_owner_receipt(
@@ -576,7 +601,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 .ok_or(InstallCoordinatorError::MissingNextAction)?;
             if action == InstallAction::FinishRollback {
                 journal.advance(InstallDisposition::RolledBack, None)?;
-                self.store.write_journal(&journal, lock)?;
+                self.persist(&mut journal, lock)?;
                 return Ok(InstallOutcome::RolledBack {
                     active_unit: journal.prior_active_unit,
                     failure: journal.failure.unwrap_or_default(),
@@ -595,7 +620,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                             action
                         };
                         journal.advance(InstallDisposition::Rollback, Some(next_action))?;
-                        self.store.write_journal(&journal, lock)?;
+                        self.persist(&mut journal, lock)?;
                     }
                     Err(StepError::Effect(error) | StepError::Fatal(error)) => return Err(error),
                     Err(StepError::Abandon(detail)) => {
@@ -614,7 +639,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                         });
                     }
                     journal.advance(InstallDisposition::Rollback, Some(next_rollback(action)?))?;
-                    self.store.write_journal(&journal, lock)?;
+                    self.persist(&mut journal, lock)?;
                 }
                 Err(StepError::Effect(error) | StepError::Fatal(error)) => return Err(error),
                 Err(StepError::Abandon(detail)) => {
