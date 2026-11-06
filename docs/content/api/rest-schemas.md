@@ -1280,13 +1280,14 @@ Detailed result from a completed discovery scan.
 
 Per-scanner diagnostics from a completed discovery scan.
 
-| Field | Type | Required |
-| --- | --- | --- |
-| `discovered` | integer | yes |
-| `duration_ms` | integer (int64) | yes |
-| `error` | string or null | no |
-| `scanner` | string | yes |
-| `status` | string | yes |
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `discovered` | integer | yes |  |
+| `duration_ms` | integer (int64) | yes |  |
+| `error` | string or null | no |  |
+| `gaps` | array of string | no | What a `partial` scan may have missed. Its devices stay tracked. |
+| `scanner` | string | yes |  |
+| `status` | string | yes | `ok`, `partial` when the scan may have missed devices, or `error`. |
 
 <div class="schema-anchor" id="ForgetDeviceRequest"></div>
 

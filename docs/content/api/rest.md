@@ -584,6 +584,10 @@ effective output state and disabled reason.
 {% <api_endpoint method="POST" path="/api/v1/devices/discover" id="discover_devices" summary="Start device discovery"> %}
 Runs a discovery scan across every backend and returns the newly found devices.
 
+Each entry in `scanners` has a `status` of `ok`, `partial`, or `error`. A
+`partial` scanner may have missed devices and lists why in `gaps`: what it did
+see still applies, and nothing of its devices is reported vanished.
+
 **Request body** (`application/json`, optional): [`DiscoverRequest`](@/api/rest-schemas.md#DiscoverRequest).
 
 | Field | Type | Required | Description |

@@ -20,8 +20,9 @@ class DiscoveryScannerResult:
         discovered (int):
         duration_ms (int):
         scanner (str):
-        status (str):
+        status (str): `ok`, `partial` when the scan may have missed devices, or `error`.
         error (None | str | Unset):
+        gaps (list[str] | Unset): What a `partial` scan may have missed. Its devices stay tracked.
     """
 
     discovered: int
@@ -29,6 +30,7 @@ class DiscoveryScannerResult:
     scanner: str
     status: str
     error: None | str | Unset = UNSET
+    gaps: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,6 +48,10 @@ class DiscoveryScannerResult:
         else:
             error = self.error
 
+        gaps: list[str] | Unset = UNSET
+        if not isinstance(self.gaps, Unset):
+            gaps = self.gaps
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -58,6 +64,8 @@ class DiscoveryScannerResult:
         )
         if error is not UNSET:
             field_dict["error"] = error
+        if gaps is not UNSET:
+            field_dict["gaps"] = gaps
 
         return field_dict
 
@@ -81,12 +89,15 @@ class DiscoveryScannerResult:
 
         error = _parse_error(d.pop("error", UNSET))
 
+        gaps = cast(list[str], d.pop("gaps", UNSET))
+
         discovery_scanner_result = cls(
             discovered=discovered,
             duration_ms=duration_ms,
             scanner=scanner,
             status=status,
             error=error,
+            gaps=gaps,
         )
 
         discovery_scanner_result.additional_properties = d
