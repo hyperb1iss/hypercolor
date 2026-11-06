@@ -87,7 +87,7 @@ const fn tree(path: &'static str, source: Source) -> Placement {
 /// The unit tree: the flat layout the installer has always laid out, as
 /// `crates/hypercolor-app/tauri*.conf.json` describe it, plus the notices
 /// and the store inventory a unit carries like every other release.
-pub(super) const LAYOUT: [Placement; 25] = [
+pub(super) const LAYOUT: [Placement; 26] = [
     file("hypercolor-app.exe", Source::Built("hypercolor-app.exe")),
     file(
         "hypercolor-daemon.exe",
@@ -107,6 +107,10 @@ pub(super) const LAYOUT: [Placement; 25] = [
     file(
         "tools/hypercolor-smbus-service.exe",
         Source::Built("hypercolor-smbus-service.exe"),
+    ),
+    file(
+        "tools/hypercolor-update-bootstrap.exe",
+        Source::Built("hypercolor-update-bootstrap.exe"),
     ),
     file(
         "tools/hypercolor-windows-helper.exe",

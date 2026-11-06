@@ -6,7 +6,7 @@
 //!     [--durable-stores <file>]... [--third-party-notices <dir>]
 //! ```
 //!
-//! `--bin-dir` holds the five signed release executables, `--stage-dir` the
+//! `--bin-dir` holds the six signed release executables, `--stage-dir` the
 //! assets `scripts/stage-app-bundle-assets.ps1` stages, and `--source-root`
 //! the engine checkout. The unit lands at `--output`, which must not exist,
 //! and the unit digest is printed on standard output.

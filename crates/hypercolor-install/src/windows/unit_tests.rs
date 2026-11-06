@@ -476,7 +476,7 @@ fn the_unit_layout_is_the_tree_the_installer_lays_out() {
             }
         }
     }
-    let unit_only = ["LICENSE", "NOTICE"];
+    let unit_only = ["LICENSE", "NOTICE", "tools/hypercolor-update-bootstrap.exe"];
     let layout: BTreeSet<String> = LAYOUT
         .iter()
         .map(|placement| placement.path.to_owned())
