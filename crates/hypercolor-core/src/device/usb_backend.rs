@@ -1034,7 +1034,7 @@ impl UsbBackend {
                 Self::open_driver_usb_transport(pending, usb, binding, input).await
             }
             TransportType::UsbSerial { baud_rate } => {
-                Self::open_serial_transport(pending, baud_rate)
+                Self::open_serial_transport(pending, baud_rate).await
             }
             TransportType::I2cSmBus { address } => {
                 let _ = usb;
@@ -1126,7 +1126,7 @@ impl UsbBackend {
         Ok(Box::new(UsbVendorTransport::new(device)))
     }
 
-    fn open_serial_transport(
+    async fn open_serial_transport(
         pending: &PendingUsbDevice,
         baud_rate: u32,
     ) -> Result<Box<dyn Transport>> {
@@ -1136,6 +1136,7 @@ impl UsbBackend {
             baud_rate,
             pending.serial.as_deref(),
         )
+        .await
         .with_context(|| {
             format!(
                 "failed to open serial transport for {:04X}:{:04X} (serial={})",

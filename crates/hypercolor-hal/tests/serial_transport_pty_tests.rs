@@ -19,7 +19,7 @@ use hypercolor_hal::drivers::nollie::{NollieModel, NollieProtocol};
 use hypercolor_hal::protocol::Protocol;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
-use serial_fake::{Ticker, TrapStream, focus_echo};
+use serial_fake::{Ticker, focus_echo, trapped_transport};
 use tokio::io::AsyncReadExt;
 use tokio_serial::SerialStream;
 
@@ -81,8 +81,7 @@ async fn spawn_stalled_send(
 #[tokio::test(flavor = "current_thread")]
 async fn nollie_cdc_frame_reaches_the_tty_without_a_drain() {
     let (mut device, port) = pty_pair();
-    let (stream, _probe) = TrapStream::new(port);
-    let transport = UsbSerialTransport::from_stream("pty-nollie", stream);
+    let transport = trapped_transport("pty-nollie", port);
     let frame = nollie_8_cdc_frame();
 
     let started = Instant::now();
@@ -113,8 +112,7 @@ async fn nollie_cdc_frame_reaches_the_tty_without_a_drain() {
 #[tokio::test(flavor = "current_thread")]
 async fn dygma_focus_handshake_uses_each_reply_as_its_barrier() {
     let (device, port) = pty_pair();
-    let (stream, _probe) = TrapStream::new(port);
-    let transport = UsbSerialTransport::from_stream("pty-dygma", stream);
+    let transport = trapped_transport("pty-dygma", port);
     let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
     let commands = protocol.init_sequence();
     assert!(
@@ -140,14 +138,12 @@ async fn dygma_focus_handshake_uses_each_reply_as_its_barrier() {
 #[tokio::test(flavor = "current_thread")]
 async fn stalled_tty_does_not_hold_up_another_device_on_the_runtime() {
     let (_wedged_device, wedged_port) = pty_pair();
-    let wedged = Arc::new(
-        UsbSerialTransport::from_stream("pty-wedged", wedged_port).with_write_timeout(NEVER),
-    );
+    let wedged = Arc::new(trapped_transport("pty-wedged", wedged_port).with_write_timeout(NEVER));
     let ticker = Ticker::start();
     let stalled = spawn_stalled_send(&wedged).await;
 
     let (healthy_device, healthy_port) = pty_pair();
-    let healthy = UsbSerialTransport::from_stream("pty-healthy", healthy_port);
+    let healthy = trapped_transport("pty-healthy", healthy_port);
     let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
     let commands = protocol.init_sequence();
     let rounds = 10;
@@ -192,8 +188,7 @@ async fn stalled_tty_does_not_hold_up_another_device_on_the_runtime() {
 async fn write_deadline_fails_a_wedged_tty() {
     let write_timeout = Duration::from_millis(100);
     let (_device, port) = pty_pair();
-    let transport =
-        UsbSerialTransport::from_stream("pty-deadline", port).with_write_timeout(write_timeout);
+    let transport = trapped_transport("pty-deadline", port).with_write_timeout(write_timeout);
     let ticker = Ticker::start();
 
     let started = Instant::now();
@@ -222,7 +217,7 @@ async fn write_deadline_fails_a_wedged_tty() {
 #[tokio::test(flavor = "current_thread")]
 async fn hangup_surfaces_as_a_write_error() {
     let (device, port) = pty_pair();
-    let transport = UsbSerialTransport::from_stream("pty-hangup", port);
+    let transport = trapped_transport("pty-hangup", port);
     transport
         .send(b"before unplug")
         .await
@@ -248,7 +243,7 @@ async fn hangup_surfaces_as_a_write_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn close_releases_the_tty_before_returning() {
     let (mut device, port) = pty_pair();
-    let transport = UsbSerialTransport::from_stream("pty-close", port);
+    let transport = trapped_transport("pty-close", port);
 
     transport.close().await.expect("close should succeed");
 

@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 
 use hypercolor_hal::transport::Transport;
 use hypercolor_hal::transport::TransportError;
-use hypercolor_hal::transport::serial::{CLOSE_TIMEOUT, DEFAULT_WRITE_TIMEOUT, UsbSerialTransport};
-use serial_fake::{Ticker, TrapStream, wait_released};
+use hypercolor_hal::transport::serial::{
+    CLOSE_TIMEOUT, DEFAULT_WRITE_TIMEOUT, RELEASE_WAIT_TIMEOUT, UsbSerialTransport,
+};
+use serial_fake::{Ticker, TrapStream, trapped_transport, wait_released};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Slack on top of a deadline before a timing assertion counts as a hang.
@@ -23,8 +25,7 @@ fn millis(duration: Duration) -> u64 {
 #[tokio::test]
 async fn send_receive_reads_until_focus_terminator() {
     let (client, mut server) = tokio::io::duplex(256);
-    let (stream, _probe) = TrapStream::new(client);
-    let transport = UsbSerialTransport::from_stream("test-focus", stream);
+    let transport = trapped_transport("test-focus", client);
 
     let server_task = tokio::spawn(async move {
         let mut command = [0_u8; 16];
@@ -55,7 +56,7 @@ async fn send_receive_reads_until_focus_terminator() {
 #[tokio::test]
 async fn receive_times_out_when_terminator_never_arrives() {
     let (client, _server) = tokio::io::duplex(64);
-    let transport = UsbSerialTransport::from_stream("test-timeout", client);
+    let transport = trapped_transport("test-timeout", client);
 
     let error = transport
         .receive(Duration::from_millis(25))
@@ -68,7 +69,7 @@ async fn receive_times_out_when_terminator_never_arrives() {
 #[tokio::test]
 async fn receive_accepts_whitespace_wrapped_terminator_and_empty_ack() {
     let (client, mut server) = tokio::io::duplex(64);
-    let transport = UsbSerialTransport::from_stream("test-empty-ack", client);
+    let transport = trapped_transport("test-empty-ack", client);
 
     tokio::spawn(async move {
         server
@@ -88,7 +89,7 @@ async fn receive_accepts_whitespace_wrapped_terminator_and_empty_ack() {
 #[tokio::test]
 async fn receive_returns_closed_when_peer_disconnects_mid_response() {
     let (client, mut server) = tokio::io::duplex(64);
-    let transport = UsbSerialTransport::from_stream("test-disconnect", client);
+    let transport = trapped_transport("test-disconnect", client);
 
     tokio::spawn(async move {
         server
@@ -109,8 +110,7 @@ async fn receive_returns_closed_when_peer_disconnects_mid_response() {
 #[tokio::test]
 async fn sends_queue_frames_without_flushing_or_waiting_for_the_device() {
     let (client, mut device) = tokio::io::duplex(8 * 1024);
-    let (stream, _probe) = TrapStream::new(client);
-    let transport = UsbSerialTransport::from_stream("test-frame", stream);
+    let transport = trapped_transport("test-frame", client);
     let packets = (0_u8..49).map(|index| vec![index; 64]).collect::<Vec<_>>();
 
     for packet in &packets {
@@ -131,7 +131,7 @@ async fn sends_queue_frames_without_flushing_or_waiting_for_the_device() {
 #[tokio::test]
 async fn write_error_surfaces_and_fails_the_transport() {
     let (client, device) = tokio::io::duplex(64);
-    let transport = UsbSerialTransport::from_stream("test-unplug", client);
+    let transport = trapped_transport("test-unplug", client);
     drop(device);
 
     let error = transport
@@ -157,8 +157,7 @@ async fn write_error_surfaces_and_fails_the_transport() {
 async fn write_deadline_fails_a_stalled_transport_without_parking_the_runtime() {
     let write_timeout = Duration::from_millis(50);
     let (client, _device) = tokio::io::duplex(64);
-    let transport =
-        UsbSerialTransport::from_stream("test-stall", client).with_write_timeout(write_timeout);
+    let transport = trapped_transport("test-stall", client).with_write_timeout(write_timeout);
     let ticker = Ticker::start();
 
     let started = Instant::now();
@@ -193,7 +192,7 @@ async fn write_deadline_fails_a_stalled_transport_without_parking_the_runtime() 
 #[tokio::test(start_paused = true)]
 async fn stalled_send_reports_the_default_write_deadline() {
     let (client, _device) = tokio::io::duplex(64);
-    let transport = UsbSerialTransport::from_stream("test-default-deadline", client);
+    let transport = trapped_transport("test-default-deadline", client);
 
     let error = transport
         .send(&[0x5A; 1024])
@@ -209,10 +208,8 @@ async fn stalled_send_reports_the_default_write_deadline() {
 #[tokio::test(flavor = "current_thread")]
 async fn close_interrupts_a_stalled_write() {
     let (client, _device) = tokio::io::duplex(64);
-    let transport = Arc::new(
-        UsbSerialTransport::from_stream("test-close-stalled-write", client)
-            .with_write_timeout(NEVER),
-    );
+    let transport =
+        Arc::new(trapped_transport("test-close-stalled-write", client).with_write_timeout(NEVER));
     let writer = tokio::spawn({
         let transport = Arc::clone(&transport);
         async move { transport.send(&[0x5A; 1024]).await }
@@ -245,10 +242,7 @@ async fn close_interrupts_a_stalled_write() {
 #[tokio::test(flavor = "current_thread")]
 async fn close_interrupts_a_pending_receive() {
     let (client, _device) = tokio::io::duplex(64);
-    let transport = Arc::new(UsbSerialTransport::from_stream(
-        "test-close-pending-read",
-        client,
-    ));
+    let transport = Arc::new(trapped_transport("test-close-pending-read", client));
     let reader = tokio::spawn({
         let transport = Arc::clone(&transport);
         async move { transport.receive(NEVER).await }
@@ -271,7 +265,8 @@ async fn close_interrupts_a_pending_receive() {
 async fn close_releases_the_port_before_returning() {
     let (client, _device) = tokio::io::duplex(64);
     let (stream, probe) = TrapStream::new(client);
-    let transport = UsbSerialTransport::from_stream("test-close-release", stream);
+    let transport =
+        UsbSerialTransport::from_stream("test-close-release", stream).expect("release service");
     transport.send(b"last frame").await.expect("send");
 
     transport.close().await.expect("close should succeed");
@@ -290,7 +285,8 @@ async fn close_releases_the_port_before_returning() {
 async fn close_is_bounded_when_the_port_release_blocks() {
     let (client, _device) = tokio::io::duplex(64);
     let (stream, probe, release) = TrapStream::holding_release(client);
-    let transport = UsbSerialTransport::from_stream("test-close-drain", stream);
+    let transport =
+        UsbSerialTransport::from_stream("test-close-drain", stream).expect("release service");
     let ticker = Ticker::start();
 
     let started = Instant::now();
@@ -324,7 +320,7 @@ async fn close_is_bounded_when_the_port_release_blocks() {
 async fn dropping_an_open_transport_releases_the_port_off_the_runtime() {
     let (client, _device) = tokio::io::duplex(64);
     let (stream, probe, release) = TrapStream::holding_release(client);
-    let transport = UsbSerialTransport::from_stream("test-drop", stream);
+    let transport = UsbSerialTransport::from_stream("test-drop", stream).expect("release service");
     let ticker = Ticker::start();
 
     let started = Instant::now();
@@ -342,4 +338,43 @@ async fn dropping_an_open_transport_releases_the_port_off_the_runtime() {
         .send(())
         .expect("release worker should still be waiting");
     wait_released(&probe, SLACK).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reopening_a_port_waits_for_its_previous_release() {
+    let path = "test-release-barrier";
+    let (client, _device) = tokio::io::duplex(64);
+    let (stream, probe, release) = TrapStream::holding_release(client);
+    let transport = UsbSerialTransport::from_stream(path, stream).expect("release service");
+    UsbSerialTransport::wait_for_release(path, Duration::ZERO)
+        .await
+        .expect("an open port has no release in flight");
+
+    drop(transport);
+    let error = UsbSerialTransport::wait_for_release(path, Duration::from_millis(50))
+        .await
+        .expect_err("the next open must not overlap a release still in flight");
+    assert!(
+        matches!(&error, TransportError::NotReady { detail } if detail.contains(path)),
+        "the barrier should name the port it is waiting on: {error:?}"
+    );
+    UsbSerialTransport::wait_for_release("test-release-barrier-other", Duration::ZERO)
+        .await
+        .expect("the barrier only holds back the same path");
+
+    let waiter = tokio::spawn(UsbSerialTransport::wait_for_release(
+        path,
+        RELEASE_WAIT_TIMEOUT,
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiter.is_finished(), "the reopen should still be waiting");
+    release
+        .send(())
+        .expect("release worker should still be waiting");
+    tokio::time::timeout(SLACK, waiter)
+        .await
+        .expect("the reopen should proceed once the release finishes")
+        .expect("waiter task should not panic")
+        .expect("the barrier should clear");
+    assert!(probe.released());
 }

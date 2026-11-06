@@ -6,19 +6,22 @@
 //! port drains, has no timeout, and discards its own error, so this
 //! transport never calls it. The tty layer keeps bytes in write order, a
 //! write deadline catches a device that stops accepting data, and protocols
-//! that need a barrier get one from the device's reply.
+//! that need a barrier get one from the device's reply. Ports are released
+//! off the runtime by the [`release`] service.
+
+mod release;
 
 use std::future::Future;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tokio_serial::{SerialPortBuilderExt, SerialPortType};
 use tracing::{debug, trace, warn};
 
 use crate::transport::{Transport, TransportError};
+use release::ReleaseService;
 
 /// Default bound on one send before the port counts as wedged.
 ///
@@ -31,9 +34,17 @@ pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 ///
 /// Closing a tty waits in the kernel until queued output drains, for up to
 /// the driver's closing wait (30 seconds by default) when the device is
-/// wedged. The release runs on a retained worker thread; once this bound
-/// passes, close returns and the release finishes in the background.
+/// wedged. The release runs on its own thread; once this bound passes,
+/// close returns and the release finishes in the background.
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Bound on how long [`UsbSerialTransport::open`] waits for an earlier
+/// session's release of the same port to finish.
+///
+/// It stays well inside the default five second connect budget, so a port
+/// whose old descriptor is still draining fails the attempt with a clear
+/// error and the lifecycle retries later.
+pub const RELEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 trait AsyncSerialIo: AsyncRead + AsyncWrite + Send + Unpin {}
 
@@ -50,21 +61,29 @@ pub struct UsbSerialTransport {
     /// operation still waiting on the port.
     closed: watch::Sender<bool>,
     write_timeout: Duration,
+    release: &'static ReleaseService,
 }
 
 impl UsbSerialTransport {
     /// Discover and open a serial port for one USB device.
     ///
+    /// Before opening the port, this starts the release service and waits
+    /// up to [`RELEASE_WAIT_TIMEOUT`] for an earlier session's release of the
+    /// same path to finish.
+    ///
     /// # Errors
     ///
-    /// Returns [`TransportError`] if no matching serial port can be found or
-    /// the port cannot be opened.
-    pub fn open(
+    /// Returns [`TransportError`] if no matching serial port can be found,
+    /// the release service cannot start, an earlier release of the port is
+    /// still running ([`TransportError::NotReady`]), or the port cannot be
+    /// opened.
+    pub async fn open(
         vendor_id: u16,
         product_id: u16,
         baud_rate: u32,
         serial: Option<&str>,
     ) -> Result<Self, TransportError> {
+        let release = release::service()?;
         let ports = tokio_serial::available_ports().map_err(|error| TransportError::IoError {
             detail: format!("failed to enumerate serial ports: {error}"),
         })?;
@@ -108,6 +127,7 @@ impl UsbSerialTransport {
             });
         };
 
+        release::wait_for_release(&path, RELEASE_WAIT_TIMEOUT).await?;
         let stream = tokio_serial::new(path.clone(), baud_rate)
             .open_native_async()
             .map_err(|error| map_serial_open_error(&error, &path))?;
@@ -121,21 +141,49 @@ impl UsbSerialTransport {
             "opened USB serial transport"
         );
 
-        Ok(Self::from_stream(path, stream))
+        Ok(Self::with_release(path, stream, release))
     }
 
     /// Construct a serial transport from an existing async stream.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError::IoError`] when the process cannot start its
+    /// serial release service. `stream` is then dropped on the calling
+    /// thread before anything has been written to it; [`Self::open`] starts
+    /// the service before it opens a port, so it never does this.
     pub fn from_stream(
         path: impl Into<String>,
         stream: impl AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    ) -> Result<Self, TransportError> {
+        let release = release::service()?;
+        Ok(Self::with_release(path, stream, release))
+    }
+
+    fn with_release(
+        path: impl Into<String>,
+        stream: impl AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        release: &'static ReleaseService,
     ) -> Self {
         Self {
             path: path.into(),
             stream: tokio::sync::Mutex::new(Some(Box::new(stream))),
             closed: watch::Sender::new(false),
             write_timeout: DEFAULT_WRITE_TIMEOUT,
+            release,
         }
+    }
+
+    /// Wait until every release of `path` handed off so far has closed its
+    /// descriptor, for at most `timeout`. [`Self::open`] runs this before it
+    /// opens a port.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError::NotReady`] when a release is still running
+    /// after `timeout`.
+    pub async fn wait_for_release(path: &str, timeout: Duration) -> Result<(), TransportError> {
+        release::wait_for_release(path, timeout).await
     }
 
     /// Bound each send by `timeout` instead of [`DEFAULT_WRITE_TIMEOUT`].
@@ -194,21 +242,22 @@ impl UsbSerialTransport {
             })
             .await;
 
-        if let Err(error) = &result
-            && !matches!(error, TransportError::Closed)
-        {
-            // A write that failed or stalled partway may have left part of a
-            // packet queued for the device, so nothing after it would frame
-            // correctly. Fail the transport and let close release the port.
-            debug!(
-                path = %self.path,
-                error = %error,
-                "usb serial write failed; transport is no longer usable"
-            );
-            self.closed.send_replace(true);
+        match result {
+            Ok(()) | Err(TransportError::Closed) => result,
+            Err(error) => {
+                // A write that failed or stalled partway may have left part of
+                // a packet queued for the device, so nothing after it would
+                // frame correctly. Fail the transport and let close release
+                // the port.
+                debug!(
+                    path = %self.path,
+                    error = %error,
+                    "usb serial write failed; transport is no longer usable"
+                );
+                self.closed.send_replace(true);
+                Err(error)
+            }
         }
-
-        result
     }
 
     async fn receive_locked(
@@ -247,7 +296,7 @@ impl UsbSerialTransport {
 impl Drop for UsbSerialTransport {
     fn drop(&mut self) {
         if let Some(stream) = self.stream.get_mut().take() {
-            drop(release_stream(&self.path, stream));
+            drop(self.release.release(&self.path, stream));
         }
     }
 }
@@ -302,9 +351,7 @@ impl Transport for UsbSerialTransport {
         };
         drop(slot);
 
-        let Some(released) = release_stream(&self.path, stream) else {
-            return Ok(());
-        };
+        let released = self.release.release(&self.path, stream);
         if tokio::time::timeout_at(deadline, released).await.is_err() {
             debug!(
                 path = %self.path,
@@ -351,36 +398,6 @@ async fn read_focus_reply(stream: &mut Box<dyn AsyncSerialIo>) -> Result<Vec<u8>
     }
 
     Ok(payload)
-}
-
-/// Drop `stream` on a retained worker thread, because closing a tty waits
-/// in the kernel for queued output and must not stall a runtime worker.
-///
-/// The receiver resolves once the descriptor is released. `None` means no
-/// worker could start and the stream was already dropped on this thread.
-fn release_stream(path: &str, stream: Box<dyn AsyncSerialIo>) -> Option<oneshot::Receiver<()>> {
-    let (released_tx, released_rx) = oneshot::channel();
-    let worker = spawn_worker(
-        std::thread::Builder::new().name("hc-serial-close".to_owned()),
-        move || {
-            drop(stream);
-            let _ = released_tx.send(());
-        },
-    );
-    match worker {
-        Ok(worker) => {
-            retain_worker(worker, format!("usb serial close {path}"));
-            Some(released_rx)
-        }
-        Err(error) => {
-            warn!(
-                path,
-                error = %error,
-                "could not start a serial close worker; released the port on this thread"
-            );
-            None
-        }
-    }
 }
 
 fn duration_ms(duration: Duration) -> u64 {

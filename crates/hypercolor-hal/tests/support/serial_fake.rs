@@ -204,3 +204,16 @@ pub async fn wait_released(probe: &TrapProbe, limit: Duration) {
         tokio::time::sleep(TICK).await;
     }
 }
+
+/// A transport over `inner` behind the flush trap.
+pub fn trapped_transport<S>(
+    path: &str,
+    inner: S,
+) -> hypercolor_hal::transport::serial::UsbSerialTransport
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let (stream, _probe) = TrapStream::new(inner);
+    hypercolor_hal::transport::serial::UsbSerialTransport::from_stream(path, stream)
+        .expect("the serial release service should start")
+}
