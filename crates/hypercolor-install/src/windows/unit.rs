@@ -344,7 +344,7 @@ impl Plan {
         if path
             .split('/')
             .any(|name| !windows_file_name_is_valid(name))
-            || path.eq_ignore_ascii_case(MANIFEST_NAME)
+            || fold_case(path) == fold_case(MANIFEST_NAME)
         {
             return Err(invalid(format!(
                 "{path:?} is not a unit path Windows reads as written"
