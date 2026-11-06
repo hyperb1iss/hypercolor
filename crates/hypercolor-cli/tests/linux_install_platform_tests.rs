@@ -6,7 +6,7 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use hypercolor_cli::install::{
+use hypercolor_install::{
     InstallAction, InstallCoordinator, InstallDisposition, InstallPlatform, InstallRequest,
     InstallStore, InstallTargetPolicy, InstallTransactionId, InstallationState,
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
@@ -41,8 +41,8 @@ struct FakeExecutor {
     daemon_digest: String,
     daemon_digests: BTreeMap<String, String>,
     daemon_identities: BTreeMap<String, (u64, u64)>,
-    expected_unit_authorities: Option<Vec<hypercolor_cli::install::UnitRecord>>,
-    expected_prior: Option<(hypercolor_cli::install::UnitRecord, PathBuf)>,
+    expected_unit_authorities: Option<Vec<hypercolor_install::UnitRecord>>,
+    expected_prior: Option<(hypercolor_install::UnitRecord, PathBuf)>,
     versions: BTreeMap<String, String>,
     invocation: u32,
     http_calls: usize,
@@ -144,7 +144,7 @@ impl FakeExecutor {
     fn begin_effect(
         &mut self,
         name: &str,
-    ) -> Result<bool, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<bool, hypercolor_install::InstallPlatformError> {
         self.effects.push(name.to_owned());
         let point = if self.fault.as_ref().is_some_and(|fault| fault.0 == name) {
             self.fault.take().map(|fault| fault.1)
@@ -158,18 +158,16 @@ impl FakeExecutor {
             None
         };
         if point == Some(FaultPoint::Before) {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "scripted before-effect failure",
             ));
         }
         Ok(point == Some(FaultPoint::After))
     }
 
-    fn finish_effect(
-        fail_after: bool,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    fn finish_effect(fail_after: bool) -> Result<(), hypercolor_install::InstallPlatformError> {
         if fail_after {
-            Err(hypercolor_cli::install::InstallPlatformError::new(
+            Err(hypercolor_install::InstallPlatformError::new(
                 "scripted after-effect failure",
             ))
         } else {
@@ -236,9 +234,9 @@ impl LinuxInstallExecutor for FakeExecutor {
     fn validate_topology(
         &mut self,
         topology: &LinuxInstallConfig,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if topology != self.expected_topology.as_ref().unwrap_or(&config()) {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "split install-store topology",
             ));
         }
@@ -247,14 +245,14 @@ impl LinuxInstallExecutor for FakeExecutor {
 
     fn validate_unit_authority(
         &mut self,
-        unit: &hypercolor_cli::install::UnitRecord,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+        unit: &hypercolor_install::UnitRecord,
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if self
             .expected_unit_authorities
             .as_ref()
             .is_some_and(|expected| !expected.iter().any(|known| known == unit))
         {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "split retained unit authority",
             ));
         }
@@ -262,9 +260,7 @@ impl LinuxInstallExecutor for FakeExecutor {
             .directory()
             .open_child_directory(Path::new("bin"))
             .and_then(|directory| directory.open_regular_file(Path::new("hypercolor-daemon")))
-            .map_err(|source| {
-                hypercolor_cli::install::InstallPlatformError::new(source.to_string())
-            })?;
+            .map_err(|source| hypercolor_install::InstallPlatformError::new(source.to_string()))?;
         self.daemon_identities.insert(
             unit.id().as_str().to_owned(),
             (daemon.metadata().device(), daemon.metadata().inode()),
@@ -274,36 +270,30 @@ impl LinuxInstallExecutor for FakeExecutor {
 
     fn prior_units_root(
         &self,
-        unit: &hypercolor_cli::install::UnitRecord,
-    ) -> Result<PathBuf, hypercolor_cli::install::InstallPlatformError> {
+        unit: &hypercolor_install::UnitRecord,
+    ) -> Result<PathBuf, hypercolor_install::InstallPlatformError> {
         self.expected_prior
             .as_ref()
             .filter(|(expected, _)| expected == unit)
             .map(|(_, root)| root.clone())
-            .ok_or_else(|| {
-                hypercolor_cli::install::InstallPlatformError::new("unretained prior role")
-            })
+            .ok_or_else(|| hypercolor_install::InstallPlatformError::new("unretained prior role"))
     }
 
-    fn active_unit(
-        &mut self,
-    ) -> Result<Option<UnitId>, hypercolor_cli::install::InstallPlatformError> {
+    fn active_unit(&mut self) -> Result<Option<UnitId>, hypercolor_install::InstallPlatformError> {
         Ok(self.active())
     }
 
     fn settle_runtime(
         &mut self,
-    ) -> Result<
-        hypercolor_cli::install::LinuxRuntimeSettlement,
-        hypercolor_cli::install::InstallPlatformError,
-    > {
-        Ok(hypercolor_cli::install::LinuxRuntimeSettlement::Settled)
+    ) -> Result<hypercolor_install::LinuxRuntimeSettlement, hypercolor_install::InstallPlatformError>
+    {
+        Ok(hypercolor_install::LinuxRuntimeSettlement::Settled)
     }
 
     fn systemd_show(
         &mut self,
         max_bytes: usize,
-    ) -> Result<Vec<u8>, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<Vec<u8>, hypercolor_install::InstallPlatformError> {
         let output = self.show();
         assert!(output.len() <= max_bytes);
         Ok(output)
@@ -312,7 +302,7 @@ impl LinuxInstallExecutor for FakeExecutor {
     fn launcher_entry(
         &mut self,
         max_bytes: usize,
-    ) -> Result<(LinuxExactEntry, Vec<u8>), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(LinuxExactEntry, Vec<u8>), hypercolor_install::InstallPlatformError> {
         self.launcher_observations += 1;
         if self
             .launcher_drift
@@ -343,7 +333,7 @@ impl LinuxInstallExecutor for FakeExecutor {
     fn layout_entry(
         &mut self,
         item: LinuxLayoutItem,
-    ) -> Result<LinuxExactEntry, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<LinuxExactEntry, hypercolor_install::InstallPlatformError> {
         let observations = self.layout_observations.entry(item).or_default();
         *observations += 1;
         if self
@@ -360,13 +350,13 @@ impl LinuxInstallExecutor for FakeExecutor {
     fn directory_state(
         &mut self,
         item: LinuxDirectoryItem,
-    ) -> Result<LinuxDirectoryState, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<LinuxDirectoryState, hypercolor_install::InstallPlatformError> {
         Ok(self.directories[&item])
     }
 
     fn legacy_inventory(
         &mut self,
-    ) -> Result<Vec<LinuxLegacyFile>, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<Vec<LinuxLegacyFile>, hypercolor_install::InstallPlatformError> {
         Ok(self.legacy_inventory.clone())
     }
 
@@ -374,7 +364,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         &mut self,
         expected: &LinuxExactEntry,
         replacement: Option<&LinuxFilePublication>,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         assert_eq!(&self.launcher, expected);
         let fail_after = self.begin_effect("launcher")?;
         if let Some(replacement) = replacement {
@@ -408,7 +398,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         item: LinuxLayoutItem,
         expected: &LinuxExactEntry,
         replacement: Option<&LinuxLayoutPublication>,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         assert!(exact_entries_match(&self.layout[&item], expected));
         let effect = format!("layout:{}", item_name(item));
         let fail_after = self.begin_effect(&effect)?;
@@ -433,7 +423,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         item: LinuxDirectoryItem,
         expected: LinuxDirectoryState,
         create: bool,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         assert_eq!(self.directories[&item], expected);
         assert!(create, "rollback must retain version-neutral scaffolding");
         let effect = format!("directory:{item:?}:create");
@@ -442,7 +432,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         Self::finish_effect(fail_after)
     }
 
-    fn reload_manager(&mut self) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    fn reload_manager(&mut self) -> Result<(), hypercolor_install::InstallPlatformError> {
         let fail_after = self.begin_effect("manager")?;
         if matches!(self.launcher, LinuxExactEntry::Absent) {
             self.systemd.load = "not-found";
@@ -462,7 +452,7 @@ impl LinuxInstallExecutor for FakeExecutor {
     fn set_autostart(
         &mut self,
         enabled: bool,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         let effect = format!("autostart:{enabled}");
         let fail_after = self.begin_effect(&effect)?;
         self.systemd.enabled = enabled;
@@ -472,7 +462,7 @@ impl LinuxInstallExecutor for FakeExecutor {
     fn set_runtime(
         &mut self,
         running: bool,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         let effect = format!("runtime:{running}");
         let fail_after = self.begin_effect(&effect)?;
         self.systemd.active = running;
@@ -495,7 +485,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         &mut self,
         expected: &LinuxServiceIdentity,
         window: Duration,
-    ) -> Result<LinuxServiceWatch, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<LinuxServiceWatch, hypercolor_install::InstallPlatformError> {
         self.watches.push((expected.clone(), window));
         let current = LinuxServiceIdentity {
             invocation_id: self.systemd.invocation.clone(),
@@ -528,7 +518,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         &mut self,
         _pid: u32,
         _max_bytes: u64,
-    ) -> Result<LinuxProcessExecutable, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<LinuxProcessExecutable, hypercolor_install::InstallPlatformError> {
         self.process_calls += 1;
         if let Some(process) = &self.process_override {
             let mut process = process.clone();
@@ -602,10 +592,10 @@ impl LinuxInstallExecutor for FakeExecutor {
         &mut self,
         path: &'static str,
         max_bytes: usize,
-    ) -> Result<LinuxHttpResponse, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<LinuxHttpResponse, hypercolor_install::InstallPlatformError> {
         self.http_calls += 1;
         if self.http_hung {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "HTTP owner proof timed out",
             ));
         }
@@ -627,13 +617,12 @@ impl LinuxInstallExecutor for FakeExecutor {
 
     fn snapshot_legacy_unit(
         &mut self,
-        snapshot: &hypercolor_cli::install::LinuxLegacySnapshot,
-    ) -> Result<hypercolor_cli::install::UnitRecord, hypercolor_cli::install::InstallPlatformError>
-    {
+        snapshot: &hypercolor_install::LinuxLegacySnapshot,
+    ) -> Result<hypercolor_install::UnitRecord, hypercolor_install::InstallPlatformError> {
         self.effects.push("snapshot".to_owned());
         assert_eq!(snapshot.inventory, self.legacy_inventory);
         let root = self.legacy_snapshot_root.take().ok_or_else(|| {
-            hypercolor_cli::install::InstallPlatformError::new(
+            hypercolor_install::InstallPlatformError::new(
                 "scripted legacy snapshot was not configured",
             )
         })?;
@@ -1234,7 +1223,7 @@ fn managed_adoption_rollback_restores_original_launcher_layout_and_inode() {
 }
 
 fn cold_managed_adoption(journal_written: bool, rollback: bool) {
-    use hypercolor_cli::install::{
+    use hypercolor_install::{
         LinuxAdoption, LinuxInstallElection, LinuxInstallLocation, elect_linux_installation,
     };
     let home = tempfile::tempdir_in(std::env::var_os("HOME").expect("owned test home"))
@@ -1262,7 +1251,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         active_root: old.active_path(),
         probation: Duration::ZERO,
         managed: None,
-        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
+        service: hypercolor_install::LinuxServiceRenderer::PUBLIC,
     };
     let mut executor = FakeExecutor::absent(old.active_path(), sha256(b"daemon"));
     executor.expected_topology = Some(old_config.clone());
@@ -1305,7 +1294,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         active_root: adoption.store().active_path(),
         probation: Duration::ZERO,
         managed: None,
-        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
+        service: hypercolor_install::LinuxServiceRenderer::PUBLIC,
     };
     executor.active_path = adoption.store().active_path();
     executor.expected_topology = Some(new_config.clone());
@@ -1400,7 +1389,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
     if rollback {
         assert!(matches!(
             result.expect("settled recovery"),
-            Some(hypercolor_cli::install::InstallOutcome::RolledBack { .. })
+            Some(hypercolor_install::InstallOutcome::RolledBack { .. })
         ));
     } else {
         result.expect("cold activation recovery");
@@ -1459,7 +1448,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         .expect("next attempt uses disposition-appropriate prior");
     assert!(matches!(
         outcome,
-        hypercolor_cli::install::InstallOutcome::Committed { .. }
+        hypercolor_install::InstallOutcome::Committed { .. }
     ));
     drop(next);
     drop(authority);
@@ -2167,7 +2156,7 @@ fn semantic_record_validation_rejects_recovery_forgery() {
     assert!(
         platform
             .matches_exact_state(
-                hypercolor_cli::install::PlatformCheckpoint::PriorOriginal,
+                hypercolor_install::PlatformCheckpoint::PriorOriginal,
                 &prior.platform,
                 0,
                 &prepared.record,
@@ -2214,7 +2203,7 @@ fn byte_identical_unit_from_a_split_root_is_rejected_before_inspection() {
         active_root: PathBuf::from("/tmp/foreign/active"),
         probation: Duration::ZERO,
         managed: None,
-        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
+        service: hypercolor_install::LinuxServiceRenderer::PUBLIC,
     };
     let Err(error) = LinuxInstallPlatform::new(executor, split_config, []) else {
         panic!("split config topology must fail before inspection");
@@ -2231,7 +2220,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             active_root: PathBuf::from(root).join("active"),
             probation: Duration::ZERO,
             managed: None,
-            service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
+            service: hypercolor_install::LinuxServiceRenderer::PUBLIC,
         };
         let executor = FakeExecutor::absent(PathBuf::from(root).join("active"), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2253,7 +2242,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             active_root: parent.join("active"),
             probation: Duration::ZERO,
             managed: None,
-            service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
+            service: hypercolor_install::LinuxServiceRenderer::PUBLIC,
         };
         let executor = FakeExecutor::absent(config.active_root.clone(), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2516,7 +2505,7 @@ fn raw_conversion_executor(fixture: &Fixture) -> (FakeExecutor, Vec<u8>) {
 struct Fixture {
     temp: tempfile::TempDir,
     store: InstallStore,
-    candidate: hypercolor_cli::install::UnitRecord,
+    candidate: hypercolor_install::UnitRecord,
     daemon_digest: String,
 }
 
@@ -2547,7 +2536,7 @@ impl Fixture {
 
     fn request_for(
         &self,
-        candidate: hypercolor_cli::install::UnitRecord,
+        candidate: hypercolor_install::UnitRecord,
         target_policy: InstallTargetPolicy,
         suffix: &str,
     ) -> InstallRequest {
@@ -2559,7 +2548,7 @@ impl Fixture {
         }
     }
 
-    fn stage_upgrade(&self) -> hypercolor_cli::install::UnitRecord {
+    fn stage_upgrade(&self) -> hypercolor_install::UnitRecord {
         let source = self.temp.path().join("upgrade-source");
         fs::create_dir(&source).expect("upgrade source root");
         let candidate_file = write_release_with(&source, UPGRADE_VERSION, b"daemon-upgrade");
@@ -2582,7 +2571,7 @@ fn config_with_probation(probation: Duration) -> LinuxInstallConfig {
         active_root: PathBuf::from(ACTIVE_ROOT),
         probation,
         managed: None,
-        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
+        service: hypercolor_install::LinuxServiceRenderer::PUBLIC,
     }
 }
 
@@ -2780,7 +2769,7 @@ fn running_upgrade(
 ) -> (
     Fixture,
     LinuxInstallPlatform<FakeExecutor>,
-    hypercolor_cli::install::InstallLock,
+    hypercolor_install::InstallLock,
     UnitId,
 ) {
     let mut fixture = Fixture::new();
@@ -2832,8 +2821,8 @@ fn running_upgrade(
 fn upgrade_outcome(
     fixture: &Fixture,
     platform: &mut LinuxInstallPlatform<FakeExecutor>,
-    lock: &mut hypercolor_cli::install::InstallLock,
-) -> hypercolor_cli::install::InstallOutcome {
+    lock: &mut hypercolor_install::InstallLock,
+) -> hypercolor_install::InstallOutcome {
     InstallCoordinator::new(&fixture.store, platform)
         .install_with_lock(
             fixture.request_for(
@@ -2854,7 +2843,7 @@ fn probation_holds_the_proven_candidate_for_its_window_then_proves_it_again() {
     assert!(
         matches!(
             outcome,
-            hypercolor_cli::install::InstallOutcome::Committed { .. }
+            hypercolor_install::InstallOutcome::Committed { .. }
         ),
         "{outcome:?}"
     );
@@ -2882,7 +2871,7 @@ fn a_candidate_that_restarts_one_second_before_probation_ends_rolls_back() {
             executor.probation_restart_at = Some(Duration::from_secs(89));
         });
     let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
-    let hypercolor_cli::install::InstallOutcome::RolledBack {
+    let hypercolor_install::InstallOutcome::RolledBack {
         active_unit,
         failure,
         abandoned,
@@ -2902,7 +2891,7 @@ fn a_candidate_that_restarts_one_second_before_probation_ends_rolls_back() {
     let restored = restored.expect("the rollback names the release it restored");
     assert_eq!(
         restored,
-        hypercolor_cli::install::RestoredRelease {
+        hypercolor_install::RestoredRelease {
             unit: prior,
             version: VERSION.to_owned(),
             instance: executor.systemd.invocation.clone(),
@@ -2922,7 +2911,7 @@ fn a_candidate_whose_api_hangs_during_probation_rolls_back() {
             executor.http_hangs_in_probation = true;
         });
     let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
-    let hypercolor_cli::install::InstallOutcome::RolledBack {
+    let hypercolor_install::InstallOutcome::RolledBack {
         failure, restored, ..
     } = outcome
     else {
@@ -2941,7 +2930,7 @@ fn zero_probation_commits_after_the_first_proof_and_the_bound_is_enforced() {
     let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
     assert!(matches!(
         outcome,
-        hypercolor_cli::install::InstallOutcome::Committed { .. }
+        hypercolor_install::InstallOutcome::Committed { .. }
     ));
     let executor = platform.into_executor();
     assert!(executor.watches.is_empty());
@@ -2950,9 +2939,7 @@ fn zero_probation_commits_after_the_first_proof_and_the_bound_is_enforced() {
     let executor = FakeExecutor::absent(PathBuf::from(ACTIVE_ROOT), "00".repeat(32));
     let refused = LinuxInstallPlatform::new(
         executor,
-        config_with_probation(
-            hypercolor_cli::install::MAX_PROBATION_WINDOW + Duration::from_secs(1),
-        ),
+        config_with_probation(hypercolor_install::MAX_PROBATION_WINDOW + Duration::from_secs(1)),
         [],
     )
     .err()

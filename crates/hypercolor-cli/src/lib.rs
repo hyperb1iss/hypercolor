@@ -8,9 +8,6 @@ pub mod client;
 pub mod commands;
 pub mod config;
 #[cfg(unix)]
-#[doc(hidden)]
-pub use hypercolor_install as install;
-#[cfg(unix)]
 mod install_command;
 pub mod output;
 
@@ -254,7 +251,7 @@ pub struct InstallReleaseArgs {
     install_dir: std::path::PathBuf,
 
     #[arg(long, value_parser = install_command::parse_manifest_digest)]
-    expected_manifest_sha256: install::UnitId,
+    expected_manifest_sha256: hypercolor_install::UnitId,
 
     #[arg(long)]
     no_service: bool,
@@ -267,7 +264,7 @@ pub struct InstallReleaseArgs {
     #[arg(
         long,
         value_name = "SECONDS",
-        default_value_t = install::DEFAULT_PROBATION_WINDOW.as_secs(),
+        default_value_t = hypercolor_install::DEFAULT_PROBATION_WINDOW.as_secs(),
         value_parser = install_command::parse_probation_seconds
     )]
     probation_seconds: u64,

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use hypercolor_cli::install::macos::{
+use hypercolor_install::macos::{
     MacosCandidateLayout, MacosDirectoryState, MacosEntryPublication, MacosExactEntry,
     MacosFilePublication, MacosInstallConfig, MacosInstallExecutor, MacosInstallPlatform,
     MacosLaunchdObservation, MacosLauncherSnapshot, MacosLegacyExecutable, MacosLegacyFile,
@@ -15,7 +15,7 @@ use hypercolor_cli::install::macos::{
     MacosRuntimeExecutable, MacosRuntimeTransition, bind_macos_retained_legacy_unit,
     retain_macos_unit,
 };
-use hypercolor_cli::install::{
+use hypercolor_install::{
     InstallAction, InstallCoordinator, InstallDisposition, InstallPlatform, InstallRequest,
     InstallStore, InstallTargetPolicy, InstallTransactionId, InstallationState, PlatformState,
     PlatformTransactionRecord, UnitId, UnitRecord, stage_release_payload,
@@ -145,7 +145,7 @@ impl FakeExecutor {
     fn begin_effect(
         &mut self,
         effect: String,
-    ) -> Result<bool, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<bool, hypercolor_install::InstallPlatformError> {
         self.effects.push(effect.clone());
         let primary = self
             .fault
@@ -169,18 +169,16 @@ impl FakeExecutor {
             self.secondary_fault = None;
         }
         if point == Some(FaultPoint::Before) {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "scripted before-effect failure",
             ));
         }
         Ok(point == Some(FaultPoint::After))
     }
 
-    fn finish_effect(
-        fail_after: bool,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    fn finish_effect(fail_after: bool) -> Result<(), hypercolor_install::InstallPlatformError> {
         if fail_after {
-            Err(hypercolor_cli::install::InstallPlatformError::new(
+            Err(hypercolor_install::InstallPlatformError::new(
                 "scripted after-effect failure",
             ))
         } else {
@@ -193,9 +191,9 @@ impl MacosInstallExecutor for FakeExecutor {
     fn validate_topology(
         &mut self,
         config: &MacosInstallConfig,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if config != &self.config {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "split macOS topology",
             ));
         }
@@ -205,7 +203,7 @@ impl MacosInstallExecutor for FakeExecutor {
     fn validate_unit_authority(
         &mut self,
         _unit: &UnitRecord,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         Ok(())
     }
 
@@ -213,32 +211,30 @@ impl MacosInstallExecutor for FakeExecutor {
         &mut self,
         _unit: &UnitRecord,
         _executable: &MacosRuntimeExecutable,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         Ok(())
     }
 
-    fn active_unit(
-        &mut self,
-    ) -> Result<Option<UnitId>, hypercolor_cli::install::InstallPlatformError> {
+    fn active_unit(&mut self) -> Result<Option<UnitId>, hypercolor_install::InstallPlatformError> {
         Ok(self.active())
     }
 
     fn launchd_observation(
         &mut self,
-    ) -> Result<MacosLaunchdObservation, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<MacosLaunchdObservation, hypercolor_install::InstallPlatformError> {
         Ok(self.launchd.clone())
     }
 
     fn owner_record(
         &mut self,
-    ) -> Result<Option<MacosOwnerRecord>, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<Option<MacosOwnerRecord>, hypercolor_install::InstallPlatformError> {
         Ok(self.owner.clone())
     }
 
     fn launcher_entry(
         &mut self,
         max_bytes: usize,
-    ) -> Result<(MacosExactEntry, Vec<u8>), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(MacosExactEntry, Vec<u8>), hypercolor_install::InstallPlatformError> {
         assert!(self.launcher_bytes.len() <= max_bytes);
         Ok((self.launcher.clone(), self.launcher_bytes.clone()))
     }
@@ -246,7 +242,7 @@ impl MacosInstallExecutor for FakeExecutor {
     fn public_snapshot(
         &mut self,
         _layouts: &[MacosCandidateLayout],
-    ) -> Result<MacosPublicSnapshot, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<MacosPublicSnapshot, hypercolor_install::InstallPlatformError> {
         self.public_snapshot_calls += 1;
         let apply = match self.snapshot_mutation.as_ref() {
             Some(SnapshotMutation::ExtraEntry { call, .. })
@@ -276,21 +272,21 @@ impl MacosInstallExecutor for FakeExecutor {
         &mut self,
         _directories: &[String],
         _entries: &[String],
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         Ok(())
     }
 
     fn candidate_layout(
         &mut self,
         _unit: &UnitRecord,
-    ) -> Result<MacosCandidateLayout, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<MacosCandidateLayout, hypercolor_install::InstallPlatformError> {
         Ok(self.projection.clone())
     }
 
     fn inspect_legacy_executable(
         &mut self,
         _owner: Option<&MacosOwnerRecord>,
-    ) -> Result<Option<MacosLegacyExecutable>, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<Option<MacosLegacyExecutable>, hypercolor_install::InstallPlatformError> {
         Ok(self.legacy_executable.clone())
     }
 
@@ -298,13 +294,13 @@ impl MacosInstallExecutor for FakeExecutor {
         &mut self,
         expected: &MacosExactEntry,
         replacement: Option<&MacosFilePublication>,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if let Some((entry, bytes)) = self.launcher_race.take() {
             self.launcher = entry;
             self.launcher_bytes = bytes;
         }
         if !exact_entry_content_matches(&self.launcher, expected) {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "scripted launcher race",
             ));
         }
@@ -329,7 +325,7 @@ impl MacosInstallExecutor for FakeExecutor {
         path: &str,
         expected: &MacosExactEntry,
         replacement: Option<&MacosEntryPublication>,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if self
             .layout_race
             .as_ref()
@@ -344,7 +340,7 @@ impl MacosInstallExecutor for FakeExecutor {
             }
         }
         if !exact_entry_content_matches(&self.public.entries[path], expected) {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "scripted layout race",
             ));
         }
@@ -378,7 +374,7 @@ impl MacosInstallExecutor for FakeExecutor {
         path: &str,
         expected: MacosDirectoryState,
         create: bool,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         assert_eq!(self.public.directories[path], expected);
         assert!(create, "rollback retains version-neutral scaffolding");
         let fail_after = self.begin_effect(format!("directory:{path}"))?;
@@ -391,7 +387,7 @@ impl MacosInstallExecutor for FakeExecutor {
     fn set_autostart(
         &mut self,
         enabled: bool,
-    ) -> Result<MacosMutationOutcome, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<MacosMutationOutcome, hypercolor_install::InstallPlatformError> {
         let effect = format!("autostart:{enabled}");
         if self.submitted_unknown.as_ref() == Some(&effect) {
             self.effects.push(effect);
@@ -407,7 +403,7 @@ impl MacosInstallExecutor for FakeExecutor {
     fn persist_launcher_snapshot(
         &mut self,
         launcher: &MacosFilePublication,
-    ) -> Result<MacosLauncherSnapshot, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<MacosLauncherSnapshot, hypercolor_install::InstallPlatformError> {
         let snapshot_id = launcher_snapshot_id(launcher.mode, &launcher.contents);
         let snapshot = MacosLauncherSnapshot {
             relative_path: format!("launchd/{snapshot_id}.plist"),
@@ -429,7 +425,7 @@ impl MacosInstallExecutor for FakeExecutor {
         &mut self,
         launcher: &MacosFilePublication,
         snapshot: &MacosLauncherSnapshot,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if self
             .private_launchers
             .get(&snapshot.relative_path)
@@ -437,7 +433,7 @@ impl MacosInstallExecutor for FakeExecutor {
                 stored_launcher != launcher || stored_snapshot != snapshot
             })
         {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "private launcher snapshot changed",
             ));
         }
@@ -447,7 +443,7 @@ impl MacosInstallExecutor for FakeExecutor {
     fn transition_runtime(
         &mut self,
         transition: &MacosRuntimeTransition,
-    ) -> Result<MacosMutationOutcome, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<MacosMutationOutcome, hypercolor_install::InstallPlatformError> {
         let running = matches!(transition, MacosRuntimeTransition::Start { .. });
         let effect = format!("runtime:{running}");
         if self.submitted_unknown.as_ref() == Some(&effect) {
@@ -468,7 +464,7 @@ impl MacosInstallExecutor for FakeExecutor {
                     .get(&launcher_snapshot.relative_path)
                     .is_none_or(|(_, snapshot)| snapshot != launcher_snapshot)
             {
-                return Err(hypercolor_cli::install::InstallPlatformError::new(
+                return Err(hypercolor_install::InstallPlatformError::new(
                     "invalid scripted private launcher start authority",
                 ));
             }
@@ -493,9 +489,7 @@ impl MacosInstallExecutor for FakeExecutor {
                 }
             }
             let owner = self.owner.as_ref().ok_or_else(|| {
-                hypercolor_cli::install::InstallPlatformError::new(
-                    "scripted stop has no current owner",
-                )
+                hypercolor_install::InstallPlatformError::new("scripted stop has no current owner")
             })?;
             let active_matches = self.active().as_ref() == Some(&authority.unit)
                 || (self.active().is_none() && authority.unit.as_str().starts_with("legacy-"));
@@ -507,7 +501,7 @@ impl MacosInstallExecutor for FakeExecutor {
                 || owner.active_identity.pid != authority.pid
                 || !active_matches
             {
-                return Err(hypercolor_cli::install::InstallPlatformError::new(
+                return Err(hypercolor_install::InstallPlatformError::new(
                     "scripted stop authority is not current",
                 ));
             }
@@ -520,7 +514,7 @@ impl MacosInstallExecutor for FakeExecutor {
     fn snapshot_legacy_unit(
         &mut self,
         snapshot: &MacosLegacySnapshot,
-    ) -> Result<UnitRecord, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<UnitRecord, hypercolor_install::InstallPlatformError> {
         self.effects.push("snapshot".to_owned());
         for file in &snapshot.regular_files {
             self.snapshot_files
@@ -528,7 +522,7 @@ impl MacosInstallExecutor for FakeExecutor {
         }
         self.legacy_snapshot = Some(snapshot.clone());
         self.legacy_unit.clone().ok_or_else(|| {
-            hypercolor_cli::install::InstallPlatformError::new(
+            hypercolor_install::InstallPlatformError::new(
                 "scripted legacy snapshot authority is not configured",
             )
         })
@@ -541,18 +535,18 @@ impl MacosInstallExecutor for FakeExecutor {
         launcher: &MacosExactEntry,
         launcher_bytes: &[u8],
         entries: &BTreeMap<String, MacosExactEntry>,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if self
             .legacy_unit
             .as_ref()
             .is_none_or(|expected| expected != unit)
         {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "foreign scripted legacy snapshot",
             ));
         }
         let snapshot = self.legacy_snapshot.as_ref().ok_or_else(|| {
-            hypercolor_cli::install::InstallPlatformError::new(
+            hypercolor_install::InstallPlatformError::new(
                 "missing scripted complete legacy snapshot",
             )
         })?;
@@ -582,7 +576,7 @@ impl MacosInstallExecutor for FakeExecutor {
                     .is_none_or(|actual| !exact_entry_content_matches(actual, expected))
             })
         {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "scripted legacy snapshot is incomplete",
             ));
         }
@@ -594,9 +588,9 @@ impl MacosInstallExecutor for FakeExecutor {
         _unit: &UnitRecord,
         path: &str,
         max_bytes: u64,
-    ) -> Result<Vec<u8>, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<Vec<u8>, hypercolor_install::InstallPlatformError> {
         let bytes = self.snapshot_files.get(path).cloned().ok_or_else(|| {
-            hypercolor_cli::install::InstallPlatformError::new("missing scripted snapshot file")
+            hypercolor_install::InstallPlatformError::new("missing scripted snapshot file")
         })?;
         assert!(u64::try_from(bytes.len()).expect("size") <= max_bytes);
         Ok(bytes)
@@ -605,9 +599,9 @@ impl MacosInstallExecutor for FakeExecutor {
     fn corroborate_owner(
         &mut self,
         record: &MacosOwnerRecord,
-    ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<(), hypercolor_install::InstallPlatformError> {
         if self.owner.as_ref() != Some(record) {
-            return Err(hypercolor_cli::install::InstallPlatformError::new(
+            return Err(hypercolor_install::InstallPlatformError::new(
                 "scripted owner changed",
             ));
         }
@@ -618,7 +612,7 @@ impl MacosInstallExecutor for FakeExecutor {
         &mut self,
         expectation: &MacosDirectLaunchdPublicationExpectation,
         _timeout: Duration,
-    ) -> Result<Option<MacosOwnerRecord>, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<Option<MacosOwnerRecord>, hypercolor_install::InstallPlatformError> {
         Ok(self
             .owner
             .clone()
@@ -630,7 +624,7 @@ impl MacosInstallExecutor for FakeExecutor {
         _executable: &MacosLegacyExecutable,
         after_epoch: u64,
         timeout: Duration,
-    ) -> Result<Option<MacosOwnerRecord>, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<Option<MacosOwnerRecord>, hypercolor_install::InstallPlatformError> {
         assert!(!timeout.is_zero());
         Ok(self
             .owner
@@ -641,7 +635,7 @@ impl MacosInstallExecutor for FakeExecutor {
     fn wait_for_guard_release(
         &mut self,
         _timeout: Duration,
-    ) -> Result<bool, hypercolor_cli::install::InstallPlatformError> {
+    ) -> Result<bool, hypercolor_install::InstallPlatformError> {
         Ok(true)
     }
 }
@@ -683,7 +677,7 @@ fn first_install_enables_runs_and_keeps_manager_checkpoints_state_neutral() {
         .expect("install candidate");
     assert!(matches!(
         outcome,
-        hypercolor_cli::install::InstallOutcome::Committed { .. }
+        hypercolor_install::InstallOutcome::Committed { .. }
     ));
     let executor = platform.into_executor();
     assert_eq!(executor.launchd.pid, Some(4001));
@@ -779,7 +773,7 @@ fn error_after_candidate_start_captures_authority_and_rolls_back_every_exact_eff
         .expect("rollback completes");
     assert!(matches!(
         outcome,
-        hypercolor_cli::install::InstallOutcome::RolledBack { .. }
+        hypercolor_install::InstallOutcome::RolledBack { .. }
     ));
     let executor = platform.into_executor();
     assert_eq!(executor.launchd.pid, None);
@@ -866,7 +860,7 @@ fn every_forward_platform_effect_fails_closed_before_and_after_mutation() {
                 .expect("fault rollback completes");
             assert!(matches!(
                 outcome,
-                hypercolor_cli::install::InstallOutcome::RolledBack { .. }
+                hypercolor_install::InstallOutcome::RolledBack { .. }
             ));
             let executor = platform.into_executor();
             assert_eq!(executor.launchd.pid, None);
@@ -983,7 +977,7 @@ fn every_rollback_platform_effect_recovers_cold_before_and_after_mutation() {
                 .expect("pending rollback");
             assert!(matches!(
                 outcome,
-                hypercolor_cli::install::InstallOutcome::RolledBack { .. }
+                hypercolor_install::InstallOutcome::RolledBack { .. }
             ));
             let executor = platform.into_executor();
             assert_eq!(executor.active(), None);
@@ -1310,7 +1304,7 @@ fn cold_recovery_uses_persisted_candidate_receipt_to_finish_rollback() {
         .expect("pending journal");
     assert!(matches!(
         outcome,
-        hypercolor_cli::install::InstallOutcome::RolledBack { .. }
+        hypercolor_install::InstallOutcome::RolledBack { .. }
     ));
     let executor = platform.into_executor();
     assert_eq!(executor.launchd.pid, None);
@@ -1514,7 +1508,7 @@ fn first_conversion_snapshots_complete_raw_inventory_and_restores_exact_modes() 
         .expect("conversion rollback");
     assert!(matches!(
         outcome,
-        hypercolor_cli::install::InstallOutcome::RolledBack { .. }
+        hypercolor_install::InstallOutcome::RolledBack { .. }
     ));
     let executor = platform.into_executor();
     let snapshot = executor.legacy_snapshot.expect("complete legacy snapshot");
@@ -1788,7 +1782,7 @@ fn same_unit_failure_restores_prior_launcher_mode_layout_and_fresh_owner() {
         .expect("same-unit rollback");
     assert!(matches!(
         outcome,
-        hypercolor_cli::install::InstallOutcome::RolledBack { .. }
+        hypercolor_install::InstallOutcome::RolledBack { .. }
     ));
     let executor = platform.into_executor();
     assert!(matches!(

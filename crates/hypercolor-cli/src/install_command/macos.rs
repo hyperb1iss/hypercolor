@@ -5,10 +5,10 @@ use anyhow::{Context as _, Result, bail};
 
 use super::{require_bounded_absolute, require_candidate_committed, transaction_id};
 use crate::InstallReleaseArgs;
-use crate::install::macos::{
+use hypercolor_install::macos::{
     MacosInstallConfig, MacosInstallPlatform, MacosNativeExecutor, retain_macos_unit,
 };
-use crate::install::{
+use hypercolor_install::{
     InstallCoordinator, InstallDisposition, InstallRequest, InstallStore, InstallTargetPolicy,
     MAX_INSTALL_JOURNAL_BYTES, PlatformState, UnitId, UnitRecord,
     stage_release_payload_from_authority, validate_release_payload_from_authority,
@@ -133,7 +133,7 @@ pub(super) fn execute(args: &InstallReleaseArgs) -> Result<()> {
 
 fn retain_platform_units(
     store: &InstallStore,
-    lock: &crate::install::InstallLock,
+    lock: &hypercolor_install::InstallLock,
     state: &PlatformState,
     seen: &mut BTreeSet<String>,
     known_units: &mut Vec<UnitRecord>,
@@ -153,7 +153,7 @@ fn retain_platform_units(
 
 fn retain_unit(
     store: &InstallStore,
-    lock: &crate::install::InstallLock,
+    lock: &hypercolor_install::InstallLock,
     unit: UnitId,
     seen: &mut BTreeSet<String>,
     known_units: &mut Vec<UnitRecord>,
@@ -246,7 +246,7 @@ const fn target_policy(no_service: bool) -> InstallTargetPolicy {
 mod tests {
     use std::path::Path;
 
-    use crate::install::InstallTargetPolicy;
+    use hypercolor_install::InstallTargetPolicy;
 
     use super::{MacosInstallTopology, target_policy};
 

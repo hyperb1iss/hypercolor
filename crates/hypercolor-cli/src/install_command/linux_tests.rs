@@ -62,7 +62,7 @@ fn invalid_permanent_locator_refuses_normal_and_no_service_before_staging() {
         let args = InstallReleaseArgs {
             install_prefix: prefix.clone(),
             install_dir: prefix.join("bin"),
-            expected_manifest_sha256: crate::install::UnitId::new("a".repeat(64)).expect("id"),
+            expected_manifest_sha256: hypercolor_install::UnitId::new("a".repeat(64)).expect("id"),
             no_service,
             validate_only: false,
             probation_seconds: 0,

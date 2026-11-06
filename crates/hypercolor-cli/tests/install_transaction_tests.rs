@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
-use hypercolor_cli::install::{
+use hypercolor_install::{
     InstallAction, InstallCoordinator, InstallCoordinatorError, InstallDisposition,
     InstallJournalV1, InstallModelError, InstallOutcome, InstallPlatform, InstallPlatformError,
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
@@ -255,7 +255,7 @@ impl InstallPlatform for FakePlatform {
     fn prepare_transaction(
         &mut self,
         candidate: &UnitRecord,
-        prior: &hypercolor_cli::install::InstallationState,
+        prior: &hypercolor_install::InstallationState,
         target: &PlatformState,
     ) -> Result<PreparedPlatformTransaction, InstallPlatformError> {
         assert!(!candidate.id().as_str().is_empty());
@@ -359,7 +359,7 @@ impl InstallPlatform for FakePlatform {
     fn preflight_authority(
         &mut self,
         candidate: &UnitId,
-        prior: &hypercolor_cli::install::InstallationState,
+        prior: &hypercolor_install::InstallationState,
         record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
         let (action, injection) = self.begin_effect()?;

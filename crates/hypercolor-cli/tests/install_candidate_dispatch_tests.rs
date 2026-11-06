@@ -162,7 +162,7 @@ fn valid_installer_protocol_dispatches_before_connection_setup() {
 
 #[test]
 fn anchored_candidate_store_bootstraps_once_and_uses_one_canonical_lock() {
-    use hypercolor_cli::install::{InstallStore, InstallStoreError, MAX_INSTALL_JOURNAL_BYTES};
+    use hypercolor_install::{InstallStore, InstallStoreError, MAX_INSTALL_JOURNAL_BYTES};
     use std::fs;
     use std::os::unix::fs::MetadataExt as _;
 
