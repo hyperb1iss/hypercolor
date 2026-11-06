@@ -1496,6 +1496,13 @@ impl DeviceStagingBuffer {
     }
 }
 
+/// Whether `payload` was handled without a later error.
+fn payload_delivered(metrics: &OutputQueueMetrics, payload: &FramePayload) -> bool {
+    let last_handled_sequence = metrics.last_handled_sequence.load(Ordering::Relaxed);
+    let last_error_sequence = metrics.last_error_sequence.load(Ordering::Relaxed);
+    payload.id.sequence == last_handled_sequence && last_handled_sequence >= last_error_sequence
+}
+
 /// Latest-frame queue for a single `(backend_id, device_id)` target.
 ///
 /// Internally uses a `watch` channel so stale queued payloads are replaced
@@ -1867,13 +1874,10 @@ impl OutputQueue {
 
     /// Whether the latest queued payload was handled without a later error.
     fn latest_delivered(&self) -> bool {
-        let current = self.tx.borrow();
-        let Some(payload) = current.as_ref() else {
-            return false;
-        };
-        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
-        let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
-        payload.id.sequence == last_handled_sequence && last_handled_sequence >= last_error_sequence
+        self.tx
+            .borrow()
+            .as_ref()
+            .is_some_and(|payload| payload_delivered(&self.metrics, payload))
     }
 
     fn should_suppress_duplicate(&self, colors: &[[u8; 3]]) -> bool {
@@ -1902,6 +1906,31 @@ impl OutputQueue {
     /// Requeue the latest payload when its attempt failed or the device
     /// declined it, returning its LED count.
     pub(super) fn retry_latest_after_error(&mut self) -> Option<usize> {
+        self.requeue_latest_if(|metrics, payload| metrics.ended_undelivered(payload.id.sequence))
+    }
+
+    /// Requeue the latest payload when the backend's cadence still owes an
+    /// identical copy of it (see `OutputCadence::with_min_identical_sends`),
+    /// returning its LED count.
+    ///
+    /// The routed-reuse path calls this for unchanged frames, which never
+    /// reach `push`. Each copy waits until the previous one was delivered.
+    /// Backends that do not opt in never owe a copy, so this is a no-op.
+    pub(super) fn repeat_latest_if_owed(&mut self) -> Option<usize> {
+        if self.identical_sends_owed == 0 {
+            return None;
+        }
+        let led_count = self.requeue_latest_if(payload_delivered)?;
+        self.identical_sends_owed -= 1;
+        Some(led_count)
+    }
+
+    /// Requeue the latest payload under a fresh delivery id when
+    /// `should_requeue` accepts it, returning its LED count.
+    fn requeue_latest_if(
+        &mut self,
+        should_requeue: impl FnOnce(&OutputQueueMetrics, &FramePayload) -> bool,
+    ) -> Option<usize> {
         let mut delivery_sequence = self
             .delivery_sequence
             .lock()
@@ -1911,7 +1940,7 @@ impl OutputQueue {
             return None;
         };
 
-        if !self.metrics.ended_undelivered(payload.id.sequence) {
+        if !should_requeue(&self.metrics, payload) {
             return None;
         }
 

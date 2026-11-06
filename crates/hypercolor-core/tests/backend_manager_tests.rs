@@ -5062,6 +5062,68 @@ async fn reuse_routed_frame_outputs_keeps_identical_successful_payload_quiet() {
 }
 
 #[tokio::test]
+async fn reuse_routed_frame_outputs_sends_owed_identical_copies() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(0)
+    .with_min_identical_sends(3);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:reuse_repeat")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:reuse_repeat", 4)]);
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+    manager.write_frame(&frame, &layout);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(write_count.load(Ordering::Relaxed), 1);
+
+    // The render loop takes the routed-reuse path for an unchanged frame,
+    // so the owed copies must go out from there, one per reuse tick.
+    let mut written = Vec::new();
+    for _ in 0..5 {
+        assert!(manager.can_reuse_routed_frame_outputs(&layout));
+        written.push(manager.reuse_routed_frame_outputs(&layout).devices_written);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(written, vec![1, 1, 0, 0, 0]);
+    assert_eq!(
+        write_count.load(Ordering::Relaxed),
+        3,
+        "three identical deliveries in total, then suppression"
+    );
+    let expected = vec![expected_led_color([12, 34, 56]); 4];
+    assert!(writes.lock().await.iter().all(|write| write == &expected));
+
+    // A changed frame restarts the obligation on the same path.
+    let changed = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[1, 2, 3]; 4],
+    }];
+    manager.write_frame(&changed, &layout);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    for _ in 0..4 {
+        manager.reuse_routed_frame_outputs(&layout);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(write_count.load(Ordering::Relaxed), 6);
+}
+
+#[tokio::test]
 async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_error() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
