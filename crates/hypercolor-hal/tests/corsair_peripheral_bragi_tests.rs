@@ -9,9 +9,10 @@ use hypercolor_hal::drivers::corsair::peripheral::devices::{
     PID_K100_OPTICAL_V1, PID_SCIMITAR_ELITE_BRAGI,
 };
 use hypercolor_hal::drivers::corsair::peripheral::types::{
-    BRAGI_JUMBO_PACKET_SIZE, BRAGI_LARGE_PACKET_SIZE, BRAGI_PACKET_SIZE, BragiCommand,
-    BragiDeviceConfig, BragiHandle, BragiLightingFormat, BragiLightingMode, BragiProperty,
-    BragiResource, CorsairPeripheralClass, CorsairPeripheralTopology,
+    BRAGI_JUMBO_PACKET_SIZE, BRAGI_LARGE_PACKET_SIZE, BRAGI_MAGIC, BRAGI_PACKET_SIZE,
+    BragiChildSlot, BragiCommand, BragiDeviceConfig, BragiHandle, BragiLightingFormat,
+    BragiLightingMode, BragiProperty, BragiResource, CorsairPeripheralClass,
+    CorsairPeripheralTopology,
 };
 use hypercolor_hal::drivers::corsair::{CORSAIR_USAGE_PAGE, CORSAIR_VID};
 use hypercolor_hal::protocol::Protocol;
@@ -382,4 +383,95 @@ fn jumbo_and_large_bragi_descriptors_report_their_packet_sizes() {
             usage: None,
         }
     );
+}
+
+#[test]
+fn child_slots_cover_one_through_seven_only() {
+    assert!(BragiChildSlot::new(0).is_none());
+    assert!(BragiChildSlot::new(8).is_none());
+
+    let slots = (1..=7)
+        .map(|slot| BragiChildSlot::new(slot).expect("slots 1-7 are valid"))
+        .collect::<Vec<_>>();
+    let magics = slots.iter().map(|slot| slot.magic()).collect::<Vec<_>>();
+    assert_eq!(magics, vec![0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F]);
+}
+
+#[test]
+fn subdevice_bitfield_names_present_slots_from_bits_one_to_seven() {
+    let present = |bitfield| {
+        BragiChildSlot::present_in(bitfield)
+            .map(BragiChildSlot::get)
+            .collect::<Vec<_>>()
+    };
+
+    assert!(present(0).is_empty());
+    assert_eq!(present(0b0000_0010), vec![1]);
+    assert_eq!(present(0b1000_0110), vec![1, 2, 7]);
+    // Bit 0 is the receiver itself and bit 8 onward name no slot.
+    assert!(present(0x0000_0001).is_empty());
+    assert!(present(0x0001_FF00).is_empty());
+    assert_eq!(present(0x0000_00FF), vec![1, 2, 3, 4, 5, 6, 7]);
+}
+
+#[test]
+fn receiver_child_properties_use_spec_ids() {
+    assert_eq!(BragiProperty::VendorId as u8, 0x11);
+    assert_eq!(BragiProperty::ProductId as u8, 0x12);
+    assert_eq!(BragiProperty::SubdeviceBitfield as u8, 0x36);
+}
+
+#[test]
+fn routed_config_puts_the_child_slot_in_every_packet_magic() {
+    let slot = BragiChildSlot::new(2).expect("slot 2 is valid");
+    let direct = bragi_config(BRAGI_PACKET_SIZE, 12, BragiLightingFormat::RgbPlanar);
+    let routed = CorsairBragiProtocol::new(direct.routed_to(slot));
+
+    assert_eq!(direct.magic(), BRAGI_MAGIC);
+    assert_eq!(routed.config().magic(), 0x0A);
+
+    let colors = vec![[0x10_u8, 0x20, 0x30]; 12];
+    let keepalive = routed
+        .keepalive()
+        .expect("Bragi devices keep their session alive");
+    let packets = routed
+        .init_sequence()
+        .into_iter()
+        .chain(routed.encode_frame(&colors))
+        .chain(routed.shutdown_sequence())
+        .chain(keepalive.commands)
+        .chain(routed.encode_brightness(128).unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    assert!(packets.len() > 4);
+    for packet in packets {
+        assert_eq!(packet.data[0], 0x0A);
+        assert_eq!(packet.data.len(), BRAGI_PACKET_SIZE);
+    }
+}
+
+#[test]
+fn routing_changes_only_the_magic_byte() {
+    let slot = BragiChildSlot::new(1).expect("slot 1 is valid");
+    let direct = bragi_protocol(BRAGI_PACKET_SIZE, 6, BragiLightingFormat::RgbPlanar);
+    let routed = CorsairBragiProtocol::new(
+        bragi_config(BRAGI_PACKET_SIZE, 6, BragiLightingFormat::RgbPlanar).routed_to(slot),
+    );
+    let colors = [
+        [1_u8, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9],
+        [1, 1, 1],
+        [2, 2, 2],
+        [3, 3, 3],
+    ];
+
+    let direct_frame = direct.encode_frame(&colors);
+    let routed_frame = routed.encode_frame(&colors);
+    assert_eq!(direct_frame.len(), routed_frame.len());
+    for (direct, routed) in direct_frame.iter().zip(&routed_frame) {
+        assert_eq!(direct.data[0], BRAGI_MAGIC);
+        assert_eq!(routed.data[0], BRAGI_MAGIC | 1);
+        assert_eq!(direct.data[1..], routed.data[1..]);
+    }
 }

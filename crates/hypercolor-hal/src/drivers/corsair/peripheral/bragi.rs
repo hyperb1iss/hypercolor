@@ -78,7 +78,7 @@ impl CorsairBragiProtocol {
 
     fn fixed_packet(&self) -> Vec<u8> {
         let mut packet = vec![0_u8; self.config.packet_size];
-        packet[0] = BRAGI_MAGIC;
+        packet[0] = self.config.magic();
         packet
     }
 
@@ -136,7 +136,7 @@ impl CorsairBragiProtocol {
             TransferType::Primary,
             |packet| {
                 packet.resize(self.config.packet_size, 0);
-                packet[0] = BRAGI_MAGIC;
+                packet[0] = self.config.magic();
                 fill(packet);
             },
         );
