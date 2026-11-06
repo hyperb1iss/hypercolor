@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice,
+    DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
 use hypercolor_driver_pixel::{
     KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG, PixelBackend, PixelConfig, configured_devices,
@@ -252,6 +252,57 @@ async fn artnet_frames_address_port_and_zero_fill_lower_slots() {
 }
 
 #[tokio::test]
+async fn artnet_sends_from_its_standard_source_port() {
+    let (receiver, addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "srcport", "host": "127.0.0.1", "port": addr.port(), "protocol": "artnet",
+        "pixel_count": 1
+    }));
+    let (backend, id) = connect(&config).await;
+    assert_eq!(
+        backend
+            .connected_socket_local_addr(&id)
+            .map(|local| local.port()),
+        Some(6454)
+    );
+    backend
+        .write_colors(&id, &[[1, 2, 3]])
+        .await
+        .expect("write");
+    let mut buf = [0u8; 600];
+    let (_, from) = timeout(RECV_TIMEOUT, receiver.recv_from(&mut buf))
+        .await
+        .expect("packet should arrive")
+        .expect("receive should succeed");
+    assert_eq!(
+        from.port(),
+        6454,
+        "Art-Net 4 uses UDP 6454 as both source and destination"
+    );
+}
+
+#[tokio::test]
+async fn e131_and_ddp_keep_ephemeral_source_ports() {
+    let (receiver, addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "ephemeral", "host": "127.0.0.1", "port": addr.port(), "protocol": "e131",
+        "pixel_count": 1
+    }));
+    let (backend, id) = connect(&config).await;
+    backend
+        .write_colors(&id, &[[1, 2, 3]])
+        .await
+        .expect("write");
+    let mut buf = [0u8; 700];
+    let (_, from) = timeout(RECV_TIMEOUT, receiver.recv_from(&mut buf))
+        .await
+        .expect("packet should arrive")
+        .expect("receive should succeed");
+    assert_ne!(from.port(), 5568);
+    assert_ne!(from.port(), 6454);
+}
+
+#[tokio::test]
 async fn artnet_odd_channel_counts_pad_to_even() {
     let (receiver, addr) = loopback_receiver().await;
     let config = config_for(json!({
@@ -382,6 +433,77 @@ async fn frame_sink_delivers_and_reports_transport_start() {
     assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
     assert_eq!(started.load(Ordering::Relaxed), 1);
     recv(&receiver).await;
+}
+
+#[tokio::test]
+async fn frame_sink_rejects_writes_after_disconnect() {
+    let (receiver, addr) = loopback_receiver().await;
+    let config = config_for(json!({
+        "id": "closed", "host": "127.0.0.1", "port": addr.port(), "protocol": "e131",
+        "pixel_count": 1
+    }));
+    let (backend, id) = connect(&config).await;
+    // The output queue keeps its sink across disconnect, so hold one too.
+    let sink = backend
+        .frame_sink(&id)
+        .expect("connected device has a sink");
+    assert!(!sink.is_closed());
+    sink.write_colors_shared_outcome(Arc::new(vec![[9, 9, 9]]))
+        .await
+        .expect("write before disconnect");
+    recv(&receiver).await;
+
+    backend.disconnect(&id).await.expect("disconnect");
+    recv_n(&receiver, 1 + 3).await; // black frame, then three terminated
+    assert!(sink.is_closed());
+
+    assert!(matches!(
+        sink.write_colors_shared_outcome(Arc::new(vec![[1, 1, 1]]))
+            .await,
+        Err(DeviceError::Disconnected { .. })
+    ));
+    let started = Arc::new(AtomicUsize::new(0));
+    let ack = sink
+        .deliver_colors_shared_observed(
+            DeviceDeliveryId {
+                queue_generation: 1,
+                sequence: 7,
+            },
+            Arc::new(vec![[2, 2, 2]]),
+            Arc::new(CountingObserver(Arc::clone(&started))),
+        )
+        .await;
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    assert!(!ack.transport_started);
+    assert_eq!(started.load(Ordering::Relaxed), 0);
+    assert_quiet(&receiver).await;
+}
+
+#[tokio::test]
+async fn e131_cadence_requires_three_identical_sends() {
+    let e131 = config_for(json!({
+        "id": "sacn", "host": "127.0.0.1", "protocol": "e131", "pixel_count": 1
+    }));
+    let (backend, id) = connect(&e131).await;
+    assert_eq!(
+        backend
+            .output_cadence(&id)
+            .map(OutputCadence::min_identical_sends),
+        Some(3)
+    );
+    for protocol in ["artnet", "ddp"] {
+        let config = config_for(json!({
+            "id": "other", "host": "127.0.0.1", "protocol": protocol, "pixel_count": 1
+        }));
+        let (backend, id) = connect(&config).await;
+        assert_eq!(
+            backend
+                .output_cadence(&id)
+                .map(OutputCadence::min_identical_sends),
+            Some(1),
+            "{protocol} keeps plain suppression"
+        );
+    }
 }
 
 #[tokio::test]

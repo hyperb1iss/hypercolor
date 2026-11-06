@@ -7,7 +7,8 @@
 //! packets to the configured receiver.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,9 @@ use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
     DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
-use hypercolor_pixel_protocols::artnet::{ArtDmxPacket, ArtDmxSequenceTracker, PortAddress};
+use hypercolor_pixel_protocols::artnet::{
+    ARTNET_PORT, ArtDmxPacket, ArtDmxSequenceTracker, PortAddress,
+};
 use hypercolor_pixel_protocols::ddp::{DDP_ID_DEFAULT, DdpSequence, DdpSpan, build_ddp_spans};
 use hypercolor_pixel_protocols::e131::{E131Packet, E131SequenceTracker, E131SyncPacket};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
@@ -25,7 +28,7 @@ use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info, warn};
 
 use crate::color::encode_pixels;
-use crate::config::{PixelDeviceConfig, is_unicast_target};
+use crate::config::{PixelDeviceConfig, PixelProtocol, is_unicast_target};
 use crate::plan::{DmxPlan, OutputPlan, PixelDevicePlan, resolve_device};
 
 /// Discovery metadata key carrying the device's effective config as JSON.
@@ -42,6 +45,10 @@ pub const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(800);
 /// E1.31 section 6.2.6: three packets with `Stream_Terminated` set.
 pub const E131_TERMINATION_PACKETS: usize = 3;
 
+/// E1.31 section 6.6.2: three packets of unchanged data before a source
+/// suppresses transmission.
+pub const E131_IDENTICAL_SENDS: u8 = 3;
+
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Backend for manually configured sACN, Art-Net, and DDP receivers.
@@ -50,11 +57,48 @@ pub struct PixelBackend {
     /// Plans for adopted devices, keyed by device id.
     adopted: StdRwLock<HashMap<DeviceId, Arc<PixelDevicePlan>>>,
     /// Connected sessions.
-    sessions: StdRwLock<HashMap<DeviceId, Arc<Mutex<PixelSession>>>>,
-    /// Shared IPv4 socket.
+    sessions: StdRwLock<HashMap<DeviceId, Arc<SessionSlot>>>,
+    /// Shared IPv4 socket on an ephemeral port (E1.31 and DDP).
     socket_v4: OnceCell<Arc<UdpSocket>>,
-    /// Shared IPv6 socket.
+    /// Shared IPv6 socket on an ephemeral port (E1.31 and DDP).
     socket_v6: OnceCell<Arc<UdpSocket>>,
+    /// Art-Net socket bound to UDP 6454, or `None` when that bind failed
+    /// and Art-Net falls back to the ephemeral IPv4 socket.
+    artnet_socket: OnceCell<Option<Arc<UdpSocket>>>,
+}
+
+/// A connected session plus its closed flag.
+///
+/// The flag lives outside the mutex so frame sinks can answer `is_closed`
+/// without blocking, and disconnect sets it while holding the session lock
+/// so no write can slip in after the shutdown frames.
+struct SessionSlot {
+    closed: AtomicBool,
+    session: Mutex<PixelSession>,
+}
+
+impl SessionSlot {
+    /// Lock the session and write a frame unless it was disconnected.
+    async fn write(
+        &self,
+        device_id: DeviceId,
+        colors: &[[u8; 3]],
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        let mut session = self.session.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(disconnected(device_id));
+        }
+        session
+            .write_colors(colors)
+            .await
+            .map_err(|error| DeviceError::write(device_id, error))
+    }
+}
+
+fn disconnected(device_id: DeviceId) -> DeviceError {
+    DeviceError::Disconnected {
+        device: device_id.to_string(),
+    }
 }
 
 impl PixelBackend {
@@ -68,7 +112,7 @@ impl PixelBackend {
     #[must_use]
     pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
         self.session(id)
-            .and_then(|session| session.try_lock().ok().map(|s| s.socket.clone()))
+            .and_then(|slot| slot.session.try_lock().ok().map(|s| Arc::clone(&s.socket)))
             .and_then(|socket| socket.local_addr().ok())
     }
 
@@ -82,7 +126,7 @@ impl PixelBackend {
             .cloned()
     }
 
-    fn session(&self, id: &DeviceId) -> Option<Arc<Mutex<PixelSession>>> {
+    fn session(&self, id: &DeviceId) -> Option<Arc<SessionSlot>> {
         self.sessions
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -90,7 +134,33 @@ impl PixelBackend {
             .cloned()
     }
 
-    async fn socket_for(&self, target: SocketAddr) -> Result<Arc<UdpSocket>> {
+    async fn socket_for(&self, plan: &PixelDevicePlan) -> Result<Arc<UdpSocket>> {
+        if plan.protocol == PixelProtocol::ArtNet {
+            let bound = self
+                .artnet_socket
+                .get_or_init(|| async {
+                    match bind_artnet_socket() {
+                        Ok(socket) => Some(Arc::new(socket)),
+                        Err(error) => {
+                            warn!(
+                                error = %error,
+                                port = ARTNET_PORT,
+                                "could not bind the Art-Net source port; sending ArtDmx from an \
+                                 ephemeral port instead, which some nodes ignore"
+                            );
+                            None
+                        }
+                    }
+                })
+                .await;
+            if let Some(socket) = bound {
+                return Ok(Arc::clone(socket));
+            }
+        }
+        self.ephemeral_socket(plan.target).await
+    }
+
+    async fn ephemeral_socket(&self, target: SocketAddr) -> Result<Arc<UdpSocket>> {
         let (cell, bind) = if target.is_ipv4() {
             (&self.socket_v4, "0.0.0.0:0")
         } else {
@@ -106,11 +176,26 @@ impl PixelBackend {
         .map(Arc::clone)
     }
 
-    fn require_session(&self, id: &DeviceId) -> Result<Arc<Mutex<PixelSession>>, DeviceError> {
-        self.session(id).ok_or_else(|| DeviceError::Disconnected {
-            device: id.to_string(),
-        })
+    fn require_session(&self, id: &DeviceId) -> Result<Arc<SessionSlot>, DeviceError> {
+        self.session(id).ok_or_else(|| disconnected(*id))
     }
+}
+
+/// Bind the Art-Net socket on UDP 6454, the protocol's source and
+/// destination port.
+///
+/// `SO_REUSEADDR` (plus `SO_REUSEPORT` on Unix) lets this coexist with
+/// another Art-Net application on the same host that also sets them.
+fn bind_artnet_socket() -> std::io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, ARTNET_PORT)).into())?;
+    UdpSocket::from_std(socket.into())
 }
 
 #[async_trait::async_trait]
@@ -156,7 +241,7 @@ impl DeviceBackend for PixelBackend {
             ));
         }
         let socket = self
-            .socket_for(plan.target)
+            .socket_for(&plan)
             .await
             .map_err(|error| DeviceError::connection(id, error))?;
 
@@ -174,20 +259,29 @@ impl DeviceBackend for PixelBackend {
         self.sessions
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(Mutex::new(session)));
+            .insert(
+                *id,
+                Arc::new(SessionSlot {
+                    closed: AtomicBool::new(false),
+                    session: Mutex::new(session),
+                }),
+            );
         Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let session = self
+        let slot = self
             .sessions
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id)
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-        let mut session = session.lock().await;
+            .ok_or_else(|| disconnected(*id))?;
+        let mut session = slot.session.lock().await;
+        // Close under the session lock: frame sinks still hold this slot,
+        // and any write that waits on the lock must see the flag.
+        if slot.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
         if let Err(error) = session.finish().await {
             debug!(
                 device_id = %id,
@@ -201,13 +295,10 @@ impl DeviceBackend for PixelBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        let session = self.require_session(id)?;
-        let mut session = session.lock().await;
-        session
-            .write_colors(colors)
+        self.require_session(id)?
+            .write(*id, colors)
             .await
             .map(|_| ())
-            .map_err(|error| DeviceError::write(id, error))
     }
 
     async fn write_colors_shared(
@@ -223,12 +314,9 @@ impl DeviceBackend for PixelBackend {
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let session = self.require_session(id)?;
-        let mut session = session.lock().await;
-        session
-            .write_colors(colors.as_slice())
+        self.require_session(id)?
+            .write(*id, colors.as_slice())
             .await
-            .map_err(|error| DeviceError::write(id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -261,15 +349,22 @@ impl DeviceBackend for PixelBackend {
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
         self.adopted_plan(id).map(|plan| {
-            OutputCadence::from_fps(plan.max_fps).with_max_frame_silence(KEEPALIVE_INTERVAL)
+            let identical_sends = if plan.protocol == PixelProtocol::E131 {
+                E131_IDENTICAL_SENDS
+            } else {
+                1
+            };
+            OutputCadence::from_fps(plan.max_fps)
+                .with_max_frame_silence(KEEPALIVE_INTERVAL)
+                .with_min_identical_sends(identical_sends)
         })
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.session(id).map(|session| {
+        self.session(id).map(|slot| {
             Arc::new(PixelFrameSink {
                 device_id: *id,
-                session,
+                slot,
             }) as Arc<dyn DeviceFrameSink>
         })
     }
@@ -277,14 +372,17 @@ impl DeviceBackend for PixelBackend {
 
 async fn deliver_observed(
     device_id: DeviceId,
-    session: &Arc<Mutex<PixelSession>>,
+    slot: &SessionSlot,
     delivery_id: DeviceDeliveryId,
     colors: &[[u8; 3]],
     observer: &dyn DeviceDeliveryObserver,
 ) -> DeviceDeliveryAck {
     let payload_bytes = colors.len().saturating_mul(3);
     let started_at = Instant::now();
-    let mut session = session.lock().await;
+    let mut session = slot.session.lock().await;
+    if slot.closed.load(Ordering::Acquire) {
+        return DeviceDeliveryAck::rejected(delivery_id, disconnected(device_id));
+    }
     observer.transport_started(delivery_id);
     let result = session
         .write_colors(colors)
@@ -295,11 +393,15 @@ async fn deliver_observed(
 
 struct PixelFrameSink {
     device_id: DeviceId,
-    session: Arc<Mutex<PixelSession>>,
+    slot: Arc<SessionSlot>,
 }
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for PixelFrameSink {
+    fn is_closed(&self) -> bool {
+        self.slot.closed.load(Ordering::Acquire)
+    }
+
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
         self.write_colors_shared_outcome(colors).await.map(|_| ())
     }
@@ -308,11 +410,7 @@ impl DeviceFrameSink for PixelFrameSink {
         &self,
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let mut session = self.session.lock().await;
-        session
-            .write_colors(colors.as_slice())
-            .await
-            .map_err(|error| DeviceError::write(self.device_id, error))
+        self.slot.write(self.device_id, colors.as_slice()).await
     }
 
     async fn deliver_colors_shared_observed(
@@ -321,14 +419,7 @@ impl DeviceFrameSink for PixelFrameSink {
         colors: Arc<Vec<[u8; 3]>>,
         observer: Arc<dyn DeviceDeliveryObserver>,
     ) -> DeviceDeliveryAck {
-        deliver_observed(
-            self.device_id,
-            &self.session,
-            id,
-            &colors,
-            observer.as_ref(),
-        )
-        .await
+        deliver_observed(self.device_id, &self.slot, id, &colors, observer.as_ref()).await
     }
 }
 
