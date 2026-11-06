@@ -3,11 +3,12 @@
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{Context, Result, bail};
-use hypercolor_driver_support::http::{BoundedResponse, ReadBudget};
+use hypercolor_driver_support::http::ReadBudget;
 use serde::Serialize;
 use tokio::net::UdpSocket;
 
-use super::{NANOLEAF_HTTP_TIMEOUT, NANOLEAF_SMALL_REPLY_BYTES, nanoleaf_http_client};
+use super::api::AuthenticatedApi;
+use super::{NANOLEAF_HTTP_TIMEOUT, NANOLEAF_SMALL_REPLY_BYTES};
 
 pub const DEFAULT_NANOLEAF_API_PORT: u16 = 16_021;
 pub const DEFAULT_NANOLEAF_STREAM_PORT: u16 = 60_222;
@@ -134,8 +135,6 @@ async fn enable_external_control(device_ip: IpAddr, api_port: u16, auth_token: &
         bail!("Nanoleaf external control requires a non-empty auth token");
     }
 
-    let client = nanoleaf_http_client()?;
-    let url = format!("http://{device_ip}:{api_port}/api/v1/{auth_token}/effects");
     let body = ExternalControlRequest {
         write: ExternalControlWrite {
             command: "display",
@@ -144,19 +143,15 @@ async fn enable_external_control(device_ip: IpAddr, api_port: u16, auth_token: &
         },
     };
 
-    // The reply is never read: the status is all that matters.
-    client
-        .put(&url)
-        .json(&body)
-        .send(ReadBudget::new(
-            NANOLEAF_SMALL_REPLY_BYTES,
-            NANOLEAF_HTTP_TIMEOUT,
-        ))
+    AuthenticatedApi::new(device_ip, api_port, auth_token)
+        .put_json(
+            "/effects",
+            &body,
+            // The reply is never read: the status is all that matters.
+            ReadBudget::new(NANOLEAF_SMALL_REPLY_BYTES, NANOLEAF_HTTP_TIMEOUT),
+            "external-control",
+        )
         .await
-        .and_then(BoundedResponse::error_for_status)
-        .with_context(|| format!("failed to enable Nanoleaf external control via {url}"))?;
-
-    Ok(())
 }
 
 #[derive(Debug, Serialize)]

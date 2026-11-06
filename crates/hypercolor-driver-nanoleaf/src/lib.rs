@@ -5,11 +5,14 @@
 //! Panel topology is fetched on connect and cached; the `refresh_topology` action
 //! triggers a reconnect to reload the layout on demand.
 
+mod api;
 pub mod backend;
 #[cfg(test)]
 mod bounds_tests;
 mod scanner;
 mod streaming;
+#[cfg(test)]
+mod token_log_tests;
 mod topology;
 mod types;
 
@@ -29,7 +32,7 @@ use hypercolor_driver_api::{
     DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
-use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget, StatusCode};
+use hypercolor_driver_support::http::{BoundedHttpClient, ReadBudget, StatusCode};
 use hypercolor_driver_support::network::{
     metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
 };
@@ -51,6 +54,7 @@ use hypercolor_types::pairing::{
 };
 use serde::Deserialize;
 
+use self::api::AuthenticatedApi;
 use self::types::NanoleafPanelLayoutResponse;
 
 pub use backend::{NanoleafBackend, NanoleafConfig};
@@ -196,22 +200,13 @@ async fn fetch_device_info(
     api_port: u16,
     auth_token: &str,
 ) -> Result<NanoleafDeviceInfo> {
-    let url = format!("http://{ip}:{api_port}/api/v1/{auth_token}");
-    let client = nanoleaf_http_client()?;
-    let response = client
-        .get(&url)
-        .send(ReadBudget::new(
-            NANOLEAF_DEVICE_INFO_REPLY_BYTES,
-            NANOLEAF_HTTP_TIMEOUT,
-        ))
+    AuthenticatedApi::new(ip, api_port, auth_token)
+        .get_json(
+            "",
+            ReadBudget::new(NANOLEAF_DEVICE_INFO_REPLY_BYTES, NANOLEAF_HTTP_TIMEOUT),
+            "device-info",
+        )
         .await
-        .and_then(BoundedResponse::error_for_status)
-        .with_context(|| format!("Nanoleaf device-info request to {url} failed"))?;
-
-    response
-        .json()
-        .await
-        .with_context(|| format!("failed to decode Nanoleaf device-info response from {url}"))
 }
 
 async fn fetch_panel_layout(
@@ -219,22 +214,13 @@ async fn fetch_panel_layout(
     api_port: u16,
     auth_token: &str,
 ) -> Result<NanoleafPanelLayoutResponse> {
-    let url = format!("http://{ip}:{api_port}/api/v1/{auth_token}/panelLayout/layout");
-    let client = nanoleaf_http_client()?;
-    let response = client
-        .get(&url)
-        .send(ReadBudget::new(
-            NANOLEAF_LAYOUT_REPLY_BYTES,
-            NANOLEAF_HTTP_TIMEOUT,
-        ))
+    AuthenticatedApi::new(ip, api_port, auth_token)
+        .get_json(
+            "/panelLayout/layout",
+            ReadBudget::new(NANOLEAF_LAYOUT_REPLY_BYTES, NANOLEAF_HTTP_TIMEOUT),
+            "panel-layout",
+        )
         .await
-        .and_then(BoundedResponse::error_for_status)
-        .with_context(|| format!("Nanoleaf panel-layout request to {url} failed"))?;
-    let decoded: NanoleafPanelLayoutResponse = response
-        .json()
-        .await
-        .with_context(|| format!("failed to decode Nanoleaf panel-layout response from {url}"))?;
-    Ok(decoded)
 }
 
 #[derive(Clone)]
