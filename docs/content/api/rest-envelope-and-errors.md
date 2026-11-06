@@ -48,6 +48,36 @@ The daemon emits three success statuses, depending on the operation:
 All three carry the same `{ data, meta }` body. The status line is the only
 difference, so a client that only inspects the body sees a uniform shape.
 
+## List responses
+
+Collection routes put one shape under `data`: `items`, a `total` count of
+everything that matched, and an optional `page` block.
+
+```json
+{
+  "data": {
+    "items": [],
+    "total": 0,
+    "page": {
+      "offset": 0,
+      "limit": 50,
+      "has_more": false
+    }
+  }
+}
+```
+
+`page` is present only where the route genuinely pages, so its absence means
+the response is complete rather than implying a page size nobody enforces.
+Three routes page today: `GET /api/v1/devices`, `GET /api/v1/layouts`, and
+`GET /api/v1/attachments/templates`. Each defaults `limit` to 50 and rejects a
+`limit` above 200 with `validation_error`. Read every item by following
+`page.has_more`, advancing `offset` by the number of items the last page
+returned.
+
+A few collection routes still answer a bare array or a named wrapper instead.
+The [REST reference](@/api/rest.md) shows the exact body every route returns.
+
 ## Error envelope
 
 A failed response is `{ error, meta }`. The top-level key is `error`, not `data`,

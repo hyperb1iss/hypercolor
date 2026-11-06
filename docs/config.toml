@@ -6,6 +6,11 @@ build_search_index = true
 generate_feeds = false
 minify_html = true
 
+# `*.notes.md` files are the authored inputs of generated pages, kept next to
+# the page they feed (rest.notes.md feeds rest.md through
+# scripts/gen-rest-reference.ts). They are not pages themselves.
+ignored_content = ["*.notes.md"]
+
 [search]
 include_title = true
 include_description = true
