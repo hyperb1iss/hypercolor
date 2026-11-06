@@ -251,6 +251,64 @@ async fn connect_twice_keeps_one_session() {
 }
 
 #[tokio::test]
+async fn reconnecting_right_after_disconnect_reopens_the_port() {
+    let mut pty = pty();
+    let backend = AdalightBackend::new();
+    let id = connected(
+        &backend,
+        json!({ "id": "desk", "port": pty.slave_path, "led_count": 1 }),
+    )
+    .await;
+    backend
+        .write_colors(&id, &[[1, 1, 1]])
+        .await
+        .expect("write");
+    read_frame(&mut pty.master, 9).await;
+
+    // The exclusive open would fail if the old descriptor were still held.
+    backend.disconnect(&id).await.expect("disconnect");
+    read_frame(&mut pty.master, 9 * BLACKOUT_FRAMES).await;
+    backend.connect(&id).await.expect("reconnect");
+    backend
+        .write_colors(&id, &[[2, 2, 2]])
+        .await
+        .expect("write");
+    assert_eq!(
+        read_frame(&mut pty.master, 9).await,
+        [0x41, 0x64, 0x61, 0x00, 0x00, 0x55, 2, 2, 2]
+    );
+}
+
+#[tokio::test]
+async fn a_changed_plan_replaces_the_live_session() {
+    let mut pty = pty();
+    let backend = AdalightBackend::new();
+    let id = connected(
+        &backend,
+        json!({ "id": "desk", "port": pty.slave_path, "led_count": 1 }),
+    )
+    .await;
+
+    // A config edit re-adopts the same id with a longer strip.
+    let edited = discovered(json!({ "id": "desk", "port": pty.slave_path, "led_count": 2 }));
+    assert_eq!(edited.info.id, id);
+    backend.adopt_device(&edited).expect("re-adopt");
+    backend
+        .connect(&id)
+        .await
+        .expect("connect with the new plan");
+
+    backend
+        .write_colors(&id, &[[3, 3, 3], [4, 4, 4]])
+        .await
+        .expect("write");
+    assert_eq!(
+        read_frame(&mut pty.master, 12).await,
+        [0x41, 0x64, 0x61, 0x00, 0x01, 0x54, 3, 3, 3, 4, 4, 4]
+    );
+}
+
+#[tokio::test]
 async fn a_stalled_port_fails_the_write_instead_of_queueing() {
     let pty = pty();
     let backend = AdalightBackend::new();

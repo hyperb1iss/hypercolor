@@ -63,6 +63,9 @@ const GREETING_MAX_BYTES: usize = 256;
 /// Quiet period that ends the greeting read.
 const GREETING_READ_IDLE: Duration = Duration::from_millis(25);
 
+/// Slack on top of the blackout frames' line time while a close drains.
+const CLOSE_WAIT_MARGIN: Duration = Duration::from_millis(500);
+
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Backend for manually configured Adalight and AWA serial controllers.
@@ -161,8 +164,19 @@ impl DeviceBackend for AdalightBackend {
         let plan = self
             .adopted_plan(id)
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        if self.is_connected(id) {
-            return Ok(());
+        if let Some(existing) = self.session(id) {
+            let mut existing = existing.lock().await;
+            if *existing.plan == *plan {
+                return Ok(());
+            }
+            // The config changed under a live session: release the old port
+            // before reopening, since the open is exclusive.
+            existing.close_and_wait().await;
+            drop(existing);
+            self.sessions
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(id);
         }
 
         let mut port = open_port(*id, &plan).await?;
@@ -221,7 +235,7 @@ impl DeviceBackend for AdalightBackend {
                 "best-effort serial blackout frame failed"
             );
         }
-        session.close();
+        session.close_and_wait().await;
         info!(device_id = %id, "Disconnected serial LED controller");
         Ok(())
     }
@@ -484,18 +498,42 @@ impl AdalightSession {
         Ok(())
     }
 
-    /// Close the port on a blocking thread: closing a tty waits for the
-    /// driver to drain its output, which must not stall an async worker.
-    fn close(&mut self) {
-        let Some(port) = self.port.take() else {
+    /// Close the port on a blocking thread, because closing a tty waits for
+    /// the driver to drain its output and must not stall an async worker.
+    /// The returned task finishes once the descriptor (and its exclusive
+    /// lock) is released.
+    fn close(&mut self) -> Option<tokio::task::JoinHandle<()>> {
+        let port = self.port.take()?;
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            drop(port);
+            return None;
+        };
+        Some(handle.clone().spawn_blocking(move || {
+            let _runtime = handle.enter();
+            drop(port);
+        }))
+    }
+
+    /// Close the port and wait, within a bound, until it is released, so a
+    /// reconnect does not race the old descriptor's exclusive lock. A
+    /// wedged driver can hold a tty close for its full closing wait; past
+    /// the bound the close finishes in the background.
+    async fn close_and_wait(&mut self) {
+        let bound = self
+            .plan
+            .frame_time()
+            .saturating_mul(u32::try_from(BLACKOUT_FRAMES + 1).unwrap_or(u32::MAX))
+            .saturating_add(CLOSE_WAIT_MARGIN);
+        let Some(task) = self.close() else {
             return;
         };
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => drop(handle.clone().spawn_blocking(move || {
-                let _runtime = handle.enter();
-                drop(port);
-            })),
-            Err(_) => drop(port),
+        if tokio::time::timeout(bound, task).await.is_err() {
+            debug!(
+                device_id = %self.device_id,
+                port = %self.plan.port,
+                bound_ms = bound.as_millis(),
+                "serial port close is still draining; finishing in the background"
+            );
         }
     }
 
@@ -561,6 +599,6 @@ impl AdalightSession {
 
 impl Drop for AdalightSession {
     fn drop(&mut self) {
-        self.close();
+        drop(self.close());
     }
 }

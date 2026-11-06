@@ -377,7 +377,10 @@ without sending anything. The connect timeout grows by the delay.
 
 On disconnect the driver sends three black frames, but only if it ever sent
 a frame, then closes the port on a blocking thread (closing a tty waits for
-its output to drain). The repeats matter because HyperSerial never blanks on
+its output to drain). Disconnect waits for the close, bounded by the
+blackout frames' line time plus 500 ms, so an immediate reconnect does not
+collide with the old descriptor's exclusive lock; a driver that holds the
+close longer finishes it in the background. The repeats matter because HyperSerial never blanks on
 idle and drops corrupt frames, and Adalight-FastLED drops frames that arrive
 while it latches; any one of the three surviving turns the strip off.
 Hyperion.ng repeats its power-off frame five times for the same reason.
@@ -500,6 +503,9 @@ edit reaches the next connection without rebuilding the backend.
 - **Cadence** `OutputCadence::from_min_interval(frame_interval,
   effective_max_fps).with_max_frame_silence(1 s)`.
 - **Lifecycle** the connect timeout is the default plus `startup_delay_ms`.
+  A connect for a device that already has a session keeps it when the
+  adopted plan is unchanged and replaces it (closing the old port first)
+  when a config edit changed the plan.
 
 ---
 
@@ -525,7 +531,7 @@ Everything runs without hardware.
 | `tests/protocol_tests.rs` | Golden bytes for each header variant, count encoding at 1, 2, 300, and 65,536 LEDs, the check byte, every trailer vector in §5.4, calibrated and RGBW frames, color order before the checksum, padding and truncation, bandwidth math |
 | `tests/config_tests.rs` | TOML parsing and defaults, every validation rule in §8, line budget, latch, and user cap math |
 | `tests/driver_tests.rs` | Descriptor, default config, discovery identity and metadata, stable ids across port changes, control value round trip, driver and device surfaces |
-| `tests/backend_tests.rs` | Unix only. Pseudo-terminal pairs created by the test: Ada and AWA frames read back byte for byte (including `0A 0D 11 13` to prove raw mode), padding, three-frame blackout on disconnect, no blackout before the first frame, startup delay with a greeting, idempotent connect, a stalled port failing within its bound, a missing path inside a fresh temp directory, cadence and lifecycle policy |
+| `tests/backend_tests.rs` | Unix only. Pseudo-terminal pairs created by the test: Ada and AWA frames read back byte for byte (including `0A 0D 11 13` to prove raw mode), padding, three-frame blackout on disconnect, no blackout before the first frame, startup delay with a greeting, idempotent connect, reconnect right after disconnect, a config edit replacing the live session, a stalled port failing within its bound, a missing path inside a fresh temp directory, cadence and lifecycle policy |
 
 The pty tests open only the slave path of a pair they just created. The
 missing-port test uses a path inside an empty temporary directory.
