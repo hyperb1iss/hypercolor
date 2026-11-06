@@ -5,7 +5,8 @@
 **Status:** Implemented (status corrected 2026-08-25). The 90-byte report, protocol
 dispatch, CRC, and device catalog all ship in
 `crates/hypercolor-hal/src/drivers/razer/`. Section 6.3 (added 2026-11-05)
-records the accessory and headset registry facts.
+records the accessory and headset registry facts. Section 7.2 (rewritten
+2026-11-05) records the no-detach rule and the laptop interface layout.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::razer`
 **Author:** Nova
@@ -29,7 +30,7 @@ records the accessory and headset registry facts.
 
 ## 1. Overview
 
-Native USB HID driver for Razer peripherals via the `hypercolor-hal` abstraction layer. All Razer Chroma devices share a common 90-byte HID feature report protocol over USB control transfers, differentiated by a transaction ID byte that selects between protocol generations.
+Native USB HID driver for Razer peripherals via the `hypercolor-hal` abstraction layer. All Razer Chroma devices share a common 90-byte HID feature report protocol, differentiated by a transaction ID byte that selects between protocol generations.
 
 Clean-room implementation derived from publicly available protocol knowledge:
 
@@ -39,7 +40,7 @@ Clean-room implementation derived from publicly available protocol knowledge:
 
 **Vendor ID:** `0x1532` (Razer Inc.)
 
-All devices use USB control transfers with HID feature reports — not interrupt endpoints — making `nusb` control transfer APIs the correct transport binding.
+Feature reports travel as HID class requests on the default control pipe, not as interrupt endpoint traffic. Hypercolor sends them through the host HID stack and never claims the interface that carries them, because on every Razer family that interface is also a live input interface (section 7.2).
 
 Older Kraken headsets (Kraken 7.1 Chroma, V2, Tournament Edition, Ultimate, Kitty V2) are the exception: they expose lighting as a RAM register map written through a 37-byte HID output report. Spec 83 covers that protocol.
 
@@ -66,7 +67,7 @@ Offset  Size  Field               Description
 
 ### USB Control Transfer Parameters
 
-Sent as HID feature reports via USB control transfers:
+On the wire each report is one HID class request on the default control pipe:
 
 | Operation         | bmRequestType | bRequest | wValue   | wIndex           |
 | ----------------- | ------------- | -------- | -------- | ---------------- |
@@ -74,6 +75,8 @@ Sent as HID feature reports via USB control transfers:
 | GET_REPORT (recv) | `0xA1`        | `0x01`   | `0x0300` | interface number |
 
 The `wValue` encodes `(HID_REPORT_TYPE_FEATURE << 8) | report_id` where `report_id = 0x00` for all standard devices. Some devices (Leviathan V2) use `report_id = 0x07`, yielding `wValue = 0x0307`.
+
+These are the requests the device sees. Registered descriptors never build them directly: the host HID stack issues them for a feature report written to the device's HID collection (section 7.2).
 
 ### CRC Calculation
 
@@ -583,21 +586,33 @@ pub struct RazerProtocol {
 
 ### 7.2 Transport
 
-On Linux, Hypercolor uses `TransportType::UsbHidRaw` for Razer devices so the kernel HID driver can stay attached while feature reports flow through `/dev/hidraw*`:
+Every registered Razer descriptor uses `TransportType::UsbHidApi`, backed by `hidapi`. The crate is built with its hidraw backend on Linux, so reports flow through `/dev/hidraw*` while `usbhid` stays bound; Windows and macOS use the native HID APIs. Shared-report devices use `HidRawReportMode::FeatureReport`; the Kraken memory-access headsets use output reports (Spec 83).
 
-```rust
-/// Linux HIDRAW transport for Razer devices.
-///
-/// Sends/receives 90-byte feature reports through async-hid on top of hidraw.
-pub struct UsbHidRawTransport {
-    /// Open `/dev/hidraw*` node path.
-    device_path: String,
-    /// Report ID (0x00 for most devices, 0x07 for Leviathan V2).
-    report_id: u8,
-    /// Maximum feature report length.
-    max_packet_len: usize,
-}
-```
+For a report ID of `0x00` the HID buffer is the report ID byte followed by the 90-byte report, 91 bytes in all. The HID stack carries the ID in the low byte of `wValue` and leaves it out of the data stage, so the device receives exactly the 90 bytes of section 2. Reads request a 91-byte buffer and get back the ID byte followed by the 90-byte reply, which the transport strips.
+
+#### No-detach rule
+
+No Razer descriptor may use a transport that claims a USB interface (`UsbControl`, `UsbHid`, `UsbBulk`, `UsbVendor`, or a driver-owned `DriverUsb` transport). On Linux a claim detaches the kernel driver, and the interface that carries the Razer feature report is a HID input interface on keyboards, mice, and laptops alike, so a claim takes that input away for as long as Hypercolor holds the device. This is the Spec 53 section 8.4 rule applied to Razer. `crates/hypercolor-hal/tests/razer_input_safety_tests.rs` enforces it for every registered Razer descriptor.
+
+#### Laptop interface layout
+
+Blade and Book laptops expose the internal keyboard as one USB device with three HID interfaces. Public `lsusb -v` dumps show the same layout from 2018 through 2023:
+
+| Interface | Class / subclass / protocol | Report descriptor | Endpoint  | Role                                    |
+| --------- | --------------------------- | ----------------- | --------- | --------------------------------------- |
+| 0         | 3 / 1 / 1 (boot keyboard)   | 61 bytes          | `0x81` IN | Keyboard                                |
+| 1         | 3 / 0 / 1 (keyboard)        | 159 bytes         | `0x82` IN | Keyboard                                |
+| 2         | 3 / 0 / 2 (mouse)           | 94 bytes          | `0x83` IN | Input, plus the lighting feature report |
+
+All three are HID class, so `usbhid` binds them by default. The lighting feature report rides interface 2 (OpenRGB targets interface 2, usage page `0x0001`, usage `0x0002` for every Blade and Book; openrazer creates its lighting controls on the mouse-protocol interface and never detaches it). A third-party HID enumeration of the Blade 15 (2018 Advanced) reports a 91-byte feature report (ID plus 90) on interface 2.
+
+Hypercolor therefore registers every laptop with the tuple the `BlackWidow` keyboards use: interface 2, report ID `0x00`, `FeatureReport`, usage page `0x0001`, usage `0x0002`, `max_report_len` 91. Until 2026-11-05 the laptops used `UsbControl { interface: 2 }`, which detached `usbhid` from interface 2 on Linux. `crates/hypercolor-hal/tests/razer_laptop_wire_tests.rs` proves both paths put identical requests on the wire for every command the laptop protocols emit.
+
+Dumps confirming the layout cover PIDs `0x0233`, `0x023A`, `0x0245`, `0x0246`, `0x0234`, and `0x029D`, plus three PIDs outside the registry (`0x024B`, `0x026E`, `0x02C6`). Open questions:
+
+- No decoded interface 2 report descriptor is public, so whether Fn or media keys ride its input reports is unknown. It does not change the rule, since the interface is input either way.
+- No dumps exist for `0x0205`, `0x020F`, `0x0210`, `0x0220`, `0x0224`, `0x022D`, `0x0232`, `0x0239`, `0x026A`, `0x0270`, `0x0276`, `0x028A`, or `0x028C`. They are assumed to share the layout.
+- The hidraw path has not yet been run on a Blade by the Hypercolor team.
 
 ### 7.3 Device Descriptor
 
@@ -774,3 +789,11 @@ pub struct MockRazerTransport {
 - linux-usb.org `usb.ids` and Driver Fusion's HID listings for product ID
   confirmation (Nari family, Leviathan V2 Pro, Nommo V2 and V2 Pro, `0x0F05`,
   `0x0F28`)
+- Blade laptop `lsusb -v` dumps in openrazer issues 605 (`0x0233`), 775
+  (`0x023A`), 855 (`0x0245`), 859 and 971 (`0x0246`), 910 (`0x0234`), and
+  2102 (`0x029D`), which record the interface layout in section 7.2
+- OpenRGB `RazerControllerDetect.cpp` (laptop detectors: interface 2, usage
+  page `0x0001`, usage `0x0002`)
+- dvalfrid/rigstats issue 510 (feature report enumeration on the Blade 15
+  2018 Advanced: interface 2, 91 bytes)
+- Spec 53 section 8.4 (input device safety)

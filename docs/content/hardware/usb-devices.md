@@ -101,7 +101,7 @@ The `hidraw` rules cover this path as well.
 
 ### UsbControl
 
-Used by Razer laptop keyboards (Blade-class), which claim interface 2 directly. Razer peripherals use `UsbHidApi` instead. This path claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place, and the device node is in `/dev/bus/usb/`. The detach step is Linux-specific; Windows and macOS claim the interface without it.
+No registered device uses this path today. It claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers, so it is only safe on an interface with no input function. Razer laptop keyboards (Blade-class) carry their lighting report on interface 2, which is also a live HID input interface, so they use `UsbHidApi` like every other Razer device. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place, and the device node is in `/dev/bus/usb/`. The detach step is Linux-specific; Windows and macOS claim the interface without it.
 
 ### UsbHid
 
