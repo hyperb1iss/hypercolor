@@ -88,9 +88,11 @@ pub fn analog_header_packet(color: [u8; 3], order: AnalogColorOrder) -> FixedCol
 }
 
 impl Gen2Profile {
-    /// NZXT motherboard. Digital channels come from the topology query and
-    /// are capped at the board's NZXT plus ARGB header count; each 12V header
-    /// becomes a fixed-color zone.
+    /// NZXT motherboard. Digital channels come from the topology query, and
+    /// only channels naming known NZXT accessories are streamed; the NZXT plus
+    /// ARGB header count bounds the channel index. Generic strips on ARGB
+    /// headers report no accessory, so those headers stay dark. Each 12V
+    /// header becomes a fixed-color zone.
     ///
     /// Only the first 12V header's target bytes are documented, so at most
     /// one analog header is driven. No board in Spec 39 §4.4 has more.

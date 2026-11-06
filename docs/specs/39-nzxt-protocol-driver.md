@@ -974,7 +974,9 @@ status packet `0x67 0x02` once fan polling is enabled (the Linux hwmon driver en
 or the Kraken status packet `0x75 0x02`. Any report other than `0x21 0x03`, and an empty
 read (how hidapi reports a timeout), parses as `Busy`, which makes the backend resend the
 topology query after its retry backoff. A device that never answers ends init with an
-empty layout rather than an error.
+empty layout rather than an error. A `0x21 0x03` reply too short to hold the channel count
+at byte 14 is not retried: it fails init with a malformed-response error, because a
+truncated reply means the transport and the protocol disagree on the report size.
 
 ### 6.7 Registration
 
@@ -1201,15 +1203,23 @@ check first.
    documented for the Z3, the channel is always streamed as 40 LEDs, the count §4.6.2 states.
 8. Kraken X3: the channel carrying accessory `0x10` is the pump ring. The channel carrying
    `0x11` is the logo and is never streamed, because §4.6.1 routes the logo through the
-   separate `0x2A` write. Every other channel is external and is capped at 40 LEDs at an
-   accessory boundary (accessories that would cross 40 are dropped whole). On `0x2014` the
-   logo is a static 1-LED zone.
-9. Motherboards: digital channels are topology driven and capped at the NZXT plus ARGB header
-   count from §4.4, so a channel index the table does not account for is never streamed. The
-   12V header is a static fixed-color zone. Its byte order defaults to RGB, the order the
-   §4.4 template is written in.
+   separate `0x2A` write. Every streamed channel is capped at 40 LEDs (the external channel
+   maximum) at an accessory boundary: accessories that would cross 40 are dropped whole. The
+   pump ring's 8 LEDs never reach the cap. On `0x2014` the logo is a static 1-LED zone.
+9. Motherboards: like every Gen2 profile, a channel is streamed only when the topology
+   reply names known NZXT accessories on it, so the code assumes nothing about which index
+   a given header occupies. The NZXT plus ARGB header count from §4.4 is only an upper
+   bound on channel indexes. ARGB headers stay dark in practice: a generic strip reports
+   no accessory ID, and §9.4 records that their channel index and LED count source are
+   unknown. The 12V header is a static fixed-color zone. Its byte order defaults to RGB,
+   the order the §4.4 template is written in; the profile accepts any of the six orders,
+   but no user-facing setting selects one yet.
 10. Zone order is digital channels in channel order (accessories in slot order inside each
     channel), then fixed-color zones (12V header or X3 logo).
+11. Layout hints follow §5.2 (strips linear, fans and pump rings circular), with one
+    exception: the F360 RGB Core case version (`0x1D`) and F420 RGB (`0x1F`) are triple-fan
+    units whose LEDs span three separate fans, so they are laid out as strips rather than
+    as one 24-LED ring.
 
 Wire tables for every packet Phase 1 sends:
 
