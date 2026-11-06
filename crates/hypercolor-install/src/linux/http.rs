@@ -8,7 +8,7 @@ use super::model::{LinuxHttpResponse, error};
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(super) fn http_get(
+pub(crate) fn http_get(
     address: SocketAddr,
     path: &str,
     max_bytes: usize,

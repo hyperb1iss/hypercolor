@@ -9,12 +9,16 @@
 //! Every decision lives here and compiles on every unix host, so it is
 //! tested against fakes anywhere. The macOS system calls live behind
 //! [`MacosBundleExecutor`] in `native`, and the daemon's service manager
-//! behind [`MacosBundleService`].
+//! behind [`MacosBundleService`], which [`MacosBundleLaunchdService`]
+//! implements over [`MacosBundleAgent`], native in `native_agent`.
 
 mod executor;
+mod launchd;
 mod model;
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 mod native;
+#[cfg(target_os = "macos")]
+mod native_agent;
 mod platform;
 mod record;
 mod service;
@@ -24,6 +28,9 @@ mod swap;
 mod tests;
 
 pub use executor::MacosBundleExecutor;
+pub use launchd::{
+    MACOS_BUNDLE_START_DEADLINE, MacosBundleAgent, MacosBundleAgentJob, MacosBundleLaunchdService,
+};
 pub use model::{
     MACOS_BUNDLE_DISCARD_SUFFIX, MACOS_BUNDLE_NAME, MACOS_BUNDLE_PARTIAL_SUFFIX,
     MACOS_BUNDLE_STAGING_MARGIN_BYTES, MACOS_BUNDLE_STAGING_ROOT_NAME, MacosBundleConfig,
@@ -33,5 +40,7 @@ pub use model::{
 };
 #[cfg(target_os = "macos")]
 pub use native::MacosBundleNativeExecutor;
+#[cfg(target_os = "macos")]
+pub use native_agent::MacosBundleNativeAgent;
 pub use platform::MacosBundleInstallPlatform;
 pub use service::MacosBundleService;
