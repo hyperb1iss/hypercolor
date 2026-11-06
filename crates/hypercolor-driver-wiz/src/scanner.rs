@@ -1,6 +1,6 @@
 //! Discovery and device probing (Spec 93 §3 and §9.4).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -39,6 +39,12 @@ pub mod metadata_key {
 const MIN_COLLECTION_WINDOW: Duration = Duration::from_millis(300);
 const MAX_COLLECTION_WINDOW: Duration = Duration::from_secs(2);
 const RECEIVE_BUFFER_LEN: usize = 2048;
+/// Most devices one scan admits from registration replies. WiZ homes run
+/// from a handful to a few hundred bulbs; 512 matches the LIFX driver's
+/// bound and caps what unsolicited replies can make the scanner probe.
+pub const MAX_DISCOVERY_CANDIDATES: usize = 512;
+/// Probes in flight at once, each one socket and two short requests.
+pub const MAX_CONCURRENT_PROBES: usize = 32;
 
 /// Where and how a scan looks for devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,33 +226,73 @@ impl WizScanner {
     ///
     /// Returns an error when the discovery socket cannot be bound.
     pub async fn scan_profiles(&self) -> Result<Vec<WizDeviceProfile>> {
+        let started = Instant::now();
+        let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
         let mut targets = self.options.unicast_targets.clone();
         if !self.options.broadcast_targets.is_empty() {
-            let window =
-                (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
-            targets.extend(collect_registrations(&self.options.broadcast_targets, window).await?);
+            targets.extend(
+                collect_registrations(
+                    &self.options.broadcast_targets,
+                    window,
+                    MAX_DISCOVERY_CANDIDATES,
+                )
+                .await?,
+            );
         }
         targets.sort_unstable();
         targets.dedup();
 
+        // One probe round costs every attempt's reply timeout; the probe
+        // phase gets the scan budget, and at least one round.
+        let round = self
+            .options
+            .request_policy
+            .reply_timeout
+            .saturating_mul(self.options.request_policy.attempts.max(1) * 2);
+        let deadline = started + self.options.timeout.max(window + round);
+        let policy = self.options.request_policy;
+        let mut pending = targets.into_iter();
         let mut tasks = JoinSet::new();
-        for addr in targets {
-            let policy = self.options.request_policy;
-            tasks.spawn(async move { (addr, probe_device(addr, policy).await) });
+        let spawn_next = |tasks: &mut JoinSet<_>, pending: &mut std::vec::IntoIter<SocketAddr>| {
+            if let Some(addr) = pending.next() {
+                tasks.spawn(async move { (addr, probe_device(addr, policy).await) });
+            }
+        };
+        for _ in 0..MAX_CONCURRENT_PROBES {
+            spawn_next(&mut tasks, &mut pending);
         }
+
+        let mut seen = HashSet::new();
         let mut profiles: Vec<WizDeviceProfile> = Vec::new();
-        while let Some(joined) = tasks.join_next().await {
-            match joined {
-                Ok((_, Ok(profile))) if !profile.class.is_light() => {
-                    debug!(mac = %profile.mac, "skipping WiZ smart plug");
+        loop {
+            match timeout_at(deadline, tasks.join_next()).await {
+                Err(_) => {
+                    let unfinished = tasks.len() + pending.len();
+                    warn!(
+                        unfinished,
+                        "WiZ scan budget ran out before every probe finished"
+                    );
+                    tasks.abort_all();
+                    break;
                 }
-                Ok((_, Ok(profile))) => {
-                    if !profiles.iter().any(|known| known.mac == profile.mac) {
-                        profiles.push(profile);
+                Ok(None) => break,
+                Ok(Some(joined)) => {
+                    match joined {
+                        Ok((_, Ok(profile))) if !profile.class.is_light() => {
+                            debug!(mac = %profile.mac, "skipping WiZ smart plug");
+                        }
+                        Ok((_, Ok(profile))) => {
+                            if seen.insert(profile.mac.clone()) {
+                                profiles.push(profile);
+                            }
+                        }
+                        Ok((addr, Err(error))) => {
+                            warn!(%addr, error = %error, "WiZ device probe failed");
+                        }
+                        Err(error) => warn!(error = %error, "WiZ probe task failed"),
                     }
+                    spawn_next(&mut tasks, &mut pending);
                 }
-                Ok((addr, Err(error))) => warn!(%addr, error = %error, "WiZ device probe failed"),
-                Err(error) => warn!(error = %error, "WiZ probe task failed"),
             }
         }
         profiles.sort_by(|left, right| left.mac.cmp(&right.mac));
@@ -255,7 +301,11 @@ impl WizScanner {
 }
 
 /// Send the discovery registration to every target and collect the
-/// addresses (on the standard port) of devices that answer.
+/// addresses of devices that answer, admitting at most `limit`.
+///
+/// A reply counts only when it is a successful registration carrying a
+/// well-formed MAC, and each MAC and each source IP is admitted once, so
+/// replies from many ports or with invented MACs cannot multiply probes.
 ///
 /// # Errors
 ///
@@ -263,6 +313,7 @@ impl WizScanner {
 pub async fn collect_registrations(
     targets: &[SocketAddr],
     window: Duration,
+    limit: usize,
 ) -> Result<Vec<SocketAddr>> {
     let socket = tokio::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
         .await
@@ -278,31 +329,52 @@ pub async fn collect_registrations(
 
     let deadline = Instant::now() + window;
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_LEN];
+    let mut macs = HashSet::new();
+    let mut sources = HashSet::new();
     let mut found = Vec::new();
-    loop {
+    while found.len() < limit {
         match timeout_at(deadline, socket.recv_from(&mut buffer)).await {
             Err(_) => break,
             Ok(Err(error)) => {
                 debug!(%error, "WiZ discovery receive failed");
                 break;
             }
-            Ok(Ok((len, source))) => {
-                let registered = decode_reply(&buffer[..len])
-                    .and_then(|reply| reply_result::<RegistrationResult>(&reply, "registration"));
-                match registered {
-                    Ok(result) => {
-                        debug!(%source, mac = %result.mac, "WiZ discovery reply");
-                        // Replies come from the device's listening port.
-                        if !found.contains(&source) {
-                            found.push(source);
-                        }
+            Ok(Ok((len, source))) => match registration_mac(&buffer[..len]) {
+                Ok(mac) => {
+                    if sources.contains(&source.ip()) || !macs.insert(mac.clone()) {
+                        continue;
                     }
-                    Err(error) => debug!(%source, %error, "ignoring non-WiZ discovery reply"),
+                    sources.insert(source.ip());
+                    debug!(%source, %mac, "WiZ discovery reply");
+                    // Replies come from the device's listening port.
+                    found.push(source);
                 }
-            }
+                Err(reason) => debug!(%source, %reason, "ignoring WiZ discovery reply"),
+            },
         }
     }
+    if found.len() >= limit {
+        warn!(
+            limit,
+            "WiZ discovery stopped admitting devices at its limit; add the rest to device_ips"
+        );
+    }
     Ok(found)
+}
+
+/// The canonical MAC of a successful registration reply.
+///
+/// # Errors
+///
+/// Returns why the datagram is not one.
+pub fn registration_mac(datagram: &[u8]) -> Result<String, String> {
+    let reply = decode_reply(datagram).map_err(|error| error.to_string())?;
+    let result: RegistrationResult =
+        reply_result(&reply, "registration").map_err(|error| error.to_string())?;
+    if result.success == Some(false) {
+        return Err("registration was not successful".to_owned());
+    }
+    canonical_mac(&result.mac).ok_or_else(|| format!("invalid MAC '{}'", result.mac))
 }
 
 /// Read one device's system and model configuration.

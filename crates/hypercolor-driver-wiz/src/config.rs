@@ -14,7 +14,7 @@ pub const DEFAULT_MAX_FPS: u32 = 20;
 pub const MAX_FPS_LIMIT: u32 = 60;
 
 /// WiZ backend and discovery configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WizConfig {
     /// Addresses probed directly, for networks that filter broadcast.
     #[serde(default)]
@@ -32,6 +32,22 @@ pub struct WizConfig {
     /// verified controls". Kept out of control surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_key: Option<String>,
+}
+
+/// Debug output never shows the signing key, only whether one is set.
+impl std::fmt::Debug for WizConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WizConfig")
+            .field("device_ips", &self.device_ips)
+            .field("broadcast_discovery", &self.broadcast_discovery)
+            .field("max_fps", &self.max_fps)
+            .field(
+                "signing_key",
+                &self.signing_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl Default for WizConfig {
