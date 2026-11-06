@@ -232,6 +232,8 @@ fn manifests_that_a_windows_unit_cannot_honour_are_refused() {
         "trailing ",
         "back\\slash",
         "manifest.json",
+        "MANIFEST.JSON",
+        "man\u{131}fest.json",
         "",
         "a//b",
     ] {

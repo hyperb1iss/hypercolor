@@ -322,7 +322,7 @@ pub(super) fn split_parent(path: &str) -> (&str, &str) {
 fn validate_member_path(path: &str) -> Result<String, ReleasePayloadError> {
     let valid = !path.is_empty()
         && path.len() <= MAX_RELEASE_PATH_BYTES
-        && !path.eq_ignore_ascii_case(MANIFEST_NAME)
+        && fold_case(path) != fold_case(MANIFEST_NAME)
         && path.split('/').all(windows_file_name_is_valid);
     if valid {
         Ok(path.to_owned())
