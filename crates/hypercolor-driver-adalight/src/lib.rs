@@ -44,7 +44,7 @@ use hypercolor_types::device::{
 use hypercolor_types::identity::BackendId;
 
 pub use backend::{
-    AdalightBackend, DISCONNECT_BUDGET, KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG, SnapshotConfig,
+    AdalightBackend, DISCONNECT_BUDGET, KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG,
     output_cadence_for, stall_budget,
 };
 pub use color::ColorOrder;

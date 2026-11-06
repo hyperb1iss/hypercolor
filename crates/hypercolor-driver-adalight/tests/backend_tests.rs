@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use hypercolor_driver_adalight::protocol::{AwaWhite, FrameEncoder, FrameLayout, Framing};
 use hypercolor_driver_adalight::{
-    AdalightBackend, AdalightConfig, ColorOrder, DISCONNECT_BUDGET, KEEPALIVE_INTERVAL,
-    MAX_BLACKOUT_FRAMES, configured_devices, output_cadence_for,
+    AdalightBackend, AdalightConfig, AdalightDeviceConfig, ColorOrder, DISCONNECT_BUDGET,
+    KEEPALIVE_INTERVAL, MAX_BLACKOUT_FRAMES, METADATA_DEVICE_CONFIG, configured_devices,
+    output_cadence_for, resolve_device,
 };
 use hypercolor_driver_api::{
     DeviceBackend, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource,
@@ -117,6 +118,11 @@ fn discovered(device: Value) -> DiscoveredDevice {
         .expect("valid config")
         .pop()
         .expect("one device")
+}
+
+/// A complete discovery record for a device the live config never named.
+fn discovered_with_id(id: &str) -> DiscoveredDevice {
+    discovered(json!({ "id": id, "port": FAKE_PORT, "led_count": 1 }))
 }
 
 async fn read_frame(master: &mut SerialStream, len: usize) -> Vec<u8> {
@@ -231,7 +237,7 @@ async fn disconnect_blacks_out_the_strip_and_closes_the_port() {
     read_frame(&mut pty.master, 12).await;
 
     rig.backend.disconnect(&id).await.expect("disconnect");
-    assert!(!rig.backend.is_connected(&id));
+    assert!(rig.backend.frame_sink(&id).is_none());
     let black = [0x41, 0x64, 0x61, 0x00, 0x01, 0x54, 0, 0, 0, 0, 0, 0];
     assert_eq!(
         read_frame(&mut pty.master, 12 * MAX_BLACKOUT_FRAMES).await,
@@ -430,16 +436,18 @@ async fn missing_ports_fail_to_connect_with_a_retryable_error() {
         "{error:?}"
     );
     assert!(error.to_string().contains("no-such-port"));
-    assert!(!rig.backend.is_connected(&discovered.info.id));
+    assert!(rig.backend.frame_sink(&discovered.info.id).is_none());
 }
 
 #[tokio::test]
-async fn unadopted_devices_cannot_connect() {
+async fn unconfigured_devices_cannot_connect() {
     let rig = Rig::new();
-    assert!(matches!(
-        rig.backend.connect(&DeviceId::new()).await,
-        Err(DeviceError::NotAdopted { .. })
-    ));
+    assert_not_configured(
+        &rig.backend
+            .connect(&DeviceId::new())
+            .await
+            .expect_err("nothing configures this id"),
+    );
 }
 
 // ── Authorization by the live config ────────────────────────────────────
@@ -475,14 +483,13 @@ async fn a_removed_entry_cannot_be_reopened_by_identify() {
         .adopt_device(&retained)
         .expect_err("adoption must check the live config");
     assert_not_configured(&error);
-    assert!(rig.backend.adopted_plan(&id).is_none());
     let error = rig
         .backend
         .connect(&id)
         .await
         .expect_err("connect must check the live config");
-    assert!(matches!(error, DeviceError::NotAdopted { .. }), "{error:?}");
-    assert!(!rig.backend.is_connected(&id));
+    assert_not_configured(&error);
+    assert!(rig.backend.frame_sink(&id).is_none());
     assert_silent(&mut pty.master, "a removed device must never be reopened").await;
 }
 
@@ -499,10 +506,6 @@ async fn an_adopted_device_removed_before_connect_is_refused() {
     rig.config.remove("desk");
     let error = rig.backend.connect(&id).await.expect_err("entry is gone");
     assert_not_configured(&error);
-    assert!(
-        rig.backend.adopted_plan(&id).is_none(),
-        "refusal forgets it"
-    );
     assert_silent(&mut pty.master, "the port must stay closed").await;
 }
 
@@ -523,14 +526,48 @@ async fn an_entry_removed_during_the_startup_delay_is_refused() {
     };
     let (connected, ()) = tokio::join!(connect, remove);
     assert_not_configured(&connected.expect_err("entry removed mid-boot"));
-    assert!(!rig.backend.is_connected(&id));
+    assert!(rig.backend.frame_sink(&id).is_none());
     assert_silent(&mut pty.master, "no frame goes to a removed device").await;
 }
 
 #[tokio::test]
-async fn a_moved_port_is_not_opened_from_stale_metadata() {
+async fn a_config_edit_during_the_startup_delay_retires_the_stale_open() {
     let mut old_port = pty();
-    let new_port = pty();
+    let mut new_port = pty();
+    let rig = Rig::new();
+    let discovered = rig.discovered(json!({
+        "id": "uno", "port": old_port.slave_path, "led_count": 1, "startup_delay_ms": 300
+    }));
+    let id = discovered.info.id;
+
+    let connect = rig.backend.connect(&id);
+    let edit = async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        rig.config
+            .upsert(json!({ "id": "uno", "port": new_port.slave_path, "led_count": 1 }));
+    };
+    let (connected, ()) = tokio::join!(connect, edit);
+    let error = connected.expect_err("the open outlived its config");
+    assert!(
+        matches!(error, DeviceError::ConnectionFailed { .. }),
+        "{error:?}"
+    );
+    assert!(rig.backend.frame_sink(&id).is_none());
+
+    // The lifecycle retries, and the retry opens what the config names now.
+    rig.backend.connect(&id).await.expect("retry");
+    rig.backend
+        .write_colors(&id, &[[3, 3, 3]])
+        .await
+        .expect("write");
+    assert_eq!(read_frame(&mut new_port.master, 9).await[6..], [3, 3, 3]);
+    assert_silent(&mut old_port.master, "the stale port never sees a frame").await;
+}
+
+#[tokio::test]
+async fn stale_metadata_cannot_reopen_a_moved_port() {
+    let mut old_port = pty();
+    let mut new_port = pty();
     let rig = Rig::new();
     let stale = rig.discovered(json!({
         "id": "desk", "port": old_port.slave_path, "led_count": 1
@@ -540,12 +577,15 @@ async fn a_moved_port_is_not_opened_from_stale_metadata() {
     rig.config
         .upsert(json!({ "id": "desk", "port": new_port.slave_path, "led_count": 1 }));
 
-    let error = rig
-        .backend
+    rig.backend
         .adopt_device(&stale)
-        .expect_err("stale port must not be adopted");
-    assert_not_configured(&error);
-    assert!(error.to_string().contains("names port"), "{error}");
+        .expect("the id is configured");
+    rig.backend.connect(&stale.info.id).await.expect("connect");
+    rig.backend
+        .write_colors(&stale.info.id, &[[9, 9, 9]])
+        .await
+        .expect("write");
+    assert_eq!(read_frame(&mut new_port.master, 9).await[6..], [9, 9, 9]);
     assert_silent(&mut old_port.master, "the old port must stay closed").await;
 }
 
@@ -560,6 +600,12 @@ async fn a_disabled_driver_opens_nothing() {
     assert_not_configured(
         &rig.backend
             .adopt_device(&discovered)
+            .expect_err("disabled driver"),
+    );
+    assert_not_configured(
+        &rig.backend
+            .connect(&discovered.info.id)
+            .await
             .expect_err("disabled driver"),
     );
     assert_silent(&mut pty.master, "a disabled driver must not open ports").await;
@@ -617,12 +663,12 @@ fn unconfigured_devices_get_the_default_connect_timeout() {
     );
 }
 
-#[test]
-fn cadence_paces_to_the_line_and_refreshes_idle_strips() {
+#[tokio::test]
+async fn cadence_paces_to_the_line_and_refreshes_idle_strips() {
+    let pty = pty();
     let rig = Rig::new();
-    let discovered = rig.discovered(json!({ "id": "desk", "port": FAKE_PORT, "led_count": 300 }));
-    rig.backend.adopt_device(&discovered).expect("adopt");
-    let id = discovered.info.id;
+    let device = json!({ "id": "desk", "port": pty.slave_path, "led_count": 300 });
+    let id = rig.connected(device.clone()).await;
 
     let cadence = rig.backend.output_cadence(&id).expect("cadence");
     // 906 bytes at 115200 baud occupy the line for 78.646 ms.
@@ -631,49 +677,48 @@ fn cadence_paces_to_the_line_and_refreshes_idle_strips() {
     assert_eq!(cadence.target_fps(), 12);
     assert_eq!(rig.backend.target_fps(&id), Some(12));
 
-    let plan = rig.backend.adopted_plan(&id).expect("plan");
+    let config: AdalightDeviceConfig = serde_json::from_value(device).expect("device");
+    let plan = resolve_device(&config).expect("plan");
     assert_eq!(output_cadence_for(&plan), cadence);
+
+    rig.backend.disconnect(&id).await.expect("disconnect");
+    assert_eq!(rig.backend.output_cadence(&id), None, "only sessions pace");
 }
 
-#[test]
-fn adoption_requires_the_config_metadata() {
+#[tokio::test]
+async fn metadata_neither_authorizes_nor_redirects_an_open() {
+    let mut configured = pty();
+    let mut elsewhere = pty();
     let rig = Rig::new();
-    let mut discovered = rig.discovered(json!({ "id": "desk", "port": FAKE_PORT, "led_count": 1 }));
-    discovered.metadata.clear();
-    assert!(matches!(
-        rig.backend.adopt_device(&discovered),
-        Err(DeviceError::NotAdopted { .. })
-    ));
-
-    let mut tampered = rig.discovered(json!({ "id": "desk", "port": FAKE_PORT, "led_count": 1 }));
-    tampered.metadata.insert(
-        hypercolor_driver_adalight::METADATA_DEVICE_CONFIG.to_owned(),
-        json!({ "id": "desk", "port": FAKE_PORT, "led_count": 0 }).to_string(),
+    let mut discovered = rig.discovered(json!({
+        "id": "desk", "port": configured.slave_path, "led_count": 1
+    }));
+    discovered.metadata.insert(
+        METADATA_DEVICE_CONFIG.to_owned(),
+        json!({ "id": "desk", "port": elsewhere.slave_path, "led_count": 1 }).to_string(),
     );
-    assert!(matches!(
-        rig.backend.adopt_device(&tampered),
-        Err(DeviceError::ProtocolError { .. })
-    ));
-    assert!(rig.backend.adopted_plan(&tampered.info.id).is_none());
-}
+    rig.backend.adopt_device(&discovered).expect("configured");
+    rig.backend
+        .connect(&discovered.info.id)
+        .await
+        .expect("open");
+    rig.backend
+        .write_colors(&discovered.info.id, &[[4, 4, 4]])
+        .await
+        .expect("write");
+    assert_eq!(read_frame(&mut configured.master, 9).await[6..], [4, 4, 4]);
+    assert_silent(&mut elsewhere.master, "metadata cannot name a port").await;
 
-#[test]
-fn a_snapshot_backend_authorizes_only_its_own_entries() {
-    let config: AdalightConfig = serde_json::from_value(json!({
-        "devices": [{ "id": "desk", "port": FAKE_PORT, "led_count": 1 }]
-    }))
-    .expect("config");
-    let backend = AdalightBackend::from_config(&config).expect("snapshot backend");
-    backend
-        .adopt_device(&discovered(
-            json!({ "id": "desk", "port": FAKE_PORT, "led_count": 1 }),
-        ))
-        .expect("configured entry adopts");
+    let mut stripped = rig.discovered(json!({ "id": "bare", "port": FAKE_PORT, "led_count": 1 }));
+    stripped.metadata.clear();
+    rig.backend
+        .adopt_device(&stripped)
+        .expect("config alone authorizes adoption");
+
+    let unconfigured = discovered_with_id("other");
     assert_not_configured(
-        &backend
-            .adopt_device(&discovered(
-                json!({ "id": "other", "port": FAKE_PORT, "led_count": 1 }),
-            ))
-            .expect_err("unknown entry"),
+        &rig.backend
+            .adopt_device(&unconfigured)
+            .expect_err("metadata alone authorizes nothing"),
     );
 }

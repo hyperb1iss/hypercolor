@@ -503,23 +503,26 @@ entry. It opens no port.
 | `claim` | `None`: nothing came from hardware |
 | Metadata | `port`, `baud_rate`, `protocol`, `frame_bytes`, `line_max_fps`, and `adalight_device` (the entry as JSON) |
 
-The backend re-validates `adalight_device` when it adopts a device, but that
-metadata only describes the device; it never authorizes an open (§9.4).
+The device surface reads `adalight_device`, but that metadata only describes
+the device; it never authorizes an open (§9.4).
 
 ### 9.4 Backend
 
 - **Authorization.** The registry keeps a departed device's last discovery
   metadata, and identify re-adopts from it and connects. So the backend
-  never treats metadata as permission. It holds a live view of the driver
-  config (`DriverHost::config_source`, which the daemon backs with its
-  config manager) and, at adoption, right before every open, and again
-  after the startup delay, looks the device id up in the config as it is at
-  that moment. The driver must be enabled, the config must be valid, an
-  entry must derive this device id, and that entry must name the same port.
-  Otherwise the backend forgets the device and refuses with `NotFound`,
-  which the lifecycle does not retry. A host without a live config store
-  gets the entry the backend was built from; the reconciler rebuilds the
-  backend whenever that entry changes.
+  never reads metadata at all. It holds a required live view of the driver
+  config (`DriverContext::config`, which the daemon backs with its config
+  manager) and resolves the device through `ConfiguredDevices` at adoption
+  and at every connect. The driver must be enabled, the config must be
+  valid, and an entry must derive this device id; otherwise the backend
+  refuses with `NotFound`, which the lifecycle does not retry. The port that
+  opens is the one the config names at that moment. Right before the open,
+  and again before publishing the session, the backend confirms the config
+  it resolved is still current, so an open cannot outlive its config: a
+  removed entry refuses with `NotFound`, and any other edit fails with a
+  retryable connection error so the lifecycle retries under the new config.
+  A live session is not re-checked per frame: a config edit reaches it
+  through the reconciler, which rebuilds the backend and retires its devices.
 - **Connect** opens the configured path at the configured baud, 8N1, no flow
   control, on a blocking thread. Unix opens take `TIOCEXCL` and an exclusive
   `flock`, so a second host (Hyperion, Prismatik) holding the port makes the
@@ -536,7 +539,7 @@ metadata only describes the device; it never authorizes an open (§9.4).
   effective_max_fps).with_max_frame_silence(1 s)`.
 - **Lifecycle** the connect timeout is the default plus `startup_delay_ms`.
   The daemon asks for it before adopting the device, so the delay comes
-  from the live config entry for the device id, not from the adopted plan.
+  from the live config entry for the device id.
   A connect for a device that already has a session keeps it when the plan
   is unchanged and replaces it (closing the old port first) when a config
   edit changed the plan.
@@ -547,8 +550,9 @@ metadata only describes the device; it never authorizes an open (§9.4).
 
 - The driver never enumerates serial ports and never claims a USB device by
   VID or PID. The only path it opens is one named in its config at the
-  moment of opening; removed, disabled, or re-pointed entries are refused
-  even when old discovery metadata still describes them (§9.4).
+  moment of opening; removed or disabled entries are refused, and a
+  re-pointed entry opens its new path, even when old discovery metadata still
+  describes the old one (§9.4).
 - It never sends a byte outside the configured framing: no probes, no
   statistics requests, no reset sequences, no DTR or RTS changes.
 - Exclusive opens keep two hosts from interleaving frames on one port.
@@ -567,7 +571,7 @@ Everything runs without hardware.
 | `tests/protocol_tests.rs` | Golden bytes for each header variant, count encoding at 1, 2, 300, and 65,536 LEDs, the check byte, every trailer vector in §5.4, calibrated and RGBW frames, color order before the checksum, padding and truncation, bandwidth math |
 | `tests/config_tests.rs` | TOML parsing and defaults, every validation rule in §8, line budget, latch, and user cap math |
 | `tests/driver_tests.rs` | Descriptor, default config, discovery identity and metadata, stable ids across port changes, control value round trip, driver and device surfaces |
-| `tests/backend_tests.rs` | Unix only. Pseudo-terminal pairs created by the test, with a live test config the test edits: Ada and AWA frames read back byte for byte (including `0A 0D 11 13` to prove raw mode), padding, blackout on disconnect, no blackout before the first frame, startup delay with a greeting, idempotent connect, reconnect right after disconnect, a config edit replacing the live session, a stalled port failing within its bound and its disconnect finishing inside the budget, a missing path inside a fresh temp directory. Authorization: configure, discover, drive, remove the entry, disconnect, then identify's re-adopt and connect from the retained metadata are both refused and the port stays silent; an adopted device removed before connect, an entry removed during the startup delay, a moved port with stale metadata, and a disabled driver are refused. The first-connect timeout is read before adoption, as the daemon does, and covers a 6 s startup delay |
+| `tests/backend_tests.rs` | Unix only. Pseudo-terminal pairs created by the test, with a live test config the test edits: Ada and AWA frames read back byte for byte (including `0A 0D 11 13` to prove raw mode), padding, blackout on disconnect, no blackout before the first frame, startup delay with a greeting, idempotent connect, reconnect right after disconnect, a config edit replacing the live session, a stalled port failing within its bound and its disconnect finishing inside the budget, a missing path inside a fresh temp directory. Authorization: configure, discover, drive, remove the entry, disconnect, then identify's re-adopt and connect from the retained metadata are both refused and the port stays silent; an adopted device removed before connect, an entry removed during the startup delay, and a disabled driver are refused; a config edit during the startup delay retires the stale open and the retry opens the new port; stale or tampered metadata never moves an open off the configured port. The first-connect timeout is read before adoption, as the daemon does, and covers a 6 s startup delay |
 | `tests/drain_tests.rs` | Drain watchdog decisions with synthetic readings: clear below a frame, backlog skips, a queue that never drains stalls after the budget, a slowly draining queue keeps coalescing, growth is not progress, clearing restarts the clock |
 
 The pty tests open only the slave path of a pair they just created. The

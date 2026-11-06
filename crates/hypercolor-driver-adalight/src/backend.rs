@@ -2,10 +2,9 @@
 //!
 //! Each connected device owns a session holding its resolved plan, the
 //! open port, and a reusable frame buffer whose header is built once. The
-//! backend never enumerates ports, and every adoption and every open is
-//! authorized against the live driver config at that moment: a device id
-//! must still name an entry there, with the same port, or the backend
-//! refuses it. Historical discovery metadata alone never opens a port.
+//! backend never enumerates ports, and only the live driver config decides
+//! what opens: every adoption and every open resolves the device from the
+//! config at that moment, and discovery metadata never names a port here.
 //!
 //! Pacing follows the render loop up to what the line can carry. The
 //! backend advertises the line interval as the output cadence, so the
@@ -15,7 +14,7 @@
 //! delivery so the lifecycle reconnects. Frames never queue behind the
 //! UART.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
@@ -23,9 +22,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
     DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice,
-    DriverConfigSource, DriverConfigView, OutputCadence,
+    DriverConfigSource, DriverConfigView, DriverError, OutputCadence,
 };
-use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_driver_support::ConfiguredDevices;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -35,12 +34,12 @@ use tokio_serial::{
 };
 use tracing::{debug, info, warn};
 
-use crate::config::{AdalightConfig, AdalightDeviceConfig};
+use crate::config::AdalightConfig;
 use crate::drain::{DrainVerdict, DrainWatch};
-use crate::plan::{AdalightDevicePlan, resolve_config, resolve_device};
+use crate::plan::{AdalightDevicePlan, resolve_config};
 use crate::protocol::FrameEncoder;
 
-/// Discovery metadata key carrying the device's config entry as JSON.
+/// Discovery metadata key describing the device's config entry as JSON.
 pub const METADATA_DEVICE_CONFIG: &str = "adalight_device";
 
 /// Longest silence before the last frame is resent.
@@ -74,147 +73,46 @@ const GREETING_READ_IDLE: Duration = Duration::from_millis(25);
 
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
-/// A fixed driver config, for hosts that cannot provide a live one.
-///
-/// The reconciler rebuilds the backend whenever the driver's config entry
-/// changes, so the entry a backend was built from is still the newest one
-/// such a host has.
-#[derive(Debug, Clone)]
-pub struct SnapshotConfig {
-    entry: DriverConfigEntry,
-}
-
-impl SnapshotConfig {
-    /// Wrap one driver config entry.
-    #[must_use]
-    pub const fn new(entry: DriverConfigEntry) -> Self {
-        Self { entry }
-    }
-
-    /// Build an enabled entry from a typed config.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the config cannot be serialized.
-    pub fn from_config(config: &AdalightConfig) -> Result<Self> {
-        let serde_json::Value::Object(settings) =
-            serde_json::to_value(config).context("failed to serialize adalight config")?
-        else {
-            bail!("adalight config did not serialize to an object");
-        };
-        Ok(Self::new(DriverConfigEntry::enabled(
-            settings.into_iter().collect::<BTreeMap<_, _>>(),
-        )))
-    }
-}
-
-impl DriverConfigSource for SnapshotConfig {
-    fn current(&self) -> DriverConfigEntry {
-        self.entry.clone()
-    }
-}
-
 /// Backend for manually configured Adalight and AWA serial controllers.
 pub struct AdalightBackend {
-    /// Live driver config that authorizes every adoption and open.
-    config: Arc<dyn DriverConfigSource>,
-    /// Plans for adopted devices, keyed by device id.
-    adopted: StdRwLock<HashMap<DeviceId, Arc<AdalightDevicePlan>>>,
+    /// The live config, the only authority on what may open.
+    devices: ConfiguredDevices<AdalightDevicePlan>,
     /// Connected sessions.
-    sessions: StdRwLock<HashMap<DeviceId, Arc<Mutex<AdalightSession>>>>,
+    sessions: StdRwLock<HashMap<DeviceId, OpenSession>>,
+}
+
+/// A connected session with its plan readable without the session lock.
+#[derive(Clone)]
+struct OpenSession {
+    plan: Arc<AdalightDevicePlan>,
+    session: Arc<Mutex<AdalightSession>>,
+}
+
+/// Every configured device with its plan, for [`ConfiguredDevices`].
+fn configured_plans(
+    config: DriverConfigView<'_>,
+) -> Result<Vec<(DeviceId, AdalightDevicePlan)>, DriverError> {
+    let config = config.parse_settings::<AdalightConfig>()?;
+    let plans = resolve_config(&config).map_err(|error| DriverError::Configuration {
+        message: error.to_string(),
+    })?;
+    Ok(plans
+        .into_iter()
+        .map(|plan| (crate::device_id_for(&plan.id), plan))
+        .collect())
 }
 
 impl AdalightBackend {
-    /// Create a backend that checks `config` before every adoption and
-    /// open.
+    /// Create a backend authorized by `config`.
     #[must_use]
     pub fn new(config: Arc<dyn DriverConfigSource>) -> Self {
         Self {
-            config,
-            adopted: StdRwLock::default(),
+            devices: ConfiguredDevices::new(crate::DESCRIPTOR.id, config, configured_plans),
             sessions: StdRwLock::default(),
         }
     }
 
-    /// Create a backend authorized by a fixed config.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the config cannot be serialized.
-    pub fn from_config(config: &AdalightConfig) -> Result<Self> {
-        Ok(Self::new(Arc::new(SnapshotConfig::from_config(config)?)))
-    }
-
-    /// Resolved plan for an adopted device.
-    #[must_use]
-    pub fn adopted_plan(&self, id: &DeviceId) -> Option<Arc<AdalightDevicePlan>> {
-        self.adopted
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    }
-
-    /// Whether a device has an open session.
-    #[must_use]
-    pub fn is_connected(&self, id: &DeviceId) -> bool {
-        self.session(id).is_some()
-    }
-
-    /// Plan the live config holds for `id` right now.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DeviceError::NotFound`] when the driver is disabled, its
-    /// config is invalid, or no entry derives this device id.
-    pub fn configured_plan(&self, id: &DeviceId) -> Result<AdalightDevicePlan, DeviceError> {
-        let not_configured = |reason: &str| DeviceError::NotFound {
-            device: format!("{id} ({reason})"),
-        };
-        let entry = self.config.current();
-        if !entry.enabled {
-            return Err(not_configured("the adalight driver is disabled"));
-        }
-        let config = DriverConfigView {
-            driver_id: crate::DESCRIPTOR.id,
-            entry: &entry,
-        }
-        .parse_settings::<AdalightConfig>()
-        .map_err(|error| not_configured(&format!("the adalight config is invalid: {error}")))?;
-        let plans = resolve_config(&config)
-            .map_err(|error| not_configured(&format!("the adalight config is invalid: {error}")))?;
-        plans
-            .into_iter()
-            .find(|plan| crate::device_id_for(&plan.id) == *id)
-            .ok_or_else(|| not_configured("no serial device in the current config has this id"))
-    }
-
-    /// Live plan for `id`, required to name the same port as `expected`.
-    fn authorize(
-        &self,
-        id: &DeviceId,
-        expected: &AdalightDevicePlan,
-    ) -> Result<AdalightDevicePlan, DeviceError> {
-        let live = self.configured_plan(id)?;
-        if live.port != expected.port {
-            return Err(DeviceError::NotFound {
-                device: format!(
-                    "{id} (the current config names port {} for '{}', not {})",
-                    live.port, live.id, expected.port
-                ),
-            });
-        }
-        Ok(live)
-    }
-
-    fn forget(&self, id: &DeviceId) {
-        self.adopted
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-    }
-
-    fn session(&self, id: &DeviceId) -> Option<Arc<Mutex<AdalightSession>>> {
+    fn session(&self, id: &DeviceId) -> Option<OpenSession> {
         self.sessions
             .read()
             .unwrap_or_else(PoisonError::into_inner)
@@ -223,9 +121,11 @@ impl AdalightBackend {
     }
 
     fn require_session(&self, id: &DeviceId) -> Result<Arc<Mutex<AdalightSession>>, DeviceError> {
-        self.session(id).ok_or_else(|| DeviceError::Disconnected {
-            device: id.to_string(),
-        })
+        self.session(id)
+            .map(|open| open.session)
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })
     }
 }
 
@@ -242,30 +142,7 @@ impl DeviceBackend for AdalightBackend {
     }
 
     fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
-        let device_id = discovered.info.id;
-        let Some(raw) = discovered.metadata.get(METADATA_DEVICE_CONFIG) else {
-            return Err(DeviceError::NotAdopted { device_id });
-        };
-        let config: AdalightDeviceConfig = serde_json::from_str(raw).map_err(|error| {
-            DeviceError::protocol(
-                device_id,
-                format!("invalid adalight device metadata: {error}"),
-            )
-        })?;
-        let described = resolve_device(&config)
-            .map_err(|error| DeviceError::protocol(device_id, error.to_string()))?;
-        let plan = match self.authorize(&device_id, &described) {
-            Ok(plan) => plan,
-            Err(error) => {
-                self.forget(&device_id);
-                return Err(error);
-            }
-        };
-        self.adopted
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(device_id, Arc::new(plan));
-        Ok(())
+        self.devices.current(&discovered.info.id).map(|_| ())
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
@@ -273,41 +150,28 @@ impl DeviceBackend for AdalightBackend {
     }
 
     fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
-        // The daemon asks for the policy before it adopts a device, so the
-        // startup delay comes from the live config, not the adopted plan.
         let policy = DeviceLifecyclePolicy::default();
         let startup_delay = self
-            .configured_plan(&info.id)
-            .map(|plan| plan.startup_delay)
-            .ok()
-            .or_else(|| self.adopted_plan(&info.id).map(|plan| plan.startup_delay))
+            .devices
+            .current(&info.id)
+            .map(|device| device.plan().startup_delay)
             .unwrap_or_default();
         policy.with_connect_timeout(policy.connect_timeout().saturating_add(startup_delay))
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let adopted = self
-            .adopted_plan(id)
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        // Authorize against the config as it is now, not as it was when the
-        // device was discovered or adopted.
-        let plan = match self.authorize(id, &adopted) {
-            Ok(plan) => Arc::new(plan),
-            Err(error) => {
-                self.forget(id);
-                return Err(error);
-            }
-        };
+        let device = self.devices.current(id)?;
+        let plan = Arc::clone(device.plan());
 
         if let Some(existing) = self.session(id) {
-            let mut existing = existing.lock().await;
-            if *existing.plan == *plan {
+            let mut session = existing.session.lock().await;
+            if *session.plan == *plan {
                 return Ok(());
             }
             // The config changed under a live session: release the old port
             // before reopening, since the open is exclusive.
-            existing.close_and_wait(DISCONNECT_BUDGET).await;
-            drop(existing);
+            session.close_and_wait(DISCONNECT_BUDGET).await;
+            drop(session);
             self.sessions
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -316,28 +180,18 @@ impl DeviceBackend for AdalightBackend {
 
         // Closing an old session can take a while; check again right
         // before the open.
-        let plan = match self.authorize(id, &plan) {
-            Ok(plan) => Arc::new(plan),
-            Err(error) => {
-                self.forget(id);
-                return Err(error);
-            }
-        };
-        self.adopted
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::clone(&plan));
+        self.devices.confirm(id, &device)?;
 
         let mut port = open_port(*id, &plan).await?;
         if !plan.startup_delay.is_zero() {
             tokio::time::sleep(plan.startup_delay).await;
             log_greeting(*id, &plan, &mut port).await;
-            // The entry may have been removed while the board booted.
-            if let Err(error) = self.authorize(id, &plan) {
-                self.forget(id);
-                close_port(port).await;
-                return Err(error);
-            }
+        }
+        // The config may have moved while the port opened and the board
+        // booted; a session only ever goes live under the config it opened.
+        if let Err(error) = self.devices.confirm(id, &device) {
+            close_port(port).await;
+            return Err(error);
         }
 
         let line_max_fps = plan.line_max_fps();
@@ -364,17 +218,21 @@ impl DeviceBackend for AdalightBackend {
             );
         }
 
-        let session = AdalightSession::new(*id, plan, port);
+        let session = Arc::new(Mutex::new(AdalightSession::new(
+            *id,
+            Arc::clone(&plan),
+            port,
+        )));
         self.sessions
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(Mutex::new(session)));
+            .insert(*id, OpenSession { plan, session });
         Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let started = Instant::now();
-        let session = self
+        let open = self
             .sessions
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -382,7 +240,7 @@ impl DeviceBackend for AdalightBackend {
             .ok_or_else(|| DeviceError::Disconnected {
                 device: id.to_string(),
             })?;
-        let mut session = session.lock().await;
+        let mut session = open.session.lock().await;
         if let Err(error) = session.finish().await {
             debug!(
                 device_id = %id,
@@ -452,18 +310,18 @@ impl DeviceBackend for AdalightBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.adopted_plan(id).map(|plan| plan.effective_max_fps())
+        self.session(id).map(|open| open.plan.effective_max_fps())
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.adopted_plan(id).map(|plan| output_cadence_for(&plan))
+        self.session(id).map(|open| output_cadence_for(&open.plan))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.session(id).map(|session| {
+        self.session(id).map(|open| {
             Arc::new(AdalightFrameSink {
                 device_id: *id,
-                session,
+                session: open.session,
             }) as Arc<dyn DeviceFrameSink>
         })
     }
