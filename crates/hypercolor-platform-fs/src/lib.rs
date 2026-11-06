@@ -28,7 +28,7 @@ pub use unix::{
 pub use windows::{
     DestinationIdentity, WindowsAce, WindowsAceKind, WindowsDirectory, WindowsDirectoryAccess,
     WindowsEntryKind, WindowsEntryMetadata, WindowsFileLock, WindowsSecurity, WindowsSid,
-    windows_child_name_is_valid, windows_file_security,
+    windows_child_name_is_valid, windows_file_security, windows_named_pipe_server_process_id,
 };
 pub use windows_names::windows_file_name_is_valid;
 
