@@ -12,18 +12,26 @@
 //! platform meets the rules the Windows store enforces. So do the decisions
 //! the programs outside a unit make: which release runs, which process may
 //! serve the update pipe, and how the service manager recovers the update
-//! service. Only their Win32 hosts and everything that touches the store
-//! are Windows-only.
+//! service. So does every step of [`WindowsInstallPlatform`]. Only their
+//! Win32 hosts and everything that touches the store are Windows-only.
 
 mod error;
+mod executor;
 mod installation;
+mod layout;
 mod machine_layout;
 mod manifest;
+mod model;
 #[cfg(windows)]
 mod ownership;
 #[cfg(windows)]
 mod payload;
+mod platform;
+#[cfg(all(test, unix))]
+mod platform_tests;
+mod record;
 mod release_selection;
+mod session;
 #[cfg(windows)]
 pub(crate) mod store;
 mod unit;
@@ -31,6 +39,7 @@ mod update_pipe;
 mod update_service;
 
 pub use error::ReleasePayloadError;
+pub use executor::WindowsInstallExecutor;
 pub use installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation, WindowsRuntimeMode};
 pub use machine_layout::{
     BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_CLI_PROGRAM, WindowsInstallLayout,
@@ -40,6 +49,15 @@ pub use manifest::{
     MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, MAX_VENDOR_SIGNED, PermissionClass,
     WindowsVendor,
 };
+pub use model::{
+    WINDOWS_APP_ARGUMENTS, WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER,
+    WINDOWS_PROBATION_WINDOW, WINDOWS_RUNTIME_DEADLINE, WindowsAppStart, WindowsBrokerObservation,
+    WindowsFileIdentity, WindowsFirewallObservation, WindowsFirewallRule, WindowsInstallConfig,
+    WindowsProcessId, WindowsProcessImage, WindowsRunningProcess, WindowsRuntime,
+    WindowsRuntimeObservation, WindowsUnitBinding,
+};
+pub use platform::WindowsInstallPlatform;
+pub use session::WindowsSessionHost;
 pub use release_selection::{ReleaseRecords, ReleaseSelectionError, select_release};
 pub use unit::{
     WINDOWS_DURABLE_STORES_PATH, WindowsUnit, WindowsUnitError, WindowsUnitSources,

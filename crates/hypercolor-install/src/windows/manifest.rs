@@ -71,6 +71,9 @@ pub(super) struct ValidatedManifest {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(super) bytes: Vec<u8>,
     pub(super) unit_id: UnitId,
+    /// The release version the manifest states.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(super) version: String,
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(super) members: BTreeMap<String, Member>,
     /// Child names of every directory member, the root as "".
@@ -238,6 +241,7 @@ impl RawManifest {
         Ok(ValidatedManifest {
             bytes,
             unit_id,
+            version: self.version,
             members,
             children,
             vendor_signed,
