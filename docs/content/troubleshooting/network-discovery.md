@@ -4,7 +4,7 @@ description = "VLAN/AP isolation, mDNS not crossing subnets, firewall blocking m
 weight = 30
 +++
 
-Network devices (Hue, Nanoleaf, WLED, Govee, Twinkly) rely on mDNS multicast or UDP broadcast for automatic discovery. Three network configurations reliably break that: **AP/client isolation**, **VLAN segmentation**, and **multicast firewall rules**. This page walks through diagnosing which one you have and how to work around it using per-driver static IP lists.
+Network devices (Hue, Nanoleaf, WLED, Govee, Twinkly, WiZ) rely on mDNS multicast or UDP broadcast for automatic discovery. Three network configurations reliably break that: **AP/client isolation**, **VLAN segmentation**, and **multicast firewall rules**. This page walks through diagnosing which one you have and how to work around it using per-driver static IP lists.
 
 {{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
@@ -141,6 +141,17 @@ device_ips = ["192.168.10.80"]
 
 Each address is probed over HTTP on port 80, so lights on another VLAN only need TCP 80 and UDP 7777 open from the Hypercolor host. Set `broadcast_discovery = false` to stop the discovery broadcast entirely.
 
+### WiZ
+
+WiZ uses `device_ips` as well:
+
+```toml
+[drivers.wiz]
+device_ips = ["192.168.10.90"]
+```
+
+Each address is probed on UDP port 38899, which is the only port WiZ needs. `broadcast_discovery = false` stops the registration broadcast.
+
 ### Philips Hue
 
 Hue uses `bridge_ips` to locate the Hue Bridge when mDNS is unavailable:
@@ -199,5 +210,6 @@ For device-specific pairing flows and known quirks, see the hardware pages:
 - [WLED](@/hardware/wled.md)
 - [Govee](@/hardware/govee.md)
 - [Twinkly](@/hardware/twinkly.md)
+- [WiZ](@/hardware/wiz.md)
 
 For general device-not-found problems covering USB and SMBus devices as well, see [Devices not found](@/troubleshooting/devices-not-found.md).
