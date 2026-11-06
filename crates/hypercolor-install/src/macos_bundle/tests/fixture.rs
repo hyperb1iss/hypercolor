@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
-use crate::macos_bundle::MacosBundleConfig;
+use crate::macos_bundle::{
+    MacosBundleConfig, MacosBundleExecutor, MacosBundleInstallPlatform, MacosBundleService,
+};
 use crate::{InstallLock, InstallStore, UnitId, UnitRecord, stage_macos_bundle_unit};
 
 const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade_0cc0;
@@ -251,6 +253,14 @@ impl Fixture {
 
     pub(super) fn deactivate(&self) {
         self.with_lock(|lock| self.store.set_active(None, lock).expect("deactivate"));
+    }
+
+    /// Settle the store's terminal transaction under the fixture's lock.
+    pub(super) fn settle<E: MacosBundleExecutor, S: MacosBundleService>(
+        &self,
+        mut platform: MacosBundleInstallPlatform<E, S>,
+    ) -> Result<bool, crate::InstallPlatformError> {
+        self.with_lock(|lock| platform.settle(&self.store, lock))
     }
 
     pub(super) fn retain(&self, unit: &UnitId) -> UnitRecord {

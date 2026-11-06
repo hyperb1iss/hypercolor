@@ -221,6 +221,21 @@ impl MacosBundleExecutor for FakeExecutor {
         Ok(())
     }
 
+    fn retire_staged(&mut self, name: &str) -> Result<(), InstallPlatformError> {
+        boundary(&self.boundaries, "retire:before");
+        {
+            let mut world = lock(&self.world);
+            if world.staged.remove(name).is_none() {
+                return Err(fail("nothing staged to retire"));
+            }
+            world
+                .interrupted
+                .insert(format!("{name}{MACOS_BUNDLE_DISCARD_SUFFIX}"));
+        }
+        boundary(&self.boundaries, "retire:after");
+        Ok(())
+    }
+
     fn discard(&mut self, name: &str) -> Result<(), InstallPlatformError> {
         boundary(&self.boundaries, "discard:before");
         let discard = format!("{name}{MACOS_BUNDLE_DISCARD_SUFFIX}");

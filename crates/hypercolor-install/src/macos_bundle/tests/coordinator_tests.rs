@@ -149,11 +149,10 @@ impl Harness {
 
     /// Settle the terminal journal, settling again after a crash in it.
     fn settle(&self) -> bool {
-        let journal = self.fixture.journal().expect("terminal journal");
-        survive(|| self.platform().settle(&journal)).map_or_else(
+        survive(|| self.fixture.settle(self.platform())).map_or_else(
             |Crash| {
                 self.crash_at(None);
-                self.platform().settle(&journal).expect("settle again")
+                self.fixture.settle(self.platform()).expect("settle again")
             },
             |settled| settled.expect("settle"),
         )
@@ -318,17 +317,20 @@ fn clean_runs_take_exactly_the_journaled_steps_in_order() {
             "start:before",
             "start:after",
             "prove",
-            // The candidate fails its proof: stop it, swap back, unstage.
+            // The candidate fails its proof: stop it, swap back and retire
+            // its copy in one rename, then restart the prior.
             "stop:before",
             "stop:after",
             "exchange:before",
             "exchange:after",
-            "discard:before",
-            "discard:renamed",
-            "discard:after",
+            "retire:before",
+            "retire:after",
             "start:before",
             "start:after",
             "prove",
+            // Settling removes the retired candidate.
+            "discard:before",
+            "discard:after",
         ]
     );
 }
@@ -469,7 +471,10 @@ fn a_bundle_replaced_behind_the_transaction_is_drift_not_a_second_swap() {
     );
     let journal = harness.fixture.journal().expect("journal");
     assert_eq!(journal.disposition, InstallDisposition::Forward);
-    assert!(harness.platform().settle(&journal).is_err(), "nonterminal");
+    assert!(
+        harness.fixture.settle(harness.platform()).is_err(),
+        "nonterminal"
+    );
 }
 
 #[test]
@@ -499,7 +504,7 @@ fn a_first_install_moves_the_staged_bundle_into_the_empty_slot() {
 
 #[test]
 fn preparation_refuses_what_it_cannot_swap_and_writes_nothing() {
-    let cases: [(&str, Arrange); 4] = [
+    let cases: [(&str, Arrange); 5] = [
         ("installed bundle is not the active unit's", |harness| {
             lock(&harness.world).installed = MacosBundleSlot::Bundle(harness.candidate.clone());
         }),
@@ -516,6 +521,12 @@ fn preparation_refuses_what_it_cannot_swap_and_writes_nothing() {
         }),
         ("not enough room", |harness| {
             lock(&harness.world).available_bytes = 1024;
+        }),
+        ("a registered agent with no active unit", |harness| {
+            harness.fixture.deactivate();
+            let mut world = lock(&harness.world);
+            world.installed = MacosBundleSlot::Absent;
+            world.running = None;
         }),
     ];
     for (case, arrange) in cases {

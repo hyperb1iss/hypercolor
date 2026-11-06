@@ -164,6 +164,29 @@ fn a_bundle_unit_requires_its_executables_and_owner_access_to_its_directories() 
 }
 
 #[test]
+fn a_bundle_unit_refuses_members_others_could_write() {
+    for (path, mode) in [
+        ("Hypercolor.app/Contents/MacOS", 0o775),
+        ("Hypercolor.app/Contents/Info.plist", 0o664),
+        ("Hypercolor.app/Contents/Resources/icon.icns", 0o646),
+    ] {
+        let mut tree = UnitTree::new("seed", "seed", "1.0.0");
+        for directory in &mut tree.directories {
+            if directory.0 == path {
+                directory.1 = mode;
+            }
+        }
+        for file in &mut tree.files {
+            if file.0 == path {
+                file.1 = mode;
+            }
+        }
+        let error = stage_tree(&tree).expect_err(path);
+        assert!(error.to_string().contains("writable"), "{path}: {error}");
+    }
+}
+
+#[test]
 fn a_bundle_unit_names_one_macos_target_and_no_standalone_fields() {
     let tree = UnitTree::new("seed", "seed", "1.0.0");
     let mismatched = edit_manifest(&tree, |manifest| {

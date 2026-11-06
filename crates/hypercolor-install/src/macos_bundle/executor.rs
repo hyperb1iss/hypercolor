@@ -63,6 +63,13 @@ pub trait MacosBundleExecutor {
     /// Returns an error when a staged copy exists or the move fails.
     fn withdraw_installed(&mut self, name: &str) -> Result<(), InstallPlatformError>;
 
+    /// Move the staged copy named `name` to its discard name in one durable
+    /// rename, leaving its removal to [`Self::discard`].
+    ///
+    /// # Errors
+    /// Returns an error when the rename fails.
+    fn retire_staged(&mut self, name: &str) -> Result<(), InstallPlatformError>;
+
     /// Remove the staged copy named `name` and every leftover of it.
     ///
     /// The copy is renamed to its discard name first, so a removal that
