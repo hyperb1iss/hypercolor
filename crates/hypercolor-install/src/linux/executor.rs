@@ -13,19 +13,19 @@ use hypercolor_platform_fs::{
 };
 use sha2::{Digest as _, Sha256};
 
+use super::super::local_http::{LocalHttpResponse, http_get};
 use super::super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
 use super::directory::{LinuxPublicTree, read_opened_public_bytes};
 use super::effects::autostart_operation;
-use super::http::http_get;
 use super::legacy::{collect_public_legacy_inventory, prepare_legacy_files};
 use super::legacy_validation::{
     populate_legacy_stage, validate_legacy_snapshot_binding, validate_legacy_unit,
 };
 use super::model::{
     LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
-    LinuxHttpResponse, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacySnapshot,
-    LinuxProcessExecutable, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
-    MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
+    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacySnapshot, LinuxProcessExecutable,
+    LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch, MAX_SYSTEMD_SHOW_BYTES, error,
+    parse_systemd_show,
 };
 use super::runtime::{
     LinuxRuntimeManager, LinuxRuntimeSettlement, LinuxSystemdConnection, RuntimeJobOutcome,
@@ -129,7 +129,7 @@ pub trait LinuxInstallExecutor {
         &mut self,
         path: &'static str,
         max_bytes: usize,
-    ) -> Result<LinuxHttpResponse, InstallPlatformError>;
+    ) -> Result<LocalHttpResponse, InstallPlatformError>;
     fn snapshot_legacy_unit(
         &mut self,
         snapshot: &LinuxLegacySnapshot,
@@ -476,7 +476,7 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         &mut self,
         path: &'static str,
         max_bytes: usize,
-    ) -> Result<LinuxHttpResponse, InstallPlatformError> {
+    ) -> Result<LocalHttpResponse, InstallPlatformError> {
         if !matches!(path, "/health" | "/api/v1/system") {
             return Err(error("Linux owner proof requested an unapproved HTTP path"));
         }

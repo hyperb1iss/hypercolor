@@ -25,13 +25,13 @@ use hypercolor_install::{
     InstallDisposition, InstallJournalV1, InstallLock, InstallOutcome, InstallPlatformError,
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
     LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry,
-    LinuxFilePublication, LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError,
-    LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost,
-    LinuxInstallLocation, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRequest,
-    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
-    LinuxObservationError, LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicTree,
-    LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceRenderer, LinuxServiceWatch,
-    LinuxUninstallCheckpoint, LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord,
+    LinuxFilePublication, LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig,
+    LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation,
+    LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRequest, LinuxLayoutItem,
+    LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError, LinuxObservationError,
+    LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicTree, LinuxRuntimeSettlement,
+    LinuxServiceIdentity, LinuxServiceRenderer, LinuxServiceWatch, LinuxUninstallCheckpoint,
+    LinuxUninstallHost, LocalHttpResponse, OwnershipPolicy, PlatformTransactionRecord,
     PrincipalDatabase, PrincipalGroup, PrincipalUser, RestoredRelease, UnitCollection, UnitId,
     UnitRecord, bind_linux_platform, elect_linux_installation_with, observe_linux_installation,
     run_linux_install, run_linux_uninstall, stage_release_payload,
@@ -804,7 +804,7 @@ impl LinuxInstallExecutor for SimExecutor {
         &mut self,
         path: &'static str,
         max_bytes: usize,
-    ) -> Result<LinuxHttpResponse, InstallPlatformError> {
+    ) -> Result<LocalHttpResponse, InstallPlatformError> {
         let targeted = {
             let world = self.world.borrow();
             path == "/health"
@@ -840,7 +840,7 @@ impl LinuxInstallExecutor for SimExecutor {
         };
         let body = serde_json::to_vec(&value).expect("HTTP JSON");
         assert!(body.len() <= max_bytes);
-        Ok(LinuxHttpResponse { status: 200, body })
+        Ok(LocalHttpResponse { status: 200, body })
     }
 
     fn snapshot_legacy_unit(

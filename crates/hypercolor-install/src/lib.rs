@@ -13,6 +13,7 @@
 mod coordinator;
 #[cfg(unix)]
 mod linux;
+mod local_http;
 #[cfg(unix)]
 mod macho_cdhash;
 #[cfg(target_os = "macos")]
@@ -33,11 +34,12 @@ use windows::store;
 pub use coordinator::{
     InstallCoordinator, InstallCoordinatorError, InstallPlatform, InstallPlatformError,
 };
+pub use local_http::LocalHttpResponse;
 #[cfg(unix)]
 pub use linux::{
     DEFAULT_PROBATION_WINDOW, InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS,
     LINUX_PUBLIC_SERVICE_CONTRACT, LinuxAdoption, LinuxAdoptionError, LinuxDirectoryItem,
-    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
+    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
     LinuxInstallAuthority, LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig,
     LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation,
     LinuxInstallLocator, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRecords,

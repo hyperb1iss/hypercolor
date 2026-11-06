@@ -1,3 +1,4 @@
+use super::super::local_http::MAX_HTTP_RESPONSE_BYTES;
 use super::super::{
     InstallPlatform, InstallPlatformError, InstallationState, PlatformCheckpoint,
     PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, PlatformTransitionStates,
@@ -11,8 +12,8 @@ use super::executor::LinuxInstallExecutor;
 use super::model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LINUX_RECEIPT_SCHEMA_VERSION,
     LINUX_RECORD_SCHEMA_VERSION, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
-    LinuxLayoutEffect, LinuxLayoutOperation, LinuxRecord, LinuxServicePhase,
-    MAX_HTTP_RESPONSE_BYTES, MAX_LAUNCHER_BYTES, error,
+    LinuxLayoutEffect, LinuxLayoutOperation, LinuxRecord, LinuxServicePhase, MAX_LAUNCHER_BYTES,
+    error,
 };
 use super::proof::{candidate_systemd, prior_systemd, require_notify_launcher, systemd_equivalent};
 use super::state::consistent_platform_unit;

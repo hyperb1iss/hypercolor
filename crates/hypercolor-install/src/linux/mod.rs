@@ -6,7 +6,6 @@ mod effects;
 mod executor;
 #[cfg(test)]
 mod executor_tests;
-pub(crate) mod http;
 mod legacy;
 #[cfg(test)]
 mod legacy_tests;
@@ -17,10 +16,10 @@ mod location_tests;
 mod locator;
 mod locator_receipt;
 mod manager_bus;
-pub(crate) mod model;
+mod model;
 mod platform;
 mod prior;
-pub(crate) mod proof;
+mod proof;
 mod record;
 mod runtime;
 mod service;
@@ -48,10 +47,10 @@ pub use locator::{
 };
 pub use model::{
     DEFAULT_PROBATION_WINDOW, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem,
-    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
-    LinuxInstallConfig, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
-    LinuxLegacySnapshot, LinuxProcessExecutable, LinuxServiceIdentity, LinuxServicePhase,
-    LinuxServiceWatch, LinuxSystemdObservation, MAX_PROBATION_WINDOW, parse_systemd_show,
+    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxInstallConfig,
+    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLegacySnapshot,
+    LinuxProcessExecutable, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
+    LinuxSystemdObservation, MAX_PROBATION_WINDOW, parse_systemd_show,
 };
 pub use runtime::{LinuxRuntimeSettlement, LinuxSystemdConnection};
 pub use service::{
