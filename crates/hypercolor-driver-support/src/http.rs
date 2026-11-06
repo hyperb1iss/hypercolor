@@ -27,6 +27,8 @@ use crate::deadline::until_deadline;
 pub enum HttpError {
     #[error("HTTP client could not be built: {0}")]
     ClientBuild(#[source] reqwest::Error),
+    /// The transport failed. Carries no URL: some device APIs put a
+    /// credential in the path, and this error ends up in logs.
     #[error("HTTP transport failed: {0}")]
     Transport(#[source] reqwest::Error),
     #[error("HTTP status {0}")]
@@ -190,7 +192,7 @@ impl BoundedRequest {
         let inner = until_deadline(budget.deadline, self.inner.send())
             .await
             .ok_or(HttpError::DeadlineExceeded)?
-            .map_err(HttpError::Transport)?;
+            .map_err(transport_error)?;
         Ok(BoundedResponse { inner, budget })
     }
 }
@@ -247,7 +249,7 @@ impl BoundedResponse {
         while let Some(chunk) = until_deadline(deadline, self.inner.chunk())
             .await
             .ok_or(HttpError::DeadlineExceeded)?
-            .map_err(HttpError::Transport)?
+            .map_err(transport_error)?
         {
             if body.len() + chunk.len() > max_bytes {
                 return Err(too_large());
@@ -266,4 +268,8 @@ impl BoundedResponse {
         let body = self.bytes().await?;
         serde_json::from_slice(&body).map_err(HttpError::Json)
     }
+}
+
+fn transport_error(error: reqwest::Error) -> HttpError {
+    HttpError::Transport(error.without_url())
 }

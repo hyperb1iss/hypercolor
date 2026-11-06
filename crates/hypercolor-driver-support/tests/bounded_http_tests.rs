@@ -1,6 +1,7 @@
 //! The read budget: oversized bodies and slow peers fail at the bound,
 //! whatever `Content-Length` says.
 
+use std::fmt::Write as _;
 use std::future::Future;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
@@ -165,6 +166,27 @@ async fn the_clock_runs_from_the_budget_not_from_the_response() -> TestResult {
         started.elapsed() < Duration::from_secs(2),
         "nothing is left to wait for"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_errors_never_carry_the_url() -> TestResult {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    let url = format!("http://127.0.0.1:{port}/api/v1/secret-token");
+    let error = read(&url, ReadBudget::new(1024, LONG))
+        .await
+        .expect_err("nothing is listening");
+    assert!(matches!(error, HttpError::Transport(_)), "{error}");
+
+    let mut rendered = format!("{error} {error:?}");
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        write!(rendered, " {cause} {cause:?}")?;
+        source = cause.source();
+    }
+    assert!(!rendered.contains("secret-token"), "{rendered}");
     Ok(())
 }
 
