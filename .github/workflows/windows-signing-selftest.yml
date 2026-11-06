@@ -1,0 +1,88 @@
+name: Windows Signing Selftest
+
+# Proves the Artifact Signing setup end to end in minutes instead of a full
+# release build: signs a throwaway binary through the same script the
+# release lane uses, once directly and once through the command line
+# makensis runs for the NSIS uninstaller. Run it from main after
+# provisioning or rotating anything in the Azure setup, and after changing
+# scripts/sign-windows-artifacts.ps1. The windows-signing environment admits
+# only main and v* tags, so a dispatch from any other branch stops there.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-signing-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    name: Sign a probe binary
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: windows-signing
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve Windows signing
+        id: windows-signing
+        shell: pwsh
+        env:
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          WINDOWS_SIGNING_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
+        run: |
+          ./scripts/sign-windows-artifacts.ps1 resolve
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content -Raw -LiteralPath $env:GITHUB_OUTPUT) -notmatch 'enabled=true') {
+            Write-Host "::error::the selftest needs Windows signing configured and a run from main"
+            exit 1
+          }
+
+      # The GitHub OIDC token behind this login expires in about five
+      # minutes, so setup runs next and caches the code signing token.
+      - name: Sign in to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare Artifact Signing
+        shell: pwsh
+        env:
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          WINDOWS_SIGNING_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
+        run: ./scripts/sign-windows-artifacts.ps1 setup
+
+      - name: Sign and verify the probe
+        shell: pwsh
+        run: |
+          # Build outside the checkout so rust-toolchain.toml does not ask
+          # for a toolchain this runner lacks.
+          $work = Join-Path $env:RUNNER_TEMP "probe"
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          Set-Content -LiteralPath (Join-Path $work "probe.rs") -Value 'fn main() { println!("hypercolor signing probe"); }'
+          Push-Location $work
+          rustc -O probe.rs -o probe.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          ./scripts/sign-windows-artifacts.ps1 selftest (Join-Path $work "probe.exe")

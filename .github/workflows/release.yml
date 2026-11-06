@@ -72,6 +72,22 @@ jobs:
           done
           exit "${missing}"
 
+      # Windows signing is optional, but a half-configured setup would fail
+      # the tag lane only after the tag is pushed, so ask about that tag now.
+      - name: Check Windows signing configuration
+        if: inputs.dry_run == false
+        shell: pwsh
+        env:
+          SIGNING_REF: refs/tags/v${{ inputs.version }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          WINDOWS_SIGNING_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
+        run: ./scripts/sign-windows-artifacts.ps1 resolve
+
       - name: Require passing CI for the release source
         env:
           GH_TOKEN: ${{ github.token }}
