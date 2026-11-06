@@ -8,7 +8,7 @@ test("browser fixtures disable every hardware and network driver", () => {
   assert.deepEqual(drivers.map(([, id]) => id).sort(), [
     "asus", "blocks", "corsair", "dygma", "govee", "hue", "lianli", "nanoleaf",
     "nollie", "nzxt", "openrgb", "pixel", "prismrgb", "push2", "qmk", "razer", "smbus",
-    "usb", "wled",
+    "usb", "wled", "wooting",
   ]);
   assert.ok(drivers.every(([, , enabled]) => enabled === "false"));
   assert.match(config, /mdns_enabled = false/);

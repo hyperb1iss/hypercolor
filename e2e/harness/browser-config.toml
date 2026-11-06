@@ -62,6 +62,9 @@ enabled = false
 [drivers.wled]
 enabled = false
 
+[drivers.wooting]
+enabled = false
+
 [mcp]
 enabled = true
 stateful_mode = false

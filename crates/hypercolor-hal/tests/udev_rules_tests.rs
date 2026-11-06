@@ -3,6 +3,9 @@ use std::collections::BTreeSet;
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::corsair::CORSAIR_VID;
 use hypercolor_hal::drivers::corsair::peripheral::devices as corsair_peripherals;
+use hypercolor_hal::drivers::wooting::{
+    GamepadMode, MODELS, WOOTING_FAMILY, WOOTING_LEGACY_VID, WOOTING_VID,
+};
 use hypercolor_hal::registry::TransportType;
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
@@ -73,6 +76,11 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
     let mut required_rules: BTreeSet<(u16, u16, RequiredSubsystem)> = BTreeSet::new();
 
     for descriptor in ProtocolDatabase::all() {
+        // Wooting keyboards follow the interface-scoped policy checked in
+        // `wooting_udev_rules_open_only_the_configuration_interface`.
+        if descriptor.family == WOOTING_FAMILY {
+            continue;
+        }
         match descriptor.transport {
             // Host-managed HID opens /dev/hidraw* (directly or through
             // HIDAPI's hidraw backend) and never the USB device node.
@@ -363,5 +371,116 @@ fn corsair_peripherals_have_no_whole_product_hidraw_grant() {
                 );
             }
         }
+    }
+}
+
+/// Rule lines that could reach a Wooting keyboard, comments excluded: any
+/// line naming Wooting's VID, and any line naming the Atmel VID that v1
+/// firmware borrowed without pinning a non-Wooting product.
+fn wooting_rule_lines() -> Vec<&'static str> {
+    let legacy_pids: Vec<String> = MODELS
+        .iter()
+        .filter(|model| model.vendor_id == WOOTING_LEGACY_VID)
+        .flat_map(|model| {
+            [
+                format!("{:04x}", model.base_pid),
+                format!("{:04X}", model.base_pid),
+            ]
+        })
+        .collect();
+    let wooting_vid = [format!("{WOOTING_VID:04x}"), format!("{WOOTING_VID:04X}")];
+    let legacy_vid = [
+        format!("{WOOTING_LEGACY_VID:04x}"),
+        format!("{WOOTING_LEGACY_VID:04X}"),
+    ];
+
+    UDEV_RULES
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .filter(|line| {
+            let names_wooting = wooting_vid.iter().any(|vid| line.contains(vid.as_str()));
+            let names_atmel = legacy_vid.iter().any(|vid| line.contains(vid.as_str()));
+            let pins_product = line.contains("idProduct") || line.contains("modalias");
+            let pins_legacy_pid = legacy_pids.iter().any(|pid| line.contains(pid.as_str()));
+            names_wooting || (names_atmel && (!pins_product || pins_legacy_pid))
+        })
+        .collect()
+}
+
+fn wooting_config_rule(product_id: u16, interface: u8) -> String {
+    format!(
+        "SUBSYSTEM==\"hidraw\", ATTRS{{modalias}}==\"usb:v{WOOTING_VID:04X}p{product_id:04X}d*ic03isc00ip00in{interface:02X}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
+    )
+}
+
+#[test]
+fn wooting_udev_rules_open_only_the_configuration_interface() {
+    let lines = wooting_rule_lines();
+    let mut expected = BTreeSet::new();
+
+    for model in MODELS {
+        let interface = model.model.config_interface();
+        for mode in GamepadMode::ALL {
+            if model.vendor_id == WOOTING_LEGACY_VID && mode != GamepadMode::Xinput {
+                continue;
+            }
+            let product_id = model.base_pid | mode.pid_offset();
+            let pid_token = format!("p{product_id:04X}d");
+            let idproduct_token = format!("{product_id:04x}");
+            let mentions: Vec<_> = lines
+                .iter()
+                .filter(|line| {
+                    line.contains(&pid_token)
+                        || line.contains(&format!("idProduct}}==\"{idproduct_token}\""))
+                })
+                .collect();
+
+            // A DirectInput gamepad is itself a non-boot HID interface, so an
+            // interface number shifted by it could land the grant on a
+            // gamepad node. Only the verified layouts get a rule.
+            match interface {
+                Some(interface) if mode != GamepadMode::DirectInput => {
+                    let rule = wooting_config_rule(product_id, interface);
+                    assert_eq!(
+                        mentions,
+                        vec![&rule.as_str()],
+                        "{} PID {product_id:04x} needs exactly its configuration-interface rule",
+                        model.name
+                    );
+                    expected.insert(rule);
+                }
+                _ => assert!(
+                    mentions.is_empty(),
+                    "{} PID {product_id:04x} has no verified configuration interface, so it must not get a rule: {mentions:?}",
+                    model.name
+                ),
+            }
+        }
+    }
+
+    assert!(
+        !expected.is_empty(),
+        "the ARM boards must have scoped rules"
+    );
+    for line in &lines {
+        assert!(
+            expected.contains(*line),
+            "unexpected Wooting udev rule (a vendor- or product-wide grant would expose keystrokes): {line}"
+        );
+    }
+}
+
+#[test]
+fn wooting_udev_rules_never_open_the_usb_device_node() {
+    for line in wooting_rule_lines() {
+        assert!(
+            !line.contains("SUBSYSTEM==\"usb\""),
+            "a usb_device grant lets a group member detach the keyboard's input driver: {line}"
+        );
+        assert!(
+            line.contains("ic03isc00ip00"),
+            "Wooting rules must exclude the boot keyboard interface by class: {line}"
+        );
     }
 }

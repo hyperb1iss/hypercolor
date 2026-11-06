@@ -13,7 +13,9 @@ pub use crate::registry::{
     DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType, UsbTransportKind,
 };
 
-use crate::drivers::{asus, corsair, dygma, lianli, nollie, nzxt, prismrgb, push2, qmk, razer};
+use crate::drivers::{
+    asus, corsair, dygma, lianli, nollie, nzxt, prismrgb, push2, qmk, razer, wooting,
+};
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 use crate::transport::{TransportError, TransportIntent, TransportPlatform, resolve_transport};
 
@@ -29,6 +31,7 @@ static DEVICE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     descriptors.extend_from_slice(push2::descriptors());
     descriptors.extend_from_slice(qmk::devices::descriptors());
     descriptors.extend_from_slice(razer::devices::descriptors());
+    descriptors.extend_from_slice(wooting::devices::descriptors());
     descriptors
 });
 

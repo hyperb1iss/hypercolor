@@ -313,6 +313,31 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="feed", MODE="0660
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# ─── Wooting ──────────────────────────────────────────────────────────────────
+# Keyboards, so each rule is scoped to the configuration interface the
+# lighting rides on and to nothing else. A product-wide hidraw rule would
+# also open the keyboard, analog, and mouse report nodes to the fallback
+# group, which exposes keystrokes, and a usb_device rule would let a group
+# member detach the keyboard's input driver, so neither exists here
+# (Spec 90 section 8.3). The ARM boards carry the configuration collection
+# alone on interface 2. The modalias match also demands a non-boot HID
+# interface, so a shifted interface number never lands on the boot keyboard
+# or the vendor-class Xbox gamepad function. DirectInput gamepad PIDs (low
+# nibble 1), the AVR boards, and v1 firmware have no verified interface
+# layout and get no rule here; Wooting's own udev rules cover them.
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1230d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1232d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1310d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1312d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1320d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1322d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1340d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1342d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1400d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1402d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1510d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v31E3p1512d*ic03isc00ip00in02", MODE="0660", GROUP="users", TAG+="uaccess"
+
 # ─── Input event nodes ────────────────────────────────────────────────────────
 # Host keyboard/mouse capture lives in 70-hypercolor-input.rules, which MUST
 # sort before systemd's 73-seat-late.rules for `uaccess` to apply. See that

@@ -6,11 +6,13 @@
 //! `0x1337` usage page, and firmware 2.12 and newer on the multi-report
 //! `0xFF55` usage page.
 
+pub mod devices;
 pub mod packet;
 pub mod protocol;
 pub mod types;
 pub mod v1;
 
+pub use devices::{MODELS, WOOTING_FAMILY, WootingModelEntry, descriptors, transport_for};
 pub use protocol::WootingProtocol;
 pub use types::{
     CONFIG_USAGE_PAGE, GamepadMode, MULTI_REPORT_USAGE_PAGE, WOOTING_LEGACY_VID, WOOTING_VID,
