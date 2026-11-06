@@ -1,3 +1,6 @@
+#[path = "support/udev_model.rs"]
+mod udev_model;
+
 use std::collections::BTreeSet;
 
 use hypercolor_hal::database::ProtocolDatabase;
@@ -6,7 +9,13 @@ use hypercolor_hal::drivers::corsair::peripheral::devices as corsair_peripherals
 use hypercolor_hal::drivers::wooting::{
     WOOTING_FAMILY, WOOTING_LEGACY_VID, WOOTING_VID, descriptors as wooting_descriptors,
 };
+use hypercolor_hal::drivers::lianli::LIANLI_TL_VENDOR_ID;
+use hypercolor_hal::drivers::lianli::wireless::transport::PID_WIRELESS_RX;
 use hypercolor_hal::registry::TransportType;
+use udev_model::{
+    HYPERCOLOR_RULES, INTERFACE_SHAPES, InterfaceShape, PROBED_INTERFACES, RuleSet, hidraw_node,
+    tty_node, usb_device_node,
+};
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
 const UDEV_INPUT_RULES: &str = include_str!("../../../udev/70-hypercolor-input.rules");
@@ -24,126 +33,123 @@ fn input_rule_lines(rules: &str) -> Vec<&str> {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum RequiredSubsystem {
-    Hidraw,
-    I2cDev,
-    Tty,
-    Usb,
+fn rule_lines(rules: &str) -> impl Iterator<Item = &str> {
+    rules
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
 }
 
-impl RequiredSubsystem {
-    fn vendor_rule_line(self, vendor_id: u16) -> String {
-        match self {
-            Self::Hidraw => {
-                format!(
-                    "SUBSYSTEM==\"hidraw\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
-                )
-            }
-            Self::I2cDev => {
-                "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
-                    .to_owned()
-            }
-            Self::Tty => {
-                format!(
-                    "SUBSYSTEM==\"tty\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
-                )
-            }
-            Self::Usb => format!(
-                "SUBSYSTEM==\"usb\", ENV{{DEVTYPE}}==\"usb_device\", ATTR{{idVendor}}==\"{vendor_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
-            ),
-        }
-    }
+/// What a host-managed HID transport opens on hidraw.
+#[derive(Debug, Clone, Copy)]
+enum HidrawTarget {
+    /// The descriptor names the USB interface.
+    Interface(u8),
+    /// The descriptor selects a collection without naming an interface.
+    Unpinned,
+}
 
-    fn product_rule_line(self, vendor_id: u16, product_id: u16) -> Option<String> {
-        match self {
-            Self::Hidraw => Some(format!(
-                "SUBSYSTEM==\"hidraw\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", ATTRS{{idProduct}}==\"{product_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
-            )),
-            Self::I2cDev => None,
-            Self::Tty => Some(format!(
-                "SUBSYSTEM==\"tty\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", ATTRS{{idProduct}}==\"{product_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
-            )),
-            Self::Usb => Some(format!(
-                "SUBSYSTEM==\"usb\", ENV{{DEVTYPE}}==\"usb_device\", ATTR{{idVendor}}==\"{vendor_id:04x}\", ATTR{{idProduct}}==\"{product_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
-            )),
+/// The hidraw target of a transport, or `None` if it never opens hidraw.
+fn hidraw_target(transport: TransportType) -> Option<HidrawTarget> {
+    match transport {
+        TransportType::UsbHidApi {
+            interface: Some(interface),
+            ..
         }
+        | TransportType::UsbHidRaw { interface, .. } => Some(HidrawTarget::Interface(interface)),
+        TransportType::UsbHidApi {
+            interface: None, ..
+        } => Some(HidrawTarget::Unpinned),
+        _ => None,
     }
 }
 
-#[test]
-fn udev_rules_cover_each_supported_vendor_transport_family() {
-    let mut required_rules: BTreeSet<(u16, u16, RequiredSubsystem)> = BTreeSet::new();
-
-    for descriptor in ProtocolDatabase::all() {
-        // Wooting keyboards follow the interface-scoped policy checked in
-        // `wooting_udev_rules_open_only_evidenced_configuration_interfaces`.
-        if descriptor.family == WOOTING_FAMILY {
-            continue;
-        }
-        match descriptor.transport {
-            // Host-managed HID opens /dev/hidraw* (directly or through
-            // HIDAPI's hidraw backend) and never the USB device node.
-            TransportType::UsbHidApi { .. } | TransportType::UsbHidRaw { .. } => {
-                required_rules.insert((
-                    descriptor.vendor_id,
-                    descriptor.product_id,
-                    RequiredSubsystem::Hidraw,
-                ));
-            }
-            TransportType::UsbSerial { .. } => {
-                required_rules.insert((
-                    descriptor.vendor_id,
-                    descriptor.product_id,
-                    RequiredSubsystem::Tty,
-                ));
-            }
-            TransportType::I2cSmBus { .. } => {
-                required_rules.insert((
-                    descriptor.vendor_id,
-                    descriptor.product_id,
-                    RequiredSubsystem::I2cDev,
-                ));
-            }
-            TransportType::UsbControl { .. }
+/// Whether a transport opens the USB device node (`/dev/bus/usb/*`).
+fn opens_usb_device_node(transport: TransportType) -> bool {
+    matches!(
+        transport,
+        TransportType::UsbControl { .. }
             | TransportType::UsbHid { .. }
             | TransportType::UsbBulk { .. }
             | TransportType::DriverUsb { .. }
-            | TransportType::UsbVendor => {
-                required_rules.insert((
-                    descriptor.vendor_id,
-                    descriptor.product_id,
-                    RequiredSubsystem::Usb,
-                ));
-            }
-        }
-    }
+            | TransportType::UsbVendor
+    )
+}
 
-    for (vendor_id, product_id, subsystem) in required_rules {
-        let vendor_rule = subsystem.vendor_rule_line(vendor_id);
-        let product_rule = subsystem.product_rule_line(vendor_id, product_id);
-        let has_product_rule = product_rule
-            .as_ref()
-            .is_some_and(|rule| UDEV_RULES.contains(rule));
-        let has_interface_rule = subsystem == RequiredSubsystem::Hidraw
-            && has_interface_scoped_hidraw_rule(vendor_id, product_id);
+fn suggested_hidraw_rule(vendor_id: u16, product_id: u16, interface: Option<u8>) -> String {
+    let interface = interface.map_or_else(|| "*".to_owned(), |value| format!("{value:02X}"));
+    format!(
+        "SUBSYSTEM==\"hidraw\", ATTRS{{modalias}}==\"usb:v{vendor_id:04X}p{product_id:04X}d*ic03isc*ip*in{interface}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
+    )
+}
+
+fn hidraw_granted_on(vendor_id: u16, product_id: u16, interface: u8) -> bool {
+    INTERFACE_SHAPES.iter().any(|&shape| {
+        HYPERCOLOR_RULES.grants(&hidraw_node(vendor_id, product_id, interface, shape))
+    })
+}
+
+#[test]
+fn every_hidraw_descriptor_is_granted_on_the_interface_it_opens() {
+    for descriptor in ProtocolDatabase::all() {
+        let Some(target) = hidraw_target(descriptor.transport) else {
+            continue;
+        };
+        let (vendor, product) = (descriptor.vendor_id, descriptor.product_id);
+        let (granted, interface) = match target {
+            HidrawTarget::Interface(interface) => (
+                hidraw_granted_on(vendor, product, interface),
+                Some(interface),
+            ),
+            HidrawTarget::Unpinned => (
+                PROBED_INTERFACES
+                    .into_iter()
+                    .any(|interface| hidraw_granted_on(vendor, product, interface)),
+                None,
+            ),
+        };
         assert!(
-            UDEV_RULES.contains(&vendor_rule) || has_product_rule || has_interface_rule,
-            "missing udev rule for vendor {vendor_id:04x} product {product_id:04x} subsystem {subsystem:?}: expected {vendor_rule}{}",
-            product_rule
-                .as_ref()
-                .map_or_else(String::new, |rule| format!(" or {rule}"))
+            granted,
+            "{} ({vendor:04x}:{product:04x}) opens hidraw on interface {} but no rule \
+             grants that node; add a rule such as {}",
+            descriptor.name,
+            interface.map_or_else(|| "<any>".to_owned(), |value| value.to_string()),
+            suggested_hidraw_rule(vendor, product, interface)
         );
     }
 }
 
 #[test]
-fn udev_rules_grant_generic_i2c_device_access() {
-    let rule = RequiredSubsystem::I2cDev.vendor_rule_line(0);
-    assert!(
-        UDEV_RULES.contains(&rule),
-        "missing generic i2c-dev access rule: {rule}"
-    );
+fn every_usb_device_and_serial_descriptor_is_granted() {
+    let mut usb_products = BTreeSet::new();
+    let mut tty_products = BTreeSet::new();
+    for descriptor in ProtocolDatabase::all() {
+        let product = (descriptor.vendor_id, descriptor.product_id);
+        if opens_usb_device_node(descriptor.transport) {
+            usb_products.insert(product);
+        }
+        if matches!(descriptor.transport, TransportType::UsbSerial { .. }) {
+            tty_products.insert(product);
+        }
+    }
+    // The L-Wireless controller's protocol also opens its RX sibling, which
+    // has no descriptor of its own.
+    usb_products.insert((LIANLI_TL_VENDOR_ID, PID_WIRELESS_RX));
+
+    for (vendor, product) in usb_products {
+        assert!(
+            HYPERCOLOR_RULES.grants(&usb_device_node(vendor, product)),
+            "missing usb_device rule for {vendor:04x}:{product:04x}: expected \
+             SUBSYSTEM==\"usb\", ENV{{DEVTYPE}}==\"usb_device\", ATTR{{idVendor}}==\"{vendor:04x}\", \
+             ATTR{{idProduct}}==\"{product:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
+        );
+    }
+    for (vendor, product) in tty_products {
+        assert!(
+            HYPERCOLOR_RULES.grants(&tty_node(vendor, product)),
+            "missing tty rule for serial device {vendor:04x}:{product:04x}"
+        );
+    }
 }
 
 #[test]
@@ -261,17 +267,6 @@ fn lighting_grant(tag: &str) -> Option<LightingGrant> {
     })
 }
 
-fn has_interface_scoped_hidraw_rule(vendor_id: u16, product_id: u16) -> bool {
-    lighting_tag(vendor_id, product_id).is_some_and(|tag| lighting_grant(tag).is_some())
-}
-
-fn rule_lines(rules: &str) -> impl Iterator<Item = &str> {
-    rules
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-}
-
 /// Corsair keyboards and mice share their USB device with boot-keyboard,
 /// NKRO, and pointer collections. A vendor-wide hidraw or USB-node grant
 /// would expose those to the whole fallback group.
@@ -324,12 +319,9 @@ fn corsair_peripheral_rules_grant_only_the_lighting_node() {
             descriptor.name
         );
 
-        let usb_rule = RequiredSubsystem::Usb
-            .product_rule_line(CORSAIR_VID, product)
-            .expect("usb rules have a product form");
         assert!(
-            !UDEV_RULES.contains(&usb_rule),
-            "{} ({product:04x}) must not get a USB device node grant: {usb_rule}",
+            !HYPERCOLOR_RULES.grants(&usb_device_node(CORSAIR_VID, product)),
+            "{} ({product:04x}) must not get a USB device node grant",
             descriptor.name
         );
     }
@@ -494,4 +486,52 @@ fn wooting_udev_rules_never_open_the_usb_device_node() {
             "Wooting rules must exclude the boot keyboard interface by class: {line}"
         );
     }
+}
+
+/// The model reads the rule forms the file uses the way udev does: a
+/// modalias pattern pins vendor, product, and interface on one parent, and
+/// the Corsair two-step form tags a product before granting its interface.
+#[test]
+fn udev_model_reads_modalias_and_tagged_interface_rules() {
+    const RULES: &str = concat!(
+        "SUBSYSTEM==\"hidraw\", ATTRS{modalias}==\"usb:v1532p026Cd*ic03isc*ip*in03\", MODE=\"0660\", GROUP=\"users\"\n",
+        "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"1b1c\", ATTRS{idProduct}==\"1b3d\", ENV{TAGGED}=\"01-io\"\n",
+        "SUBSYSTEM==\"hidraw\", ENV{TAGGED}==\"01-io\", ATTRS{bInterfaceNumber}==\"01\", ATTRS{bNumEndpoints}==\"02\", MODE=\"0660\"\n",
+        "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"1b1c\", ATTRS{bInterfaceNumber}==\"00\", MODE=\"0600\"\n",
+        "SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_device\", ATTR{idVendor}==\"2982\", ATTR{idProduct}==\"1967|19[0-9]8\", MODE=\"0660\"\n",
+        "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"35ef\", MODE=\"0660\"\n",
+    );
+    let rules = RuleSet::parse(RULES);
+    let open = InterfaceShape {
+        subclass: 0,
+        protocol: 0,
+        endpoints: 2,
+    };
+    let in_only = InterfaceShape {
+        endpoints: 1,
+        ..open
+    };
+
+    assert!(rules.grants(&hidraw_node(0x1532, 0x026c, 3, in_only)));
+    assert!(!rules.grants(&hidraw_node(0x1532, 0x026c, 0, in_only)));
+    assert!(
+        !rules.grants(&hidraw_node(0x1532, 0x026d, 3, in_only)),
+        "modalias hex is uppercase, and the product is part of the pattern"
+    );
+
+    assert!(rules.grants(&hidraw_node(0x1b1c, 0x1b3d, 1, open)));
+    assert!(!rules.grants(&hidraw_node(0x1b1c, 0x1b3d, 1, in_only)));
+    assert!(!rules.grants(&hidraw_node(0x1b1c, 0x1b11, 1, open)));
+    assert!(
+        !rules.grants(&hidraw_node(0x1b1c, 0x1b3d, 0, open)),
+        "ATTRS keys of one rule must match on the same parent: idVendor sits on the \
+         USB device and bInterfaceNumber on the interface"
+    );
+
+    assert!(rules.grants(&usb_device_node(0x2982, 0x1967)));
+    assert!(rules.grants(&usb_device_node(0x2982, 0x1958)));
+    assert!(!rules.grants(&usb_device_node(0x2982, 0x1969)));
+    assert!(!rules.grants(&hidraw_node(0x2982, 0x1967, 0, open)));
+    assert!(rules.grants(&tty_node(0x35ef, 0x0012)));
+    assert!(!rules.grants(&tty_node(0x35ee, 0x0012)));
 }
