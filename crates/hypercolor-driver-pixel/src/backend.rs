@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -62,9 +62,12 @@ pub struct PixelBackend {
     socket_v4: OnceCell<Arc<UdpSocket>>,
     /// Shared IPv6 socket on an ephemeral port (E1.31 and DDP).
     socket_v6: OnceCell<Arc<UdpSocket>>,
-    /// Art-Net socket bound to UDP 6454, or `None` when that bind failed
-    /// and Art-Net falls back to the ephemeral IPv4 socket.
-    artnet_socket: OnceCell<Option<Arc<UdpSocket>>>,
+    /// Art-Net socket bound to UDP 6454. Sessions own it; the backend only
+    /// keeps a weak handle, so the port is released when the last Art-Net
+    /// session ends and another application can take it.
+    artnet_socket: StdMutex<Weak<UdpSocket>>,
+    /// Whether the ephemeral-port fallback for Art-Net was already logged.
+    artnet_fallback_warned: AtomicBool,
 }
 
 /// A connected session plus its closed flag.
@@ -136,28 +139,50 @@ impl PixelBackend {
 
     async fn socket_for(&self, plan: &PixelDevicePlan) -> Result<Arc<UdpSocket>> {
         if plan.protocol == PixelProtocol::ArtNet {
-            let bound = self
-                .artnet_socket
-                .get_or_init(|| async {
-                    match bind_artnet_socket() {
-                        Ok(socket) => Some(Arc::new(socket)),
-                        Err(error) => {
-                            warn!(
-                                error = %error,
-                                port = ARTNET_PORT,
-                                "could not bind the Art-Net source port; sending ArtDmx from an \
-                                 ephemeral port instead, which some nodes ignore"
-                            );
-                            None
-                        }
+            match self.artnet_source_socket() {
+                Ok(socket) => return Ok(socket),
+                Err(error) => {
+                    if !self.artnet_fallback_warned.swap(true, Ordering::Relaxed) {
+                        let reason = if error.kind() == std::io::ErrorKind::AddrInUse {
+                            "another Art-Net application owns UDP 6454"
+                        } else {
+                            "UDP 6454 could not be bound"
+                        };
+                        warn!(
+                            error = %error,
+                            port = ARTNET_PORT,
+                            reason,
+                            "sending ArtDmx from an ephemeral source port instead of 6454; \
+                             nodes that only accept Art-Net from 6454 will ignore it"
+                        );
                     }
-                })
-                .await;
-            if let Some(socket) = bound {
-                return Ok(Arc::clone(socket));
+                }
             }
         }
         self.ephemeral_socket(plan.target).await
+    }
+
+    /// The shared Art-Net source socket, binding UDP 6454 if no session
+    /// holds it.
+    ///
+    /// The bind sets no reuse flags. With `SO_REUSEPORT` the kernel would
+    /// load-balance another local Art-Net application's incoming unicast
+    /// onto this socket, which never reads, so that application would lose
+    /// packets. Without the flags the bind simply fails while another
+    /// application owns the port, and the caller falls back.
+    fn artnet_source_socket(&self) -> std::io::Result<Arc<UdpSocket>> {
+        let mut held = self
+            .artnet_socket
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(socket) = held.upgrade() {
+            return Ok(socket);
+        }
+        let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, ARTNET_PORT))?;
+        socket.set_nonblocking(true)?;
+        let socket = Arc::new(UdpSocket::from_std(socket)?);
+        *held = Arc::downgrade(&socket);
+        Ok(socket)
     }
 
     async fn ephemeral_socket(&self, target: SocketAddr) -> Result<Arc<UdpSocket>> {
@@ -179,23 +204,6 @@ impl PixelBackend {
     fn require_session(&self, id: &DeviceId) -> Result<Arc<SessionSlot>, DeviceError> {
         self.session(id).ok_or_else(|| disconnected(*id))
     }
-}
-
-/// Bind the Art-Net socket on UDP 6454, the protocol's source and
-/// destination port.
-///
-/// `SO_REUSEADDR` (plus `SO_REUSEPORT` on Unix) lets this coexist with
-/// another Art-Net application on the same host that also sets them.
-fn bind_artnet_socket() -> std::io::Result<UdpSocket> {
-    use socket2::{Domain, Protocol, Socket, Type};
-
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    #[cfg(unix)]
-    socket.set_reuse_port(true)?;
-    socket.set_nonblocking(true)?;
-    socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, ARTNET_PORT)).into())?;
-    UdpSocket::from_std(socket.into())
 }
 
 #[async_trait::async_trait]

@@ -266,14 +266,24 @@ reordering.
 
 Art-Net 4 says "Art-Net uses only one port of 0x1936" as both source and
 destination, so ArtDmx goes out from a socket bound to `0.0.0.0:6454`. The
-socket sets `SO_REUSEADDR`, plus `SO_REUSEPORT` on Unix, so it coexists
-with another Art-Net application on the host that sets them too. If the bind
-still fails, the driver logs one warning and sends ArtDmx from the shared
-ephemeral IPv4 socket, which some nodes ignore. The driver never reads from
-the 6454 socket. When another application shares the port with reuse
-flags, the kernel may deliver some unicast Art-Net traffic meant for it to
-this socket instead, where it is dropped; nodes that see two Art-Net
-senders on one host should be pointed at one of them.
+bind sets no reuse flags. With `SO_REUSEPORT` (or `SO_REUSEADDR`) a socket
+can join another local application's reuse group, and the kernel then
+load-balances that application's incoming unicast across both sockets. This
+socket never reads, so QLC+, xLights, or a visualizer on the same host would
+silently lose packets. Losing those packets is worse than an ephemeral
+source port, so the driver never shares the port:
+
+1. If no Art-Net session holds the socket, the backend tries a plain bind of
+   `0.0.0.0:6454`.
+2. If the bind fails, typically because another Art-Net application owns the
+   port, ArtDmx goes out from the shared ephemeral IPv4 socket. The first
+   fallback logs one warning naming the reason; nodes that only accept
+   Art-Net from 6454 will ignore those packets.
+3. Sessions own the 6454 socket and the backend keeps only a weak handle, so
+   the port is released when the last Art-Net session disconnects. An
+   application started after Hypercolor can claim 6454 once Hypercolor stops
+   streaming Art-Net, and the next Art-Net connect binds again if the port is
+   free.
 
 Art-Net 4 is an IPv4 protocol, so validation rejects IPv6 hosts for
 `artnet` devices (an IPv4-mapped address is accepted as its IPv4 form).
@@ -634,7 +644,8 @@ the plan from that JSON and needs no config of its own.
 the plan, a reusable channel stream buffer, and per-universe packets whose
 fixed headers are built once at connect. E1.31 and DDP share one IPv4 and
 one IPv6 socket, bound lazily on the unspecified address with an ephemeral
-port; Art-Net uses the 6454 socket from section 5.4. No socket enables
+port; Art-Net uses the 6454 socket from section 5.4 while one is held, or
+the ephemeral IPv4 socket as its fallback. No socket enables
 `SO_BROADCAST`. Writes lock the device session, so frames to one device
 never interleave. `frame_sink` returns a cloneable lane over the same
 session, and `deliver_colors_shared_observed` reports transport start once
@@ -680,12 +691,20 @@ from discovery output and streams to a loopback receiver: multi-universe
 E1.31 with per-universe sequences, sync packets with their own sequence,
 black frame plus three terminated packets per universe on disconnect, silence
 when nothing was sent, ArtDmx with Port-Address `0x0123` and zero-filled
-lower slots, ArtDmx sent from source port 6454 while E1.31 keeps an
-ephemeral port, DDP fragmentation with per-packet sequence numbers and push
+lower slots, E1.31 on an ephemeral source port, DDP fragmentation with per-packet sequence numbers and push
 on the last packet, segment offsets, black padding, frame sink delivery, a
 retained sink rejected after disconnect with no transport start and no
 packet, and cadence (no cap plus 800 ms keep-alive, or a 25 ms interval at
 `max_fps = 40`, and three identical sends for E1.31 only).
+
+**Art-Net source port** (`artnet_source_port_tests.rs`, one test at a time
+because each binds 6454). ArtDmx leaves from 6454 when the port is free; it
+falls back to an ephemeral port when another socket owns 6454, including one
+that set `SO_REUSEPORT` (the backend must not join that reuse group); and two
+sessions share one 6454 socket that is released when the last disconnects.
+The reuse-group and release tests fail against a backend that set reuse
+flags and held the port for its lifetime. `socket2` is a dev-dependency only,
+to create that `SO_REUSEPORT` socket.
 
 **Output queue** (`hypercolor-core/tests/backend_manager_tests.rs`). A
 backend that opts into three identical sends gets exactly three writes of an

@@ -170,6 +170,10 @@ Physical DMX512 tops out around 44 Hz for a full universe. Pixel controllers dri
 - Check the start universe or offset against the controller's own config. The usual slip is off by one: E1.31 universes start at 1, and DDP offsets are zero-based.
 - Make sure no firewall blocks outbound UDP from the Hypercolor host.
 
+### An Art-Net node ignores Hypercolor
+
+Art-Net expects packets from UDP port 6454. If another Art-Net application on the same computer (QLC+, xLights, a visualizer) already owns that port, Hypercolor leaves it alone, sends from a different port, and logs a warning saying so. Some nodes ignore Art-Net from other ports. Close the other application, or switch the device to sACN, which has no source-port rule. Hypercolor releases 6454 whenever no Art-Net device is connected.
+
 ### Colors are swapped
 
 Most pixel controllers set the color order per output. Leave `color_order = "rgb"` and fix it on the controller, or set the matching order here, but not both.
