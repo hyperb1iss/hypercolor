@@ -470,7 +470,7 @@ Choose the transport that matches your device's USB transfer type:
 
 | Transport | When to use |
 |---|---|
-| `UsbControl { interface, report_id }` | HID feature reports over USB control transfers (Razer) |
+| `UsbControl { interface, report_id }` | HID feature reports over USB control transfers on a claimed interface; never on an interface with an input function, since Linux detaches `usbhid` |
 | `UsbHid { interface }` | HID interrupt endpoints (QMK, PrismRGB) |
 | `UsbHidApi { interface?, report_id, report_mode, max_report_len, usage_page?, usage? }` | Cross-platform `hidapi`; use for live input devices (mice, keyboards) to keep the OS HID stack attached |
 | `UsbHidRaw { interface, report_id, report_mode, usage_page?, usage? }` | Linux `/dev/hidraw*` direct access (Lian Li) |
