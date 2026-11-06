@@ -277,9 +277,9 @@ pub enum RazerMatrixType {
     /// Strips, mousepads, single-zone accessories.
     Linear,
 
-    /// Reserved for the Chroma Addressable RGB Controller. No descriptor
-    /// uses it: that controller's frames travel in a separate 320-byte
-    /// report (section 6.3), and this variant still encodes like Extended.
+    /// Unused. The Chroma Addressable RGB Controller registers on its own
+    /// frame-report encoder (section 6.3); this variant still encodes like
+    /// Extended.
     ExtendedArgb,
 }
 ```
@@ -422,7 +422,7 @@ The Seiren V3 Chroma is not present in OpenRGB or openrazer databases as of this
 | --------------------------------- | -------- | -------------- | ------------------------------------------------------------------ |
 | Seiren Emote                      | `0x0F1B` | `0x3F`         | Microphone, 4 × 16 transport geometry, reported as 8 × 8 (64 LEDs) |
 | Firefly V2                        | `0x0C04` | `0x3F`         | Mousepad, 1 × 19                                                   |
-| Chroma Addressable RGB Controller | `0x0F1F` | `0x3F`         | 6 ARGB channels, separate frame report (section 6.3), not registered |
+| Chroma Addressable RGB Controller | `0x0F1F` | n/a            | 6 ARGB headers × 80 LEDs, 320-byte frame report on interface 1 (section 6.3) |
 | Charging Pad Chroma               | `0x0F26` | `0x1F`         | 1 × 10, switched to driver mode on connect                         |
 
 Section 6.3 covers the remaining accessories and headsets.
@@ -459,6 +459,7 @@ the stability field lands (Spec 89).
 | Kraken Tournament Edition | `0x0520` | n/a | Kraken memory access, Kylie map | 1 | n/a | 3 (OpenRazer `wIndex = 3`) | OpenRazer | `razer/kraken-tournament-edition` |
 | Kraken Kitty V2 (Black Edition V2) | `0x0560` | n/a | Kraken memory access, Kylie map | 1 | n/a | 3, usage `0x0C`/`0x01` | both | `razer/kraken-kitty-v2` |
 | Kraken 7.1 Chroma | `0x0504` | n/a | Kraken memory access, Rainie map | 1 | n/a | 3, usage `0x0C`/`0x01` | both | `razer/kraken-7-1-chroma` |
+| Chroma Addressable RGB Controller | `0x0F1F` | n/a | ARGB frame report (below) | 6 headers × 80 | n/a | 1, usage `0x0C`/`0x01` | both | `razer/chroma-argb-controller` |
 
 The three 90-byte devices use the shared extended frame upload (class `0x0F`,
 id `0x03`, declared size `5 + 3 × columns`, one row per frame), the extended
@@ -510,7 +511,6 @@ them at `0x0F17` and `0x0F35`.
 
 | Device | PID | Reason |
 |---|---|---|
-| Chroma Addressable RGB Controller | `0x0F1F` | Frames use a separate ARGB report (below) on HID interface 1, alongside the 90-byte report on interface 0 |
 | Hanbo Chroma | `0x0F35` | Own report layout and green-red-blue order (OpenRGB `RazerHanboController`); OpenRGB's table shape of 1 × 70 does not fit one 90-byte report |
 | Kraken V3, V3 X, V3 HyperSense, Kitty V2 Pro | `0x0549`, `0x0537`, `0x0533`, `0x0554` | 13-byte output report `0x40` with its own command IDs |
 | Kraken V4, Kitty V3 Pro | `0x056B`, `0x056C`, `0x0587`, `0x0588` | 64-byte report with a wireless flag byte and 52 argument bytes on usage page `0xFF14`; the `KrakenV4` transaction ID variant has no encoder for it |
@@ -525,9 +525,27 @@ them at `0x0F17` and `0x0F35`.
 
 #### Chroma Addressable RGB Controller Frame Report
 
-Recorded so a later port starts from facts. Both references send it as a
-feature report (`SET_REPORT`, `wValue = 0x0300`, `wIndex = 1`), 320 bytes
-without a HIDAPI report ID prefix:
+The controller enumerates three HID interfaces, each with subclass 0,
+protocol 0 (no boot keyboard or mouse), and one interrupt IN endpoint. Their
+report descriptors, from a `usbhid-dump` in OpenRazer issue 1357, all open a
+Consumer Control (`0x0C`/`0x01`) application collection containing one
+vendor usage (`0xFF00`/`0x02`), 8-bit fields, logical range 0 to 1, and no
+report ID:
+
+| Interface | Descriptor length | Report | Role |
+|---|---|---|---|
+| 0 | 22 bytes | Feature, 90 bytes | Shared 90-byte Razer report (modes, brightness) |
+| 1 | 23 bytes | Feature, 320 bytes | ARGB frame report |
+| 2 | 22 bytes | Input, 16 bytes, array | Vendor input; not used |
+
+Interface 1 declares no input or output fields, and the kernel log in
+OpenRazer issue 2015 shows `hid-generic` creating only hidraw nodes, no input
+devices, on all three interfaces. Opening interface 1 through hidraw or
+HIDAPI detaches nothing and shares no collection with input.
+
+Both references send the frame report as a feature report (`SET_REPORT`,
+`wValue = 0x0300`, `wIndex = 1`), 320 bytes. Through HIDAPI that is report
+ID `0x00` followed by the 320 bytes, a 321-byte buffer:
 
 | Offset | Size | Field | Value |
 |---|---|---|---|
@@ -536,12 +554,30 @@ without a HIDAPI report ID prefix:
 | 2 | 1 | Channel (repeated) | 0 to 5 |
 | 3 | 1 | Pad | `0x00` |
 | 4 | 1 | Last LED index | LED count minus one |
-| 5 | 315 | Color data | R, G, B per LED, up to 105 LEDs |
+| 5 | 315 | Color data | R, G, B per LED, up to 105 LEDs, zero past the last LED |
 
-OpenRGB models each channel as up to 80 LEDs and sends no apply packet after
-the frames. OpenRazer sends brightness over the 90-byte report on interface 0 with
-transaction ID `0x3F` (class `0x0F`, id `0x04`) on LED `0x1A`, its first ARGB
-channel ID; channels 2 to 6 are `0x1B` to `0x1F`.
+OpenRGB sends all six headers on every update, each with last LED index 79
+(80 LEDs), waits 1 ms before each header's report, and sends no apply packet
+afterward; its Direct mode exposes each header as a resizable zone of 0 to 80
+LEDs. OpenRazer sends whichever headers and lengths its caller writes, with no
+pacing, and places the colors from LED 0. Neither reads a reply to the frame
+report.
+
+Brightness lives on interface 0: the extended brightness command (class
+`0x0F`, id `0x04`, transaction ID `0x3F`) on LED IDs `0x1A` to `0x1F`, one
+per header. OpenRGB sends all six; the OpenRazer contributor who ported the
+controller found LED `0x00` had no effect. An OpenRazer maintainer notes some
+Razer firmware stays dark when it powered on at 0 % brightness.
+
+Hypercolor's encoder (`drivers/razer/argb.rs`) follows OpenRGB's update
+shape: six write-only reports per frame, each carrying all 80 LEDs with last
+LED index `0x4F`, 1 ms after each. The device exposes six 80-LED strip
+segments, "Channel 1" through "Channel 6", because the controller cannot see
+what is connected; the attachment profile binds fans, rings, or strips to
+each header. It opens only interface 1, so it sends no brightness command and
+relies on host-side brightness. A unit left at hardware brightness 0 would
+therefore stay dark until another tool raises it; nobody has confirmed
+whether that happens.
 
 #### Source Disagreements
 
@@ -784,6 +820,10 @@ pub struct MockRazerTransport {
   `RazerController/RazerController.cpp` (ARGB report, apply packet),
   `RazerHanboController/`, `RazerKrakenController/`,
   `RazerKrakenV3Controller/`, `RazerKrakenV4Controller/`
+- OpenRazer issues 1357 (`usbhid-dump` report descriptors and the port of
+  the ARGB frame report), 1845 (`lsusb -v` interface descriptors), 2015
+  (kernel log binding `hid-generic` to hidraw only), and 2270 (brightness
+  note) for the Chroma Addressable RGB Controller
 - OpenRGB issue 2203 (Chroma Wireless ARGB Controller captures) and issue
   4565 (Laptop Cooling Pad request)
 - linux-usb.org `usb.ids` and Driver Fusion's HID listings for product ID
