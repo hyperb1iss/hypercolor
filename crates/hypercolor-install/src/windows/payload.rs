@@ -16,10 +16,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess, WindowsEntryKind};
 use sha2::{Digest as _, Sha256};
 
+use super::error::ReleasePayloadError;
 use super::manifest::{
     MANIFEST_NAME, MAX_RELEASE_MANIFEST_BYTES, Member, PermissionClass, ValidatedManifest,
 };
-use super::store::{InstallLock, InstallStore, InstallStoreError};
+use super::store::{InstallLock, InstallStore};
 use crate::model::{UnitId, UnitRecord};
 
 const STAGE_PREFIX: &str = ".hypercolor-stage-";
@@ -469,49 +470,6 @@ fn unit_error(path: &str, error: &io::Error) -> ReleasePayloadError {
 
 fn filesystem(operation: &'static str) -> impl Fn(io::Error) -> ReleasePayloadError {
     move |source| ReleasePayloadError::Filesystem { operation, source }
-}
-
-/// Release unit validation or staging failure on Windows.
-#[derive(Debug, thiserror::Error)]
-pub enum ReleasePayloadError {
-    /// The manifest exceeded its bounded byte limit.
-    #[error("release manifest exceeds {limit} bytes")]
-    ManifestTooLarge { limit: usize },
-    /// Strict JSON decoding failed.
-    #[error("release manifest is not valid strict JSON: {0}")]
-    DecodeManifest(#[from] serde_json::Error),
-    /// Manifest semantics or inventory are invalid.
-    #[error("invalid release manifest: {0}")]
-    InvalidManifest(String),
-    /// The extracted manifest does not match the verifier-accepted digest.
-    #[error("release manifest digest {actual} does not match verified digest {expected}")]
-    UnexpectedManifestDigest { expected: String, actual: String },
-    /// The extracted source tree does not exactly match the manifest.
-    #[error("invalid release source: {0}")]
-    InvalidSource(String),
-    /// An existing, staged or newly published unit is not exact.
-    #[error("invalid immutable release unit: {0}")]
-    InvalidUnit(String),
-    /// A bounded staging namespace was exhausted.
-    #[error("could not allocate a staging directory after {attempts} attempts")]
-    StageCollisions { attempts: usize },
-    /// A handle-relative filesystem operation failed.
-    #[error("failed to {operation}: {source}")]
-    Filesystem {
-        operation: &'static str,
-        #[source]
-        source: io::Error,
-    },
-    /// Install-store authority could not be retained.
-    #[error(transparent)]
-    Store(#[from] InstallStoreError),
-    /// Failure cleanup could not remove the staging tree.
-    #[error("release staging failed ({original}) and cleanup failed: {cleanup}")]
-    Cleanup {
-        original: String,
-        #[source]
-        cleanup: io::Error,
-    },
 }
 
 #[cfg(test)]
