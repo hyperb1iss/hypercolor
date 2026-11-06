@@ -71,17 +71,7 @@ pub struct PageInfo {
 
 `page: None` means the response is complete rather than faking a paging contract the route does not honor. Domain aliases name the concrete shape, so `EffectListResponse` is `ListResponse<EffectSummary>`.
 
-Five list routes are outside that shape, and a client that assumes `items` on them fails to deserialize:
-
-| Route                  | `data` shape                              | Declared as             |
-| ---------------------- | ----------------------------------------- | ----------------------- |
-| `/displays`            | bare JSON array                           | `OperationDoc::get_vec` |
-| `/capture/monitors`    | bare JSON array                           | `OperationDoc::get_vec` |
-| `/config/schema`       | bare JSON array                           | `OperationDoc::get_vec` |
-| `/simulators/displays` | bare JSON array                           | `OperationDoc::get_vec` |
-| `/control-surfaces`    | `ControlSurfaceListResponse { surfaces }` | `OperationDoc::get`     |
-
-`get_list` is what produces the `{ items, total, page }` envelope; `get_vec` wraps a plain `Vec<T>`. Read the route's `OperationDoc` before writing a client type.
+Every collection route takes this shape, including `/displays`, `/capture/monitors`, `/config/schema`, `/simulators/displays`, and `/control-surfaces`, which answered bare arrays or `{ surfaces }` before 1.0. Register a collection with `OperationDoc::get_list::<Item>()` and build an unpaged body with `ListResponse::complete(items)`. `tests/openapi_tests.rs` refuses any enveloped read whose `data` is a bare array.
 
 ## Effect Application Flow
 

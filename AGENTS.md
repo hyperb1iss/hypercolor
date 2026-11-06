@@ -203,14 +203,11 @@ library, output, scene, scenes, simulators, system) plus the shared
 `envelope` module that owns `ApiResponse`, `ListResponse`, `PageInfo`, and
 `ApiErrorBody`. The daemon serializes these types; the web UI, the TUI, the
 CLI, the tray, and the desktop app shell deserialize them, and the Python
-client is generated from the same schemas. Most list routes answer
-`ListResponse { items, total, page }`, where `page` is present only on the
-routes that genuinely page (twelve routes answer `ListResponse` at all). Five
-collection routes do not, and the exceptions are
-contract: `GET /displays`, `/capture/monitors`, `/simulators/displays`, and
-`/config/schema` put a bare JSON array in `data` (they register through
-`OperationDoc::get_vec`), and `GET /control-surfaces` answers
-`{ surfaces: [...] }`. `GET /effects/console` is a cursor window over a log,
+client is generated from the same schemas. Every collection route answers
+`ListResponse { items, total, page }` (registered through
+`OperationDoc::get_list`), where `page` is present only on the routes that
+genuinely page; an OpenAPI test refuses any enveloped read whose `data` is a
+bare array. `GET /effects/console` is a cursor window over a log,
 `{ entries, next_seq, truncated }`, not a collection. Check the generated
 OpenAPI document before assuming a collection is paged. Diagnostic telemetry
 (system status internals, metrics) deliberately stays daemon-local; clients
