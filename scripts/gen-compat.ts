@@ -2,7 +2,8 @@
 /**
  * Compatibility matrix generator.
  *
- * Parses every TOML in data/drivers/vendors/ and emits three outputs:
+ * Parses every TOML in data/drivers/vendors/ and emits three outputs, each
+ * carrying the per-device `verification` tier from Spec 89:
  *   data/compat/compatibility.json       machine-readable, stable schema, consumed by the site and tooling
  *   docs/content/hardware/compatibility.md   Zola-rendered per-vendor page under docs/
  *   data/compat/README-hardware.md       summary snippet injected into README.md between BEGIN/END markers
@@ -47,6 +48,20 @@ const STATUS_LABELS: Record<Status, string> = {
     researched: 'Researched',
     known: 'Known',
     blocked: 'Blocked',
+}
+
+/**
+ * How a device was confirmed (Spec 89). `unverified` is the default, so a row
+ * that says nothing makes no claim.
+ */
+type Verification = 'hardware' | 'community' | 'unverified'
+
+const VERIFICATION_ORDER: Verification[] = ['hardware', 'community', 'unverified']
+
+const VERIFICATION_LABELS: Record<Verification, string> = {
+    hardware: 'Hardware',
+    community: 'Community',
+    unverified: 'Unverified',
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -95,6 +110,7 @@ interface DeviceEntry {
     name: string
     type: string | null
     status: Status
+    verification: Verification
     driver: string | null
     transport: string | null
     leds: number | null
@@ -110,6 +126,8 @@ interface VendorEntry {
     notes: string | null
     devices: DeviceEntry[]
     counts: Record<Status, number>
+    /** Supported devices only, split by how they were confirmed. */
+    supportedByVerification: Record<Verification, number>
     totalDevices: number
     drivers: string[]
     transports: string[]
@@ -125,6 +143,7 @@ interface Report {
         vendors: number
         devices: number
         byStatus: Record<Status, number>
+        supportedByVerification: Record<Verification, number>
         drivers: string[]
     }
     vendors: VendorEntry[]
@@ -148,7 +167,18 @@ interface ParsedToml {
 }
 
 const VENDOR_KEYS = new Set(['name', 'vid', 'website', 'notes'])
-const DEVICE_KEYS = new Set(['pid', 'vid', 'name', 'type', 'status', 'driver', 'transport', 'leds', 'notes'])
+const DEVICE_KEYS = new Set([
+    'pid',
+    'vid',
+    'name',
+    'type',
+    'status',
+    'verification',
+    'driver',
+    'transport',
+    'leds',
+    'notes',
+])
 
 function parseToml(src: string, file: string): ParsedToml {
     const out: ParsedToml = { vendor: {}, devices: [] }
@@ -370,6 +400,7 @@ function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
     const vids = coerceNumberArray(vendor.vid, file, 'vendor.vid')
 
     const counts = emptyCounts()
+    const supportedByVerification = emptyVerificationCounts()
     const drivers = new Set<string>()
     const transports = new Set<string>()
     const deviceTypes = new Set<string>()
@@ -386,8 +417,10 @@ function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
         const transport = typeof d.transport === 'string' ? d.transport : null
         const leds = typeof d.leds === 'number' ? d.leds : null
         const notes = typeof d.notes === 'string' && d.notes.length > 0 ? d.notes : null
+        const verification = requireVerification(d, driver, `${file}[${i}] "${name}"`)
 
         counts[status] += 1
+        if (status === 'supported') supportedByVerification[verification] += 1
         if (driver) drivers.add(driver)
         if (transport) transports.add(transport)
         if (type) deviceTypes.add(type)
@@ -400,6 +433,7 @@ function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
             name,
             type,
             status,
+            verification,
             driver,
             transport,
             leds,
@@ -424,6 +458,7 @@ function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
         notes,
         devices,
         counts,
+        supportedByVerification,
         totalDevices: devices.length,
         drivers: Array.from(drivers).sort(),
         transports: Array.from(transports).sort(),
@@ -441,6 +476,29 @@ function emptyCounts(): Record<Status, number> {
         known: 0,
         blocked: 0,
     }
+}
+
+function emptyVerificationCounts(): Record<Verification, number> {
+    return { hardware: 0, community: 0, unverified: 0 }
+}
+
+function requireVerification(
+    obj: Record<string, unknown>,
+    driver: string | null,
+    where: string,
+): Verification {
+    const v = obj.verification
+    if (v === undefined) return 'unverified'
+    if (typeof v !== 'string' || !VERIFICATION_ORDER.includes(v as Verification)) {
+        throw new Error(
+            `${where}: unknown verification "${String(v)}" (expected one of ${VERIFICATION_ORDER.join(', ')})`,
+        )
+    }
+    // A row without a driver has nothing Hypercolor could have run.
+    if (v !== 'unverified' && driver === null) {
+        throw new Error(`${where}: verification "${v}" needs a "driver"`)
+    }
+    return v as Verification
 }
 
 function requireString(obj: Record<string, unknown>, key: string, where: string): string {
@@ -483,6 +541,7 @@ function formatHex(value: number, minDigits: number): string {
 
 function buildReport(vendors: VendorEntry[]): Report {
     const byStatus = emptyCounts()
+    const supportedByVerification = emptyVerificationCounts()
     // Driver families that contribute at least one shipping device. A driver
     // that's implemented but whose devices are all `blocked` (e.g. dygma) does
     // not count toward the "X driver families" surface in marketing copy,
@@ -491,6 +550,7 @@ function buildReport(vendors: VendorEntry[]): Report {
     let deviceCount = 0
     for (const v of vendors) {
         for (const s of STATUS_ORDER) byStatus[s] += v.counts[s]
+        for (const t of VERIFICATION_ORDER) supportedByVerification[t] += v.supportedByVerification[t]
         for (const d of v.devices) {
             if (d.status === 'supported' && d.driver) drivers.add(d.driver)
         }
@@ -505,6 +565,7 @@ function buildReport(vendors: VendorEntry[]): Report {
             vendors: vendors.length,
             devices: deviceCount,
             byStatus,
+            supportedByVerification,
             drivers: Array.from(drivers).sort(),
         },
         vendors,
@@ -533,6 +594,8 @@ function renderHardwareMd(report: Report): string {
     lines.push(MARKER_WARN)
     lines.push('')
     lines.push(summaryParagraph(report))
+    lines.push('')
+    lines.push(...verificationLegend())
     lines.push('')
     lines.push('## Summary')
     lines.push('')
@@ -603,6 +666,22 @@ function renderReadmeSnippet(report: Report): string {
 
 const MARKER_WARN = '<!-- GENERATED by scripts/gen-compat.ts from data/drivers/vendors/*.toml. Do not edit by hand; run `just compat` to regenerate. -->'
 
+function verificationLegend(): string[] {
+    return [
+        '## How Devices Are Verified',
+        '',
+        'A driver existing for a device is not the same as someone having run it. The **Verified** column says how each device with a driver was confirmed:',
+        '',
+        '| Verified | Meaning |',
+        '|---|---|',
+        "| Hardware | A maintainer ran this device on real hardware with the current driver. |",
+        '| Community | A user reported it working in a closed GitHub issue or discussion. |',
+        '| Unverified | Built from a protocol spec, captures, or reference code; nobody has confirmed it on the device yet. |',
+        '',
+        `If you run an unverified device and it works, [open an issue](https://github.com/hyperb1iss/hypercolor/issues/new/choose) saying so and it moves to Community. The promotion rules are in [Spec 89](${SOURCE_BROWSE_BASE}/docs/specs/89-experimental-drivers-and-device-verification.md).`,
+    ]
+}
+
 function summaryParagraph(report: Report): string {
     const { totals } = report
     const supported = totals.byStatus.supported
@@ -610,9 +689,10 @@ function summaryParagraph(report: Report): string {
     const researchPool = totals.byStatus.researched + totals.byStatus.known
     const drivers = totals.drivers.length
 
+    const tested = totals.supportedByVerification.hardware + totals.supportedByVerification.community
     const segments = [
         `Hypercolor tracks **${totals.devices} devices** across **${totals.vendors} vendors** in \`data/drivers/vendors/\`.`,
-        `**${supported}** ship with a working driver today across **${drivers} driver families**.`,
+        `**${supported}** ship with a driver today across **${drivers} driver families**, and **${tested}** of those have been confirmed on real hardware (${totals.supportedByVerification.hardware} by a maintainer, ${totals.supportedByVerification.community} by users).`,
     ]
     if (inFlight > 0) {
         segments.push(`**${inFlight}** are actively in development.`)
@@ -632,31 +712,38 @@ interface SummaryTableOptions {
 
 function summaryTable(report: Report, opts: SummaryTableOptions = {}): string[] {
     const rows: string[] = []
-    rows.push('| Vendor | Supported | In progress | Researched | Blocked | Drivers |')
-    rows.push('|---|--:|--:|--:|--:|---|')
+    rows.push('| Vendor | Supported | Verified | In progress | Researched | Blocked | Drivers |')
+    rows.push('|---|--:|--:|--:|--:|--:|---|')
     for (const v of report.vendors) {
         const drivers = v.drivers.length > 0 ? v.drivers.map((d) => `\`${d}\``).join(', ') : '—'
+        const verified = v.supportedByVerification.hardware + v.supportedByVerification.community
         rows.push(
-            `| ${vendorLink(v, opts.anchorBase)} | ${fmtCount(v.counts.supported)} | ${fmtCount(v.counts.in_progress + v.counts.planned)} | ${fmtCount(v.counts.researched + v.counts.known)} | ${fmtCount(v.counts.blocked)} | ${drivers} |`,
+            `| ${vendorLink(v, opts.anchorBase)} | ${fmtCount(v.counts.supported)} | ${fmtCount(verified)} | ${fmtCount(v.counts.in_progress + v.counts.planned)} | ${fmtCount(v.counts.researched + v.counts.known)} | ${fmtCount(v.counts.blocked)} | ${drivers} |`,
         )
     }
     return rows
 }
 
 function byDriverList(report: Report): string[] {
-    const counts = new Map<string, number>()
+    const counts = new Map<string, { supported: number; verified: number }>()
     for (const v of report.vendors) {
         for (const d of v.devices) {
             if (d.status === 'supported' && d.driver) {
-                counts.set(d.driver, (counts.get(d.driver) ?? 0) + 1)
+                const entry = counts.get(d.driver) ?? { supported: 0, verified: 0 }
+                entry.supported += 1
+                if (d.verification !== 'unverified') entry.verified += 1
+                counts.set(d.driver, entry)
             }
         }
     }
     const items = Array.from(counts.entries()).sort(
-        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+        (a, b) => b[1].supported - a[1].supported || a[0].localeCompare(b[0]),
     )
     if (items.length === 0) return ['_No shipping drivers yet._']
-    return items.map(([driver, count]) => `- **\`${driver}\`** — ${count} supported device${count === 1 ? '' : 's'}`)
+    return items.map(
+        ([driver, { supported, verified }]) =>
+            `- **\`${driver}\`**: ${supported} supported device${supported === 1 ? '' : 's'}, ${verified} verified`,
+    )
 }
 
 /** The device's wire identity: a VID:PID pair when it overrides its vendor. */
@@ -678,7 +765,7 @@ function statusTable(report: Report, status: Status): string[] {
     const header = ['Vendor', 'Device']
     if (showPid) header.push('PID')
     header.push('Type')
-    if (showDriver) header.push('Driver')
+    if (showDriver) header.push('Driver', 'Verified')
     header.push('Transport')
     if (showLeds) header.push('LEDs')
     header.push('Notes')
@@ -694,7 +781,7 @@ function statusTable(report: Report, status: Status): string[] {
             const cells: string[] = [escape(v.name), escape(d.name)]
             if (showPid) cells.push(deviceIdCell(d))
             cells.push(typeLabel(d.type))
-            if (showDriver) cells.push(d.driver ? `\`${d.driver}\`` : '—')
+            if (showDriver) cells.push(d.driver ? `\`${d.driver}\`` : '—', VERIFICATION_LABELS[d.verification])
             cells.push(transportLabel(d.transport))
             if (showLeds) cells.push(d.leds !== null ? String(d.leds) : '—')
             cells.push(notesCell(d.notes))
@@ -724,6 +811,11 @@ function vendorSection(vendor: VendorEntry): string[] {
         if (vendor.counts[s] > 0) summaryParts.push(`${vendor.counts[s]} ${STATUS_LABELS[s].toLowerCase()}`)
     }
     lines.push(`**Devices tracked:** ${summaryParts.join(' · ') || 'none'}`)
+    if (vendor.counts.supported > 0) {
+        const { hardware, community } = vendor.supportedByVerification
+        lines.push('')
+        lines.push(`**Supported devices verified:** ${hardware} on hardware · ${community} by the community · ${vendor.counts.supported - hardware - community} unverified`)
+    }
     lines.push('')
 
     if (vendor.notes) {
@@ -753,7 +845,7 @@ function vendorDeviceTable(devices: DeviceEntry[], status: Status): string[] {
     const header = ['Device']
     if (showPid) header.push('PID')
     header.push('Type')
-    if (showDriver) header.push('Driver')
+    if (showDriver) header.push('Driver', 'Verified')
     header.push('Transport')
     if (showLeds) header.push('LEDs')
     header.push('Notes')
@@ -765,7 +857,7 @@ function vendorDeviceTable(devices: DeviceEntry[], status: Status): string[] {
         const cells: string[] = [escape(d.name)]
         if (showPid) cells.push(deviceIdCell(d))
         cells.push(typeLabel(d.type))
-        if (showDriver) cells.push(d.driver ? `\`${d.driver}\`` : '—')
+        if (showDriver) cells.push(d.driver ? `\`${d.driver}\`` : '—', VERIFICATION_LABELS[d.verification])
         cells.push(transportLabel(d.transport))
         if (showLeds) cells.push(d.leds !== null ? String(d.leds) : '—')
         cells.push(notesCell(d.notes))
@@ -920,6 +1012,7 @@ function main() {
     console.log('')
     const t = report.totals
     console.log(`  ${t.vendors} vendors · ${t.devices} devices · ${t.byStatus.supported} supported · ${t.byStatus.researched + t.byStatus.known} researched/known · ${t.byStatus.blocked} blocked`)
+    console.log(`  verified supported: ${t.supportedByVerification.hardware} hardware · ${t.supportedByVerification.community} community · ${t.supportedByVerification.unverified} unverified`)
     console.log(`  drivers: ${t.drivers.join(', ')}`)
 
     if (check && anyChanged) {
