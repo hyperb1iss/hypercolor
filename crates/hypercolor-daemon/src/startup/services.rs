@@ -891,7 +891,8 @@ impl DaemonState {
                         Arc::clone(&driver_registry),
                         Some(Arc::clone(&config_manager)),
                     )
-                    .with_device_input(Arc::new(device_input.clone())),
+                    .with_device_input(Arc::new(device_input.clone()))
+                    .with_installation_id(server_identity.instance_id.as_str()),
                 ))
             },
         )?;

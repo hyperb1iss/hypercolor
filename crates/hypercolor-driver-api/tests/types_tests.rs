@@ -788,6 +788,7 @@ fn pair_device_status_serde_uses_snake_case() {
 }
 
 #[test]
-fn hosts_offer_no_device_input_by_default() {
+fn hosts_offer_no_device_input_or_installation_id_by_default() {
     assert!(NoopDriverHost.device_input().is_none());
+    assert!(NoopDriverHost.installation_id().is_none());
 }
