@@ -26,6 +26,13 @@ pub const TOKEN_LEN: usize = 8;
 pub const V3_FRAGMENT_PAYLOAD: usize = 900;
 /// Largest LED count a version 1 header can describe.
 pub const V1_MAX_LEDS: usize = u8::MAX as usize;
+/// Most LEDs the driver accepts from any device. Generation II reports at
+/// most 1200 (`max_supported_led`) and Pro controllers 1500, so 4096
+/// leaves headroom while keeping a frame small enough to allocate and
+/// send. Larger counts come from a misbehaving or hostile peer.
+pub const MAX_LED_COUNT: usize = 4096;
+/// Largest UDP payload over IPv4.
+pub const MAX_DATAGRAM_PAYLOAD: usize = 65_507;
 
 /// Errors decoding device replies.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -40,8 +47,10 @@ pub enum ProtocolError {
     LedProfile(String),
     #[error("Twinkly frame of {leds} LEDs exceeds the version 1 limit of 255")]
     V1TooManyLeds { leds: usize },
-    #[error("Twinkly frame needs {fragments} fragments, more than one byte can number")]
-    TooManyFragments { fragments: usize },
+    #[error("Twinkly device reports {leds} LEDs; the driver accepts 1 to {MAX_LED_COUNT}")]
+    LedCount { leds: usize },
+    #[error("Twinkly frame of {bytes} bytes does not fit one version 2 datagram")]
+    V2FrameTooLarge { bytes: usize },
 }
 
 /// One reply to the discovery datagram.
@@ -278,6 +287,33 @@ impl fmt::Display for RtProtocol {
     }
 }
 
+/// Check that a device with `led_count` LEDs can be streamed: at least
+/// one LED, at most [`MAX_LED_COUNT`], at most 255 on version 1, and a
+/// version 2 frame that fits one datagram.
+///
+/// # Errors
+///
+/// Returns the first limit the count breaks.
+pub fn validate_led_count(
+    protocol: RtProtocol,
+    profile: LedProfile,
+    led_count: usize,
+) -> Result<(), ProtocolError> {
+    if led_count == 0 || led_count > MAX_LED_COUNT {
+        return Err(ProtocolError::LedCount { leds: led_count });
+    }
+    let frame_bytes = led_count * profile.bytes_per_led();
+    match protocol {
+        RtProtocol::V1 if led_count > V1_MAX_LEDS => {
+            Err(ProtocolError::V1TooManyLeds { leds: led_count })
+        }
+        RtProtocol::V2 if frame_bytes + 1 + TOKEN_LEN + 1 > MAX_DATAGRAM_PAYLOAD => {
+            Err(ProtocolError::V2FrameTooLarge { bytes: frame_bytes })
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Encodes engine frames into real-time datagrams, reusing its buffers.
 #[derive(Debug, Clone)]
 pub struct RtFrameEncoder {
@@ -294,27 +330,15 @@ impl RtFrameEncoder {
     ///
     /// # Errors
     ///
-    /// Returns an error when the device cannot be described by the
-    /// protocol: more than 255 LEDs on version 1, or more fragments than
-    /// one byte can number on version 3.
+    /// Returns an error when [`validate_led_count`] refuses the device.
     pub fn new(
         protocol: RtProtocol,
         profile: LedProfile,
         led_count: usize,
         token: [u8; TOKEN_LEN],
     ) -> Result<Self, ProtocolError> {
-        let frame_bytes = led_count.saturating_mul(profile.bytes_per_led());
-        match protocol {
-            RtProtocol::V1 if led_count > V1_MAX_LEDS => {
-                return Err(ProtocolError::V1TooManyLeds { leds: led_count });
-            }
-            RtProtocol::V3 if protocol.datagrams_for(frame_bytes) > usize::from(u8::MAX) + 1 => {
-                return Err(ProtocolError::TooManyFragments {
-                    fragments: protocol.datagrams_for(frame_bytes),
-                });
-            }
-            _ => {}
-        }
+        validate_led_count(protocol, profile, led_count)?;
+        let frame_bytes = led_count * profile.bytes_per_led();
         Ok(Self {
             protocol,
             profile,

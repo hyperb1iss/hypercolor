@@ -59,7 +59,7 @@ async fn discovery_datagram_finds_the_device_and_probes_it() -> TestResult {
 async fn discovery_replies_report_the_sender() -> TestResult {
     let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(10)).await?;
     let found =
-        collect_discovery_replies(&[fake.discovery_addr()], Duration::from_millis(300)).await?;
+        collect_discovery_replies(&[fake.discovery_addr()], Duration::from_millis(300), 8).await?;
     assert_eq!(found, [IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     Ok(())
 }
