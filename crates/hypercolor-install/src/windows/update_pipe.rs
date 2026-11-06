@@ -155,8 +155,10 @@ pub enum UpdatePipeError {
 /// Connect to the update pipe at `name` and return it only when the update
 /// service's own process serves it.
 ///
-/// The service is asked after the server is named, so the answer describes
-/// a process that was running when the pipe was already connected.
+/// The service is asked after the server is named, so its answer is no
+/// older than the pipe it vouches for. A process ID is only an identity
+/// while its process lives; the check leans on the pipe's name reaching
+/// nobody but the recorded user for the rest.
 ///
 /// # Errors
 ///
