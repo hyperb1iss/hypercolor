@@ -1,8 +1,13 @@
-{% component api_endpoint(method: string, path: string) %}
-<div class="api-endpoint">
+{#- `id` and `summary` are set by the generated REST reference
+    (scripts/gen-rest-reference.ts): `id` is the OpenAPI operationId, which
+    makes every card a stable deep link. Hand-written cards omit both. -#}
+{% component api_endpoint(method: string, path: string, id: string = "", summary: string = "") %}
+<div class="api-endpoint"{% if id %} id="{{ id }}"{% endif %}>
   <div class="api-endpoint__header">
     <span class="api-endpoint__method api-endpoint__method--{{ method | lower }}">{{ method }}</span>
     <code class="api-endpoint__path">{{ path }}</code>
+    {% if summary %}<span class="api-endpoint__summary">{{ summary }}</span>{% endif %}
+    {% if id %}<a class="api-endpoint__anchor" href="#{{ id }}" aria-label="Link to {{ method }} {{ path }}">#</a>{% endif %}
   </div>
   <div class="api-endpoint__body">{{ body | markdown | safe }}</div>
 </div>
