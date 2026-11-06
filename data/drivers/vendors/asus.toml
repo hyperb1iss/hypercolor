@@ -26,6 +26,7 @@ pid = 0x19AF
 name = "Aura Motherboard (Gen 3)"
 type = "motherboard"
 status = "supported"
+verification = "hardware"
 driver = "asus"
 transport = "usb_hid_raw"
 

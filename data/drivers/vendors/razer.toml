@@ -10,6 +10,7 @@ pid = 0x026C
 name = "Huntsman V2"
 type = "keyboard"
 status = "supported"
+verification = "hardware"
 driver = "razer"
 transport = "usb_hid"
 leds = 132
@@ -20,6 +21,7 @@ pid = 0x0099
 name = "Basilisk V3"
 type = "mouse"
 status = "supported"
+verification = "hardware"
 driver = "razer"
 transport = "usb_hid"
 leds = 11
@@ -59,6 +61,7 @@ pid = 0x056F
 name = "Seiren V3 Chroma"
 type = "microphone"
 status = "supported"
+verification = "hardware"
 driver = "razer"
 transport = "usb_hid"
 
@@ -67,10 +70,11 @@ pid = 0x0527
 name = "Kraken Ultimate"
 type = "headset"
 status = "supported"
+verification = "community"
 driver = "razer"
 transport = "usb_hid"
 leds = 1
-notes = "Kraken memory-access protocol, one zone for both earcups"
+notes = "Kraken memory-access protocol, one zone for both earcups. Reported working in #362"
 
 [[devices]]
 pid = 0x0270
@@ -352,6 +356,7 @@ pid = 0x0F0D
 name = "Laptop Stand Chroma"
 type = "other"
 status = "supported"
+verification = "hardware"
 driver = "razer"
 transport = "usb_hid"
 

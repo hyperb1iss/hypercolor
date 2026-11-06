@@ -8,6 +8,7 @@ pid = 0x1967
 name = "Push 2"
 type = "other"
 status = "supported"
+verification = "hardware"
 driver = "push2"
 transport = "usb_midi"
 notes = "Composite MIDI + bulk display. MIDI for pad control, bulk OUT for sideband display."
