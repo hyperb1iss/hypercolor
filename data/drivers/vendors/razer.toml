@@ -587,26 +587,334 @@ status = "supported"
 driver = "razer"
 transport = "usb_hid"
 
-# ─── Not Yet Supported ───────────────────────────────────────────────
-
 [[devices]]
 pid = 0x0203
 name = "BlackWidow Chroma"
 type = "keyboard"
-status = "researched"
-notes = "Legacy protocol"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+notes = "Standard matrix 6x22"
 
 [[devices]]
 pid = 0x0211
 name = "BlackWidow Chroma Overwatch"
 type = "keyboard"
-status = "researched"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+notes = "Standard matrix 6x22"
 
 [[devices]]
 pid = 0x0216
 name = "BlackWidow X Chroma"
 type = "keyboard"
-status = "researched"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+notes = "Standard matrix 6x22"
+
+[[devices]]
+pid = 0x0209
+name = "BlackWidow Tournament Edition Chroma"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+notes = "Standard matrix 6x22"
+
+[[devices]]
+pid = 0x0296
+name = "DeathStalker V2 Pro TKL (Wireless)"
+type = "keyboard"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+notes = "0x9F wireless transaction ID, extended matrix 6x17"
+
+[[devices]]
+pid = 0x004C
+name = "Diamondback Chroma"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 21
+notes = "Linear 1x21"
+
+[[devices]]
+pid = 0x006E
+name = "DeathAdder Essential (Legacy)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 2
+notes = "Extended matrix 1x2"
+
+[[devices]]
+pid = 0x0071
+name = "DeathAdder Essential (White Edition)"
+type = "mouse"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 2
+notes = "Extended matrix 1x2"
+
+[[devices]]
+pid = 0x0C00
+name = "Firefly"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 15
+notes = "Linear 1x15"
+
+[[devices]]
+pid = 0x0C01
+name = "Goliathus Chroma"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Single zone"
+
+[[devices]]
+pid = 0x0C02
+name = "Goliathus Chroma Extended"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Single zone"
+
+[[devices]]
+pid = 0x0C04
+name = "Firefly V2"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 19
+notes = "Extended matrix 1x19"
+
+[[devices]]
+pid = 0x0C05
+name = "Strider Chroma"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 19
+notes = "Extended matrix 1x19"
+
+[[devices]]
+pid = 0x0068
+name = "Firefly Hyperflux"
+type = "mousepad"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 14
+notes = "Extended matrix 1x14, switched to driver mode on connect"
+
+[[devices]]
+pid = 0x0F08
+name = "Base Station Chroma"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 15
+notes = "Extended matrix 1x15"
+
+[[devices]]
+pid = 0x0F07
+name = "Chroma Mug Holder"
+type = "desk"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 15
+notes = "Linear 1x15, switched to driver mode on connect"
+
+[[devices]]
+pid = 0x007E
+name = "Mouse Dock Chroma"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Single zone"
+
+[[devices]]
+pid = 0x00A4
+name = "Mouse Dock Pro"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 9
+notes = "0xFF transaction ID with extended matrix frames, 1x9 per OpenRGB (OpenRazer lists 1x8)"
+
+[[devices]]
+pid = 0x0F21
+name = "Thunderbolt 4 Dock Chroma"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 12
+notes = "Extended matrix 1x12, matched by consumer-control usage on any interface"
+
+[[devices]]
+pid = 0x0F52
+name = "Thunderbolt 5 Dock Chroma"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 12
+notes = "Extended matrix 1x12, matched by consumer-control usage on any interface"
+
+[[devices]]
+pid = 0x0215
+name = "Core"
+type = "other"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 9
+notes = "Standard matrix 1x9"
+
+[[devices]]
+pid = 0x0F0E
+name = "Chroma PC Case Lighting Kit"
+type = "argb_controller"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 32
+notes = "Extended matrix 2x16, one row per strip"
+
+[[devices]]
+pid = 0x0F19
+name = "Kraken Kitty Edition"
+type = "headset"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 4
+notes = "Extended matrix 1x4 on HID interface 1"
+
+[[devices]]
+pid = 0x0517
+name = "Nommo Chroma"
+type = "speakers"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 48
+notes = "Extended matrix 2x24"
+
+[[devices]]
+pid = 0x0518
+name = "Nommo Pro"
+type = "speakers"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 16
+notes = "Extended matrix 2x8"
+
+[[devices]]
+pid = 0x054A
+name = "Leviathan V2 X"
+type = "speakers"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 14
+notes = "Extended matrix 1x14, HID report ID 0x07"
+
+# ─── Registered, awaiting hardware confirmation ───────────────────
+
+[[devices]]
+pid = 0x0F17
+name = "Tomahawk ATX"
+type = "case"
+status = "in_progress"
+driver = "razer"
+transport = "usb_hid"
+leds = 20
+notes = "OpenRazer facts: 0x1F transaction ID, extended matrix 1x20 on HID interface 0. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x0F12
+name = "Raptor 27"
+type = "monitor"
+status = "in_progress"
+driver = "razer"
+transport = "usb_hid"
+leds = 12
+notes = "OpenRazer facts: 0x1F transaction ID, extended matrix 1x12 on HID interface 0. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x0F1A
+name = "Core X Chroma"
+type = "other"
+status = "in_progress"
+driver = "razer"
+transport = "usb_hid"
+leds = 16
+notes = "OpenRGB facts: 0x3F transaction ID, extended matrix 1x16 on HID interface 2 (OpenRazer sends 0x1F). Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x0510
+name = "Kraken 7.1 V2"
+type = "headset"
+status = "in_progress"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x0520
+name = "Kraken Tournament Edition"
+type = "headset"
+status = "in_progress"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x0560
+name = "Kraken Kitty V2"
+type = "headset"
+status = "in_progress"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Sold as the Kitty Black Edition V2. Kraken memory-access protocol (Spec 83), Kraken V2 address map. Awaiting hardware confirmation."
+
+[[devices]]
+pid = 0x0504
+name = "Kraken 7.1 Chroma"
+type = "headset"
+status = "in_progress"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Kraken memory-access protocol (Spec 83), Kraken 7.1 Chroma address map with the LED mode register at 0x1008. Awaiting hardware confirmation."
+
+# ─── Not Yet Supported ───────────────────────────────────────────────
 
 [[devices]]
 pid = 0x0241
@@ -623,12 +931,6 @@ status = "researched"
 [[devices]]
 pid = 0x023F
 name = "Cynosa Lite"
-type = "keyboard"
-status = "researched"
-
-[[devices]]
-pid = 0x0209
-name = "BlackWidow Tournament Edition Chroma"
 type = "keyboard"
 status = "researched"
 
@@ -665,33 +967,8 @@ type = "keyboard"
 status = "researched"
 
 [[devices]]
-pid = 0x0296
-name = "DeathStalker V2 Pro TKL (Wireless)"
-type = "keyboard"
-status = "researched"
-
-[[devices]]
-pid = 0x004C
-name = "Diamondback Chroma"
-type = "mouse"
-status = "researched"
-notes = "Legacy mouse"
-
-[[devices]]
 pid = 0x004E
 name = "Naga Hex V2"
-type = "mouse"
-status = "researched"
-
-[[devices]]
-pid = 0x006E
-name = "DeathAdder Essential (Legacy)"
-type = "mouse"
-status = "researched"
-
-[[devices]]
-pid = 0x0071
-name = "DeathAdder Essential (Alt)"
 type = "mouse"
 status = "researched"
 
@@ -700,129 +977,95 @@ pid = 0x0574
 name = "Barracuda X Chroma"
 type = "headset"
 status = "researched"
-
-[[devices]]
-pid = 0x020F
-name = "Kraken Kitty Edition"
-type = "headset"
-status = "researched"
-
-[[devices]]
-pid = 0x0510
-name = "Kraken 7.1 V2"
-type = "headset"
-status = "researched"
+notes = "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
 
 [[devices]]
 pid = 0x0533
-name = "Kraken Headset"
+name = "Kraken V3 HyperSense"
 type = "headset"
 status = "researched"
-notes = "Multiple PIDs: 0x0533, 0x0537, 0x0549, 0x0560"
+notes = "Kraken V3 family: a 13-byte output report 0x40 per OpenRGB, neither the Kraken memory-access protocol nor the 90-byte report."
+
+[[devices]]
+pid = 0x0537
+name = "Kraken V3 X"
+type = "headset"
+status = "researched"
+notes = "Kraken V3 family: a 13-byte output report 0x40 per OpenRGB, neither the Kraken memory-access protocol nor the 90-byte report."
+
+[[devices]]
+pid = 0x0549
+name = "Kraken V3"
+type = "headset"
+status = "researched"
+notes = "Kraken V3 family: a 13-byte output report 0x40 per OpenRGB, neither the Kraken memory-access protocol nor the 90-byte report."
 
 [[devices]]
 pid = 0x051C
 name = "Nari Headset"
 type = "headset"
 status = "researched"
-notes = "Multiple PIDs: 0x051C, 0x051F, 0x051E, 0x051A"
+notes = "Multiple PIDs: 0x051C Nari (Wireless), 0x051D Nari (Wired), 0x051A Nari Ultimate, 0x051E and 0x051F Nari Essential. No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
 
 [[devices]]
-pid = 0x0517
-name = "Nommo Speakers"
+pid = 0x055C
+name = "Nommo V2"
 type = "speakers"
 status = "researched"
-notes = "Multiple PIDs: 0x0517, 0x0518, 0x055C, 0x055A"
+notes = "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
 
 [[devices]]
-pid = 0x0532
-name = "Leviathan V2 Soundbar"
+pid = 0x055A
+name = "Nommo V2 Pro"
 type = "speakers"
 status = "researched"
-notes = "Multiple PIDs: 0x0532, 0x054A, 0x0548"
+notes = "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
+
+[[devices]]
+pid = 0x0548
+name = "Leviathan V2 Pro"
+type = "speakers"
+status = "researched"
+notes = "No public protocol documentation; neither OpenRazer nor OpenRGB drives it."
 
 [[devices]]
 pid = 0x0F2C
 name = "Chroma Light Strip Set"
 type = "strip"
 status = "researched"
-
-[[devices]]
-pid = 0x0F0E
-name = "Chroma Lighting Kit"
-type = "argb_controller"
-status = "researched"
+notes = "Enumerates as the Chroma Wireless ARGB Controller. OpenRGB issue 2203 holds undecoded captures; no wire format is documented."
 
 [[devices]]
 pid = 0x0F1F
-name = "Addressable RGB Controller"
+name = "Chroma Addressable RGB Controller"
 type = "argb_controller"
 status = "researched"
+notes = "Six ARGB channels of up to 80 LEDs. Frames travel as a separate 320-byte ARGB feature report on HID interface 1, not the 90-byte report (Spec 17 section 6.3)."
 
 [[devices]]
 pid = 0x0F3C
-name = "PWM Controller"
+name = "PWM PC Fan Controller"
 type = "fan_controller"
 status = "researched"
+notes = "HID interface 1. No lighting protocol is documented."
 
 [[devices]]
 pid = 0x0F43
 name = "Laptop Cooling Pad"
 type = "other"
 status = "researched"
+notes = "No public protocol documentation (OpenRGB request 4565 has no captures)."
 
 [[devices]]
-pid = 0x0F44
-name = "Hanbo AIO"
+pid = 0x0F35
+name = "Hanbo Chroma"
 type = "aio"
 status = "researched"
+notes = "Own report layout with green-red-blue color order (OpenRGB RazerHanboController), not the 90-byte report."
 
 [[devices]]
-pid = 0x0C00
-name = "Mousepad Controller"
-type = "mousepad"
-status = "researched"
-notes = "Multiple PIDs: 0x0C00, 0x0C01, 0x0C02, 0x0C04, 0x0C05"
-
-[[devices]]
-pid = 0x0F12
-name = "Raptor 27 Inch Monitor"
+pid = 0x0F28
+name = "Raptor 27 (second PID)"
 type = "monitor"
 status = "researched"
-notes = "Multiple PIDs: 0x0F12, 0x0F28"
-
-[[devices]]
-pid = 0x0F21
-name = "Thunderbolt Dock"
-type = "other"
-status = "researched"
-
-[[devices]]
-pid = 0x0F08
-name = "Base Station Chroma"
-type = "other"
-status = "researched"
-
-[[devices]]
-pid = 0x0F22
-name = "Mouse Dock"
-type = "other"
-status = "researched"
-
-[[devices]]
-pid = 0x0F23
-name = "Mouse Dock Pro"
-type = "other"
-status = "researched"
-
-[[devices]]
-pid = 0x0F24
-name = "Mouse Bungee V3"
-type = "other"
-status = "researched"
-
-[[devices]]
-pid = 0x0F05
-name = "Tomahawk ATX Case"
-type = "case"
-status = "researched"
+notes = "Neither OpenRazer nor OpenRGB lists this PID, so its report format is unconfirmed. 0x0F12 is registered."
