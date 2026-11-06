@@ -68,7 +68,7 @@ transliterated.
 | E1.31 data packet | E1.31 | 5568 | 126 + n (n = 1-512 slots) | Once per universe per frame |
 | E1.31 universe synchronization | E1.31 | 5568 | 49 | After each frame's data packets, when `sync_universe` is set |
 | E1.31 data packet, `Stream_Terminated` | E1.31 | 5568 | 126 + n | Three per universe on disconnect |
-| ArtDmx | Art-Net 4 | 6454 | 18 + n (n even, 2-512) | Once per universe per frame |
+| ArtDmx | Art-Net 4 | 6454 (source and destination) | 18 + n (n even, 2-512) | Once per universe per frame |
 | DDP data packet | DDP | 4048 | 10 + n (n up to 1440) | One or more per frame |
 
 The driver emits no other packet types. In particular it never sends
@@ -98,10 +98,17 @@ no universes.
 on its unicast address" (E1.31-2018 section 9.1.1), and Art-Net 4 requires
 ArtDmx to be unicast. DDP data "should not" be broadcast unless every
 destination wants the same data. The driver therefore supports unicast
-alone and rejects multicast, unspecified, and IPv4 limited-broadcast hosts at
-validation and again at connect. E1.31 multicast (239.255.UH.UL) is a
-possible follow-up; it is excluded here because it reaches every receiver on
-the segment, WLED included.
+alone. Hosts are canonicalized first, so an IPv4-mapped IPv6 address such as
+`::ffff:239.1.2.3` is judged, compared, and sent as the IPv4 address it
+carries; a dual-stack socket would otherwise send it as IPv4 multicast.
+Validation then rejects unspecified addresses, every multicast range (IPv4
+224.0.0.0/4, IPv6 ff00::/8 including link-local multicast), the IPv4
+limited broadcast, and the IPv4 "this network" block 0.0.0.0/8, and connect
+repeats the check. A directed subnet broadcast cannot be recognized without
+the netmask, but no output socket enables `SO_BROADCAST`, so the kernel
+refuses it. E1.31 multicast (239.255.UH.UL) is a possible follow-up; it is
+excluded here because it reaches every receiver on the segment, WLED
+included.
 
 **Not implemented:**
 
@@ -203,12 +210,16 @@ immediately and ignore the property values.
 - **Source name:** the 64-byte field holds at most 63 bytes of UTF-8 plus a
   NUL. Validation rejects longer names, and the encoder truncates on a
   character boundary as a second line of defense.
-- **CID:** section 5.6 says equipment "should maintain the same CID for its
-  entire lifetime". The driver derives a UUID v5 from the device's config id
-  under a fixed Hypercolor namespace, so the CID survives restarts without
-  any persisted state. A device may pin an explicit `cid`. Two Hypercolor
-  hosts that drive the same receiver with the same device id would collide;
-  give one an explicit `cid`.
+- **CID:** section 5.6 requires a UUID per source and says equipment
+  "should maintain the same CID for its entire lifetime". The daemon already
+  persists an instance id (a UUID in its data directory, also used for its
+  mDNS identity) and exposes it to drivers as `DriverHost::installation_id`.
+  Discovery derives each device's CID as a UUID v5, under a fixed Hypercolor
+  namespace, of `<installation id>/<device id>`, and writes it into the
+  device's effective config. The CID is therefore stable across restarts,
+  and two installations that reuse a device id still get different CIDs. A
+  device may pin an explicit `cid`. A host without an installation id hashes
+  the device id alone.
 
 ---
 
@@ -250,6 +261,22 @@ universe.
 One counter per Port-Address, incremented "in the range 0x01 to 0xff". The
 driver wraps 255 back to 1 and never sends 0, which would disable receiver
 reordering.
+
+### 5.4 Source Port and Addressing
+
+Art-Net 4 says "Art-Net uses only one port of 0x1936" as both source and
+destination, so ArtDmx goes out from a socket bound to `0.0.0.0:6454`. The
+socket sets `SO_REUSEADDR`, plus `SO_REUSEPORT` on Unix, so it coexists
+with another Art-Net application on the host that sets them too. If the bind
+still fails, the driver logs one warning and sends ArtDmx from the shared
+ephemeral IPv4 socket, which some nodes ignore. The driver never reads from
+the 6454 socket. When another application shares the port with reuse
+flags, the kernel may deliver some unicast Art-Net traffic meant for it to
+this socket instead, where it is dropped; nodes that see two Art-Net
+senders on one host should be pointed at one of them.
+
+Art-Net 4 is an IPv4 protocol, so validation rejects IPv6 hosts for
+`artnet` devices (an IPv4-mapped address is accepted as its IPv4 form).
 
 ---
 
@@ -293,10 +320,19 @@ span into chunks of the largest whole-pixel multiple at or under 1440 bytes
 converts byte offsets to pixel indices and a chunk boundary inside a pixel
 would misalign the rest of the frame.
 
-Every packet in a frame shares one sequence number, which advances 1 through
-15 and wraps to 1. Only the final packet of the frame sets push, which tells
-the receiver "to display its data buffer immediately". Spans with explicit
-offsets (section 7.4) go out in segment order inside the same frame.
+The DDP specification says the sequence number "should be incremented with
+each new packet sent" and that "a receiver can ignore duplicates received
+back-to-back", so the driver gives every packet the next number, 1 through
+15, wrapping to 1 and never sending 0. Only the final packet of the frame
+sets push, which tells the receiver "to display its data buffer
+immediately". Spans with explicit offsets (section 7.4) go out in segment
+order inside the same frame.
+
+The WLED driver keeps one sequence number per frame, the framing it has
+always sent, through `build_ddp_frame`. WLED's receiver (`handleDDPPacket`
+in `wled00/e131.cpp`) only drops sequence numbers just behind the last one
+it recorded, so that framing passes there at any frame size, and WLED stays
+byte-identical.
 
 ---
 
@@ -434,10 +470,16 @@ driver sets that silence to 800 ms:
 - Art-Net 4 recommends an 800-1000 ms retransmit for idle inputs.
 - DDP defines no timeout; WLED's realtime timeout defaults to 2.5 s.
 
-Known deviation: section 6.6.2 also asks for three identical packets before
-suppression begins. The queue suppresses after one, so on a lossy link the
-last change of an animation can take up to one keep-alive interval to land.
-A follow-up can send the trailing copies from the driver.
+Section 6.6.2 also says "three packets containing the non-changing
+Property Values ... shall be sent before the initiation of transmission
+suppression." E1.31 devices declare that through the output cadence
+(`OutputCadence::with_min_identical_sends(3)`): the output queue lets an
+unchanged payload through until it has been delivered three times, then
+suppresses it. Each repeat waits for the previous copy to be delivered, so a
+coalesced or failed attempt never counts, and a changed payload restarts
+the count. Repeats ride the render loop's existing cadence; nothing is
+paced lower. Art-Net and DDP keep plain suppression, and every other backend
+keeps the default of one send.
 
 ### 9.3 Shutdown
 
@@ -494,13 +536,13 @@ start_universe = 4
 |---|---|---|---|
 | `id` | all | required | 1-64 of `A-Z a-z 0-9 - _`; unique ignoring case |
 | `name` | all | `id` | At most 128 characters |
-| `host` | all | required | IPv4 or IPv6 unicast; loopback and link-local allowed |
+| `host` | all | required | Unicast IPv4 or IPv6 (IPv4 only for `artnet`); IPv4-mapped forms count as IPv4; loopback and link-local allowed |
 | `protocol` | all | required | `e131` (alias `sacn`), `artnet` (alias `art-net`), `ddp` |
 | `port` | all | 5568, 6454, 4048 | 1024-65535 |
 | `color_order` | all | `rgb` | Section 8 |
 | `channels_per_pixel` | all | 3 or 4 | Color channels to 512 |
 | `pixel_count` | all | none | Single output; exclusive with `segments` |
-| `segments` | all | none | List of `{ name, pixel_count, start_universe, start_channel, ddp_offset }` |
+| `segments` | all | none | At most 256 of `{ name, pixel_count, start_universe, start_channel, ddp_offset }` |
 | `start_universe` | e131, artnet | 1 | E1.31 1-63999, Art-Net 0-32767 |
 | `start_channel` | e131, artnet | 1 | 1 to `channels_per_universe` |
 | `channels_per_universe` | e131, artnet | 510 or 512 | 1-512, at least `channels_per_pixel` |
@@ -508,12 +550,20 @@ start_universe = 4
 | `priority` | e131 | driver `priority` | 0-200 |
 | `source_name` | e131 | driver `source_name` | At most 63 bytes |
 | `sync_universe` | e131 | none | 1-63999 |
-| `cid` | e131 | UUID v5 of `id` | UUID string |
+| `cid` | e131 | UUID v5 of installation id and `id` | UUID string |
 | `max_fps` | all | 0 | 0-1000, 0 follows the render loop |
 
 Fields that do not apply to the device's protocol are rejected rather than
 ignored, so a `priority` on a DDP device or a `ddp_offset` on an E1.31 device
 fails validation with a message naming the field.
+
+A device may stream at most 4,194,304 channels (4 MiB per frame, about
+8,200 full universes or 1.39 million RGB pixels), which bounds the encode
+buffer and packet plan one config entry can request. Within that bound the
+protocol limits apply: the last addressed universe must stay inside the
+E1.31 or Art-Net range, and DDP spans inside the 32-bit offset space. Both
+limits are checked with the device's totals before any universe run or
+span is built.
 
 ### 10.3 Apply Behavior
 
@@ -582,13 +632,20 @@ the plan from that JSON and needs no config of its own.
 
 `PixelBackend` keeps adopted plans and connected sessions. A session holds
 the plan, a reusable channel stream buffer, and per-universe packets whose
-fixed headers are built once at connect. One IPv4 and one IPv6 socket are
-bound lazily on the unspecified address with an ephemeral port and shared by
-all devices of that family; neither enables `SO_BROADCAST`. Writes lock the
-device session, so frames to one device never interleave. `frame_sink`
-returns a cloneable lane over the same session, and
-`deliver_colors_shared_observed` reports transport start once the session is
-held.
+fixed headers are built once at connect. E1.31 and DDP share one IPv4 and
+one IPv6 socket, bound lazily on the unspecified address with an ephemeral
+port; Art-Net uses the 6454 socket from section 5.4. No socket enables
+`SO_BROADCAST`. Writes lock the device session, so frames to one device
+never interleave. `frame_sink` returns a cloneable lane over the same
+session, and `deliver_colors_shared_observed` reports transport start once
+the session is held.
+
+The core output queue keeps a device's frame sink after disconnect until it
+removes the queue, so the session carries a closed flag. Disconnect sets it
+while holding the session lock, then sends the shutdown frames. Every later
+write through the backend or a retained sink fails with `Disconnected`
+before any transport I/O, and the sink's `is_closed` reports it without
+blocking.
 
 ---
 
@@ -607,16 +664,33 @@ DDP headers, multi-span frames with one push, and whole-pixel chunking.
 splits at 510 and 512 channels, start channel zero-fill, segment jumps,
 overlap and range rejection, DDP spans and data types, protocol-specific
 field rejection, cross-device conflicts, and the TOML example from the user
-docs parsed through the same `[drivers]` table the daemon reads.
+docs parsed through the same `[drivers]` table the daemon reads. Bounds
+tests reject a `u32::MAX` pixel count in 3-channel universes, segments whose
+sum overflows `u32`, and a 4 GiB DDP device in well under a second, and a
+million-universe device on the universe check before any run exists.
+Address tests reject IPv4-mapped multicast, broadcast, and unspecified forms
+plus 0.0.0.0/8 and IPv6 multicast, resolve `::ffff:10.0.0.5` to IPv4, catch
+its universe conflict with `10.0.0.5`, and reject IPv6 Art-Net hosts.
+`driver_tests.rs` runs discovery through a host with an installation id and
+checks that derived CIDs are stable per installation, differ across
+installations, and yield to an explicit `cid`.
 
 **Loopback integration** (`backend_tests.rs`). The real backend is adopted
 from discovery output and streams to a loopback receiver: multi-universe
 E1.31 with per-universe sequences, sync packets with their own sequence,
 black frame plus three terminated packets per universe on disconnect, silence
 when nothing was sent, ArtDmx with Port-Address `0x0123` and zero-filled
-lower slots, DDP fragmentation with push on the last packet and segment
-offsets, black padding, frame sink delivery, and cadence (no cap plus 800 ms
-keep-alive, or a 25 ms interval at `max_fps = 40`).
+lower slots, ArtDmx sent from source port 6454 while E1.31 keeps an
+ephemeral port, DDP fragmentation with per-packet sequence numbers and push
+on the last packet, segment offsets, black padding, frame sink delivery, a
+retained sink rejected after disconnect with no transport start and no
+packet, and cadence (no cap plus 800 ms keep-alive, or a 25 ms interval at
+`max_fps = 40`, and three identical sends for E1.31 only).
+
+**Output queue** (`hypercolor-core/tests/backend_manager_tests.rs`). A
+backend that opts into three identical sends gets exactly three writes of an
+unchanged frame and three more after a change; the existing test that an
+opted-out backend sends an unchanged frame once still passes.
 
 **WLED regression.** The WLED suite passes unchanged after the extraction:
 93 tests across its two test files. The gate skips its two mDNS scanner
@@ -634,7 +708,7 @@ the files:
 |---|---|---|---|
 | E1.31 | stock ACN (`--enable-heuristic acn`, `acn.dmx_enable:TRUE`) | 12: data, sync, black, terminated | All decode (universe, sequence, sync universe 9, `Stream Terminated: True`); 0 malformed, 0 expert warnings |
 | Art-Net | stock Art-Net | 4 ArtDMX | All decode (Universe 3 and 4, Length 510 and 4, sequences 1-2); 0 malformed |
-| DDP | none in Wireshark (its `ddp` is AppleTalk) | 4 | Decoded by a 40-line Lua dissector written from the section 6.1 table; 0 malformed |
+| DDP | none in Wireshark (its `ddp` is AppleTalk) | 4 | Decoded by a 40-line Lua dissector written from the section 6.1 table (sequences 1-4, push on packets 2 and 4); 0 malformed |
 
 Each check has a negative control that does fire: an E1.31 packet with a
 corrupted root length, a truncated ArtDmx, and a DDP packet whose length

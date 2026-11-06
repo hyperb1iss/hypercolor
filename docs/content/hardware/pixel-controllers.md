@@ -115,7 +115,7 @@ Per-device settings under `[[drivers.pixel.devices]]`:
 |---|---|---|---|
 | `id` | all | required | Stable identity, 1-64 letters, digits, `-` or `_` |
 | `name` | all | the id | Display name |
-| `host` | all | required | Controller IP address (unicast) |
+| `host` | all | required | Controller IP address (unicast; IPv4 for Art-Net) |
 | `protocol` | all | required | `e131` (or `sacn`), `artnet`, `ddp` |
 | `port` | all | 5568, 6454, 4048 | UDP port |
 | `color_order` | all | `rgb` | `rgb`, `grb`, `bgr` and the other orders, or `rgbw`, `grbw` and the other white orders |
@@ -128,10 +128,10 @@ Per-device settings under `[[drivers.pixel.devices]]`:
 | `ddp_offset` | ddp | `0` | Byte offset of the first channel |
 | `priority`, `source_name` | e131 | driver values | Per-device E1.31 overrides |
 | `sync_universe` | e131 | none | Send an E1.31 sync packet after every frame so outputs latch together |
-| `cid` | e131 | derived from `id` | Fixed sender UUID |
+| `cid` | e131 | derived from this installation and `id` | Fixed sender UUID |
 | `max_fps` | all | follow the render loop | Cap this device's frame rate |
 
-Settings that do not apply to a device's protocol are rejected with a message naming the field, so a typo like a `priority` on a DDP device fails loudly instead of being ignored.
+Settings that do not apply to a device's protocol are rejected with a message naming the field, so a typo like a `priority` on a DDP device fails loudly instead of being ignored. One device can stream up to 4,194,304 channels (about 8,200 universes); split anything bigger into several devices.
 
 You can also read and edit the whole device list through the driver's control surface:
 
@@ -143,7 +143,7 @@ hypercolor drivers controls pixel
 
 | | E1.31 (sACN) | Art-Net 4 | DDP |
 |---|---|---|---|
-| UDP port | 5568 | 6454 | 4048 |
+| UDP port | 5568 | 6454 (also the source port) | 4048 |
 | Addressing | Universe 1-63999 | Port-Address 0-32767 (Net, Sub-Net, Universe) | 32-bit byte offset |
 | Pixels per packet | 170 RGB or 128 RGBW per universe | 170 RGB or 128 RGBW per universe | 480 RGB or 360 RGBW per packet |
 | Frame latch | Optional sync packet (`sync_universe`) | None | Push flag on the last packet |
@@ -153,7 +153,7 @@ By default 3-channel pixels use 510 channels per universe so no pixel straddles 
 
 ## Frame rate
 
-Each device follows the render loop, up to 60 fps. When nothing changes, Hypercolor resends the last frame every 800 ms so receivers do not time out (sACN receivers give up after 2.5 s).
+Each device follows the render loop, up to 60 fps. When nothing changes, Hypercolor resends the last frame every 800 ms so receivers do not time out (sACN receivers give up after 2.5 s). For sACN, a frame that stops changing still goes out three times at the render rate before the resends slow down, as the standard asks.
 
 Physical DMX512 tops out around 44 Hz for a full universe. Pixel controllers drive pixels, not DMX lines, and keep up at the full render rate. If a receiver re-emits real DMX512, set `max_fps = 44` on that device.
 

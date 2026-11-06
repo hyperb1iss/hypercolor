@@ -38,9 +38,11 @@ packets per universe.
 
 ## Devices and Protocol
 
-E1.31 on UDP 5568 (universes 1-63999, priority, source name, optional universe
-synchronization), Art-Net 4 ArtDmx on UDP 6454 (15-bit Port-Address), and DDP on UDP
-4048 (byte offsets, push on the final packet). Packet layouts, universe math, and
+E1.31 on UDP 5568 (universes 1-63999, priority, a per-installation CID, optional
+universe synchronization, three identical sends before suppression), Art-Net 4
+ArtDmx on UDP 6454 as both source and destination (15-bit Port-Address, IPv4 only),
+and DDP on UDP 4048 (byte offsets, per-packet sequence numbers, push on the final
+packet). Packet layouts, universe math, and
 references live in `docs/specs/87-pixel-protocols-driver.md`; setup is documented in
 `docs/content/hardware/pixel-controllers.md`.
 
