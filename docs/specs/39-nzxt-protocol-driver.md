@@ -971,18 +971,22 @@ state (out of scope).
 
 The device may interleave unrelated input reports with the topology reply: the Gen2 fan
 status packet `0x67 0x02` once fan polling is enabled (the Linux hwmon driver enables it),
-or the Kraken status packet `0x75 0x02`. Any report other than `0x21 0x03`, and an empty
-read (how hidapi reports a timeout), parses as `Busy`, which makes the backend resend the
-topology query after its retry backoff. A device that never answers ends init with an
-empty layout rather than an error. A `0x21 0x03` reply too short to hold the channel count
-at byte 14 is not retried: it fails init with a malformed-response error, because a
-truncated reply means the transport and the protocol disagree on the report size.
+or the Kraken status packet `0x75 0x02`. Any report other than `0x21 0x03` parses as
+`Unsolicited`: the USB backend reads the next report in its place without resending the
+query, so the reply already queued behind the status packets is the one consumed. The
+backend tolerates 16 unsolicited reports per command, then fails it. The topology reply is
+required: a read timeout (an empty read on hidapi, a timeout error on hidraw) fails init
+instead of leaving the device with no channels, as does a `0x21 0x03` reply too short to
+hold the channel count at byte 14, which means the transport and the protocol disagree on
+the report size. A failed init surfaces as a connect error, and the device lifecycle
+retries the connect.
 
 ### 6.7 Registration
 
-The `nzxt` driver module ships experimental: nobody on the team owns NZXT hardware, so every
-descriptor is unverified and the module stays off until a user enables it. The device
-database entries carry the same unverified marker.
+The `nzxt` driver module is enabled by default and claims its devices like any other HAL
+family. It carries the experimental label (Spec 89): nobody on the team owns NZXT
+hardware, so every descriptor is unverified. The label informs users; it gates nothing.
+The device database entries carry the same unverified marker.
 
 ### 6.8 Capability model
 
@@ -1178,6 +1182,7 @@ supplies the missing facts. Do not fill these from memory of other implementatio
 | Kraken Elite v2 external (§4.6.4)  | A commit packet for `26 14 02 02`. The documented apply carries `0x01` at byte 2 and `0x18` (24) at byte 7, both ring values, so it cannot be assumed to commit the external channel.                                                                                                  |
 | Gen2 firmware version (§4.3)       | Byte offsets of `fw_major`, `fw_minor`, `fw_patch` in the `11 01` response. Lighting does not depend on them, so Phase 1 never sends `10 01`.                                                                                                                                          |
 | Frame pacing (all families)        | No family documents a maximum frame rate or a minimum gap between reports. Phase 1 targets 30 FPS with no inter-report delay; revisit with hardware.                                                                                                                                   |
+| HID report numbering (all families) | Whether these devices declare numbered HID reports. Phase 1 sends byte 0 (`0x20`, `0x22`, `0x26`, `0x2A`) as the first byte of the report in report-ID-in-payload mode. On Linux hidraw that byte reaches the wire either way (usbhid strips only a leading `0x00`). The Windows and macOS HID APIs treat byte 0 as the report ID: if the device uses unnumbered reports they need a `0x00` prefix (and on Windows a buffer of the declared output report length, 65 bytes), and the packets as written would be rejected or misframed. Settled by the HID report descriptor: on Linux `/sys/class/hidraw/hidrawN/device/report_descriptor` or `usbhid-dump`, on Windows `HidP_GetCaps` (`OutputReportByteLength`) plus the descriptor's Report ID items (tag `0x85`). Until then, treat Windows and macOS as the less certain platforms. |
 
 ### 9.5 Phase 1 encoding readings
 
