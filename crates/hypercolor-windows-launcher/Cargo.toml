@@ -1,0 +1,46 @@
+[package]
+name = "hypercolor-windows-launcher"
+description = "The Windows programs outside Hypercolor's release units: the stable launcher and the update service's recovery bootstrap"
+# Only the signed builds an installer lays down have a legitimate use.
+publish = false
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+# Win32 FFI calls (job objects, service security, the failure dialog) and
+# the service dispatch entry point require unsafe. Every unsafe block must be
+# documented per the workspace pattern in hypercolor-windows-pawnio.
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[[bin]]
+name = "hypercolor-launcher"
+path = "src/bin/hypercolor-launcher.rs"
+
+[[bin]]
+name = "hypercolor-update-bootstrap"
+path = "src/bin/hypercolor-update-bootstrap.rs"
+
+[dependencies]
+hypercolor-install = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+hypercolor-platform-fs = { workspace = true }
+rand = { workspace = true }
+windows-service = "0.8.1"
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_JobObjects",
+  "Win32_System_Services",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
