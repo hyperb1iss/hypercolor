@@ -3,7 +3,8 @@
 //! One durable install journal drives every install, upgrade, rollback and
 //! recovery through [`InstallCoordinator`], on every platform. Platforms
 //! apply and prove each step: `LinuxInstallPlatform` drives a per-user
-//! systemd service, and the `macos` module a launchd agent. The `windows`
+//! systemd service, the `macos` module a launchd agent over a standalone
+//! tree, and the `macos_bundle` module a signed app bundle. The `windows`
 //! module holds the machine-wide store and release units a Windows
 //! platform transacts on. The raw `hypercolor __install-release` command is
 //! one host of this library; others (an update activator, a daemon that
