@@ -372,7 +372,7 @@ test.describe("REST API", () => {
       simulatorId = simulator.id;
 
       const simulators = await readEnvelope(await api.get("/api/v1/simulators/displays"));
-      expect(simulators.some((entry) => entry.id === simulatorId)).toBe(true);
+      expect(simulators.items.some((entry) => entry.id === simulatorId)).toBe(true);
 
       const updatedSimulator = await readEnvelope(
         await api.patch(`/api/v1/simulators/displays/${simulatorId}`, {
@@ -387,7 +387,7 @@ test.describe("REST API", () => {
       expect(updatedSimulator.name).toBe(updatedSimulatorName);
 
       const displays = await readEnvelope(await api.get("/api/v1/displays"));
-      expect(displays.some((display) => display.id === simulatorId)).toBe(true);
+      expect(displays.items.some((display) => display.id === simulatorId)).toBe(true);
 
       const devices = await readEnvelope(await api.get("/api/v1/devices"));
       expect(devices.items.some((device) => device.id === simulatorId)).toBe(true);

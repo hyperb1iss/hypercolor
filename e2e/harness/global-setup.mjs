@@ -205,7 +205,10 @@ async function seedPreviewSimulator(apiOrigin) {
 
   await waitForCondition(async () => {
     const displays = await readEnvelope(`${apiOrigin}/api/v1/displays`);
-    return Array.isArray(displays) && displays.some((display) => display.id === simulator.id);
+    return (
+      Array.isArray(displays?.items) &&
+      displays.items.some((display) => display.id === simulator.id)
+    );
   }, "seeded simulator to appear in displays");
 
   return simulator;

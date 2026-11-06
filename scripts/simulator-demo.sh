@@ -409,7 +409,7 @@ if [[ "$EPHEMERAL" == true ]]; then
 else
   existing_id="$(
     jq -r --arg name "$NAME" '
-      .data[]
+      .data.items[]
       | select(.name == $name)
       | .id
     ' <<<"$simulators_json" | head -n1
