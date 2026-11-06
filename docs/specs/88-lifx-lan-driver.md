@@ -618,12 +618,20 @@ take its cheapest one.
 
 The sender always works on the newest frame:
 
-1. A frame waiting for the budget before its first message is simply
-   replaced when a newer frame arrives.
-2. While a started frame's tail is being paced, the sender looks at the
-   slot before every message and whenever a newer frame arrives during a
-   wait. It switches to the newer frame when that frame costs fewer
-   messages than the tail still to send, and keeps going otherwise.
+1. Until some frame has sent a datagram since the last apply, a newer frame
+   simply replaces the waiting one.
+2. Once a frame sends its first datagram, the sender holds a commitment
+   bound: the messages left before the next apply. The bound shrinks as the
+   tail goes out, and a newer frame takes over only if it costs fewer
+   messages than the bound, which then shrinks to that frame's cost. The
+   bound clears only when a frame finishes. The sender checks the slot
+   before every message and whenever a newer frame arrives during a wait.
+
+Because a takeover must beat the bound and the bound never grows, the work
+left before the next apply never increases. A frame that took over but has
+not sent yet cannot be undone by an expensive frame arriving after it: with
+a cheap frame and an expensive frame alternating between transmission
+slots, the cheap one applies at the next slot.
 
 The cost rule keeps two properties at once. Old content never holds the
 light while something cheaper is waiting: a solid frame or an identify
@@ -653,6 +661,22 @@ started tail. The table is why it would stay correct if that changed.
 Direct writes (identify flashes, temporary direct control) go through the
 same slot, so they also replace a paced tail, and `write_colors` returns
 once its frame, or a newer one that replaced it, is on the wire.
+
+The sender keeps these invariants, each stated where it is enforced in
+`backend.rs`:
+
+| Invariant | How it holds |
+|---|---|
+| A handoff never claims transport | the sink acks a handoff as `Sent` (the outcome for a frame "handed to an async transport worker") with `transport_started` false; the sender reports transport start when the frame's first datagram goes out, and never for a frame replaced before that |
+| No success while a failure is unresolved | a failed datagram send records a failure that only a later successful send clears; until then every handoff acks as a transient failure, so the host cannot clear its retained failure early |
+| Every waiter wakes | a frame's sequence is derived from the slot inside the slot's write lock, so the slot's sequence only grows and `write_colors` waiting for "this frame or a newer one" always resolves |
+| Nothing leaves after disconnect | disconnect sets a closed flag under the slot's write lock (so no submission publishes afterwards), wakes the sender, and waits up to one second for it to exit before cancelling and awaiting it; retained sinks reject at once |
+
+The display age of an expensive frame is a device fact, not a driver
+choice: a legacy frame of 80 different zones is 80 messages, so at the
+20 messages per second guideline the light shows its content about 3.75 s
+after the first run left (the burst plus 75 paced intervals), and nothing
+the driver does can shorten that without exceeding the budget.
 
 ### 9.5 Reassertion
 
@@ -967,6 +991,10 @@ flag, so the failure is an error. A scan fails when:
 - more distinct serials answered than the candidate limit (section 4.4),
   so some were never probed.
 
+Two failure paths still log and continue rather than failing the scan: a
+receive error on the discovery socket during collection, and a probe task
+that panics. A probe that returns an error is handled as described below.
+
 An address family with no targets is skipped and is not a failure. When a
 scan fails, the host keeps every existing LIFX mapping and registers no
 devices from that scan; lights first seen in it are registered by the next
@@ -1041,7 +1069,7 @@ receiver can only make the check looser.
 | `lifx_topology_tests.rs` | segments for each class, chain positions with rotation, candle and uplight maps, messages per frame and cadence |
 | `lifx_encoder_tests.rs` | datagram plans: run merging and apply flags for legacy, 82-zone chunking, Set64 per tile, frame buffer path above 64 zones, single-buffer fallback; best and worst frame costs; the token bucket's burst, pacing, and window bound |
 | `lifx_scanner_tests.rs` | an in-repo fake LIFX responder on 127.0.0.1 answers discovery and probes for bulb, legacy strip, extended strip, tile chain, and 16 x 8 ceiling; several devices behind one port; every coverage gap (one failed unicast send, all broadcast sends failed, replies past the limit) is an error; lights that miss their probe are reported as unprobed; probes never exceed the concurrency limit |
-| `lifx_backend_tests.rs` | adopt, connect (power ack), write, brightness, cadence, refreshed info, worst-case frames paced message by message, a cheaper newer frame replacing a paced tail, equally costly frames all finishing, a direct write replacing a tail and returning once sent, against the fake responder |
+| `lifx_backend_tests.rs` | adopt, connect (power ack), write, brightness, cadence, refreshed info, worst-case frames paced message by message, a cheaper newer frame replacing a paced tail, equally costly frames all finishing, a direct write replacing a tail and returning once sent, handoffs that never claim transport and failures that stay reported until a later send succeeds, the commitment bound under alternating cheap and expensive frames, concurrent direct writes all settling, and disconnect stopping the sender before it returns, against the fake responder |
 | `hypercolor-driver-builtin` `lifx_output_queue_tests.rs` | the real host output queue (`BackendManager`) in front of the backend: newer frames replace a paced worst-case tail and the newest one is what the light shows, a uniform animation flows near the full message rate, and a worst-case stream finishes whole frames in order; every run is checked against the budget |
 | `lifx_driver_tests.rs` | descriptor, default-enabled module, config validation, driver and device control surfaces, probe target merging |
 | `lifx_emulator_tests.rs` | opt-in run against lifx-emulator bound to 127.0.0.1 (section 12.1) |

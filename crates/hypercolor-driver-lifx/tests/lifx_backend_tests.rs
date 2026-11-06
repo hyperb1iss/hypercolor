@@ -12,6 +12,7 @@ use hypercolor_driver_api::{
     DeviceDeliveryStatus, DiscoveredDevice,
 };
 use hypercolor_driver_lifx::LifxBackend;
+use hypercolor_driver_lifx::backend::FrameCommitment;
 use hypercolor_driver_lifx::color::{Hsbk, HsbkEncoder};
 use hypercolor_driver_lifx::config::LifxConfig;
 use hypercolor_driver_lifx::scanner::{LifxScanOptions, LifxScanner, discovered_device};
@@ -405,12 +406,17 @@ async fn frame_sink_reports_completed_deliveries() -> TestResult {
         .deliver_colors_shared_observed(id, Arc::new(vec![RED]), observer.clone())
         .await;
     assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(
-        observer.started.lock().expect("observer lock").as_slice(),
-        &[id]
+    assert!(
+        !ack.transport_started,
+        "the handoff itself is not transport"
     );
     let frames = fake.wait_for(102, 1).await;
     assert_eq!(frames.len(), 1);
+    assert_eq!(
+        observer.started.lock().expect("observer lock").as_slice(),
+        &[id],
+        "the sender reports transport start when the frame goes out"
+    );
     Ok(())
 }
 
@@ -443,5 +449,256 @@ async fn connect_fails_when_the_light_goes_away() -> TestResult {
     backend.adopt_device(&discovered)?;
     assert!(backend.connect(&discovered.info.id).await.is_err());
     assert!(backend.output_cadence(&discovered.info.id).is_none());
+    Ok(())
+}
+
+fn legacy_strip_fake() -> Vec<FakeDevice> {
+    vec![FakeDevice::new(
+        2,
+        31,
+        (2, 60),
+        FakeKind::LegacyStrip { zones: 16 },
+    )]
+}
+
+// Gap: a handoff must not report transport start, or success while a send
+// failure is unresolved.
+#[tokio::test(flavor = "current_thread")]
+async fn handoffs_never_report_success_over_an_unresolved_failure() -> TestResult {
+    let fake = FakeLifx::spawn(legacy_strip_fake()).await?;
+    let addr = fake.addr();
+    let (backend, device_id) = connect_legacy_strip(&fake).await?;
+    let sink = backend.frame_sink(&device_id).expect("frame sink");
+    let observer = Arc::new(RecordingObserver::default());
+
+    // Two frames handed over back to back: the first is replaced before it
+    // reaches the wire, so only the second ever reports transport start.
+    let first = sink
+        .deliver_colors_shared_observed(delivery(1), Arc::new(vec![RED; 16]), observer.clone())
+        .await;
+    let second = sink
+        .deliver_colors_shared_observed(delivery(2), Arc::new(vec![BLUE; 16]), observer.clone())
+        .await;
+    for ack in [&first, &second] {
+        assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+        assert!(!ack.transport_started, "a handoff is not transport");
+    }
+    fake.wait_for(501, 1).await;
+    assert_eq!(
+        observer.started.lock().expect("observer lock").as_slice(),
+        &[delivery(2)]
+    );
+
+    // With the light gone, the connected socket starts refusing sends.
+    drop(fake);
+    let mut sequence = 3;
+    let failed = loop {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let ack = sink
+            .deliver_colors_shared_observed(
+                delivery(sequence),
+                Arc::new(vec![RED; 16]),
+                observer.clone(),
+            )
+            .await;
+        sequence += 1;
+        if ack.status == DeviceDeliveryStatus::Failed {
+            break ack;
+        }
+        assert!(sequence < 40, "the refused send never surfaced");
+    };
+    assert!(failed.transient, "the session keeps running");
+
+    // No send has happened since, so the failure must still be reported.
+    let still = sink
+        .deliver_colors_shared_observed(
+            delivery(sequence),
+            Arc::new(vec![RED; 16]),
+            observer.clone(),
+        )
+        .await;
+    assert_eq!(
+        still.status,
+        DeviceDeliveryStatus::Failed,
+        "failures are sticky"
+    );
+
+    // The light comes back on the same port; a later successful send clears
+    // the failure and handoffs succeed again.
+    let fake = FakeLifx::spawn_on(addr, legacy_strip_fake()).await?;
+    let mut recovered = false;
+    for attempt in 0..40 {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let ack = sink
+            .deliver_colors_shared_observed(
+                delivery(sequence + 1 + attempt),
+                Arc::new(vec![BLUE; 16]),
+                observer.clone(),
+            )
+            .await;
+        if ack.status == DeviceDeliveryStatus::Completed {
+            recovered = true;
+            break;
+        }
+    }
+    assert!(recovered, "a successful send clears the failure");
+    assert!(!fake.wait_for(501, 1).await.is_empty());
+    Ok(())
+}
+
+// Gap: cheap and expensive frames alternating between transmission slots
+// must not keep every frame from reaching its final apply.
+#[test]
+fn commitment_survives_replacements_before_the_first_datagram() {
+    let mut commitment = FrameCommitment::default();
+    assert!(commitment.admits(80), "nothing started yet: newest wins");
+
+    // An 80-run frame starts and sends ten runs.
+    for remaining in (70..80).rev() {
+        commitment.sent(remaining);
+    }
+    assert_eq!(commitment.remaining(), Some(70));
+
+    // A solid frame beats the 80-run tail and becomes the commitment.
+    assert!(commitment.admits(1));
+    commitment.replaced(1);
+
+    // Expensive and cheap frames keep arriving before its first datagram.
+    for _ in 0..10 {
+        assert!(
+            !commitment.admits(80),
+            "an expensive frame may not undo the cheap commitment before it starts"
+        );
+        assert!(
+            !commitment.admits(1),
+            "an equally cheap frame waits for the committed one to apply"
+        );
+    }
+    assert_eq!(commitment.remaining(), Some(1), "the bound never grew");
+
+    commitment.sent(0);
+    commitment.finished();
+    assert!(
+        commitment.admits(80),
+        "after an apply the next frame starts fresh"
+    );
+}
+
+// On a current-thread runtime the sender only runs while the test sleeps,
+// so each step below lands where the schedule says: a solid frame while a
+// started frame waits for its next slot, then an expensive frame before the
+// solid one's first datagram.
+#[tokio::test(flavor = "current_thread")]
+async fn alternating_cheap_and_expensive_frames_still_apply() -> TestResult {
+    let fake = FakeLifx::spawn(legacy_strip_fake()).await?;
+    let (backend, device_id) = connect_legacy_strip(&fake).await?;
+    let sink = backend.frame_sink(&device_id).expect("frame sink");
+    let observer = Arc::new(RecordingObserver::default());
+
+    sink.deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
+        .await;
+    let mut sequence = 2;
+    for _ in 0..8 {
+        // Let the sender spend its burst or send at its slot, then park.
+        tokio::time::sleep(Duration::from_millis(55)).await;
+        sink.deliver_colors_shared_observed(
+            delivery(sequence),
+            Arc::new(vec![RED; 16]),
+            observer.clone(),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        sink.deliver_colors_shared_observed(
+            delivery(sequence + 1),
+            Arc::new(alternating(16)),
+            observer.clone(),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        sequence += 2;
+    }
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let applied = fake
+        .received_of_type(501)
+        .iter()
+        .filter(|run| run.payload[14] == 1)
+        .count();
+    assert!(applied >= 1, "no frame ever reached its final apply");
+    Ok(())
+}
+
+// Gap: concurrent submissions must leave the slot's sequence monotonic so
+// every waiter wakes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_direct_writes_all_settle() -> TestResult {
+    let fake = FakeLifx::spawn(vec![FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb)]).await?;
+    let config = LifxConfig {
+        max_messages_per_second: 200,
+        ..LifxConfig::default()
+    };
+    let discovered = discover(&fake, &config).await?.remove(0);
+    let device_id = discovered.info.id;
+    let backend = Arc::new(LifxBackend::new(config).with_request_policy(policy()));
+    backend.adopt_device(&discovered)?;
+    backend.connect(&device_id).await?;
+
+    let mut writers = tokio::task::JoinSet::new();
+    for writer in 0..32_u8 {
+        let backend = Arc::clone(&backend);
+        writers.spawn(async move {
+            for step in 0..8_u8 {
+                backend
+                    .write_colors(&device_id, &[[writer, step, 0]])
+                    .await
+                    .expect("write settles");
+            }
+        });
+    }
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while let Some(joined) = writers.join_next().await {
+            joined.expect("writer task");
+        }
+    })
+    .await
+    .map_err(|_| "a direct write never settled")?;
+    Ok(())
+}
+
+// Gap: once disconnect returns, nothing more leaves and retained sinks
+// reject at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_stops_the_sender_before_returning() -> TestResult {
+    let fake = FakeLifx::spawn(legacy_strip_fake()).await?;
+    let (backend, device_id) = connect_legacy_strip(&fake).await?;
+    let sink = backend.frame_sink(&device_id).expect("frame sink");
+    let observer = Arc::new(RecordingObserver::default());
+
+    // Keep a paced worst-case frame in flight, then disconnect mid-tail.
+    sink.deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
+        .await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    backend.disconnect(&device_id).await?;
+
+    assert!(sink.is_closed(), "retained sinks see a closed lane");
+    let rejected = sink
+        .deliver_colors_shared_observed(delivery(2), Arc::new(vec![RED; 16]), observer.clone())
+        .await;
+    assert_eq!(rejected.status, DeviceDeliveryStatus::Failed);
+    assert!(matches!(
+        rejected.error,
+        Some(DeviceError::Disconnected { .. })
+    ));
+
+    // Whatever was sent before disconnect returned has landed well within
+    // this pause; nothing may arrive after it.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let landed = fake.received_of_type(501).len();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        fake.received_of_type(501).len(),
+        landed,
+        "a datagram left after disconnect"
+    );
+    assert!(landed < 16, "the tail was cut off, {landed} runs sent");
     Ok(())
 }

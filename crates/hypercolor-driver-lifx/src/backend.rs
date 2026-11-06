@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
@@ -41,6 +41,7 @@ const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 const MIN_FRAME_SILENCE: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const POWER_ON_LEVEL: u16 = u16::MAX;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Device a discovery scan handed to this backend.
 #[derive(Debug, Clone)]
@@ -49,18 +50,38 @@ struct AdoptedDevice {
     serial: Serial,
 }
 
+/// Host delivery a frame carries, so the sender can report the moment its
+/// transport starts.
+type Delivery = (DeviceDeliveryId, Arc<dyn DeviceDeliveryObserver>);
+
 /// One frame waiting in a device's latest-frame slot.
-#[derive(Debug)]
 struct FrameRequest {
     sequence: u64,
     colors: Arc<Vec<[u8; 3]>>,
+    delivery: Option<Delivery>,
 }
 
 /// State the sender task and its callers share.
 #[derive(Debug, Default)]
 struct SenderShared {
     brightness: AtomicU8,
+    /// Last send failure. Invariant: set by a failed datagram send and
+    /// cleared only by a later successful one, so no submission reports
+    /// success while a failure is unresolved.
     failure: StdMutex<Option<String>>,
+    /// Invariant: set while holding the slot's write lock, and every
+    /// submission checks it under that lock, so nothing is published after
+    /// a disconnect closes the session.
+    closed: AtomicBool,
+}
+
+impl SenderShared {
+    fn failure(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// Connected device: immutable facts plus the handle to its sender task.
@@ -71,34 +92,46 @@ struct SessionHandle {
     shared: Arc<SenderShared>,
     frames: watch::Sender<Option<Arc<FrameRequest>>>,
     settled: watch::Receiver<u64>,
-    next_sequence: AtomicU64,
-    task: JoinHandle<()>,
+    task: StdMutex<Option<JoinHandle<()>>>,
 }
 
 impl SessionHandle {
     fn is_closed(&self) -> bool {
-        self.task.is_finished()
+        self.shared.closed.load(Ordering::Acquire)
     }
 
     /// Hand a frame to the sender, replacing any frame not yet started.
-    fn submit(&self, device_id: DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<u64, DeviceError> {
-        if self.is_closed() {
-            return Err(DeviceError::Disconnected {
-                device: device_id.to_string(),
-            });
-        }
-        if let Some(failure) = self
-            .shared
-            .failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
+    ///
+    /// The sequence is derived from the slot inside its write lock, so the
+    /// slot's sequence only grows and every `settle` eventually wakes. The
+    /// frame is published even while a send failure is unresolved (so the
+    /// sender can retry and clear it), but the failure is returned.
+    fn submit(
+        &self,
+        device_id: DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+        delivery: Option<Delivery>,
+    ) -> Result<u64, DeviceError> {
+        let mut published = None;
+        self.frames.send_if_modified(|slot| {
+            if self.shared.closed.load(Ordering::Acquire) {
+                return false;
+            }
+            let sequence = slot.as_ref().map_or(0, |frame| frame.sequence) + 1;
+            *slot = Some(Arc::new(FrameRequest {
+                sequence,
+                colors,
+                delivery,
+            }));
+            published = Some(sequence);
+            true
+        });
+        let sequence = published.ok_or_else(|| DeviceError::Disconnected {
+            device: device_id.to_string(),
+        })?;
+        if let Some(failure) = self.shared.failure() {
             return Err(DeviceError::write(device_id, failure));
         }
-        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed) + 1;
-        self.frames
-            .send_replace(Some(Arc::new(FrameRequest { sequence, colors })));
         Ok(sequence)
     }
 
@@ -112,22 +145,95 @@ impl SessionHandle {
             .map_err(|_| DeviceError::Disconnected {
                 device: device_id.to_string(),
             })?;
-        if let Some(failure) = self
-            .shared
-            .failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
+        if let Some(failure) = self.shared.failure() {
             return Err(DeviceError::write(device_id, failure));
         }
         Ok(())
+    }
+
+    /// Close the session and wait for the sender to stop.
+    ///
+    /// Invariant: once this returns, the sender task has exited (or was
+    /// cancelled and awaited), so no datagram leaves afterwards, and every
+    /// retained sink rejects submissions.
+    async fn shutdown(&self) {
+        self.frames
+            .send_modify(|_| self.shared.closed.store(true, Ordering::Release));
+        let task = self
+            .task
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(mut task) = task
+            && tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut task)
+                .await
+                .is_err()
+        {
+            task.abort();
+            let _ = task.await;
+        }
     }
 }
 
 impl Drop for SessionHandle {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self
+            .task
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            task.abort();
+        }
+    }
+}
+
+/// Remaining messages until the next frame applies, which gates when a
+/// newer frame may replace the current one (Spec 88 §9.4).
+///
+/// Invariant: the bound never grows while a commitment exists. It starts
+/// when a frame sends its first datagram, shrinks as that frame's tail goes
+/// out and whenever a cheaper frame replaces it, and clears only when a
+/// frame finishes. A replacement must cost less than the bound, so the work
+/// left before the next apply never increases and frames always finish.
+/// Before anything has been sent there is no commitment, and the newest
+/// frame simply replaces an unstarted one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameCommitment {
+    remaining: Option<usize>,
+}
+
+impl FrameCommitment {
+    /// Whether a newer frame costing `cost` messages may take over.
+    #[must_use]
+    pub fn admits(&self, cost: usize) -> bool {
+        self.remaining.is_none_or(|remaining| cost < remaining)
+    }
+
+    /// A newer frame costing `cost` messages took over.
+    pub fn replaced(&mut self, cost: usize) {
+        if let Some(remaining) = self.remaining.as_mut() {
+            *remaining = (*remaining).min(cost);
+        }
+    }
+
+    /// A datagram went out and the current frame has `remaining` left.
+    pub fn sent(&mut self, remaining: usize) {
+        self.remaining = Some(
+            self.remaining
+                .map_or(remaining, |bound| bound.min(remaining)),
+        );
+    }
+
+    /// The current frame finished; the next frame starts unconstrained.
+    pub fn finished(&mut self) {
+        self.remaining = None;
+    }
+
+    /// Messages left before the next apply, if a frame has started.
+    #[must_use]
+    pub const fn remaining(&self) -> Option<usize> {
+        self.remaining
     }
 }
 
@@ -152,6 +258,9 @@ impl DeviceSender {
     async fn run(mut self, mut frames: watch::Receiver<Option<Arc<FrameRequest>>>) {
         let mut last_settled = 0_u64;
         loop {
+            if self.shared.closed.load(Ordering::Acquire) {
+                return;
+            }
             let latest = frames.borrow_and_update().clone();
             if let Some(request) = latest
                 && request.sequence > last_settled
@@ -222,12 +331,26 @@ impl DeviceSender {
     }
 
     fn record_failure(&self, failure: String) {
-        warn!(device_id = %self.device_id, error = %failure, "LIFX output failed");
-        *self
+        let mut slot = self
             .shared
             .failure
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+            .unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            warn!(device_id = %self.device_id, error = %failure, "LIFX output failed");
+        }
+        *slot = Some(failure);
+    }
+
+    fn record_success(&self) {
+        let mut slot = self
+            .shared
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if slot.take().is_some() {
+            info!(device_id = %self.device_id, "LIFX output recovered");
+        }
     }
 
     /// Send the newest frame to completion. Returns the sequence of the
@@ -244,24 +367,30 @@ impl DeviceSender {
         self.activate();
         let mut sent = 0_usize;
         let mut considered = current.sequence;
+        let mut commitment = FrameCommitment::default();
 
         loop {
+            if self.shared.closed.load(Ordering::Acquire) {
+                return None;
+            }
             let total = self.active.datagram_count();
             if sent >= total {
                 return Some(current.sequence);
             }
 
-            // A newer frame replaces the tail only when it finishes sooner
-            // than the tail would: it repaints every zone and carries the
-            // final apply, so nothing the tail would have shown is lost.
+            // A newer frame takes over only within the commitment bound: it
+            // repaints every zone and carries its own apply, so nothing the
+            // replaced frame would have shown is lost, and the work left
+            // before the next apply never grows.
             let newest = frames.borrow_and_update().clone();
             if let Some(newer) = newest
                 && newer.sequence > considered
             {
                 considered = newer.sequence;
                 if let Some(cost) = self.prepare(&newer)
-                    && (sent == 0 || cost < total - sent)
+                    && commitment.admits(cost)
                 {
+                    commitment.replaced(cost);
                     self.activate();
                     current = newer;
                     sent = 0;
@@ -285,12 +414,19 @@ impl DeviceSender {
             let Some(datagram) = self.active.datagram(sent) else {
                 return Some(current.sequence);
             };
+            if sent == 0
+                && let Some((id, observer)) = &current.delivery
+            {
+                observer.transport_started(*id);
+            }
             if let Err(error) = self.socket.send(datagram).await {
                 self.record_failure(format!("LIFX datagram send failed: {error}"));
                 return Some(current.sequence);
             }
+            self.record_success();
             self.budget.record(Instant::now());
             sent += 1;
+            commitment.sent(total - sent);
         }
     }
 }
@@ -382,6 +518,7 @@ impl LifxBackend {
         let shared = Arc::new(SenderShared {
             brightness: AtomicU8::new(u8::MAX),
             failure: StdMutex::new(None),
+            closed: AtomicBool::new(false),
         });
         let (frames, frames_rx) = watch::channel(None);
         let (settled_tx, settled) = watch::channel(0);
@@ -413,8 +550,7 @@ impl LifxBackend {
             shared,
             frames,
             settled,
-            next_sequence: AtomicU64::new(0),
-            task,
+            task: StdMutex::new(Some(task)),
         })
     }
 }
@@ -431,9 +567,18 @@ impl DeviceFrameSink for LifxFrameSink {
     }
 
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        self.handle.submit(self.device_id, colors).map(|_| ())
+        self.handle.submit(self.device_id, colors, None).map(|_| ())
     }
 
+    /// Acknowledge the handoff to the device sender.
+    ///
+    /// `Sent` covers a frame "handed to an async transport worker", so a
+    /// successful handoff acks as completed, but with `transport_started`
+    /// false: the sender reports transport start itself when the frame's
+    /// first datagram goes out, and never for a frame replaced before that.
+    /// Invariant: while a send failure is unresolved, the handoff acks as a
+    /// transient failure instead, so the host cannot clear a retained
+    /// failure until a later datagram send has succeeded.
     async fn deliver_colors_shared_observed(
         &self,
         id: DeviceDeliveryId,
@@ -442,13 +587,25 @@ impl DeviceFrameSink for LifxFrameSink {
     ) -> DeviceDeliveryAck {
         let payload_bytes = colors.len().saturating_mul(3);
         let started_at = Instant::now();
-        let result = self.handle.submit(self.device_id, colors).map(|_| {
-            // The frame is handed to the device's sender, which owns the
-            // transport from here (DeviceWriteOutcome::Sent).
-            observer.transport_started(id);
-            DeviceWriteOutcome::Sent
-        });
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
+        match self
+            .handle
+            .submit(self.device_id, colors, Some((id, observer)))
+        {
+            Ok(_) => {
+                let mut ack = DeviceDeliveryAck::from_write_result(
+                    id,
+                    payload_bytes,
+                    started_at.elapsed(),
+                    Ok(DeviceWriteOutcome::Sent),
+                );
+                ack.transport_started = false;
+                ack
+            }
+            Err(error @ DeviceError::Disconnected { .. }) => DeviceDeliveryAck::rejected(id, error),
+            Err(error) => {
+                DeviceDeliveryAck::failed_transient(id, false, started_at.elapsed(), error)
+            }
+        }
     }
 }
 
@@ -538,8 +695,7 @@ impl DeviceBackend for LifxBackend {
             .remove(id);
         match removed {
             Some(handle) => {
-                // Sinks the host still holds see a closed lane from here on.
-                handle.task.abort();
+                handle.shutdown().await;
                 info!(device_id = %id, serial = %handle.profile.serial, "Disconnected from LIFX device");
                 Ok(())
             }
@@ -551,7 +707,7 @@ impl DeviceBackend for LifxBackend {
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let handle = self.connected(id)?;
-        let sequence = handle.submit(*id, Arc::new(colors.to_vec()))?;
+        let sequence = handle.submit(*id, Arc::new(colors.to_vec()), None)?;
         handle.settle(*id, sequence).await
     }
 

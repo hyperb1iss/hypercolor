@@ -101,7 +101,13 @@ pub struct FakeLifx {
 
 impl FakeLifx {
     pub async fn spawn(devices: Vec<FakeDevice>) -> TestResult<Self> {
-        let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+        Self::spawn_on(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), devices).await
+    }
+
+    /// Bind a specific loopback address, for example to come back on the
+    /// port of a fake that was dropped.
+    pub async fn spawn_on(bind: SocketAddr, devices: Vec<FakeDevice>) -> TestResult<Self> {
+        let socket = UdpSocket::bind(bind).await?;
         let addr = socket.local_addr()?;
         let received = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&received);
