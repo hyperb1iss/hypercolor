@@ -577,23 +577,53 @@ as an explicit user control, and never changes the render loop's own rate.
 |---|---|---|
 | Single zone | 1 | 20 |
 | Extended multizone, N zones | ceil(N / 82) | 20 for N <= 82 |
-| Legacy multizone, N zones | worst case N (identical runs merge) | 20 / N worst case |
+| Legacy multizone, N zones | one per run of equal adjacent colors, 1 to N | 20 for a solid frame; a frame of N different zones takes N / 20 s |
 | Matrix, per tile <= 64 zones | 1 per tile | 20 / tiles (5-tile chain: 4) |
 | Matrix, tile > 64 zones with spare buffer | ceil(H / (64 / W)) + 1 | 16 x 8 Ceiling: 3 messages, 6.6 |
 
-### 9.3 Coalescing, never queueing
+### 9.3 A budget charged per message
 
-The host already runs one latest-value output queue per device (Spec 51
-section 16): while a device waits for its cadence slot, newer frames replace
-older ones and only the newest is sent. The driver reports an output cadence
-whose minimum interval is `messages_per_frame / max_messages_per_second`,
-computed from the worst case at connect. Inside the device session a second
-guard (a virtual-schedule pacer) tracks when the budget next allows a full
-frame and sleeps until then if a write ever arrives early, so direct writes
-outside the queue cannot exceed the budget either. Frames are never buffered
-behind each other.
+The budget is charged per datagram as it is sent, whichever frame it belongs
+to. It is a token bucket in its virtual-scheduling form (GCRA): each message
+moves a theoretical arrival time forward by one message interval
+(1 / `max_messages_per_second`), and a message may leave once that time,
+less a burst tolerance of four intervals, has arrived. Up to five messages
+can therefore leave back to back (one full frame of a five-tile chain, so
+all tiles change together); after that every message waits its interval. In
+any window of length L at most `5 + L × max_messages_per_second` messages
+leave, and the long-run rate is the budget. With a budget below five
+messages per second the burst shrinks to the budget.
 
-### 9.4 Reassertion
+A frame costs what its own messages cost. A solid legacy strip frame is one
+message and runs at the full 20 per second; a frame of 80 different zones is
+80 messages and takes about 3.8 s, and nothing else goes out meanwhile.
+
+### 9.4 Coalescing, never queueing
+
+The host runs one latest-value output queue per device (Spec 51 section 16):
+while a device waits for its cadence slot, newer frames replace older ones
+and only the newest is offered. The driver reports a cadence whose minimum
+interval is the cheapest frame's cost (one message interval for bulbs and
+legacy strips, `tiles` intervals for a chain), so the host never offers
+frames faster than the device can take its cheapest one.
+
+Waiting for the budget only ever happens where the frame is still
+replaceable:
+
+1. When the host offers a frame and the budget has no room for its first
+   message, the sink declines it at once with `SuppressedCadence`. Nothing is
+   encoded or sent, the frame stays in the host's slot (where a newer frame
+   can replace it), and the host offers the newest frame again after one
+   cadence interval.
+2. Once a frame's first message leaves, its remaining messages are paced by
+   the budget inside the same delivery. The frame is committed at that point
+   (its earlier zones are already on the wire), and frames pushed meanwhile
+   keep replacing each other in the host's slot; only the newest follows.
+
+Direct writes outside the queue (identify flashes, temporary direct control)
+have no slot behind them, so they wait for the budget instead of declining.
+
+### 9.5 Reassertion
 
 UDP output carries no acknowledgement, so a dropped packet would leave a
 static scene wrong forever. The cadence asks the host to resend the cached
@@ -601,7 +631,7 @@ frame after one second of silence (or two frame intervals, whichever is
 longer), which also repaints a light that was power cycled or changed from
 another app.
 
-### 9.5 Transition
+### 9.6 Transition
 
 `duration` on every color message comes from `transition_ms` (default 0, an
 immediate change). A transition near the frame interval lets the light
@@ -828,7 +858,8 @@ widen kelvin are not tracked, since the base range is always accepted):
 | `src/encoder.rs` | frame to datagram plans per class (section 5) |
 | `src/transport.rs` | UDP request and reply client with retries |
 | `src/scanner.rs` | discovery and device probing |
-| `src/backend.rs` | `LifxBackend`, device sessions, frame sink, pacer |
+| `src/backend.rs` | `LifxBackend`, device sessions, frame sink |
+| `src/pacer.rs` | the per-device message budget (section 9.3) |
 
 Dependencies: `hypercolor-driver-api`, `hypercolor-driver-support`,
 `hypercolor-color`, `hypercolor-types`, `tokio`, `serde`, `serde_json`,
@@ -901,10 +932,12 @@ serial as a MAC address.
 - **Connect** re-probes the device at its adopted address (topology may have
   changed since discovery), sends SetLightPower on with an acknowledgement,
   and builds the session: a UDP socket, header template, output plan, and
-  pacer. Connect timeout is 8 seconds.
-- **Write** converts the frame to HSBK, pads or truncates to the device's LED
-  count (warning at most once a minute), encodes the plan's datagrams into a
-  reused buffer, waits on the pacer if needed, and sends.
+  message budget. Connect timeout is 8 seconds.
+- **Write** declines the frame when the budget has no room for its first
+  message (section 9.4); otherwise it converts the frame to HSBK, pads or
+  truncates to the device's LED count (warning at most once a minute),
+  encodes the plan's datagrams into a reused buffer, and sends them, each
+  one charged to the budget and paced by it.
 - **Brightness** scales HSBK brightness (section 8).
 - **Disconnect** drops the session.
 - `connected_device_info` returns the topology read at connect.
@@ -979,6 +1012,7 @@ CopyFrameBuffer arrives.
 | Nobody has run the driver on real LIFX hardware | ships experimental and off by default |
 | The 20 messages per second figure comes from 2016-era documentation | exposed as `max_messages_per_second`; revisit after hardware tests |
 | Tile chain frame rate is 4 FPS at the default budget | a direct consequence of one Set64 per tile; users who accept the risk can raise the budget |
+| A five-message burst may be more than some firmware likes | the burst is one Tile chain frame, the pattern LIFX's own clients send; the long-run rate stays at the budget |
 | Saturation in linear light may look more saturated than the LIFX app for pastels | intentional (LEDs reward saturation); revisit with hardware |
 | `user_y` direction is not stated in the documentation | taken as growing upward; users can rotate the zone in the layout editor |
 | The frame-buffer sequence for matrices above 64 zones is an inference | Set64 to fb 1 then CopyFrameBuffer verified against the emulator by read-back; needs a real 26 inch Ceiling |

@@ -363,10 +363,11 @@ async fn probe_multizone(
     Ok(LifxTopology::Multizone { zones, extended })
 }
 
-/// Target frames per second for a profile under a message budget.
+/// Frames per second a profile reaches under a message budget when every
+/// frame is as cheap as its device class allows.
 #[must_use]
 pub fn max_fps_for(topology: &LifxTopology, max_messages_per_second: u16) -> u32 {
-    let messages = OutputPlan::from_topology(topology).worst_case_messages();
+    let messages = OutputPlan::from_topology(topology).best_case_messages();
     (u32::from(max_messages_per_second) / messages).max(1)
 }
 

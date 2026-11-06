@@ -17,9 +17,12 @@ use hypercolor_driver_lifx::config::LifxConfig;
 use hypercolor_driver_lifx::scanner::{LifxScanOptions, LifxScanner, discovered_device};
 use hypercolor_driver_lifx::transport::RequestPolicy;
 use hypercolor_types::device::DeviceError;
-use support::{FakeDevice, FakeKind, FakeLifx, FakeTile, Received, TestResult};
+use support::{
+    FakeDevice, FakeKind, FakeLifx, FakeTile, Received, TestResult, assert_within_budget,
+};
 
 const RED: [u8; 3] = [255, 0, 0];
+const BLUE: [u8; 3] = [0, 0, 255];
 
 fn policy() -> RequestPolicy {
     RequestPolicy {
@@ -145,18 +148,129 @@ async fn tile_chains_stream_one_set64_per_tile_at_the_budgeted_cadence() -> Test
     assert_eq!(cadence.min_interval(), Some(Duration::from_millis(100)));
     assert_eq!(cadence.target_fps(), 10);
 
+    // Three frames are six messages: the first five fit the burst and the
+    // sixth waits one message interval.
     let started = Instant::now();
-    backend.write_colors(&device_id, &[RED; 128]).await?;
-    backend.write_colors(&device_id, &[RED; 128]).await?;
+    for _ in 0..3 {
+        backend.write_colors(&device_id, &[RED; 128]).await?;
+    }
     assert!(
-        started.elapsed() >= Duration::from_millis(90),
-        "the pacer holds a back-to-back frame to the message budget"
+        started.elapsed() >= Duration::from_millis(45),
+        "the budget holds the sixth message back"
     );
 
-    let frames = fake.wait_for(715, 4).await;
-    assert_eq!(frames.len(), 4);
+    let frames = fake.wait_for(715, 6).await;
+    assert_eq!(frames.len(), 6);
     let tiles: Vec<u8> = frames.iter().map(|frame| frame.payload[0]).collect();
-    assert_eq!(tiles, vec![0, 1, 0, 1]);
+    assert_eq!(tiles, vec![0, 1, 0, 1, 0, 1]);
+    assert_within_budget(
+        &frames,
+        5,
+        Duration::from_millis(50),
+        Duration::from_millis(25),
+    );
+    Ok(())
+}
+
+fn alternating(zones: usize) -> Vec<[u8; 3]> {
+    (0..zones)
+        .map(|zone| if zone % 2 == 0 { RED } else { BLUE })
+        .collect()
+}
+
+async fn connect_legacy_strip(
+    fake: &FakeLifx,
+) -> TestResult<(LifxBackend, hypercolor_types::device::DeviceId)> {
+    let config = LifxConfig::default();
+    let discovered = discover(fake, &config).await?.remove(0);
+    let device_id = discovered.info.id;
+    let backend = LifxBackend::new(config).with_request_policy(policy());
+    backend.adopt_device(&discovered)?;
+    backend.connect(&device_id).await?;
+    Ok((backend, device_id))
+}
+
+#[tokio::test]
+async fn worst_case_legacy_frames_are_paced_message_by_message() -> TestResult {
+    let fake = FakeLifx::spawn(vec![FakeDevice::new(
+        2,
+        31,
+        (2, 60),
+        FakeKind::LegacyStrip { zones: 16 },
+    )])
+    .await?;
+    let (backend, device_id) = connect_legacy_strip(&fake).await?;
+
+    let cadence = backend.output_cadence(&device_id).expect("cadence");
+    assert_eq!(
+        cadence.min_interval(),
+        Some(Duration::from_millis(50)),
+        "the host offers frames at the cheapest frame's cost"
+    );
+    assert_eq!(backend.target_fps(&device_id), Some(20));
+
+    let started = Instant::now();
+    backend.write_colors(&device_id, &alternating(16)).await?;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(540),
+        "16 runs cost 11 paced intervals after the burst, took {elapsed:?}"
+    );
+
+    let runs = fake.wait_for(501, 16).await;
+    assert_eq!(runs.len(), 16);
+    assert!(runs[..15].iter().all(|run| run.payload[14] == 0));
+    assert_eq!(runs[15].payload[14], 1, "only the last run applies");
+    assert_within_budget(
+        &runs,
+        5,
+        Duration::from_millis(50),
+        Duration::from_millis(25),
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn sink_declines_a_frame_while_the_budget_is_spent() -> TestResult {
+    let fake = FakeLifx::spawn(vec![FakeDevice::new(
+        2,
+        31,
+        (2, 60),
+        FakeKind::LegacyStrip { zones: 16 },
+    )])
+    .await?;
+    let (backend, device_id) = connect_legacy_strip(&fake).await?;
+    let sink = backend.frame_sink(&device_id).expect("frame sink");
+    let observer = Arc::new(RecordingObserver::default());
+    let id = |sequence| DeviceDeliveryId {
+        queue_generation: 1,
+        sequence,
+    };
+
+    let first = sink
+        .deliver_colors_shared_observed(id(1), Arc::new(alternating(16)), observer.clone())
+        .await;
+    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+
+    let declined = sink
+        .deliver_colors_shared_observed(id(2), Arc::new(vec![RED; 16]), observer.clone())
+        .await;
+    assert_eq!(declined.status, DeviceDeliveryStatus::SuppressedCadence);
+    assert!(!declined.transport_started);
+
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let accepted = sink
+        .deliver_colors_shared_observed(id(3), Arc::new(vec![RED; 16]), observer.clone())
+        .await;
+    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(
+        observer.started.lock().expect("observer lock").as_slice(),
+        &[id(1), id(3)],
+        "a declined frame never starts transport"
+    );
+    let runs = fake.wait_for(501, 17).await;
+    assert_eq!(runs.len(), 17);
+    assert_eq!((runs[16].payload[0], runs[16].payload[1]), (0, 15));
     Ok(())
 }
 

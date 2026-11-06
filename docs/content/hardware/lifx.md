@@ -85,11 +85,12 @@ hypercolor devices action <device-id> refresh_topology --yes
 
 ## Frame rate and the message budget
 
-LIFX recommends sending a light no more than **20 messages per second**. Hypercolor keeps
-every light inside that budget and always sends the newest frame, dropping frames in
-between rather than queueing them, so a light never lags behind the effect. The render
-loop itself keeps running at full rate; only the light's own update rate depends on how
-many messages one frame needs:
+LIFX recommends sending a light no more than **20 messages per second**. Hypercolor counts
+every message it sends a light against that budget, lets at most five go out back to back
+(one frame of a five-tile chain), and spaces the rest. It always sends the newest frame:
+frames that arrive while a light is busy replace each other instead of queueing, so a light
+never lags behind the effect. The render loop itself keeps running at full rate; only the
+light's own update rate depends on how many messages each frame needs:
 
 | Device | Messages per frame | Updates per second |
 |---|---|---|
@@ -98,10 +99,10 @@ many messages one frame needs:
 | Tile chain of 5 | 5 | 4 |
 | Candle, Ceiling, Tube | 1 | 20 |
 | Ceiling 13x26 (128 zones) | 2 to 3 | 6 to 10 |
-| Older multizone, N zones | up to N | 20 / N at worst |
+| Older multizone, N zones | one per run of equal colors | 20 for solid colors; a frame with N different zones takes N / 20 seconds |
 
-The **Max FPS** value in a device's diagnostics panel shows the rate Hypercolor uses for
-it. If you accept the risk of exceeding LIFX's recommendation, you can raise
+The **Max FPS** value in a device's diagnostics panel shows the rate for the device's
+cheapest frame. If you accept the risk of exceeding LIFX's recommendation, you can raise
 `max_messages_per_second`. Setting a short `transition_ms` (close to the frame interval)
 lets the light fade between frames, which smooths slow updates at the cost of that much
 latency.

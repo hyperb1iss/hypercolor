@@ -115,6 +115,16 @@ impl OutputPlan {
         };
         u32::try_from(messages.max(1)).unwrap_or(u32::MAX)
     }
+
+    /// Datagrams the cheapest frame needs, never below one. Only legacy
+    /// strips vary: a frame costs one message per run of equal colors.
+    #[must_use]
+    pub fn best_case_messages(&self) -> u32 {
+        match self {
+            Self::Legacy { .. } => 1,
+            _ => self.worst_case_messages(),
+        }
+    }
 }
 
 /// Header fields shared by every datagram of a device stream.

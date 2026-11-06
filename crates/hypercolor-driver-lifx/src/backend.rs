@@ -1,5 +1,13 @@
-//! LIFX output backend: device sessions, frame sink, and pacing
-//! (Spec 88 §9 and §11.5).
+//! LIFX output backend: device sessions, frame sink, and the per-device
+//! message budget (Spec 88 §9 and §11.5).
+//!
+//! Every datagram is charged against the budget as it is sent. A frame from
+//! the host's latest-value queue only starts when the budget has room for
+//! its first message; otherwise the sink declines it at once, the frame
+//! stays replaceable in the host queue, and the host offers the newest frame
+//! again after one message interval. Once a frame starts, its remaining
+//! datagrams are paced by the budget, so a frame costs exactly as long as
+//! its message count requires.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -20,7 +28,7 @@ use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use crate::color::{HsbkEncoder, clamp_kelvin};
 use crate::config::LifxConfig;
 use crate::encoder::{FrameEncoder, OutputPlan, StreamAddress};
-use crate::pacer::{MessagePacer, frame_interval};
+use crate::pacer::{MessageBudget, frame_interval};
 use crate::protocol::{Message, Serial};
 use crate::scanner::{max_fps_for, probe_device, profile_metadata, route_from_metadata};
 use crate::topology::{LIFX_DRIVER_ID, LifxDeviceProfile};
@@ -53,8 +61,19 @@ struct LifxSession {
     converter: HsbkEncoder,
     address: StreamAddress,
     duration_ms: u32,
-    pacer: MessagePacer,
+    budget: MessageBudget,
     last_size_mismatch_warn_at: Option<Instant>,
+}
+
+/// What a write does when the budget has no room for its first message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BudgetPolicy {
+    /// Decline with [`DeviceWriteOutcome::SuppressedCadence`] so the frame
+    /// stays in the host's latest-value slot, where a newer one can replace
+    /// it before the host offers it again.
+    DeclineWhenSpent,
+    /// Wait for room. Used for direct writes, which have no queue behind them.
+    Wait,
 }
 
 /// LIFX backend implementing [`DeviceBackend`].
@@ -126,8 +145,12 @@ impl LifxBackend {
             .with_context(|| format!("failed to connect LIFX socket to {}", route.addr))?;
 
         let plan = OutputPlan::from_topology(&profile.topology);
-        let messages = plan.worst_case_messages();
-        let interval = frame_interval(self.config.max_messages_per_second, messages);
+        // The host spaces offers by the cheapest frame's cost; dearer frames
+        // are paced message by message inside the session.
+        let interval = frame_interval(
+            self.config.max_messages_per_second,
+            plan.best_case_messages(),
+        );
         let max_fps = max_fps_for(&profile.topology, self.config.max_messages_per_second);
         let cadence = OutputCadence::from_min_interval(interval, max_fps)
             .with_max_frame_silence(MIN_FRAME_SILENCE.max(interval.saturating_mul(2)));
@@ -148,7 +171,7 @@ impl LifxBackend {
                 sequence,
             },
             duration_ms: u32::from(self.config.transition_ms),
-            pacer: MessagePacer::new(self.config.max_messages_per_second),
+            budget: MessageBudget::new(self.config.max_messages_per_second),
             last_size_mismatch_warn_at: None,
         };
         Ok(SessionHandle {
@@ -163,10 +186,15 @@ impl LifxBackend {
         device_id: &DeviceId,
         handle: &SessionHandle,
         colors: &[[u8; 3]],
+        policy: BudgetPolicy,
         delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<()> {
+    ) -> Result<DeviceWriteOutcome> {
         let mut guard = handle.session.lock().await;
         let session = &mut *guard;
+
+        if policy == BudgetPolicy::DeclineWhenSpent && !session.budget.ready_at(Instant::now()) {
+            return Ok(DeviceWriteOutcome::SuppressedCadence);
+        }
 
         if colors.len() != session.led_count {
             let should_warn = session
@@ -183,32 +211,34 @@ impl LifxBackend {
             }
         }
 
-        let messages = session.encoder.encode(
+        session.encoder.encode(
             colors,
             &session.converter,
             session.duration_ms,
             &mut session.address,
         )?;
-        let delay = session.pacer.delay_at(Instant::now());
-        if !delay.is_zero() {
-            tokio::time::sleep(delay).await;
-        }
 
         if let Some((id, observer)) = delivery {
             observer.transport_started(id);
         }
-        let sent_at = Instant::now();
-        for datagram in session.encoder.datagrams() {
-            session
-                .socket
+        let LifxSession {
+            socket,
+            encoder,
+            budget,
+            ..
+        } = session;
+        for datagram in encoder.datagrams() {
+            let delay = budget.delay_at(Instant::now());
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            socket
                 .send(datagram)
                 .await
                 .context("LIFX datagram send failed")?;
+            budget.record(Instant::now());
         }
-        session
-            .pacer
-            .record(sent_at, u32::try_from(messages).unwrap_or(u32::MAX));
-        Ok(())
+        Ok(DeviceWriteOutcome::Sent)
     }
 }
 
@@ -220,9 +250,31 @@ struct LifxFrameSink {
 #[async_trait::async_trait]
 impl DeviceFrameSink for LifxFrameSink {
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        LifxBackend::write_session(&self.device_id, &self.handle, colors.as_slice(), None)
-            .await
-            .map_err(|error| DeviceError::write(self.device_id, error))
+        LifxBackend::write_session(
+            &self.device_id,
+            &self.handle,
+            colors.as_slice(),
+            BudgetPolicy::Wait,
+            None,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| DeviceError::write(self.device_id, error))
+    }
+
+    async fn write_colors_shared_outcome(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        LifxBackend::write_session(
+            &self.device_id,
+            &self.handle,
+            colors.as_slice(),
+            BudgetPolicy::DeclineWhenSpent,
+            None,
+        )
+        .await
+        .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -237,11 +289,11 @@ impl DeviceFrameSink for LifxFrameSink {
             &self.device_id,
             &self.handle,
             colors.as_slice(),
+            BudgetPolicy::DeclineWhenSpent,
             Some((id, observer.as_ref())),
         )
         .await
-        .map_err(|error| DeviceError::write(self.device_id, error))
-        .map(|()| DeviceWriteOutcome::Sent);
+        .map_err(|error| DeviceError::write(self.device_id, error));
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
@@ -343,8 +395,9 @@ impl DeviceBackend for LifxBackend {
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let handle = self.connected(id)?;
-        Self::write_session(id, &handle, colors, None)
+        Self::write_session(id, &handle, colors, BudgetPolicy::Wait, None)
             .await
+            .map(|_| ())
             .map_err(|error| DeviceError::write(id, error))
     }
 

@@ -317,7 +317,8 @@ fn max_fps_follows_the_message_budget() {
             },
             20
         ),
-        1
+        20,
+        "a legacy strip's cheapest frame is one run"
     );
     let chain = matrix(vec![tile(8, 8, (0.0, 0.0), Orientation::RightSideUp); 5]);
     assert_eq!(max_fps_for(&chain, 20), 4);

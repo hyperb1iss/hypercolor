@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use hypercolor_driver_lifx::color::{Hsbk, HsbkEncoder};
 use hypercolor_driver_lifx::encoder::{FrameEncoder, OutputPlan, StreamAddress};
-use hypercolor_driver_lifx::pacer::{MessagePacer, frame_interval, per_message_interval};
+use hypercolor_driver_lifx::pacer::{
+    DEFAULT_BURST_MESSAGES, MessageBudget, frame_interval, per_message_interval,
+};
 use hypercolor_driver_lifx::products::MatrixQuirk;
 use hypercolor_driver_lifx::protocol::{Packet, Serial, decode_packet};
 use hypercolor_driver_lifx::topology::{LifxTopology, Orientation, TileGeometry};
@@ -289,35 +291,94 @@ fn worst_case_messages_per_plan() {
 }
 
 #[test]
-fn pacer_spaces_frames_by_their_message_cost() {
+fn best_case_cost_only_differs_for_legacy_strips() {
+    let best = |topology: LifxTopology| OutputPlan::from_topology(&topology).best_case_messages();
+    assert_eq!(
+        best(LifxTopology::Multizone {
+            zones: 80,
+            extended: false,
+        }),
+        1
+    );
+    assert_eq!(
+        best(LifxTopology::Multizone {
+            zones: 120,
+            extended: true,
+        }),
+        2
+    );
+    assert_eq!(best(matrix(vec![tile(8, 8, 1); 5], MatrixQuirk::None)), 5);
+    assert_eq!(best(LifxTopology::SingleZone), 1);
+}
+
+#[test]
+fn message_intervals_follow_the_budget() {
     assert_eq!(per_message_interval(20), Duration::from_millis(50));
     assert_eq!(frame_interval(20, 5), Duration::from_millis(250));
     assert_eq!(frame_interval(20, 0), Duration::from_millis(50));
+}
 
+#[test]
+fn budget_allows_a_short_burst_then_paces_every_message() {
     let start = Instant::now();
-    let mut pacer = MessagePacer::new(20);
-    assert_eq!(pacer.delay_at(start), Duration::ZERO);
-    pacer.record(start, 5);
-    assert_eq!(pacer.delay_at(start), Duration::from_millis(250));
-    assert_eq!(
-        pacer.delay_at(start + Duration::from_millis(100)),
-        Duration::from_millis(150)
-    );
-    assert_eq!(
-        pacer.delay_at(start + Duration::from_millis(300)),
-        Duration::ZERO
-    );
+    let mut budget = MessageBudget::new(20);
+    for _ in 0..DEFAULT_BURST_MESSAGES {
+        assert!(budget.ready_at(start));
+        budget.record(start);
+    }
+    // The burst is spent: the next message waits one interval, the one
+    // after that two, and so on.
+    assert_eq!(budget.delay_at(start), Duration::from_millis(50));
+    budget.record(start + Duration::from_millis(50));
+    assert_eq!(budget.delay_at(start), Duration::from_millis(100));
+    assert!(!budget.ready_at(start + Duration::from_millis(99)));
+    assert!(budget.ready_at(start + Duration::from_millis(100)));
+}
 
-    // An early write that waited is charged from the scheduled slot, so the
-    // budget holds across back-to-back frames.
-    pacer.record(start + Duration::from_millis(250), 5);
-    assert_eq!(
-        pacer.delay_at(start + Duration::from_millis(250)),
-        Duration::from_millis(250)
-    );
+#[test]
+fn budget_never_exceeds_burst_plus_rate_in_any_window() {
+    let start = Instant::now();
+    let mut budget = MessageBudget::new(20);
+    let mut now = start;
+    let mut sent = Vec::new();
+    while sent.len() < 200 {
+        now += budget.delay_at(now);
+        budget.record(now);
+        sent.push(now);
+    }
+    // In any window of length L at most burst + L / interval messages leave.
+    let interval = budget.per_message();
+    for (index, first) in sent.iter().enumerate() {
+        for (offset, later) in sent[index..].iter().enumerate() {
+            let window = later.duration_since(*first);
+            let allowed = DEFAULT_BURST_MESSAGES as usize
+                + usize::try_from(window.as_nanos() / interval.as_nanos()).expect("fits");
+            assert!(offset < allowed, "{offset} messages after {window:?}");
+        }
+    }
+    // Over the run the rate converges on the budget.
+    let elapsed = sent[199].duration_since(start);
+    assert!(elapsed >= Duration::from_millis(50 * 195), "{elapsed:?}");
+}
 
-    // After idling, the schedule restarts from the send time.
-    let later = start + Duration::from_secs(10);
-    pacer.record(later, 1);
-    assert_eq!(pacer.delay_at(later), Duration::from_millis(50));
+#[test]
+fn idle_budget_refills_to_a_full_burst_only() {
+    let start = Instant::now();
+    let mut budget = MessageBudget::new(20);
+    budget.record(start);
+    let later = start + Duration::from_secs(60);
+    for _ in 0..DEFAULT_BURST_MESSAGES {
+        assert!(budget.ready_at(later));
+        budget.record(later);
+    }
+    assert!(!budget.ready_at(later));
+    assert_eq!(MessageBudget::new(2).delay_at(start), Duration::ZERO);
+    let mut tiny = MessageBudget::new(2);
+    tiny.record(start);
+    tiny.record(start);
+    assert_eq!(
+        tiny.delay_at(start),
+        Duration::from_millis(500),
+        "burst capped at the rate"
+    );
 }

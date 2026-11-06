@@ -8,8 +8,9 @@ frames as unacknowledged Set messages. Single-zone bulbs take SetColor; strips, 
 and String lights take SetExtendedColorZones, falling back to SetColorZones on older
 firmware; Tile chains, Candles, Ceilings, and the other matrix products take Set64 per
 tile, with a hidden frame buffer and CopyFrameBuffer above 64 zones. Engine RGB is
-converted to HSBK at the edge, and output stays inside the per-device message budget by
-reporting a matching cadence to the host's latest-value output queue. The full wire format
+converted to HSBK at the edge. Every datagram is charged to a per-device message budget
+as it is sent; frames wait for the budget in the host's latest-value output queue, where
+a newer frame can still replace them. The full wire format
 and design live in `docs/specs/88-lifx-lan-driver.md`.
 
 The driver is experimental: it is tested against an in-repo fake responder and the
@@ -32,7 +33,7 @@ lifx-emulator project, but nobody has run it on real LIFX hardware yet.
 - `color::HsbkEncoder`: RGB to HSBK conversion
 - `products`: product facts and capability resolution
 - `topology`: device classes, tile geometry, segments and LED positions
-- `encoder`, `pacer`: frame encoding and the message budget guard
+- `encoder`, `pacer`: frame encoding and the per-message token-bucket budget
 - `lifx_driver_control_surface`, `lifx_device_control_surface`: control surface builders
 - `resolve_lifx_probe_targets`: unicast discovery targets from config and tracked devices
 

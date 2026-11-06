@@ -9,7 +9,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
@@ -58,6 +58,9 @@ pub struct FakeDevice {
     pub firmware: (u16, u16),
     pub label: String,
     pub kind: FakeKind,
+    /// Answer discovery but ignore every probe, like a light that drops
+    /// off Wi-Fi mid-scan.
+    pub silent_after_discovery: bool,
 }
 
 impl FakeDevice {
@@ -69,6 +72,7 @@ impl FakeDevice {
             firmware,
             label: format!("Fake {serial_tail}"),
             kind,
+            silent_after_discovery: false,
         }
     }
 }
@@ -84,6 +88,8 @@ pub struct Received {
     pub source: u32,
     pub message_type: u16,
     pub payload: Vec<u8>,
+    pub arrived: Instant,
+    pub from: SocketAddr,
 }
 
 /// Running fake responder.
@@ -105,7 +111,7 @@ impl FakeLifx {
                 let Ok((len, from)) = socket.recv_from(&mut buf).await else {
                     return;
                 };
-                let Some(message) = parse(&buf[..len]) else {
+                let Some(message) = parse(&buf[..len], from) else {
                     continue;
                 };
                 log.lock().expect("fake log lock").push(message.clone());
@@ -169,7 +175,7 @@ impl Drop for FakeLifx {
     }
 }
 
-fn parse(bytes: &[u8]) -> Option<Received> {
+fn parse(bytes: &[u8], from: SocketAddr) -> Option<Received> {
     if bytes.len() < 36 {
         return None;
     }
@@ -192,6 +198,8 @@ fn parse(bytes: &[u8]) -> Option<Received> {
         source: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
         message_type: u16::from_le_bytes([bytes[32], bytes[33]]),
         payload: bytes[36..].to_vec(),
+        arrived: Instant::now(),
+        from,
     })
 }
 
@@ -215,6 +223,9 @@ fn reply(request: &Received, serial: [u8; 6], message_type: u16, payload: &[u8])
 }
 
 fn respond(device: &FakeDevice, request: &Received, port: u16) -> Option<(u16, Vec<u8>)> {
+    if device.silent_after_discovery && request.message_type != 2 {
+        return None;
+    }
     match request.message_type {
         2 => {
             let mut payload = vec![1];
@@ -291,6 +302,31 @@ fn device_chain(device: &FakeDevice, tiles: &[FakeTile]) -> Vec<u8> {
     }
     payload.push(u8::try_from(tiles.len()).expect("tile count fits"));
     payload
+}
+
+/// Assert that no stretch of datagrams beats a token bucket of `burst`
+/// messages refilled every `interval`: `n` datagrams after the first need
+/// at least `(n - burst + 1) * interval`. `slack` absorbs receive jitter.
+pub fn assert_within_budget(
+    messages: &[Received],
+    burst: usize,
+    interval: Duration,
+    slack: Duration,
+) {
+    for (index, first) in messages.iter().enumerate() {
+        for (offset, later) in messages[index..].iter().enumerate() {
+            if offset < burst {
+                continue;
+            }
+            let needed = interval * u32::try_from(offset + 1 - burst).expect("fits");
+            let spent = later.arrived.duration_since(first.arrived);
+            assert!(
+                spent + slack >= needed,
+                "{} datagrams arrived within {spent:?}, the budget needs {needed:?}",
+                offset + 1
+            );
+        }
+    }
 }
 
 /// Decode a hex string, ignoring whitespace.
