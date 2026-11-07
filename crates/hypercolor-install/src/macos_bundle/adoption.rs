@@ -205,8 +205,14 @@ impl<E: MacosBundleExecutor, S: MacosBundleService, H: MacosBundleAdoptionHost>
             return Ok(MacosBundleAdoptionOutcome::Deferred);
         }
         let bundles = self.executor.observe()?;
-        let MacosBundleSlot::Bundle(installed) = &bundles.installed else {
-            return Err(error("no readable bundle is installed to adopt"));
+        let installed = match &bundles.installed {
+            MacosBundleSlot::Bundle(installed) => installed,
+            MacosBundleSlot::Absent => return Err(error("no bundle is installed to adopt")),
+            MacosBundleSlot::Unrecognized(reason) => {
+                return Err(error(format!(
+                    "the installed bundle cannot be read: {reason}"
+                )));
+            }
         };
         installed.validate()?;
         let recorded = self.recorded()?;

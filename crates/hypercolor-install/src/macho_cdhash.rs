@@ -102,13 +102,12 @@ fn cdhash_from_superblob(signature: &[u8]) -> Result<String, InstallPlatformErro
             "macOS embedded code signature is not a canonical superblob",
         ));
     }
+    // codesign reserves more room than the signature fills and leaves whatever
+    // the file held there. Nothing hashes those bytes, so they are no identity.
     let blob_length = be_u32(signature, 4)? as usize;
-    if blob_length < 12
-        || blob_length > signature.len()
-        || signature[blob_length..].iter().any(|byte| *byte != 0)
-    {
+    if blob_length < 12 || blob_length > signature.len() {
         return Err(error(
-            "macOS embedded code signature has noncanonical padding",
+            "macOS embedded code signature is longer than its region",
         ));
     }
     let signature = &signature[..blob_length];
@@ -339,17 +338,22 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_zero_filled_linkedit_padding() {
+    fn reads_past_what_codesign_leaves_after_the_superblob() {
         let (mut padded, expected) = thin_macho(2, 32);
-        padded[44..48].copy_from_slice(&64_u32.to_le_bytes());
-        padded.extend_from_slice(&[0; 4]);
+        padded[44..48].copy_from_slice(&68_u32.to_le_bytes());
+        padded.extend_from_slice(&[0xa5; 8]);
         assert_eq!(
             thin_macho_cdhash(&mut Cursor::new(&padded), padded.len() as u64)
-                .expect("zero-filled code signature padding"),
+                .expect("bytes after the superblob belong to nothing"),
             expected
         );
+    }
 
-        *padded.last_mut().expect("padding byte") = 1;
-        assert!(thin_macho_cdhash(&mut Cursor::new(&padded), padded.len() as u64).is_err());
+    #[test]
+    fn rejects_a_superblob_longer_than_its_region() {
+        let (mut overlong, _) = thin_macho(2, 32);
+        let signature = 48;
+        overlong[signature + 4..signature + 8].copy_from_slice(&1024_u32.to_be_bytes());
+        assert!(thin_macho_cdhash(&mut Cursor::new(&overlong), overlong.len() as u64).is_err());
     }
 }
