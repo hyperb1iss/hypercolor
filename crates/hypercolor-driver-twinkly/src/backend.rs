@@ -16,9 +16,7 @@ use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
     DiscoveredDevice, OutputCadence,
 };
-use hypercolor_driver_support::{
-    DeviceSession, FrameDelivery, Session, SessionSink, SessionTable,
-};
+use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionSink, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::TWINKLY_DRIVER_ID;
@@ -667,7 +665,9 @@ impl DeviceBackend for TwinklyBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions.facts(id).map(|facts| facts.cadence.target_fps())
+        self.sessions
+            .facts(id)
+            .map(|facts| facts.cadence.target_fps())
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {

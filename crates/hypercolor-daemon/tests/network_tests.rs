@@ -425,6 +425,10 @@ impl DeviceBackend for TestBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(
         &self,
         id: &DeviceId,

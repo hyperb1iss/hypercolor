@@ -36,6 +36,9 @@ and wire values remain in `hypercolor-driver-api`.
   byte cap enforced as body chunks arrive.
 - `network` validates endpoints and extracts typed discovery metadata.
 - `pairing` coordinates post-pair activation and post-unpair disconnects.
+- `SessionTable`, `Session`, and `SessionSink` are revocable device sessions:
+  one owner per connection, frame sinks that hold no transport, and close and
+  retirement that end a session the same way in every driver.
 
 ---
 

@@ -149,11 +149,44 @@ those `Option` returns.
 `DeviceBackend` is the hot-path trait the render loop calls on every frame. It is
 `Send + Sync` and must not block the async executor.
 
+The backend owns routes. Everything that lives and dies with one connection, the socket
+included, belongs in a `DeviceSession` kept in a `SessionTable`:
+
 ```rust
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
+    OutputCadence,
 };
+use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId};
+
+struct AcmeSession {
+    device_id: DeviceId,
+    socket: UdpSocket,
+}
+
+impl DeviceSession for AcmeSession {
+    // Facts fixed at connect, readable without waiting for the session's I/O.
+    type Facts = OutputCadence;
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        // Encode one frame. Called on every render tick; keep allocations minimal.
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
+        }
+        // Send it.
+        Ok(DeviceWriteOutcome::Sent)
+    }
+
+    async fn finish(self) -> Result<(), DeviceError> {
+        // Say goodbye on the wire. Dropping self then releases the socket.
+        Ok(())
+    }
+}
 
 #[async_trait::async_trait]
 impl DeviceBackend for AcmeBackend {
@@ -172,29 +205,50 @@ impl DeviceBackend for AcmeBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        self.sessions.ensure_accepting(id)?;
+        if self.sessions.is_open(id) {
+            return Ok(());
+        }
         // Open the UDP socket or handshake as required.
-        todo!()
+        let session = self.open_session(id).await?;
+        self.sessions.install(session).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        todo!()
+        self.sessions.close(id).await
     }
 
-    async fn write_colors(
-        &self,
-        id: &DeviceId,
-        colors: &[[u8; 3]],
-    ) -> Result<(), DeviceError> {
-        // Encode and send one frame. Called on every render tick; keep allocations minimal.
-        todo!()
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.sessions.retire().await
+    }
+
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        self.sessions.frame_sink(id)
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
         // Govern how often the render loop sends frames to this device.
-        Some(OutputCadence::from_fps(30))
+        self.sessions.facts(id).map(|cadence| *cadence)
     }
 }
 ```
+
+The table keeps the session contract for you. When `disconnect` returns `Ok`, new operations
+are revoked, admitted I/O has settled or been cancelled, `finish` ran, tasks started with
+`Session::spawn` are joined, and the transport is gone. A frame sink somebody retained holds
+an empty slot, so it rejects every frame and keeps no socket alive. A reconnect is a new
+session, and a retired backend closes everything and refuses new sessions. Do not add closed
+flags, `Drop` hooks, or your own sink for any of that.
+
+A socket every device of the backend sends from stays on the backend, with each session
+holding a reference, so closing one session leaves the others running. `Session::spawn`
+aborts its tasks, so a task must be safe to stop at any await. A task that must finish a
+write on a link other sessions share stays on the session and stops in `finish` instead,
+as OpenRGB's writer does.
 
 `DeviceLifecyclePolicy::default()` gives a 5-second connect timeout with inline execution
 and retry on timeout. Override `lifecycle_policy` only when your connect call blocks for
@@ -577,6 +631,8 @@ At minimum, cover:
   independent calls.
 - **Pairing validation**: missing fields and empty credentials return
   `PairDeviceStatus::InvalidInput`, not an error.
+- **The session contract**: implement `SessionRig` from `hypercolor-driver-conformance`
+  over your emulator and call `assert_session_contract`. Every driver runs this same test.
 
 ```bash
 just test-crate hypercolor-driver-acme

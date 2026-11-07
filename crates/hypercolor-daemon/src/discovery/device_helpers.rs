@@ -286,6 +286,17 @@ async fn connect_backend_device_inner(
     let frame_sink = io.frame_sink(device_id);
 
     let mut manager = runtime.backend_manager.lock().await;
+    if !manager.is_current_backend(backend_id, &io) {
+        // The driver's config changed while this connected. Retirement holds
+        // the only path to the old backend's sessions, so a connect it raced
+        // ends here instead of installing a sink for a route that moved on.
+        drop(manager);
+        close_superseded_connect(&io, device_id, timeout).await;
+        return Err(DeviceError::connection(
+            device_id,
+            "the backend serving this device was replaced while it connected",
+        ));
+    }
     manager.set_cached_output_cadence(backend_id, device_id, output_cadence);
     manager.set_device_frame_sink(backend_id, device_id, frame_sink);
     manager.map_device(

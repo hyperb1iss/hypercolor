@@ -640,6 +640,10 @@ mod tests {
             Ok(())
         }
 
+        async fn retire(&self) -> Result<(), DeviceError> {
+            Ok(())
+        }
+
         async fn write_colors(
             &self,
             _id: &DeviceId,

@@ -115,6 +115,10 @@ impl DeviceBackend for FixtureBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn connected_device_metadata(
         &self,
         _id: &DeviceId,

@@ -8,6 +8,10 @@ struct LegacyFrameSink;
 
 #[async_trait]
 impl DeviceFrameSink for LegacyFrameSink {
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
         Ok(())
     }

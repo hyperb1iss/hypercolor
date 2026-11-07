@@ -878,6 +878,7 @@ pub struct UsbBackend {
     protocol_configs: UsbProtocolConfigStore,
     /// Host sink for input from transports that decode it.
     device_input: Option<Arc<dyn DeviceInputSink>>,
+    retired: AtomicBool,
 }
 
 struct ConnectedUsbDevice {
@@ -1494,6 +1495,11 @@ impl DeviceBackend for UsbBackend {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(*id, Arc::new(connected));
+        // A retire that ran during this open missed the new session.
+        if self.retired.load(Ordering::SeqCst) {
+            let _ = self.disconnect(id).await;
+            bail!("the USB backend was retired");
+        }
         // Input counts only once the device is fully connected, so a connect
         // that fails partway never shows up as an input source.
         if let Some(input) = connected_input {
@@ -1511,6 +1517,25 @@ impl DeviceBackend for UsbBackend {
                 &error,
             )
         })
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.retired.store(true, Ordering::SeqCst);
+        let open: Vec<DeviceId> = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect();
+        let mut result = Ok(());
+        for id in open {
+            let closed = self.disconnect(&id).await;
+            if result.is_ok() {
+                result = closed;
+            }
+        }
+        result
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

@@ -178,14 +178,33 @@ pub async fn reconcile_driver_output_backends(
         }
     }
 
+    // Retire outside the manager lock, because closing sessions does device
+    // I/O, and before registering replacements, because a serial port or
+    // Art-Net source port opens exclusively. Lifecycle only tracks the
+    // devices disconnected above: retirement also ends sessions it never saw,
+    // such as a temporary identify, and fails any connect still in flight.
+    let retired: Vec<_> = {
+        let mut manager = runtime.backend_manager.lock().await;
+        retiring_backends
+            .iter()
+            .filter_map(|backend_id| {
+                manager
+                    .unregister_backend(backend_id)
+                    .map(|backend| (backend_id.clone(), backend))
+            })
+            .collect()
+    };
+    for (backend_id, backend) in retired {
+        if let Err(error) = backend.retire().await {
+            warn!(backend_id = %backend_id, error = %error,
+                "retiring an output backend reported a failed cleanup");
+        }
+        info!(backend_id = %backend_id, "unregistered output backend for disabled driver");
+        report.unregistered.push(backend_id);
+    }
+
     {
         let mut manager = runtime.backend_manager.lock().await;
-        for backend_id in &retiring_backends {
-            if manager.unregister_backend(backend_id).is_some() {
-                info!(backend_id = %backend_id, "unregistered output backend for disabled driver");
-                report.unregistered.push(backend_id.clone());
-            }
-        }
         for (backend_id, provider_driver_id, backend) in prepared {
             manager.register_backend(backend);
             info!(backend_id = %backend_id, driver_id = %provider_driver_id,

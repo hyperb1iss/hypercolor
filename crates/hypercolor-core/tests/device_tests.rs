@@ -163,6 +163,10 @@ impl DeviceBackend for MockBackend {
         }
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if self.fail_write.load(Ordering::Relaxed) {
             return Err(DeviceError::write(id, "mock write failure"));

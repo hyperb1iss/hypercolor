@@ -32,9 +32,10 @@ impl BackendManager {
 
     /// Remove a device backend and every output lane bound to it.
     ///
-    /// Callers disconnect the backend's devices first; this only forgets
-    /// the route. Returns the backend so the caller can finish shutting it
-    /// down, or `None` when nothing was registered under that ID.
+    /// This only forgets the route. It returns the backend so the caller can
+    /// [`DeviceBackend::retire`] it after releasing the manager, which ends
+    /// whatever sessions it still holds; returns `None` when nothing was
+    /// registered under that ID.
     pub fn unregister_backend(&mut self, backend_id: &str) -> Option<Arc<dyn DeviceBackend>> {
         let backend = self.backends.remove(backend_id)?;
         self.backend_generations.remove(backend_id);
@@ -47,6 +48,19 @@ impl BackendManager {
     #[must_use]
     pub fn backend_io(&self, backend_id: &str) -> Option<BackendIo> {
         self.backends.get(backend_id).cloned().map(BackendIo::new)
+    }
+
+    /// Whether `io` still reaches the backend registered under `backend_id`.
+    ///
+    /// Registering and unregistering a backend both happen under the manager
+    /// lock, so a caller holding that lock may publish a connection this
+    /// approves. A connection made through a backend retired in the meantime
+    /// never reaches a route.
+    #[must_use]
+    pub fn is_current_backend(&self, backend_id: &str, io: &BackendIo) -> bool {
+        self.backends
+            .get(backend_id)
+            .is_some_and(|backend| io.is_backed_by(backend))
     }
 
     /// List registered backend IDs.

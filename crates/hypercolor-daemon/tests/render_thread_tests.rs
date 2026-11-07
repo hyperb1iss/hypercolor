@@ -380,6 +380,10 @@ impl DeviceBackend for FencedRecoveryBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if *id != self.device_id {
             return Err(DeviceError::NotFound {
@@ -446,6 +450,10 @@ impl DeviceBackend for SlowDisconnectFailBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if !self.connected.load(Ordering::Acquire) {
             return Err(DeviceError::Disconnected {
@@ -493,6 +501,10 @@ impl DeviceBackend for TransientWriteFailureBackend {
             .lock()
             .expect("disconnect probe lock should not be poisoned")
             .get_or_insert(self.deliveries.load(Ordering::SeqCst));
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
         Ok(())
     }
 

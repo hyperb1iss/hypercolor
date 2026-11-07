@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
-use hypercolor_driver_conformance::{SessionRig, assert_session_contract, assert_udp_port_released};
+use hypercolor_driver_conformance::{
+    SessionRig, assert_session_contract, assert_udp_port_released,
+};
 use hypercolor_driver_twinkly::config::TwinklyConfig;
 use hypercolor_driver_twinkly::{
     TwinklyBackend, TwinklyScanOptions, TwinklyScanner, discovered_device,
@@ -98,8 +100,8 @@ async fn disconnect_restores_the_mode_after_upkeep_has_stopped() -> TestResult {
     .await?
     .found;
     let discovered = discovered_device(profiles.first().ok_or("no device")?, 60);
-    let backend =
-        TwinklyBackend::new(TwinklyConfig::default()).with_upkeep_interval(Duration::from_millis(5));
+    let backend = TwinklyBackend::new(TwinklyConfig::default())
+        .with_upkeep_interval(Duration::from_millis(5));
     backend.adopt_device(&discovered)?;
     let id = discovered.info.id;
 

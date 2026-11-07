@@ -217,7 +217,9 @@ impl DeviceBackend for AdalightBackend {
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.sessions.facts(id).map(|plan| output_cadence_for(&plan))
+        self.sessions
+            .facts(id)
+            .map(|plan| output_cadence_for(&plan))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

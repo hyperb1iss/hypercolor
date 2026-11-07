@@ -26,6 +26,10 @@ impl BackendIo {
         Self { backend }
     }
 
+    pub(super) fn is_backed_by(&self, backend: &BackendHandle) -> bool {
+        Arc::ptr_eq(&self.backend, backend)
+    }
+
     /// Connect a device once using its already-adopted backend inventory.
     ///
     /// Returns the backend's preferred output cadence for the connected device.

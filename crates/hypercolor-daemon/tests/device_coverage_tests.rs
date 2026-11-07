@@ -386,6 +386,10 @@ impl DeviceBackend for NativeFixtureBackend {
     async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
         Ok(())
     }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         Ok(())
     }

@@ -323,6 +323,10 @@ impl DeviceBackend for StaticHoldRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if colors.iter().any(|color| *color != [0, 0, 0]) {
             bail!("static hold emitted a non-black color");
@@ -381,6 +385,10 @@ impl DeviceBackend for ShutdownCleanupBackend {
         }
         self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 

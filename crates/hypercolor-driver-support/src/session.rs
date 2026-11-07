@@ -303,10 +303,7 @@ impl<S> SessionSink<S> {
     ///
     /// Returns [`DeviceError::Disconnected`] when the session is revoked or
     /// close cancelled the I/O.
-    pub async fn transact<T>(
-        &self,
-        io: impl AsyncFnOnce(&mut S) -> T,
-    ) -> Result<T, DeviceError> {
+    pub async fn transact<T>(&self, io: impl AsyncFnOnce(&mut S) -> T) -> Result<T, DeviceError> {
         let mut session = self.admit().await?;
         self.slot
             .until_cancelled(io(&mut session))
@@ -362,12 +359,7 @@ impl<S: DeviceSession> DeviceFrameSink for SessionSink<S> {
             .until_cancelled(session.deliver_frame(delivery, colors))
             .await
             .unwrap_or_else(|| {
-                DeviceDeliveryAck::failed(
-                    id,
-                    true,
-                    Duration::ZERO,
-                    disconnected(self.device_id),
-                )
+                DeviceDeliveryAck::failed(id, true, Duration::ZERO, disconnected(self.device_id))
             })
     }
 }

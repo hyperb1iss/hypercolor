@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
-use hypercolor_driver_conformance::{SessionRig, assert_session_contract, assert_udp_port_released};
+use hypercolor_driver_conformance::{
+    SessionRig, assert_session_contract, assert_udp_port_released,
+};
 use hypercolor_driver_lifx::LifxBackend;
 use hypercolor_driver_lifx::config::LifxConfig;
 use hypercolor_driver_lifx::scanner::{LifxScanOptions, LifxScanner, discovered_device};

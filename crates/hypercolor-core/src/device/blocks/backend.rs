@@ -45,6 +45,7 @@ struct BlocksBackendState {
     devices: HashMap<DeviceId, BlocksDevice>,
     /// Per-device brightness (applied by blocksd).
     brightness: HashMap<DeviceId, u8>,
+    retired: bool,
 }
 
 struct BlocksDevice {
@@ -66,6 +67,7 @@ impl BlocksBackend {
                 connection: None,
                 devices: HashMap::new(),
                 brightness: HashMap::new(),
+                retired: false,
             }),
             input: None,
             watcher: None,
@@ -268,6 +270,12 @@ impl DeviceBackend for BlocksBackend {
             .cloned()
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
         let mut state = self.state.lock().await;
+        if state.retired {
+            return Err(DeviceError::connection(
+                id,
+                "the blocks backend was retired",
+            ));
+        }
         state
             .ensure_connected(&self.socket_path)
             .await
@@ -283,6 +291,18 @@ impl DeviceBackend for BlocksBackend {
         drop(state);
         if let Some(input) = &self.input {
             input.connect(pending.uid, *id, &pending.info.name);
+        }
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        let open: Vec<DeviceId> = {
+            let mut state = self.state.lock().await;
+            state.retired = true;
+            state.devices.keys().copied().collect()
+        };
+        for id in open {
+            self.disconnect(&id).await?;
         }
         Ok(())
     }

@@ -74,6 +74,10 @@ impl DeviceBackend for NullBenchBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }

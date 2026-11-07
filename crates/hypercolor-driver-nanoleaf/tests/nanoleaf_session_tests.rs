@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hypercolor_driver_api::{DeviceBackend, DiscoveryConnectBehavior};
-use hypercolor_driver_conformance::{SessionRig, assert_session_contract, assert_udp_port_released};
+use hypercolor_driver_conformance::{
+    SessionRig, assert_session_contract, assert_udp_port_released,
+};
 use hypercolor_driver_nanoleaf::{
     NanoleafBackend, NanoleafConfig, NanoleafDiscoveredDevice, build_device_info,
 };
@@ -70,7 +72,10 @@ async fn serve_controller(listener: TcpListener) {
 async fn answer(mut stream: TcpStream) {
     let mut buffer = vec![0_u8; 4096];
     let mut read = 0;
-    while !buffer[..read].windows(4).any(|window| window == b"\r\n\r\n") {
+    while !buffer[..read]
+        .windows(4)
+        .any(|window| window == b"\r\n\r\n")
+    {
         match stream.read(&mut buffer[read..]).await {
             Ok(0) | Err(_) => return,
             Ok(count) => read += count,
@@ -109,7 +114,8 @@ async fn nanoleaf_sessions_keep_the_contract() -> TestResult {
             serde_json::json!({ "auth_token": "test-token" }),
         )
         .await?;
-    let backend = NanoleafBackend::new(NanoleafConfig::default(), store).with_stream_port(stream_port);
+    let backend =
+        NanoleafBackend::new(NanoleafConfig::default(), store).with_stream_port(stream_port);
 
     let discovered = NanoleafDiscoveredDevice {
         device_key: "shapes".to_owned(),

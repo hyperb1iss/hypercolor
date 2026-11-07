@@ -17,12 +17,12 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
-use hypercolor_daemon::network;
+use hypercolor_daemon::network::{self, reconcile_driver_output_backends};
 use hypercolor_driver_api::{
     DiscoveryObservation, DiscoveryRequest, DriverConfigView, DriverContextProvider, OutputBinding,
 };
 use hypercolor_driver_support::CredentialStore;
-use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::DeviceId;
 use serde_json::{Value, json};
 use tokio::net::UdpSocket;
@@ -149,13 +149,32 @@ impl Rig {
     }
 
     async fn identify(&self, id: DeviceId) -> (StatusCode, Value) {
+        self.identify_for(id, 1).await
+    }
+
+    /// Bring the backends in line with the current config, as the daemon
+    /// does on a config change.
+    async fn reconcile(&self, previous: &HypercolorConfig) {
+        let host = self.state.driver_host();
+        reconcile_driver_output_backends(
+            &host.discovery_runtime(),
+            self.state.driver_registry(),
+            host.as_ref(),
+            &self.manager.get(),
+            Some(previous),
+        )
+        .await
+        .expect("reconcile");
+    }
+
+    async fn identify_for(&self, id: DeviceId, duration_ms: u32) -> (StatusCode, Value) {
         let response = api::build_router(Arc::clone(&self.state), None)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri(format!("/api/v1/devices/{id}/identify"))
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"duration_ms":1}"#))
+                    .body(Body::from(format!(r#"{{"duration_ms":{duration_ms}}}"#)))
                     .expect("request"),
             )
             .await
@@ -223,6 +242,43 @@ async fn identify_on_a_removed_pixel_device_sends_nothing() {
         packets_until_quiet(&receiver).await,
         0,
         "a removed device gets no packet"
+    );
+}
+
+#[tokio::test]
+async fn removing_an_entry_stops_a_running_identify() {
+    let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver");
+    let port = receiver.local_addr().expect("address").port();
+    let rig = Rig::new(
+        "pixel",
+        &json!([{
+            "id": "roof", "host": "127.0.0.1", "port": port, "protocol": "ddp", "pixel_count": 4
+        }]),
+    )
+    .await;
+    let id = rig.track_first_device().await;
+    let previous = rig.manager.get();
+
+    let (status, body) = rig.identify_for(id, 60_000).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut buf = [0_u8; 2048];
+    tokio::time::timeout(Duration::from_secs(2), receiver.recv_from(&mut buf))
+        .await
+        .expect("the flash reaches the device")
+        .expect("recv");
+
+    rig.remove_every_device();
+    rig.reconcile(&previous).await;
+
+    // Retirement already ended the session, so what is left in the socket
+    // buffer is its shutdown frames. Three flash intervals of silence after
+    // that means the flash stopped with 60 seconds still on the clock.
+    while receiver.try_recv_from(&mut buf).is_ok() {}
+    assert!(
+        tokio::time::timeout(Duration::from_millis(750), receiver.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "a removed device keeps flashing"
     );
 }
 

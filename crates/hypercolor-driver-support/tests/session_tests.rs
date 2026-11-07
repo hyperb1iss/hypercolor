@@ -498,3 +498,51 @@ async fn busy_sessions_refuse_try_admit() {
     fixture.table.close(&fixture.id).await.expect("close");
     assert!(sink.try_admit().is_none());
 }
+
+#[tokio::test]
+async fn transact_reaches_the_state_until_the_session_closes() {
+    let fixture = Fixture::new();
+    fixture.open(Behavior::default()).await;
+    let sink = fixture.table.require(&fixture.id).expect("sink");
+
+    sink.transact(async |session| {
+        session.write_frame(&FRAME, None).await.expect("write");
+    })
+    .await
+    .expect("open session");
+    assert_eq!(fixture.frames(), 1);
+
+    fixture.table.close(&fixture.id).await.expect("close");
+    let error = sink
+        .transact(async |session| {
+            session.write_frame(&FRAME, None).await.expect("write");
+        })
+        .await
+        .expect_err("a closed session rejects");
+    assert!(is_disconnected(&error));
+    assert_eq!(fixture.frames(), 1);
+}
+
+#[tokio::test]
+async fn close_cancels_a_stuck_transaction() {
+    let fixture = Fixture::new();
+    fixture.open(Behavior::default()).await;
+    let sink = fixture.table.require(&fixture.id).expect("sink");
+    let stuck = tokio::spawn({
+        let sink = sink.clone();
+        async move {
+            sink.transact(async |_session| std::future::pending::<()>().await)
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+
+    fixture.table.close(&fixture.id).await.expect("close");
+
+    let error = stuck
+        .await
+        .expect("transaction task")
+        .expect_err("a cancelled transaction must fail");
+    assert!(is_disconnected(&error));
+    assert_eq!(fixture.finishes(), 1);
+}

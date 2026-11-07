@@ -61,6 +61,7 @@ pub struct SmBusBackend {
     pending: StdRwLock<HashMap<DeviceId, PendingSmBusDevice>>,
     connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedSmBusDevice>>>,
     transport_factory: SmBusTransportFactory,
+    retired: AtomicBool,
 }
 
 impl SmBusBackend {
@@ -90,6 +91,7 @@ impl SmBusBackend {
             pending: StdRwLock::new(HashMap::new()),
             connected: StdRwLock::new(HashMap::new()),
             transport_factory: Arc::new(transport_factory),
+            retired: AtomicBool::new(false),
         }
     }
 }
@@ -100,12 +102,17 @@ impl Default for SmBusBackend {
             pending: StdRwLock::new(HashMap::new()),
             connected: StdRwLock::new(HashMap::new()),
             transport_factory: Self::default_transport_factory(),
+            retired: AtomicBool::new(false),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for SmBusDeviceFrameSink {
+    fn is_closed(&self) -> bool {
+        !self.device.connected.load(Ordering::Acquire)
+    }
+
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
         write_connected_device(
             self.device_id,
@@ -171,6 +178,9 @@ impl DeviceBackend for SmBusBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        if self.retired.load(Ordering::SeqCst) {
+            return Err(DeviceError::connection(id, "the SMBus backend was retired"));
+        }
         if self
             .connected
             .read()
@@ -212,7 +222,31 @@ impl DeviceBackend for SmBusBackend {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(*id, Arc::new(device));
 
+        // A retire that ran during this open missed the new session.
+        if self.retired.load(Ordering::SeqCst) {
+            let _ = self.disconnect(id).await;
+            return Err(DeviceError::connection(id, "the SMBus backend was retired"));
+        }
         Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.retired.store(true, Ordering::SeqCst);
+        let open: Vec<DeviceId> = self
+            .connected
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect();
+        let mut result = Ok(());
+        for id in open {
+            let closed = self.disconnect(&id).await;
+            if result.is_ok() {
+                result = closed;
+            }
+        }
+        result
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

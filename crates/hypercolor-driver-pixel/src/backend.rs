@@ -237,7 +237,9 @@ impl DeviceBackend for PixelBackend {
         };
         let session = PixelSession::new(*id, plan, socket, &self.installation_id)
             .map_err(|error| DeviceError::connection(id, error))?;
-        self.sessions.install(Session::new(*id, facts, session)).await
+        self.sessions
+            .install(Session::new(*id, facts, session))
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

@@ -640,7 +640,9 @@ impl DeviceBackend for LifxBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions.facts(id).map(|facts| facts.cadence.target_fps())
+        self.sessions
+            .facts(id)
+            .map(|facts| facts.cadence.target_fps())
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {

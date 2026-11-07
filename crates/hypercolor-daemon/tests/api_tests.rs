@@ -523,6 +523,10 @@ impl DeviceBackend for NoopBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(
         &self,
         _id: &DeviceId,
@@ -950,6 +954,10 @@ impl DeviceBackend for StaticOutputRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(
         &self,
         id: &DeviceId,
@@ -985,6 +993,10 @@ impl DeviceBackend for IdentifyRecordingBackend {
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
@@ -1051,6 +1063,10 @@ impl DeviceBackend for DisconnectRecordingBackend {
         }
         self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 

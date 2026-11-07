@@ -138,6 +138,10 @@ impl DeviceBackend for RefreshedTopologyBackend {
         panic!("a topology refresh must preserve the connection")
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         Ok(())
     }
@@ -416,6 +420,10 @@ impl DeviceBackend for CountingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         let _ = (id, colors);
         Ok(())
@@ -456,6 +464,10 @@ impl DeviceBackend for FailingDisconnectBackend {
         self.disconnect_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Err(DeviceError::connection(id, "simulated disconnect failure"))
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
@@ -509,6 +521,10 @@ impl DeviceBackend for CachePrimingBackend {
                 device: id.to_string(),
             });
         }
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
         Ok(())
     }
 
@@ -3101,6 +3117,10 @@ impl DeviceBackend for GatedBackgroundBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         Ok(())
     }
@@ -3279,6 +3299,36 @@ async fn a_background_connect_does_not_map_a_device_a_newer_scan_retired() {
         scenario.mappings().await,
         0,
         "a stale background connect mapped a device a newer scan retired"
+    );
+    assert!(!scenario.backend.connected.load(Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn a_background_connect_does_not_publish_through_a_replaced_backend() {
+    let scenario = GatedMigrationScenario::start(false).await;
+
+    // The driver's config changes while the connect waits at the gate: the
+    // lifecycle still wants the device, but its backend is gone.
+    let retired = {
+        let mut manager = scenario.runtime.backend_manager.lock().await;
+        let retired = manager.unregister_backend("mock").expect("registered");
+        manager.register_backend(Arc::new(
+            hypercolor_core::device::mock::MockDeviceBackend::new(),
+        ));
+        retired
+    };
+    retired.retire().await.expect("retire");
+
+    scenario.backend.connect_gate.add_permits(1);
+    let disconnects = &scenario.backend.disconnects_finished;
+    scenario
+        .pump_until(|| disconnects.load(Ordering::Acquire) == 1)
+        .await;
+
+    assert_eq!(
+        scenario.mappings().await,
+        0,
+        "a connect through a replaced backend mapped its device"
     );
     assert!(!scenario.backend.connected.load(Ordering::Acquire));
 }

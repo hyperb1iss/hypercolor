@@ -528,6 +528,10 @@ impl DeviceBackend for RecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
             return Err(DeviceError::NotFound {

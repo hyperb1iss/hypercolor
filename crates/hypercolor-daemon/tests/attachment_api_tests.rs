@@ -101,6 +101,10 @@ impl DeviceBackend for RecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         self.writes
             .lock()

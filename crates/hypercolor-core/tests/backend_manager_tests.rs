@@ -115,6 +115,10 @@ impl DeviceBackend for SharedSlowBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
@@ -195,6 +199,10 @@ impl DeviceBackend for SlowRecordingBackend {
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -292,6 +300,10 @@ impl DeviceBackend for FailingDisconnectBackend {
         bail!("simulated disconnect failure")
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -336,6 +348,10 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("borrowed color path should not be used for shared payload backend")
     }
@@ -361,6 +377,10 @@ struct FastFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for FastFrameSink {
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
         if self
             .panic_next
@@ -405,6 +425,10 @@ struct SuppressingFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for SuppressingFrameSink {
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
         self.write_colors_shared_outcome(colors).await.map(|_| ())
     }
@@ -528,6 +552,10 @@ impl DeviceBackend for FastFrameSinkBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("backend-wide write path should not be used when a frame sink is available")
     }
@@ -602,6 +630,10 @@ impl DeviceBackend for DirectControlRecordingBackend {
         }
 
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -683,6 +715,10 @@ impl DeviceBackend for FailOnceRecordingBackend {
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -804,6 +840,10 @@ impl DeviceBackend for MetadataRefreshingBackend {
         }
 
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -953,6 +993,10 @@ impl DeviceBackend for ConnectRecordingBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -1018,6 +1062,10 @@ impl DeviceBackend for TimeoutConnectBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -1064,6 +1112,10 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -1105,6 +1157,10 @@ impl DeviceBackend for DisplayRecordingBackend {
         }
 
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -1164,6 +1220,10 @@ impl DeviceBackend for RecoveringDisplayBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
@@ -1211,6 +1271,10 @@ impl DeviceBackend for OrderedDisplayBackend {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 
@@ -5633,6 +5697,10 @@ struct ScriptedFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for ScriptedFrameSink {
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
         bail!("scripted sink only answers queue-qualified deliveries")
     }
@@ -5697,6 +5765,10 @@ impl DeviceBackend for ScriptedFrameSinkBackend {
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 

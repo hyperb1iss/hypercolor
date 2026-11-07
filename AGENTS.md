@@ -75,7 +75,8 @@ crates/
   hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd, macOS launchd and Windows machine platforms, payload validation
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
-  hypercolor-driver-support/       # Native credential, discovery, bounded HTTP, and framing services layered on the driver API
+  hypercolor-driver-support/       # Native credential, discovery, device-session, bounded HTTP, and framing services layered on the driver API
+  hypercolor-driver-conformance/   # Contract tests every driver runs against its own emulator (dev-dependency only)
   hypercolor-driver-builtin/       # Compile-time bundle assembling HAL + network drivers into a registry via feature flags
   hypercolor-driver-hue/           # Philips Hue Bridge driver (Entertainment API over DTLS)
   hypercolor-driver-nanoleaf/      # Nanoleaf panels driver (HTTP pairing + UDP external control)
@@ -150,7 +151,7 @@ graph TD
     DAPI & DS --> TW[hypercolor-driver-twinkly]
     DAPI & DS --> WZ[hypercolor-driver-wiz]
     DAPI & DS --> YL[hypercolor-driver-yeelight]
-    ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
+    ORS[hypercolor-openrgb-sdk] & DAPI & DS --> ORD[hypercolor-driver-openrgb]
     ORS & PER --> OH[hypercolor-openrgb-host]
     OH --> APP & CLI
     DAPI --> NET[hypercolor-network]
@@ -257,7 +258,10 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 - **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
   Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
-  Long-running I/O is dispatched internally.
+  Long-running I/O is dispatched internally. Network and serial drivers keep their
+  connections in `SessionTable` (`driver-support/src/session.rs`): disconnect revokes every
+  retained sink and releases the transport, and `retire` does that for a whole backend and
+  refuses new sessions. `hypercolor-driver-conformance` holds that contract as one shared test.
 - **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer implemented by
   `ServoRenderer` and the CPU builtins in `core/src/effect/builtin/`. There is no native GPU
   shader renderer; wgpu drives the SparkleFlinger compositor instead.

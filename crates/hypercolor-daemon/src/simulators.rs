@@ -318,6 +318,22 @@ impl DeviceBackend for SimulatedDisplayBackend {
         Ok(())
     }
 
+    /// The simulator belongs to the daemon and no driver ever retires it,
+    /// so there is no later connect to refuse.
+    async fn retire(&self) -> Result<(), DeviceError> {
+        let open: Vec<DeviceId> = self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect();
+        for id in open {
+            self.disconnect(&id).await?;
+        }
+        Ok(())
+    }
+
     async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if colors.is_empty() {
             return Ok(());

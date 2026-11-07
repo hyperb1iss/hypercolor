@@ -260,7 +260,9 @@ impl WledBackend {
     /// The starting E1.31 universe assigned to a connected device.
     #[must_use]
     pub fn connected_e131_start_universe(&self, id: &DeviceId) -> Option<u16> {
-        self.sessions.facts(id).map(|facts| facts.e131_start_universe)
+        self.sessions
+            .facts(id)
+            .map(|facts| facts.e131_start_universe)
     }
 
     async fn ensure_shared_socket(&self) -> Result<Arc<UdpSocket>> {
@@ -465,7 +467,9 @@ impl DeviceBackend for WledBackend {
             e131_start_universe: device.e131_start_universe,
             local_addr: device.socket.local_addr().ok(),
         };
-        self.sessions.install(Session::new(*id, facts, device)).await
+        self.sessions
+            .install(Session::new(*id, facts, device))
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
@@ -487,13 +491,16 @@ impl DeviceBackend for WledBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions.facts(id).map(|facts| facts.target_fps).or_else(|| {
-            self.device_infos
-                .read()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(id)
-                .map(WledDeviceInfo::negotiated_target_fps)
-        })
+        self.sessions
+            .facts(id)
+            .map(|facts| facts.target_fps)
+            .or_else(|| {
+                self.device_infos
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(id)
+                    .map(WledDeviceInfo::negotiated_target_fps)
+            })
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {

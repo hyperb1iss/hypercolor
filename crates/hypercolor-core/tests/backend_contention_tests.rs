@@ -82,6 +82,10 @@ impl BlockingFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for BlockingFrameSink {
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
         self.entered.store(true, Ordering::Release);
         self.entered_notify.notify_waiters();
@@ -166,6 +170,10 @@ impl DeviceBackend for MultiDeviceSinkBackend {
         Ok(())
     }
 
+    async fn retire(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         self.fallback_count.fetch_add(1, Ordering::AcqRel);
         let Some(sink) = self.sinks.get(id) else {
@@ -241,6 +249,10 @@ impl DeviceBackend for ContentionMockBackend {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
         self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<()> {
         Ok(())
     }
 

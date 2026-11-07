@@ -204,10 +204,9 @@ impl GoveeSession {
         };
         match command {
             LanCommand::Razer { pt } => {
-                let address = self
-                    .route
-                    .address
-                    .with_context(|| format!("Govee device {} has no LAN address", self.device_id))?;
+                let address = self.route.address.with_context(|| {
+                    format!("Govee device {} has no LAN address", self.device_id)
+                })?;
                 started();
                 self.link.send_lan(address, LanCommand::Razer { pt }).await
             }
@@ -267,10 +266,9 @@ impl GoveeSession {
         if self.last_sent.as_deref() == Some(sent_frame.as_slice()) {
             return Ok(DeviceWriteOutcome::SuppressedDuplicate);
         }
-        if self
-            .last_write_at
-            .is_some_and(|last_write| last_write.elapsed() < self.route.frame_interval(&self.config))
-        {
+        if self.last_write_at.is_some_and(|last_write| {
+            last_write.elapsed() < self.route.frame_interval(&self.config)
+        }) {
             return Ok(DeviceWriteOutcome::SuppressedCadence);
         }
 
@@ -529,7 +527,8 @@ impl DeviceBackend for GoveeBackend {
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.route(id).map(|route| route.output_cadence(&self.config))
+        self.route(id)
+            .map(|route| route.output_cadence(&self.config))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

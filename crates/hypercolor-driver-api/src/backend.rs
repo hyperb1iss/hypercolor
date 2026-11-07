@@ -453,10 +453,7 @@ pub trait DeviceFrameSink: Send + Sync {
     /// This must be a nonblocking check of cached state, without transport I/O.
     /// Queues use it to stop suppressing identical payloads after an idle actor
     /// exits, so the next delivery can report the failure to device lifecycle.
-    /// Sinks without independent actor liveness may keep the default.
-    fn is_closed(&self) -> bool {
-        false
-    }
+    fn is_closed(&self) -> bool;
 
     /// Push shared LED color data to this device's output lane.
     ///
@@ -612,21 +609,38 @@ pub trait DeviceBackend: Send + Sync {
     /// or the transport-level connection fails.
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError>;
 
-    /// Cleanly disconnect from a device.
+    /// End a device's session.
+    ///
+    /// When this returns `Ok`, new operations are revoked, admitted I/O has
+    /// settled or been cancelled, bounded protocol cleanup has finished,
+    /// owned tasks are joined, and the session's transport is released. A
+    /// [`DeviceFrameSink`] retained from the session reports closed, rejects
+    /// every frame, and transmits nothing, however long it is held. A later
+    /// [`Self::connect`] opens a new session, and sinks from the old one stay
+    /// closed. Transport shared across a backend stays open for its other
+    /// sessions.
+    ///
+    /// Hosts should use `hypercolor_driver_support::SessionTable`, which
+    /// keeps this contract for them.
     ///
     /// # Errors
     ///
-    /// Returns an error if the disconnect operation fails.
+    /// Returns the cleanup failure when protocol cleanup failed or timed
+    /// out, and the session is over either way. A backend with no session
+    /// for `id` may report [`DeviceError::Disconnected`].
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError>;
 
-    /// Close every session on this backend and refuse new ones, for good.
+    /// End every session on this backend and refuse all later connects.
+    ///
+    /// The host calls this on a backend it has unregistered, whether or not
+    /// it knows of any session on it. That covers sessions it never tracked,
+    /// such as a temporary identify, and a connect still in flight, which
+    /// must fail instead of publishing a session.
     ///
     /// # Errors
     ///
-    /// Returns an error if protocol cleanup failed for a session.
-    async fn retire(&self) -> Result<(), DeviceError> {
-        Ok(())
-    }
+    /// Returns the first cleanup failure. Every session is over either way.
+    async fn retire(&self) -> Result<(), DeviceError>;
 
     /// Push LED color data to a connected device.
     ///
