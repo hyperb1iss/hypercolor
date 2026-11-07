@@ -18,9 +18,9 @@ use hypercolor_platform_fs::{
 
 use super::installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation};
 use super::ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
-use super::release_selection::{ReleaseRecords, decode_active_pointer, encode_active_pointer};
 use super::update_pipe::{UPDATE_PIPE_RECORD, UpdatePipeName};
 use crate::model::{InstallDisposition, InstallJournalV1, InstallModelError, UnitId};
+use crate::release_selection::{ReleaseRecords, decode_active_pointer, encode_active_pointer};
 
 const INSTALL_LOCK_FILE: &str = "install.lock";
 const INSTALL_JOURNAL_FILE: &str = "install-journal.json";

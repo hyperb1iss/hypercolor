@@ -34,7 +34,7 @@ use super::model::{
     WindowsUnitBinding, error,
 };
 use super::payload::bind_windows_unit;
-use super::release_selection::{ReleaseRecords as _, decode_active_pointer};
+use crate::release_selection::{ReleaseRecords as _, decode_active_pointer};
 use super::store::InstallStore;
 use super::update_service::{ScmUpdateService, install_bootstrap, restore_bootstrap};
 use crate::local_http::{MAX_HTTP_RESPONSE_BYTES, http_get};

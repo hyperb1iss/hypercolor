@@ -34,7 +34,6 @@ mod platform;
 #[cfg(all(test, unix))]
 mod platform_tests;
 mod record;
-mod release_selection;
 mod session;
 #[cfg(windows)]
 pub(crate) mod store;
@@ -42,6 +41,7 @@ mod unit;
 mod update_pipe;
 mod update_service;
 
+pub use crate::release_selection::{ReleaseRecords, ReleaseSelectionError, select_release};
 pub use error::ReleasePayloadError;
 pub use executor::WindowsInstallExecutor;
 pub use installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation, WindowsRuntimeMode};
@@ -61,7 +61,6 @@ pub use model::{
     WindowsRunningProcess, WindowsRuntime, WindowsRuntimeObservation, WindowsUnitBinding,
 };
 pub use platform::WindowsInstallPlatform;
-pub use release_selection::{ReleaseRecords, ReleaseSelectionError, select_release};
 pub use session::WindowsSessionHost;
 pub use unit::{
     WINDOWS_DURABLE_STORES_PATH, WindowsUnit, WindowsUnitError, WindowsUnitSources,
