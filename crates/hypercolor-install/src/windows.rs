@@ -12,8 +12,9 @@
 //! platform meets the rules the Windows store enforces. So do the decisions
 //! the programs outside a unit make: which release runs, which process may
 //! serve the update pipe, and how the service manager recovers the update
-//! service. So does every step of [`WindowsInstallPlatform`]. Only their
-//! Win32 hosts and everything that touches the store are Windows-only.
+//! service. So does every step of [`WindowsInstallPlatform`] and what an
+//! installer does with its unit. Only their Win32 hosts and everything that
+//! touches the store are Windows-only.
 
 mod error;
 mod executor;
@@ -35,6 +36,7 @@ mod platform;
 mod platform_tests;
 mod record;
 mod session;
+mod setup;
 #[cfg(windows)]
 pub(crate) mod store;
 mod unit;
@@ -62,6 +64,7 @@ pub use model::{
 };
 pub use platform::WindowsInstallPlatform;
 pub use session::WindowsSessionHost;
+pub use setup::{PendingTransaction, WindowsSetupHost, run_windows_setup};
 pub use unit::{
     WINDOWS_DURABLE_STORES_PATH, WindowsUnit, WindowsUnitError, WindowsUnitSources,
     produce_windows_unit,
@@ -84,6 +87,8 @@ pub use native::WindowsNativeExecutor;
 pub use ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
 #[cfg(windows)]
 pub use payload::{retain_installed_release_unit, stage_release_payload, validate_release_payload};
+#[cfg(windows)]
+pub use setup::{WindowsInstallRequest, install_windows_release};
 #[cfg(windows)]
 pub use store::WindowsReleaseRecords;
 #[cfg(windows)]

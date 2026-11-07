@@ -1132,6 +1132,161 @@ fn a_first_install_creates_the_rules_and_a_rollback_removes_them() {
     assert_eq!(harness.fixture.active_unit(), None);
 }
 
+/// What today's flat layout names, outside any unit.
+const FLAT_ROOT: &str = r"C:\Program Files\Hypercolor";
+
+fn flat_broker() -> String {
+    format!(r#""{FLAT_ROOT}\tools\hypercolor-smbus-service.exe""#)
+}
+
+fn flat_rules() -> WindowsFirewallObservation {
+    WindowsFirewallObservation {
+        daemon: Some(format!(r"{FLAT_ROOT}\hypercolor-daemon.exe")),
+        app: Some(format!(r"{FLAT_ROOT}\hypercolor-app.exe")),
+    }
+}
+
+/// A flat installation as an installer finds it: no pointer and no unit in
+/// use, the broker stopped for the copy, nothing running, and the broker and
+/// firewall rules still naming the flat files.
+fn flat_installation() -> Harness {
+    let harness = Harness::new();
+    harness.fixture.deactivate();
+    harness.with_world(|world| {
+        world.apps.clear();
+        world.daemons.clear();
+        world.bootstrap = None;
+        world.broker = Some(Broker {
+            image: flat_broker(),
+            process: None,
+        });
+        world.firewall = Some(flat_rules());
+    });
+    harness
+}
+
+fn assert_adopted(harness: &Harness) {
+    let candidate = harness.candidate();
+    assert_eq!(harness.fixture.active_unit().as_ref(), Some(&candidate));
+    let world = lock(&harness.world);
+    assert_eq!(
+        world.broker.as_ref().map(|broker| broker.image.clone()),
+        Some(format!(
+            "\"{}\"",
+            member_path(&candidate, WINDOWS_BROKER_PROGRAM)
+        ))
+    );
+    assert_eq!(
+        world.firewall,
+        Some(WindowsFirewallObservation {
+            daemon: Some(member_path(&candidate, WINDOWS_DAEMON_PROGRAM)),
+            app: Some(member_path(&candidate, WINDOWS_APP_PROGRAM)),
+        })
+    );
+    assert!(world.apps.is_empty() && world.daemons.is_empty());
+}
+
+fn assert_still_flat(harness: &Harness) {
+    assert_eq!(harness.fixture.active_unit(), None);
+    let world = lock(&harness.world);
+    assert_eq!(
+        world.broker.as_ref().map(|broker| broker.image.clone()),
+        Some(flat_broker())
+    );
+    assert_eq!(world.firewall, Some(flat_rules()));
+}
+
+#[test]
+fn adopting_a_flat_install_moves_its_names_and_starts_nothing() {
+    let harness = flat_installation();
+
+    let outcome = harness
+        .install_with(InstallTargetPolicy::Disabled)
+        .expect("no crash")
+        .expect("transaction");
+
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    assert_adopted(&harness);
+}
+
+#[test]
+fn an_installer_killed_at_every_boundary_of_an_adoption_is_finished_by_the_next() {
+    let clean = flat_installation();
+    clean
+        .install_with(InstallTargetPolicy::Disabled)
+        .expect("no crash")
+        .expect("transaction");
+    let boundaries = clean.passed();
+    assert!(boundaries > 4, "only {boundaries} boundaries");
+
+    for boundary in 1..=boundaries {
+        let harness = flat_installation();
+        harness.crash_at(Some(boundary));
+        harness
+            .install_with(InstallTargetPolicy::Disabled)
+            .expect_err("the crash this test armed");
+        harness.crash_at(None);
+
+        // The next installer drives what it finds to an end, then starts
+        // over if that end was not its own unit.
+        if harness.fixture.journal().is_some() {
+            harness.converge();
+        }
+        if harness.fixture.active_unit().as_ref() != Some(&harness.candidate()) {
+            harness
+                .install_with(InstallTargetPolicy::Disabled)
+                .expect("no crash")
+                .expect("transaction");
+        }
+
+        assert_adopted(&harness);
+    }
+}
+
+#[test]
+fn an_adoption_that_fails_puts_every_flat_name_back() {
+    let harness = flat_installation();
+    harness.with_world(|world| world.failing_rule = Some(WindowsFirewallRule::App));
+
+    let outcome = harness
+        .install_with(InstallTargetPolicy::Disabled)
+        .expect("no crash")
+        .expect("transaction");
+
+    assert!(is_rolled_back(&outcome), "{outcome:?}");
+    assert_still_flat(&harness);
+}
+
+#[test]
+fn an_adoption_killed_in_its_rollback_still_ends_flat() {
+    let probe = flat_installation();
+    probe.with_world(|world| world.failing_rule = Some(WindowsFirewallRule::App));
+    probe
+        .install_with(InstallTargetPolicy::Disabled)
+        .expect("no crash")
+        .expect("transaction");
+    let boundaries = probe.passed();
+
+    for boundary in 1..=boundaries {
+        let harness = flat_installation();
+        harness.with_world(|world| world.failing_rule = Some(WindowsFirewallRule::App));
+        harness.crash_at(Some(boundary));
+        harness
+            .install_with(InstallTargetPolicy::Disabled)
+            .expect_err("the crash this test armed");
+        harness.crash_at(None);
+        if harness.fixture.journal().is_some() {
+            harness.with_world(|world| world.failing_rule = None);
+            let outcome = harness.converge();
+            if matches!(outcome, InstallOutcome::Committed { .. }) {
+                assert_adopted(&harness);
+                continue;
+            }
+        }
+        assert_still_flat(&harness);
+    }
+}
+
 /// Prepare under `arrange` and return why the platform refused.
 fn refusal(arrange: impl FnOnce(&Harness), policy: InstallTargetPolicy) -> String {
     let harness = Harness::new();
