@@ -56,6 +56,11 @@ pub use hypercolor_types::api::devices::{
 };
 
 const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
+/// Longest one identify write may hold the output transition guard, which
+/// brightness, pause, and stop all wait on. A direct write waits for the
+/// transport, and this sits past the slowest healthy first frame: WLED's
+/// three second realtime entry.
+const IDENTIFY_WRITE_TIMEOUT: Duration = Duration::from_secs(4);
 const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];
 
 #[derive(Debug)]
@@ -1278,7 +1283,7 @@ async fn run_identify_flash(
             elapsed_ms = started_at.elapsed().as_millis(),
             "identify issuing final clear frame"
         );
-        let clear_result = direct_backend.write_colors(device_id, &off_frame).await;
+        let clear_result = write_identify_frame(&direct_backend, device_id, &off_frame).await;
         if let Err(error) = clear_result {
             warn!(
                 backend_id = %backend_id,
@@ -1286,6 +1291,7 @@ async fn run_identify_flash(
                 error = %error,
                 "identify clear write failed"
             );
+            identify_failed = true;
         }
     }
 
@@ -1374,8 +1380,25 @@ async fn write_identify_output_if_running(
     if output_power.snapshot().sleeping() {
         return Ok(false);
     }
-    direct_backend.write_colors(device_id, colors).await?;
+    write_identify_frame(direct_backend, device_id, colors).await?;
     Ok(true)
+}
+
+/// Write one identify frame, for a caller holding the output transition
+/// guard. The guard orders identify against sleep, so it stays held, and this
+/// bounds how long a wedged transport can make global controls wait for it.
+async fn write_identify_frame(
+    direct_backend: &BackendIo,
+    device_id: DeviceId,
+    colors: &[[u8; 3]],
+) -> anyhow::Result<()> {
+    tokio::time::timeout(
+        IDENTIFY_WRITE_TIMEOUT,
+        direct_backend.write_colors(device_id, colors),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("identify write timed out after {IDENTIFY_WRITE_TIMEOUT:?}"))??;
+    Ok(())
 }
 
 async fn prepare_identify_backend(

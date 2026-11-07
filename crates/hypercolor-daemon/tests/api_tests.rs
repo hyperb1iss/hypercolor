@@ -1013,6 +1013,53 @@ impl DeviceBackend for IdentifyRecordingBackend {
     }
 }
 
+/// Answers the first writes, then wedges every later one forever.
+struct WedgingIdentifyBackend {
+    writes_before_wedge: usize,
+    writes: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for WedgingIdentifyBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "wled".to_owned(),
+            name: "Wedging Identify Backend".to_owned(),
+            description: "Stops answering writes partway through an identify".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        _colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
+        if self.writes.fetch_add(1, Ordering::SeqCst) >= self.writes_before_wedge {
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
+}
+
 impl DisconnectRecordingBackend {
     fn new(expected_device_id: DeviceId, disconnects: Arc<AtomicUsize>) -> Self {
         Self {
@@ -12882,6 +12929,128 @@ async fn pause_preempts_identify_and_holds_black_output() {
             .last()
             .is_some_and(|frame| frame.iter().all(|color| *color == [0, 0, 0]))
     );
+}
+
+/// What a wedged identify write may cost a global control: the write bound
+/// in the API, plus room for a loaded machine.
+const WEDGED_IDENTIFY_BOUND: Duration = Duration::from_secs(6);
+
+async fn wedging_identify_app(
+    writes_before_wedge: usize,
+) -> (axum::Router, DeviceId, Arc<AppState>, Arc<AtomicUsize>) {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Wedging Strip").await;
+    let device_info = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("test device should exist")
+        .info;
+    let layout_device_id = format!("identify:{device_id}");
+    let writes = Arc::new(AtomicUsize::new(0));
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Arc::new(WedgingIdentifyBackend {
+            writes_before_wedge,
+            writes: Arc::clone(&writes),
+        }));
+        manager
+            .connect_device("wled", device_id, &layout_device_id)
+            .await
+            .expect("test device should connect");
+        assert!(manager.set_device_zone_segments(&layout_device_id, &device_info));
+    }
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    let app = test_app_with_state(Arc::clone(&state));
+    (app, device_id, state, writes)
+}
+
+fn identify_request(device_id: DeviceId, duration_ms: u64) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/devices/{device_id}/identify"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"{{"duration_ms":{duration_ms}}}"#)))
+        .expect("failed to build request")
+}
+
+async fn wait_for_write_attempts(writes: &AtomicUsize, count: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while writes.load(Ordering::SeqCst) < count {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("identify should reach the wedged write");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_identify_write_fails_and_releases_global_output_controls() {
+    let (app, device_id, _state, writes) = wedging_identify_app(0).await;
+
+    let identify = tokio::spawn({
+        let app = app.clone();
+        async move { app.oneshot(identify_request(device_id, 10_000)).await }
+    });
+    wait_for_write_attempts(&writes, 1).await;
+
+    // Pause needs the guard the wedged write is under.
+    let paused = tokio::time::timeout(
+        WEDGED_IDENTIFY_BOUND,
+        app.oneshot(output_patch_request(r#"{"power":"paused"}"#)),
+    )
+    .await
+    .expect("a wedged identify write must not hold global controls past its bound")
+    .expect("failed to execute pause request");
+    assert_eq!(paused.status(), StatusCode::OK);
+
+    let identify = identify
+        .await
+        .expect("identify task should join")
+        .expect("failed to execute identify request");
+    assert_eq!(
+        identify.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a timed-out write is a failed identify"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_identify_clear_releases_global_output_controls() {
+    let (app, device_id, state, writes) = wedging_identify_app(1).await;
+
+    let identify = app
+        .clone()
+        .oneshot(identify_request(device_id, 1))
+        .await
+        .expect("failed to execute identify request");
+    assert_eq!(identify.status(), StatusCode::OK);
+    wait_for_write_attempts(&writes, 2).await;
+
+    let paused = tokio::time::timeout(
+        WEDGED_IDENTIFY_BOUND,
+        app.oneshot(output_patch_request(r#"{"power":"paused"}"#)),
+    )
+    .await
+    .expect("a wedged identify clear must not hold global controls past its bound")
+    .expect("failed to execute pause request");
+    assert_eq!(paused.status(), StatusCode::OK);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state
+            .backend_manager
+            .lock()
+            .await
+            .is_direct_control_active("wled", device_id)
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("identify should end once its clear gives up");
 }
 
 #[tokio::test]
