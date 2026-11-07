@@ -118,6 +118,7 @@ jobs:
       sdk: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.sdk }}
       ui: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.ui }}
       compat: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.compat }}
+      windows_installer: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.windows_installer }}
       docs: ${{ steps.filter.outputs.docs }}
       nix: ${{ steps.filter.outputs.nix }}
       workflow: ${{ steps.filter.outputs.workflow }}
@@ -219,6 +220,26 @@ jobs:
               - 'docs/content/hardware/compatibility.md'
               - 'scripts/gen-compat.ts'
               - 'scripts/gen-compat.test.ts'
+            windows_installer:
+              - 'crates/hypercolor-app/installer*'
+              - 'crates/hypercolor-app/src/autostart.rs'
+              - 'crates/hypercolor-app/tauri*.json'
+              - 'crates/hypercolor-cli/src/windows_install.rs'
+              - 'crates/hypercolor-install/src/bin/**'
+              - 'crates/hypercolor-install/src/windows/**'
+              - 'crates/hypercolor-windows-install-native/**'
+              - 'crates/hypercolor-windows-launcher/**'
+              - 'crates/hypercolor-windows-pawnio/src/windows/log_directory.rs'
+              - 'crates/hypercolor-windows-pawnio/src/windows/broker.rs'
+              - 'scripts/build-windows-installer.ps1'
+              - 'scripts/check-windows-dll-closure.ps1'
+              - 'scripts/fetch-pawnio-assets.ps1'
+              - 'scripts/install-bundled-pawnio.ps1'
+              - 'scripts/install-windows-hardware-support.ps1'
+              - 'scripts/install-windows-smbus-service.ps1'
+              - 'scripts/produce-windows-unit.ps1'
+              - 'scripts/stage-app-bundle-assets.ps1'
+              - 'scripts/test-windows-installer-upgrade.ps1'
             docs:
               - 'docs/**'
               - '.agents/**/*.md'
@@ -1177,6 +1198,118 @@ jobs:
           ./scripts/cargo-cache-build.ps1 cargo nextest run --locked
           -p hypercolor-install -p hypercolor-windows-install-native
           --run-ignored only --no-tests=fail --test-threads=1
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
+  # Builds a real installer and runs it on a real machine: from the last flat
+  # release through a kill mid-adoption, with and without the update service.
+  # A release build carries Servo and takes hours, and nothing here renders,
+  # so this builds the dev profile without it. The release lane runs the same
+  # upgrade proof against the real thing.
+  windows-installer:
+    name: Windows Installer
+    needs: changes
+    if: needs.changes.outputs.windows_installer == 'true'
+    runs-on: windows-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
+    timeout-minutes: 150
+    env:
+      # Absolute, because the Tauri steps run from crates/hypercolor-app.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      # The Tauri steps run cargo directly, outside the cache wrappers.
+      RUSTC_WRAPPER: sccache
+      # The release this proof adopts: the last one with a flat layout.
+      FLAT_RELEASE: v0.9.0
+      # Above the flat release, which an in-place upgrade needs.
+      PROOF_VERSION: 0.9.1-proof.1
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
+          shared-key: windows-installer
+          workspaces: . -> target
+          archive-key: dependencies
+          cache-on-failure: "true"
+
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-binstall
+
+      - name: Install Tauri CLI
+        # The exact version installer.nsi forks; see build-native-app.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo binstall -y --targets x86_64-pc-windows-msvc "tauri-cli@=2.12.1" || cargo install tauri-cli --version "=2.12.1" --locked
+
+      - name: Stage fixture web assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path crates/hypercolor-ui/dist, effects/hypercolor | Out-Null
+          Set-Content -LiteralPath crates/hypercolor-ui/dist/index.html -Value '<!doctype html><title>Hypercolor installer proof</title>'
+          Set-Content -LiteralPath effects/hypercolor/proof.html -Value '<!doctype html><title>Proof</title>'
+          $configPath = "crates/hypercolor-app/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.version = $env:PROOF_VERSION
+          $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
+
+      - name: Build the open source installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/build-windows-installer.ps1 -Profile dev -SkipUi -SkipEffects -NoServo
+          $proof = Join-Path $env:RUNNER_TEMP "installer-proof"
+          New-Item -ItemType Directory -Force -Path $proof | Out-Null
+          Copy-Item -Path "target/debug/bundle/nsis/*_x64-setup.exe" -Destination (Join-Path $proof "open-source-setup.exe")
+
+      - name: Build the managed installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/build-windows-installer.ps1 -Profile dev -SkipUi -SkipEffects -NoServo -ManagedUpdate
+          Copy-Item -Path "target/debug/bundle/nsis/*_x64-setup.exe" -Destination (Join-Path $env:RUNNER_TEMP "installer-proof/managed-setup.exe")
+
+      - name: Verify installer DLL closure
+        shell: pwsh
+        run: ./scripts/check-windows-dll-closure.ps1 -Installer (Join-Path $env:RUNNER_TEMP "installer-proof/managed-setup.exe")
+
+      - name: Prove installs, upgrades, kills and uninstalls
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $proof = Join-Path $env:RUNNER_TEMP "installer-proof"
+          gh release download $env:FLAT_RELEASE --repo $env:GITHUB_REPOSITORY --pattern "*_x64-setup.exe" --dir (Join-Path $proof "flat") --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release download $env:FLAT_RELEASE failed with exit code $LASTEXITCODE" }
+          $flat = (Get-ChildItem (Join-Path $proof "flat") -Filter "*_x64-setup.exe" | Select-Object -First 1).FullName
+          $openSource = Join-Path $proof "open-source-setup.exe"
+          $managed = Join-Path $proof "managed-setup.exe"
+          $harness = "./scripts/test-windows-installer-upgrade.ps1"
+          & $harness -Mode Fresh -CandidateInstaller $openSource
+          & $harness -Mode Fresh -CandidateInstaller $managed -Managed
+          foreach ($mode in "Silent", "Interactive", "Killed") {
+            & $harness -Mode $mode -PreviousInstaller $flat -CandidateInstaller $managed -Managed
+          }
+          & $harness -Mode Silent -PreviousInstaller $flat -CandidateInstaller $openSource
+          & $harness -Mode Replace -PreviousInstaller $managed -CandidateInstaller $openSource
+          & $harness -Mode Replace -PreviousInstaller $openSource -CandidateInstaller $managed -Managed
 
       - name: Save Rust build caches
         if: always()
@@ -3135,7 +3268,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app, sign-windows, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-windows-update-service, rust-windows-gpu, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [build-release, build-native-app, sign-windows, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-windows-update-service, windows-installer, rust-windows-gpu, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
