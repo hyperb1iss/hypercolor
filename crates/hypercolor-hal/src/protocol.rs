@@ -21,7 +21,9 @@ pub enum FrameBatch {
     /// The device already shows this frame, so there is nothing to write.
     Unchanged,
     /// The frame waits behind output the device has not confirmed, and the
-    /// protocol sends the newest one itself when it can.
+    /// protocol sends the newest one itself when it can. Any commands are the
+    /// protocol's own upkeep, such as a probe for that confirmation: they
+    /// still go out, and they are not this frame.
     Held,
 }
 

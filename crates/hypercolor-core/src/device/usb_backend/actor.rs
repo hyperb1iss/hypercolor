@@ -773,7 +773,14 @@ impl UsbBackend {
             }
             FrameBatch::Held => {
                 attempt.skip(held_frame_skip(protocol));
-                return Ok(());
+                return Self::run_held_commands(
+                    device_id,
+                    protocol,
+                    transport,
+                    frame.colors(),
+                    commands,
+                )
+                .await;
             }
         };
         let transmission = attempt.start();
@@ -818,6 +825,37 @@ impl UsbBackend {
                 ));
                 Err(error)
             }
+        }
+    }
+
+    /// Send what a held batch carries. It is not the frame, but a protocol
+    /// waiting on a confirmation needs its probe out to ever get one.
+    async fn run_held_commands(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
+        if commands.is_empty() {
+            return Ok(());
+        }
+        match Self::run_encoded_frame(device_id, protocol, transport, colors, commands).await {
+            Ok(()) => Ok(()),
+            Err(error)
+                if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
+            {
+                warn!(
+                    device_id = %device_id,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    error_chain = %format_error_chain(&error),
+                    "transient USB held batch write failed; actor will continue"
+                );
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 

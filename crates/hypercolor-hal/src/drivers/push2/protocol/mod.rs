@@ -303,15 +303,22 @@ impl Protocol for Push2Protocol {
         state.capturing_factory = false;
 
         let mut buffer = CommandBuffer::new(commands);
-        if let flow::BatchStart::Proceed(mut budget) =
-            flow::begin_batch(&mut state, now, &mut buffer)
-        {
-            let deferred =
-                led_palette::encode_led_batch(&mut state, normalized, &mut buffer, &mut budget);
-            flow::finish_batch(&mut state, &budget, deferred, &mut buffer);
-        }
+        let held = match flow::begin_batch(&mut state, now, &mut buffer) {
+            flow::BatchStart::Proceed(mut budget) => {
+                let deferred =
+                    led_palette::encode_led_batch(&mut state, normalized, &mut buffer, &mut budget);
+                flow::finish_batch(&mut state, &budget, deferred, &mut buffer);
+                false
+            }
+            // At most a probe for the acknowledgement went in; no LED did.
+            flow::BatchStart::Hold => true,
+        };
         buffer.finish();
-        FrameBatch::from_commands(commands)
+        if held {
+            FrameBatch::Held
+        } else {
+            FrameBatch::from_commands(commands)
+        }
     }
 
     #[expect(clippy::similar_names, reason = "lsb/msb are standard acronyms")]

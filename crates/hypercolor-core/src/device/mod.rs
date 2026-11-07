@@ -53,16 +53,18 @@ pub use usb_backend::{
 pub use usb_hotplug::{UsbHotplugEvent, UsbHotplugMonitor};
 pub use usb_scanner::UsbScanner;
 
-/// When to offer a held frame again, for a protocol with no pump cadence.
+/// The soonest a held frame is offered again, so a held lane never spins.
 const HELD_FRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// The skip for a frame `protocol` holds behind unconfirmed output. The
-/// protocol sends the newest frame itself, so the lane comes back at its next
-/// pump.
+/// The skip for a frame `protocol` holds behind unconfirmed output. It comes
+/// back at the next pump, or the next frame slot for a protocol with no pump.
 pub(crate) fn held_frame_skip(
     protocol: &dyn hypercolor_hal::protocol::Protocol,
 ) -> hypercolor_driver_api::SkipReason {
-    let wait = protocol.frame_pump_interval().unwrap_or(HELD_FRAME_RETRY);
+    let wait = protocol
+        .frame_pump_interval()
+        .unwrap_or_else(|| protocol.frame_interval())
+        .max(HELD_FRAME_RETRY);
     hypercolor_driver_api::SkipReason::Deferred {
         retry_at: std::time::Instant::now() + wait,
     }

@@ -72,7 +72,19 @@ impl DeviceSession for SmBusSession {
             } => (pixel_bytes, completion),
             FrameBatch::Unchanged => return attempt.skip(SkipReason::Unchanged).into(),
             FrameBatch::Held => {
-                return attempt.skip(held_frame_skip(self.protocol.as_ref())).into();
+                let receipt = attempt.skip(held_frame_skip(self.protocol.as_ref()));
+                // Not the frame, but what the protocol needs to get unstuck.
+                if !self.frame_commands.is_empty()
+                    && let Err(error) = run_commands(
+                        self.protocol.as_ref(),
+                        self.transport.as_ref(),
+                        self.frame_commands.as_slice(),
+                    )
+                    .await
+                {
+                    warn!(device_id = %self.device_id, error = %error, "SMBus held batch failed");
+                }
+                return receipt.into();
             }
         };
         let transmission = attempt.start();

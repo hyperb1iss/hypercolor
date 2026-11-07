@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use hypercolor_driver_api::{DeliveryResult, FrameObserver, IoStage, Receipt};
+use hypercolor_driver_api::{DeliveryResult, FrameObserver, IoStage, Receipt, SkipReason};
 use hypercolor_hal::display::DisplayEncodeError;
 use hypercolor_hal::protocol::{
     FrameBatch, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
@@ -3111,6 +3111,112 @@ async fn a_partly_written_frame_is_acknowledged_with_the_bytes_written() {
         18,
         "only the bytes the protocol wrote are counted"
     );
+
+    drop(frame_tx);
+    let result = timeout(Duration::from_secs(1), actor)
+        .await
+        .expect("the actor stops once its frame source is gone")
+        .expect("actor task joins");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+/// Holds every frame, the way a protocol waiting on a confirmation does,
+/// with one probe in the batch.
+struct HoldingProtocol;
+
+const HELD_PROBE: u8 = 0x5A;
+
+impl Protocol for HoldingProtocol {
+    fn name(&self) -> &'static str {
+        "holding"
+    }
+
+    fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn encode_frame(&self, _colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        vec![test_command(HELD_PROBE)]
+    }
+
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
+        commands.clear();
+        commands.extend(self.encode_frame(colors));
+        FrameBatch::Held
+    }
+
+    fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
+        Ok(ProtocolResponse {
+            status: ResponseStatus::Ok,
+            data: Vec::new(),
+        })
+    }
+
+    fn zones(&self) -> Vec<SegmentInfo> {
+        Vec::new()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities::default()
+    }
+
+    fn total_leds(&self) -> u32 {
+        10
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_millis(16)
+    }
+}
+
+/// A held batch settles as not written, but its probe still goes out. Without
+/// that the confirmation it waits for never comes and the lane wedges.
+#[tokio::test]
+async fn a_held_batch_reaches_the_transport_and_settles_as_not_written() {
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let transport = Arc::new(RecordingTransport::default());
+    let transport_for_actor: Arc<dyn Transport> = transport.clone();
+    let protocol: Arc<dyn Protocol> = Arc::new(HoldingProtocol);
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "holding-test-device",
+        protocol,
+        transport_for_actor,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let id = DeviceDeliveryId {
+        queue_generation: 12,
+        sequence: 1,
+    };
+    let (frame, ack) = tracked_frame(id, Arc::new(vec![[1, 2, 3]; 10]));
+    frame_tx.send_replace(Some(Arc::new(frame)));
+    let ack = timeout(Duration::from_secs(1), ack)
+        .await
+        .expect("the frame is acknowledged")
+        .expect("acknowledgement channel stays open");
+    assert!(
+        matches!(
+            ack.result(),
+            DeliveryResult::NotWritten(SkipReason::Deferred { .. })
+        ),
+        "a probe is not the frame: {:?}",
+        ack.result()
+    );
+    assert_eq!(ack.transport_latency(), Duration::ZERO);
+    assert_eq!(wait_for_writes(&transport, 1).await, vec![vec![HELD_PROBE]]);
 
     drop(frame_tx);
     let result = timeout(Duration::from_secs(1), actor)
