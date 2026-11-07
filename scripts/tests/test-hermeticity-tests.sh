@@ -90,6 +90,32 @@ fn t() {
 RS
 expect_fail second-daemon "never calls MdnsScope::Loopback.restrict(&second)"
 
+# A restriction in another test never covers this one, even on the same name.
+root="$(case_root other-test)"
+place "$root" tests/demo_tests.rs <<'RS'
+fn first() {
+    let daemon = ServiceDaemon::new().expect("daemon");
+    daemon.register(info);
+}
+
+fn second() {
+    let daemon = ServiceDaemon::new().expect("daemon");
+    MdnsScope::Loopback.restrict(&daemon).expect("scope");
+}
+RS
+expect_fail other-test "tests/demo_tests.rs:2: ServiceDaemon::new never calls MdnsScope::Loopback.restrict(&daemon)"
+
+# Restricting after the daemon already reached the network is too late.
+root="$(case_root late-restriction)"
+place "$root" tests/demo_tests.rs <<'RS'
+fn t() {
+    let daemon = ServiceDaemon::new().expect("daemon");
+    daemon.register(info);
+    MdnsScope::Loopback.restrict(&daemon).expect("scope");
+}
+RS
+expect_fail late-restriction "ServiceDaemon::new uses daemon before MdnsScope::Loopback.restrict(&daemon)"
+
 # Inline cfg(test) modules count as test code.
 root="$(case_root inline-module)"
 place "$root" src/lib.rs <<'RS'

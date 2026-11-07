@@ -101,6 +101,18 @@ def binding_before(masked, start):
     return found.group(1) if found else None
 
 
+def enclosing_block_end(masked, offset):
+    depth = 0
+    for j in range(offset - 1, -1, -1):
+        if masked[j] == "}":
+            depth += 1
+        elif masked[j] == "{":
+            if depth == 0:
+                return closing(masked, j)
+            depth -= 1
+    return len(masked)
+
+
 def problem(rust, match):
     name = match.group(1)
     masked = rust.masked
@@ -119,14 +131,22 @@ def problem(rust, match):
     if name == "MdnsBrowser::with_scope":
         args = arguments(masked, open_paren)
         return None if compact(args[0]) == "MdnsScope::Loopback" else "browses beyond loopback"
-    # ServiceDaemon: the bound daemon must be restricted after construction.
+    # ServiceDaemon: restricting this binding must be the first thing that
+    # happens to it, in the block that owns it.
     binding = binding_before(masked, match.start())
     if binding is None:
         return "bind the daemon and call MdnsScope::Loopback.restrict(&daemon)"
-    tail = compact(masked[match.end() :])
-    if f"MdnsScope::Loopback.restrict(&{binding})" in tail:
-        return None
-    return f"never calls MdnsScope::Loopback.restrict(&{binding})"
+    start = match.start() + len(statement(masked, match.start()))
+    block = masked[start : enclosing_block_end(masked, match.start())]
+    restriction = re.search(
+        rf"MdnsScope::Loopback\s*\.\s*restrict\s*\(\s*&\s*({binding})\b", block
+    )
+    if restriction is None:
+        return f"never calls MdnsScope::Loopback.restrict(&{binding})"
+    first_use = re.search(rf"\b{binding}\b", block)
+    if first_use.start() != restriction.start(1):
+        return f"uses {binding} before MdnsScope::Loopback.restrict(&{binding})"
+    return None
 
 
 failures = []
