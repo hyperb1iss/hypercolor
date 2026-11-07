@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::paths::IsolatedUserDirs;
 #[cfg(feature = "servo-gpu-import")]
 use crate::effect::servo::set_servo_gpu_import_mode;
 use crate::effect::servo::worker::{
@@ -198,6 +199,30 @@ fn wait_for_load_completion(renderer: &mut ServoRenderer) {
         thread::sleep(Duration::from_millis(10));
     }
     panic!("Servo load task should complete");
+}
+
+/// An HTML effect on disk with the user directories claimed. Loading a page
+/// writes a runtime copy to the cache, so a test that loads one needs both.
+///
+/// Field order matters: the claim clears its overrides before the directory
+/// it pointed at is removed.
+struct PageFixture {
+    _dirs: Arc<IsolatedUserDirs>,
+    _root: tempfile::TempDir,
+    source_path: PathBuf,
+}
+
+fn page_fixture() -> PageFixture {
+    let root = tempfile::tempdir().expect("temporary directory");
+    let dirs = IsolatedUserDirs::claim(root.path());
+    let source_path = root.path().join("effect.html");
+    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+        .expect("write source html");
+    PageFixture {
+        _dirs: dirs,
+        _root: root,
+        source_path,
+    }
 }
 
 fn html_metadata(path: PathBuf) -> EffectMetadata {
@@ -424,10 +449,8 @@ fn display_faces_submit_gpu_preferred_renders_when_import_is_on() {
         spawn_render_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("face.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = display_html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -570,12 +593,8 @@ fn init_with_canvas_size_returns_before_servo_session_create_completes() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    // Loading a page writes a runtime copy to the cache, so claim it.
-    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -617,12 +636,8 @@ fn render_into_uses_placeholder_while_servo_load_is_pending() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    // Loading a page writes a runtime copy to the cache, so claim it.
-    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -673,12 +688,8 @@ fn init_with_canvas_size_reuses_previous_canvas_while_new_effect_loads() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    // Loading a page writes a runtime copy to the cache, so claim it.
-    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
@@ -723,12 +734,8 @@ fn renderer_warms_from_load_start_until_the_new_page_renders_its_first_frame() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    // Loading a page writes a runtime copy to the cache, so claim it.
-    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let mut renderer = ServoRenderer::new();
     assert!(
@@ -784,10 +791,8 @@ fn presented_frames_count_only_frames_the_current_page_completed() {
     let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let mut renderer = ServoRenderer::new();
     renderer.initialized = true;
@@ -842,10 +847,8 @@ fn a_session_lost_before_its_first_frame_presents_nothing() {
     let (worker, load_rx, release_tx, _unload_rx, _stopped) = spawn_blocking_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let mut renderer = ServoRenderer::new();
     renderer
@@ -936,12 +939,8 @@ fn init_with_canvas_size_loads_servo_page_at_target_resolution() {
     let (worker, load_rx, unload_rx, stopped) = spawn_load_test_worker();
     install_running_shared_worker(worker);
 
-    let temp_dir = tempfile::tempdir().expect("temporary directory");
-    // Loading a page writes a runtime copy to the cache, so claim it.
-    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
-    let source_path = temp_dir.path().join("effect.html");
-    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
-        .expect("write source html");
+    let page = page_fixture();
+    let source_path = page.source_path.clone();
 
     let metadata = html_metadata(source_path);
     let mut renderer = ServoRenderer::new();
