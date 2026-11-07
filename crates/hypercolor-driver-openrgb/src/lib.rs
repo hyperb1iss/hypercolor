@@ -9,14 +9,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Error, Result, bail};
+use anyhow::{Context, Error, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceBackendFactory, DeviceFrameSink, DiscoveredDevice,
+    Attempt, BackendInfo, DeviceBackend, DeviceBackendFactory, DeviceFrameSink, DiscoveredDevice,
     DiscoveryBatch, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
     DriverConfigProvider, DriverConfigView, DriverContext, DriverDescriptor, DriverError,
     DriverHost, DriverModule, DriverPresentationProvider, DriverRuntimeActions, Frame,
-    MailboxFrame, OutputBinding, OutputPolicy, Submission,
+    MailboxFrame, OutputBinding, OutputPolicy, Receipt, Submission,
 };
 use hypercolor_driver_support::{DeviceSession, Session, SessionSink, SessionTable};
 use hypercolor_openrgb_sdk::{
@@ -857,18 +857,8 @@ async fn run_openrgb_output_worker(
         let Some(attempt) = frame.claim() else {
             continue;
         };
-        let transmission = attempt.start();
         next_slot = Some(Instant::now() + frame_interval);
-        match write_controller_colors(&endpoint, &controller, frame.colors()).await {
-            Ok(()) => {
-                transmission.written();
-            }
-            Err(error) => {
-                let error =
-                    map_openrgb_device_error(device_id, &error, OpenRgbDeviceOperation::Write);
-                transmission.failed(error);
-            }
-        }
+        write_controller_colors(device_id, &endpoint, &controller, frame.colors(), attempt).await;
     }
 }
 
@@ -921,22 +911,31 @@ const fn is_openrgb_transport_failure(error: &OpenRgbError) -> bool {
 /// task uses the same order), so a writer never blocks re-enumeration. When a
 /// `DEVICE_LIST_UPDATED` is pending the writer parks until the endpoint task
 /// has remapped every route instead of streaming to a possibly stale index.
+/// Write one frame and settle its attempt.
+///
+/// Transport starts at the frame's own `update_leds`. Everything before that
+/// is admission: waiting for the shared link, the controller, and a device
+/// list update, any of which can fail with nothing of the frame on the wire.
 async fn write_controller_colors(
+    device_id: DeviceId,
     endpoint: &EndpointConnection,
     controller: &Arc<Mutex<ConnectedController>>,
     colors: &[[u8; 3]],
-) -> Result<()> {
+    attempt: Attempt,
+) -> Receipt {
+    let write_error =
+        |error: Error| map_openrgb_device_error(device_id, &error, OpenRgbDeviceOperation::Write);
     let mut enumeration = endpoint.enumeration.subscribe();
-    for attempt in 0..2_u8 {
+    for round in 0..2_u8 {
         let generation = *enumeration.borrow_and_update();
         {
             let mut link = endpoint.link.lock().await;
             if link.client.is_none() {
-                bail!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint);
+                return attempt.reject(write_error(reconnecting(endpoint)));
             }
             if !link.stale_device_list {
                 let Some(client) = link.client.as_mut() else {
-                    bail!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint);
+                    return attempt.reject(write_error(reconnecting(endpoint)));
                 };
                 let saw_update = match client.drain_pending_packets() {
                     Ok(packets) => packets
@@ -945,7 +944,7 @@ async fn write_controller_colors(
                     Err(error) => {
                         let error = Error::new(error).context("OpenRGB notification drain failed");
                         endpoint.fail_link(&mut link, &error).await;
-                        return Err(error);
+                        return attempt.reject(write_error(error));
                     }
                 };
                 if saw_update {
@@ -954,31 +953,35 @@ async fn write_controller_colors(
             }
             if !link.stale_device_list {
                 let Some(client) = link.client.as_mut() else {
-                    bail!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint);
+                    return attempt.reject(write_error(reconnecting(endpoint)));
                 };
                 let (controller_index, shaped) = {
                     let mut controller = controller.lock().await;
                     if !controller.accepting_frames {
-                        bail!("OpenRGB controller is disconnected");
+                        return attempt
+                            .reject(write_error(anyhow!("OpenRGB controller is disconnected")));
                     }
-                    ensure_route_output_enabled(&controller.route)?;
-                    let shaped = shape_frame_colors(&mut controller, colors)?;
-                    (controller.route.controller_index, shaped)
+                    let shaped = ensure_route_output_enabled(&controller.route)
+                        .and_then(|()| shape_frame_colors(&mut controller, colors));
+                    match shaped {
+                        Ok(shaped) => (controller.route.controller_index, shaped),
+                        Err(error) => return attempt.reject(write_error(error)),
+                    }
                 };
-                let written = client.update_leds(controller_index, &shaped).await;
-                return match written {
-                    Ok(()) => Ok(()),
+                let transmission = attempt.start();
+                return match client.update_leds(controller_index, &shaped).await {
+                    Ok(()) => transmission.written(),
                     Err(error) => {
                         let error = Error::new(error).context("OpenRGB update_leds failed");
                         if is_link_error(&error) {
                             endpoint.fail_link(&mut link, &error).await;
                         }
-                        Err(error)
+                        transmission.failed(write_error(error))
                     }
                 };
             }
         }
-        if attempt == 0 {
+        if round == 0 {
             match timeout(
                 ENUMERATION_WAIT,
                 enumeration.wait_for(|current| *current > generation),
@@ -986,22 +989,30 @@ async fn write_controller_colors(
             .await
             {
                 Ok(Ok(_)) => {}
-                Ok(Err(_)) => bail!(
-                    "OpenRGB endpoint task for {} stopped before re-enumerating",
-                    endpoint.endpoint
-                ),
-                Err(_) => bail!(
-                    "OpenRGB device list update at {} did not settle within {:?}",
-                    endpoint.endpoint,
-                    ENUMERATION_WAIT
-                ),
+                Ok(Err(_)) => {
+                    return attempt.reject(write_error(anyhow!(
+                        "OpenRGB endpoint task for {} stopped before re-enumerating",
+                        endpoint.endpoint
+                    )));
+                }
+                Err(_) => {
+                    return attempt.reject(write_error(anyhow!(
+                        "OpenRGB device list update at {} did not settle within {:?}",
+                        endpoint.endpoint,
+                        ENUMERATION_WAIT
+                    )));
+                }
             }
         }
     }
-    bail!(
+    attempt.reject(write_error(anyhow!(
         "OpenRGB device list update at {} is still pending",
         endpoint.endpoint
-    )
+    )))
+}
+
+fn reconnecting(endpoint: &EndpointConnection) -> Error {
+    anyhow!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint)
 }
 
 /// Fit a frame to the controller's LED count.

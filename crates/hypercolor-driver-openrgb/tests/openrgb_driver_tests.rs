@@ -264,6 +264,23 @@ async fn endpoint_reconnects_with_bounded_backoff_after_socket_close() {
         "the dropped socket surfaces on the next frame"
     );
 
+    // The link is down now, so a frame fails before it reaches any I/O.
+    let refused = sink
+        .offer_to_sink(device_id, Arc::new(vec![[11, 22, 33], [44, 55, 66]]))
+        .await;
+    assert!(
+        matches!(
+            refused.result(),
+            DeliveryResult::Failed {
+                stage: IoStage::Admission,
+                ..
+            }
+        ),
+        "{:?}",
+        refused.result()
+    );
+    assert_eq!(refused.transport_latency(), Duration::ZERO);
+
     let mut recovered = false;
     for _ in 0..40 {
         let ack = tokio::time::timeout(
