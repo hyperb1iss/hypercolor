@@ -17,7 +17,8 @@ use serde::Deserialize;
 use tokio::net::UdpSocket;
 
 use super::cache::WledDeviceInfo;
-use hypercolor_driver_api::{DeviceDeliveryId, DeviceDeliveryObserver, DeviceWriteOutcome};
+use hypercolor_driver_api::DeviceWriteOutcome;
+use hypercolor_driver_support::FrameDelivery;
 use hypercolor_pixel_protocols::ddp::{
     DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DdpSequence, build_ddp_frame,
 };
@@ -125,6 +126,8 @@ pub struct WledDevice {
     pub(super) realtime_mode_active: bool,
     /// Whether the device's output stream has been initialized.
     pub(super) stream_initialized: bool,
+    /// Whether this session manages WLED realtime mode over HTTP.
+    pub(super) realtime_http_enabled: bool,
 
     /// Frames successfully sent.
     pub frames_sent: u64,
@@ -174,7 +177,7 @@ impl WledDevice {
     pub(super) async fn send_frame_outcome_observed(
         &mut self,
         pixel_data: &[u8],
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
+        delivery: Option<&FrameDelivery>,
     ) -> Result<DeviceWriteOutcome> {
         let force_send = self
             .last_frame_at
@@ -189,8 +192,8 @@ impl WledDevice {
             return Ok(DeviceWriteOutcome::SuppressedDuplicate);
         }
 
-        if let Some((id, observer)) = delivery {
-            observer.transport_started(id);
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
         }
         self.send_frame_forced(pixel_data)
             .await

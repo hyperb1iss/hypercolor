@@ -661,14 +661,6 @@ impl DeviceBackend for TwinklyBackend {
         self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.sessions.require(id)?.write(colors.as_slice()).await
-    }
-
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
         self.sessions.require(id)?.admit().await?.brightness = brightness;
         Ok(())

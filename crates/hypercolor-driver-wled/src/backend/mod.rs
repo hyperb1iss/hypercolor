@@ -24,17 +24,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
+    OutputCadence,
 };
+use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceColorFormat, DeviceError, DeviceId, DeviceInfo};
 
 use health::{
-    clear_device, enter_realtime_mode, exit_realtime_mode, prime_device,
+    REALTIME_HTTP_TIMEOUT, clear_device, enter_realtime_mode, exit_realtime_mode, prime_device,
     validate_wled_receiver_config,
 };
 use protocol::{KEEPALIVE_INTERVAL, encode_colors};
@@ -55,14 +56,135 @@ pub use protocol::{
 const DEFAULT_DEDUP_THRESHOLD: u8 = 2;
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
+/// What a connect fixed about one session.
+pub struct WledFacts {
+    ip: IpAddr,
+    target_fps: u32,
+    e131_start_universe: u16,
+    local_addr: Option<SocketAddr>,
+}
+
+impl DeviceSession for WledDevice {
+    type Facts = WledFacts;
+
+    /// The first frame can be entering realtime mode over HTTP. Cancelling
+    /// that would leave the device in live override with nobody to exit it.
+    const SETTLE: Duration = REALTIME_HTTP_TIMEOUT;
+    /// One HTTP exit from realtime mode, plus the clear frame before it.
+    const CLEANUP: Duration = REALTIME_HTTP_TIMEOUT.saturating_add(Duration::from_millis(500));
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
+        let device_id = self.device_id;
+        self.ensure_ready_for_output()
+            .await
+            .map_err(|error| DeviceError::write(device_id, error))?;
+        let expected_led_count = usize::from(self.led_count);
+
+        if colors.len() != expected_led_count {
+            let should_warn = self
+                .last_size_mismatch_warn_at
+                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+
+            if should_warn {
+                warn!(
+                    device_id = %device_id,
+                    expected_led_count,
+                    actual_led_count = colors.len(),
+                    "WLED frame size mismatch; truncating or padding to match device"
+                );
+                self.last_size_mismatch_warn_at = Some(Instant::now());
+            }
+        }
+
+        let wire_format = match self.protocol {
+            WledProtocol::Ddp => self.ddp_wire_format(),
+            WledProtocol::E131 => self.color_format,
+        };
+        let pixel_data = encode_colors(colors, wire_format, expected_led_count);
+
+        self.send_frame_outcome_observed(&pixel_data, delivery)
+            .await
+            .map_err(|error| DeviceError::write(device_id, error))
+    }
+
+    /// Blank the strip and hand it back to WLED's own effects. Both steps
+    /// are best effort: the session is ending either way.
+    async fn finish(mut self) -> std::result::Result<(), DeviceError> {
+        if self.last_sent_pixels.is_some()
+            && let Err(error) = clear_device(&mut self).await
+        {
+            debug!(
+                device_id = %self.device_id,
+                ip = %self.ip,
+                error = %error,
+                "best-effort WLED clear frame failed during disconnect"
+            );
+        }
+        if self.realtime_mode_active
+            && let Err(error) = exit_realtime_mode(self.ip).await
+        {
+            debug!(
+                device_id = %self.device_id,
+                ip = %self.ip,
+                error = %error,
+                "best-effort exit from WLED realtime mode failed"
+            );
+        }
+        Ok(())
+    }
+}
+
+impl WledDevice {
+    async fn ensure_ready_for_output(&mut self) -> Result<()> {
+        if self.stream_initialized {
+            return Ok(());
+        }
+
+        let id = self.device_id;
+        if self.realtime_http_enabled {
+            enter_realtime_mode(self.ip)
+                .await
+                .with_context(|| format!("Failed to enter realtime mode for WLED device {id}"))?;
+            self.realtime_mode_active = true;
+            validate_wled_receiver_config(
+                self.ip,
+                self.protocol,
+                self.color_format,
+                self.e131_start_universe,
+            )
+            .await;
+            if let Err(error) = prime_device(self).await {
+                if let Err(exit_error) = exit_realtime_mode(self.ip).await {
+                    debug!(
+                        device_id = %id,
+                        ip = %self.ip,
+                        error = %exit_error,
+                        "best-effort exit from WLED realtime mode failed after priming error"
+                    );
+                }
+                self.realtime_mode_active = false;
+                return Err(error).with_context(|| format!("Failed to prime WLED device {id}"));
+            }
+        }
+
+        self.stream_initialized = true;
+        Ok(())
+    }
+}
+
 // ── WledBackend ─────────────────────────────────────────────────────────
 
 /// WLED device backend implementing [`DeviceBackend`].
 ///
 /// Manages adopted devices and per-device UDP streaming over DDP or E1.31.
 pub struct WledBackend {
-    /// Connected devices, keyed by `DeviceId`.
-    devices: StdRwLock<HashMap<DeviceId, Arc<Mutex<WledDevice>>>>,
+    /// Open sessions, keyed by `DeviceId`. Each holds a reference to the
+    /// shared socket, so closing one leaves the others sending.
+    sessions: SessionTable<WledDevice>,
 
     /// Maps `DeviceId` to IP for lookup during connect.
     device_ips: StdRwLock<HashMap<DeviceId, IpAddr>>,
@@ -94,7 +216,7 @@ impl WledBackend {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            devices: StdRwLock::new(HashMap::new()),
+            sessions: SessionTable::new(),
             device_ips: StdRwLock::new(HashMap::new()),
             device_infos: StdRwLock::new(HashMap::new()),
             default_protocol: WledProtocol::default(),
@@ -132,23 +254,13 @@ impl WledBackend {
     /// The local UDP socket used by a connected device, if available.
     #[must_use]
     pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
-        self.devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .and_then(|device| device.try_lock().ok())
-            .and_then(|device| device.socket.local_addr().ok())
+        self.sessions.facts(id).and_then(|facts| facts.local_addr)
     }
 
     /// The starting E1.31 universe assigned to a connected device.
     #[must_use]
     pub fn connected_e131_start_universe(&self, id: &DeviceId) -> Option<u16> {
-        self.devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .and_then(|device| device.try_lock().ok())
-            .map(|device| device.e131_start_universe)
+        self.sessions.facts(id).map(|facts| facts.e131_start_universe)
     }
 
     async fn ensure_shared_socket(&self) -> Result<Arc<UdpSocket>> {
@@ -161,83 +273,6 @@ impl WledBackend {
             })
             .await
             .map(Arc::clone)
-    }
-
-    async fn ensure_device_ready_for_output(
-        id: &DeviceId,
-        device: &mut WledDevice,
-        realtime_http_enabled: bool,
-    ) -> Result<()> {
-        if device.stream_initialized {
-            return Ok(());
-        }
-
-        if realtime_http_enabled {
-            enter_realtime_mode(device.ip)
-                .await
-                .with_context(|| format!("Failed to enter realtime mode for WLED device {id}"))?;
-            device.realtime_mode_active = true;
-            validate_wled_receiver_config(
-                device.ip,
-                device.protocol,
-                device.color_format,
-                device.e131_start_universe,
-            )
-            .await;
-            if let Err(error) = prime_device(device).await {
-                if let Err(exit_error) = exit_realtime_mode(device.ip).await {
-                    debug!(
-                        device_id = %id,
-                        ip = %device.ip,
-                        error = %exit_error,
-                        "best-effort exit from WLED realtime mode failed after priming error"
-                    );
-                }
-                device.realtime_mode_active = false;
-                return Err(error).with_context(|| format!("Failed to prime WLED device {id}"));
-            }
-        }
-
-        device.stream_initialized = true;
-        Ok(())
-    }
-
-    async fn write_device_colors(
-        id: &DeviceId,
-        device: &Arc<Mutex<WledDevice>>,
-        colors: &[[u8; 3]],
-        realtime_http_enabled: bool,
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<DeviceWriteOutcome> {
-        let mut device = device.lock().await;
-        Self::ensure_device_ready_for_output(id, &mut device, realtime_http_enabled).await?;
-        let expected_led_count = usize::from(device.led_count);
-
-        if colors.len() != expected_led_count {
-            let should_warn = device
-                .last_size_mismatch_warn_at
-                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
-
-            if should_warn {
-                warn!(
-                    device_id = %id,
-                    expected_led_count,
-                    actual_led_count = colors.len(),
-                    "WLED frame size mismatch; truncating or padding to match device"
-                );
-                device.last_size_mismatch_warn_at = Some(Instant::now());
-            }
-        }
-
-        let wire_format = match device.protocol {
-            WledProtocol::Ddp => device.ddp_wire_format(),
-            WledProtocol::E131 => device.color_format,
-        };
-        let pixel_data = encode_colors(colors, wire_format, expected_led_count);
-
-        device
-            .send_frame_outcome_observed(&pixel_data, delivery)
-            .await
     }
 
     fn allocate_e131_start_universe(
@@ -268,57 +303,6 @@ impl WledBackend {
 impl Default for WledBackend {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-struct WledFrameSink {
-    device_id: DeviceId,
-    device: Arc<Mutex<WledDevice>>,
-    realtime_http_enabled: bool,
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for WledFrameSink {
-    async fn write_colors_shared(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<(), DeviceError> {
-        self.write_colors_shared_outcome(colors).await.map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
-        WledBackend::write_device_colors(
-            &self.device_id,
-            &self.device,
-            colors.as_slice(),
-            self.realtime_http_enabled,
-            None,
-        )
-        .await
-        .map_err(|error| DeviceError::write(self.device_id, error))
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let result = WledBackend::write_device_colors(
-            &self.device_id,
-            &self.device,
-            colors.as_slice(),
-            self.realtime_http_enabled,
-            Some((id, observer.as_ref())),
-        )
-        .await
-        .map_err(|error| DeviceError::write(self.device_id, error));
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -390,6 +374,7 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        self.sessions.ensure_accepting(id)?;
         let ip = {
             let device_ips = self
                 .device_ips
@@ -400,6 +385,16 @@ impl DeviceBackend for WledBackend {
                 .copied()
                 .ok_or(DeviceError::NotAdopted { device_id: *id })?
         };
+        if let Some(open) = self.sessions.facts(id) {
+            if open.ip == ip {
+                return Ok(());
+            }
+            // The device moved. Finish with the old address first, so its
+            // realtime exit cannot land on the session replacing it.
+            if let Err(error) = self.sessions.close(id).await {
+                debug!(device_id = %id, error = %error, "closing a moved WLED session failed");
+            }
+        }
         let wled_info = {
             let device_infos = self
                 .device_infos
@@ -450,6 +445,7 @@ impl DeviceBackend for WledBackend {
             last_size_mismatch_warn_at: None,
             realtime_mode_active: false,
             stream_initialized: false,
+            realtime_http_enabled: self.realtime_http_enabled,
             frames_sent: 0,
             last_frame_at: None,
         };
@@ -463,48 +459,23 @@ impl DeviceBackend for WledBackend {
             "Connected to WLED device"
         );
 
-        self.devices
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(Mutex::new(device)));
-        Ok(())
+        let facts = WledFacts {
+            ip,
+            target_fps: device.info.negotiated_target_fps(),
+            e131_start_universe: device.e131_start_universe,
+            local_addr: device.socket.local_addr().ok(),
+        };
+        self.sessions.install(Session::new(*id, facts, device)).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-        if let Some(device) = device {
-            let mut device = device.lock().await;
-            if device.last_sent_pixels.is_some()
-                && let Err(error) = clear_device(&mut device).await
-            {
-                debug!(
-                    device_id = %id,
-                    ip = %device.ip,
-                    error = %error,
-                    "best-effort WLED clear frame failed during disconnect"
-                );
-            }
-            if device.realtime_mode_active
-                && let Err(error) = exit_realtime_mode(device.ip).await
-            {
-                debug!(
-                    device_id = %id,
-                    ip = %device.ip,
-                    error = %error,
-                    "best-effort exit from WLED realtime mode failed"
-                );
-            }
-            info!(device_id = %id, "Disconnected from WLED device");
-            Ok(())
-        } else {
-            Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            })
-        }
+        self.sessions.close(id).await?;
+        info!(device_id = %id, "Disconnected from WLED device");
+        Ok(())
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        self.sessions.retire().await
     }
 
     async fn write_colors(
@@ -512,110 +483,17 @@ impl DeviceBackend for WledBackend {
         id: &DeviceId,
         colors: &[[u8; 3]],
     ) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-        Self::write_device_colors(id, &device, colors, self.realtime_http_enabled, None)
-            .await
-            .map_err(|error| DeviceError::write(id, error))
-            .map(|_| ())
-    }
-
-    async fn write_colors_shared(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<(), DeviceError> {
-        self.write_colors_shared_outcome(id, colors)
-            .await
-            .map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-        Self::write_device_colors(
-            id,
-            &device,
-            colors.as_slice(),
-            self.realtime_http_enabled,
-            None,
-        )
-        .await
-        .map_err(|error| DeviceError::write(id, error))
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(device_id)
-            .cloned();
-        let Some(device) = device else {
-            return DeviceDeliveryAck::rejected(
-                delivery_id,
-                DeviceError::Disconnected {
-                    device: device_id.to_string(),
-                },
-            );
-        };
-        let result = Self::write_device_colors(
-            device_id,
-            &device,
-            colors.as_slice(),
-            self.realtime_http_enabled,
-            Some((delivery_id, observer.as_ref())),
-        )
-        .await
-        .map_err(|error| DeviceError::write(device_id, error));
-        DeviceDeliveryAck::from_write_result(
-            delivery_id,
-            payload_bytes,
-            started_at.elapsed(),
-            result,
-        )
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .and_then(|device| device.try_lock().ok())
-            .map(|device| device.info.negotiated_target_fps())
-            .or_else(|| {
-                self.device_infos
-                    .read()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .get(id)
-                    .map(WledDeviceInfo::negotiated_target_fps)
-            })
+        self.sessions.facts(id).map(|facts| facts.target_fps).or_else(|| {
+            self.device_infos
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(id)
+                .map(WledDeviceInfo::negotiated_target_fps)
+        })
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
@@ -625,16 +503,6 @@ impl DeviceBackend for WledBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .map(|device| {
-                Arc::new(WledFrameSink {
-                    device_id: *id,
-                    device: Arc::clone(device),
-                    realtime_http_enabled: self.realtime_http_enabled,
-                }) as Arc<dyn DeviceFrameSink>
-            })
+        self.sessions.frame_sink(id)
     }
 }

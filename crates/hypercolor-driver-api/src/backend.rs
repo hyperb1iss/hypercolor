@@ -658,6 +658,9 @@ pub trait DeviceBackend: Send + Sync {
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<DeviceWriteOutcome, DeviceError> {
+        if let Some(sink) = self.frame_sink(id) {
+            return sink.write_colors_shared_outcome(colors).await;
+        }
         self.write_colors_shared(id, colors)
             .await
             .map(|()| DeviceWriteOutcome::Sent)
@@ -671,6 +674,11 @@ pub trait DeviceBackend: Send + Sync {
         colors: Arc<Vec<[u8; 3]>>,
         observer: Arc<dyn DeviceDeliveryObserver>,
     ) -> DeviceDeliveryAck {
+        if let Some(sink) = self.frame_sink(device_id) {
+            return sink
+                .deliver_colors_shared_observed(delivery_id, colors, observer)
+                .await;
+        }
         observer.transport_started(delivery_id);
         let payload_bytes = colors.len().saturating_mul(3);
         let started_at = std::time::Instant::now();

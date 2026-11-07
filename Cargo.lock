@@ -4917,6 +4917,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hypercolor-driver-api",
+ "hypercolor-driver-conformance",
  "hypercolor-driver-support",
  "hypercolor-pixel-protocols",
  "hypercolor-types",

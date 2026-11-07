@@ -16,6 +16,7 @@ use hypercolor_driver_api::{
     DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryCoverage,
     DiscoveryObservation,
 };
+use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
 use hypercolor_driver_support::MdnsScope;
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
@@ -1193,6 +1194,130 @@ async fn backend_disconnect_sends_final_black_frame_after_output() {
         .expect("recv final black DDP frame");
     assert_eq!(len, DDP_HEADER_SIZE + 12);
     assert_eq!(&packet[10..22], &[0; 12]);
+}
+
+struct WledRig {
+    backend: WledBackend,
+    id: DeviceId,
+    receiver: UdpSocket,
+}
+
+#[async_trait::async_trait]
+impl SessionRig for WledRig {
+    fn backend(&self) -> &dyn DeviceBackend {
+        &self.backend
+    }
+
+    fn device_id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn frame(&self, shade: u8) -> Vec<[u8; 3]> {
+        vec![[shade, 0, 255]; 4]
+    }
+
+    async fn saw_traffic(&mut self, window: Duration) -> bool {
+        let mut buffer = [0_u8; 64];
+        timeout(window, self.receiver.recv_from(&mut buffer))
+            .await
+            .is_ok_and(|received| received.is_ok())
+    }
+
+    async fn discard_traffic(&mut self) {
+        let mut buffer = [0_u8; 64];
+        while self.receiver.try_recv_from(&mut buffer).is_ok() {}
+    }
+
+    /// Every WLED session sends from the backend's one socket, so there is
+    /// nothing private to release. Sharing is proven by
+    /// `closing_one_session_leaves_the_shared_socket_running`.
+    async fn assert_transport_released(&mut self) {}
+}
+
+#[tokio::test]
+async fn wled_sessions_keep_the_contract() {
+    let _guard = ddp_test_port_guard().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new();
+    backend.set_realtime_http_enabled(false);
+    let id = DeviceId::new();
+    adopt_test_device(
+        &backend,
+        id,
+        "127.0.0.1".parse().expect("valid loopback IP"),
+        test_wled_info(4, false, 30, true),
+    );
+
+    let mut rig = WledRig {
+        backend,
+        id,
+        receiver,
+    };
+    assert_session_contract(&mut rig).await;
+}
+
+#[tokio::test]
+async fn closing_one_session_leaves_the_shared_socket_running() {
+    let _guard = ddp_test_port_guard().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new();
+    backend.set_realtime_http_enabled(false);
+    let ip: IpAddr = "127.0.0.1".parse().expect("valid loopback IP");
+    let (first, second) = (DeviceId::new(), DeviceId::new());
+    for id in [first, second] {
+        adopt_test_device(&backend, id, ip, test_wled_info(4, false, 30, true));
+        backend.connect(&id).await.expect("connect");
+    }
+    let shared = backend.shared_socket_local_addr().expect("shared socket");
+    assert_eq!(backend.connected_socket_local_addr(&second), Some(shared));
+
+    backend.disconnect(&first).await.expect("disconnect");
+
+    let sink = backend.frame_sink(&second).expect("second sink");
+    sink.write_colors_shared(Arc::new(vec![[1, 2, 3]; 4]))
+        .await
+        .expect("the other session keeps its socket");
+    let mut packet = [0_u8; 64];
+    let (_, source) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("a frame from the surviving session")
+        .expect("recv");
+    assert_eq!(source.port(), shared.port());
+}
+
+#[tokio::test]
+async fn repeated_connect_keeps_the_open_session() {
+    let _guard = ddp_test_port_guard().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new();
+    backend.set_realtime_http_enabled(false);
+    let id = DeviceId::new();
+    adopt_test_device(
+        &backend,
+        id,
+        "127.0.0.1".parse().expect("valid loopback IP"),
+        test_wled_info(4, false, 30, true),
+    );
+    backend.connect(&id).await.expect("connect");
+    let sink = backend.frame_sink(&id).expect("sink");
+
+    backend.connect(&id).await.expect("repeated connect");
+
+    assert!(!sink.is_closed());
+    sink.write_colors_shared(Arc::new(vec![[1, 2, 3]; 4]))
+        .await
+        .expect("the open session keeps streaming");
+    let mut packet = [0_u8; 64];
+    timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("a frame")
+        .expect("recv");
 }
 
 #[tokio::test]
