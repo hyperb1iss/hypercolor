@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::super::{InstallPlatformError, UnitRecord};
 use super::model::{MacosBundleMaterialization, MacosBundleObservation, MacosBundleUnit};
 
@@ -41,6 +43,16 @@ pub trait MacosBundleExecutor {
         unit: &MacosBundleUnit,
         name: &str,
     ) -> Result<MacosBundleMaterialization, InstallPlatformError>;
+
+    /// Copy the installed bundle to `Hypercolor.app` inside the existing
+    /// directory `destination`, cloned where the filesystem can, with no
+    /// member writable by anyone but its owner. The installed bundle is only
+    /// read.
+    ///
+    /// # Errors
+    /// Returns an error when the bundle holds anything but directories and
+    /// regular files, or the copy cannot be made.
+    fn snapshot_installed(&mut self, destination: &Path) -> Result<(), InstallPlatformError>;
 
     /// Exchange the staged copy with the installed bundle in one atomic
     /// rename (`renamex_np` with `RENAME_SWAP`).

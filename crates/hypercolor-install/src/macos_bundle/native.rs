@@ -33,6 +33,8 @@ const MAX_TREE_DEPTH: usize = 64;
 const MAX_STAGED_COPIES: usize = 16;
 const SCRATCH_DIRECTORY_MODE: u32 = 0o700;
 const STAGING_ROOT_MODE: u32 = 0o755;
+/// What a snapshot keeps of a member's mode.
+const SNAPSHOT_MODE_MASK: u32 = 0o755;
 
 /// The native [`MacosBundleExecutor`]: the installed bundle's directory and
 /// its staging root, on one APFS volume this user may write.
@@ -230,6 +232,33 @@ impl MacosBundleExecutor for MacosBundleNativeExecutor {
         Ok(copied)
     }
 
+    fn snapshot_installed(&mut self, destination: &Path) -> Result<(), InstallPlatformError> {
+        let source = open_directory(&self.applications, MACOS_BUNDLE_NAME)?;
+        let scratch = rfs::open(
+            destination,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io("open the bundle snapshot's directory"))?;
+        rfs::mkdirat(
+            &scratch,
+            MACOS_BUNDLE_NAME,
+            Mode::from_raw_mode(SCRATCH_DIRECTORY_MODE as _),
+        )
+        .map_err(io("create the bundle snapshot"))?;
+        let bundle = open_directory(&scratch, MACOS_BUNDLE_NAME)?;
+        let mut copier = Copier {
+            children: &BTreeMap::new(),
+            clone: true,
+            result: MacosBundleMaterialization::default(),
+        };
+        copier.snapshot(&source, &bundle, 0)?;
+        set_mode(
+            &bundle,
+            snapshot_directory_mode(&rfs::fstat(&source).map_err(io("inspect the bundle"))?),
+        )
+    }
+
     fn exchange(&mut self, name: &str) -> Result<(), InstallPlatformError> {
         require_digest(name)?;
         let staged = open_directory(&self.require_staging_root()?, name)?;
@@ -239,7 +268,7 @@ impl MacosBundleExecutor for MacosBundleNativeExecutor {
             &self.applications,
             MACOS_BUNDLE_NAME,
         )
-        .map_err(io("swap the staged and installed bundles"))?;
+        .map_err(swap_refused("swap the staged and installed bundles"))?;
         self.sync_rename(&staged)
     }
 
@@ -253,7 +282,7 @@ impl MacosBundleExecutor for MacosBundleNativeExecutor {
             MACOS_BUNDLE_NAME,
             RenameFlags::NOREPLACE,
         )
-        .map_err(io("move the staged bundle into place"))?;
+        .map_err(swap_refused("move the staged bundle into place"))?;
         self.sync_rename(&staged)
     }
 
@@ -267,7 +296,9 @@ impl MacosBundleExecutor for MacosBundleNativeExecutor {
             MACOS_BUNDLE_NAME,
             RenameFlags::NOREPLACE,
         )
-        .map_err(io("move the installed bundle back to its staging name"))?;
+        .map_err(swap_refused(
+            "move the installed bundle back to its staging name",
+        ))?;
         self.sync_rename(&staged)
     }
 
@@ -384,6 +415,58 @@ impl Copier<'_> {
                         )));
                     }
                     self.file(opened.file(), destination, name, *mode)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Copy a whole tree as it stands, for a bundle no manifest describes
+    /// yet. The modes lose whatever a unit member may not have; the code
+    /// seal does not cover them.
+    fn snapshot(
+        &mut self,
+        source: &OwnedFd,
+        destination: &OwnedFd,
+        depth: usize,
+    ) -> Result<(), InstallPlatformError> {
+        if depth > MAX_TREE_DEPTH {
+            return Err(error("the bundle exceeds its depth bound"));
+        }
+        for name in entry_names(source)? {
+            let stat = rfs::statat(source, name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(io("inspect a bundle entry"))?;
+            match FileType::from_raw_mode(stat.st_mode) {
+                FileType::Directory => {
+                    rfs::mkdirat(
+                        destination,
+                        name.as_str(),
+                        Mode::from_raw_mode(SCRATCH_DIRECTORY_MODE as _),
+                    )
+                    .map_err(io("create a bundle snapshot directory"))?;
+                    let child = open_directory(destination, &name)?;
+                    self.snapshot(&open_directory(source, &name)?, &child, depth + 1)?;
+                    set_mode(&child, snapshot_directory_mode(&stat))?;
+                }
+                FileType::RegularFile => {
+                    let opened = rfs::openat(
+                        source,
+                        name.as_str(),
+                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    )
+                    .map_err(io("open a bundle file"))?;
+                    self.file(
+                        &File::from(opened),
+                        destination,
+                        &name,
+                        (mode_of(&stat) & SNAPSHOT_MODE_MASK) | 0o400,
+                    )?;
+                }
+                _ => {
+                    return Err(error(format!(
+                        "the bundle's {name} is neither a directory nor a regular file"
+                    )));
                 }
             }
         }
@@ -647,6 +730,12 @@ fn sha256_of(mut file: File) -> Result<String, InstallPlatformError> {
     Ok(hex::encode(digest.finalize()))
 }
 
+/// A unit directory's mode for a snapshot of `stat`: its owner keeps full
+/// access, because the swap renames it and a later removal empties it.
+fn snapshot_directory_mode(stat: &Stat) -> u32 {
+    (mode_of(stat) & SNAPSHOT_MODE_MASK) | 0o700
+}
+
 #[allow(
     clippy::useless_conversion,
     reason = "mode_t is u16 on macOS and u32 on Linux"
@@ -691,6 +780,22 @@ fn require_digest(name: &str) -> Result<(), InstallPlatformError> {
 
 fn io(operation: &'static str) -> impl Fn(Errno) -> InstallPlatformError {
     move |source| error(format!("{operation}: {source}"))
+}
+
+/// macOS's App Management answers a rename of a signed app with `EPERM` when
+/// the acting process is not signed by the app's team. A refused swap changes
+/// nothing, so the transaction rolls back; this names why it had to.
+pub(super) fn swap_refused(operation: &'static str) -> impl Fn(Errno) -> InstallPlatformError {
+    move |source| {
+        if source == Errno::PERM {
+            error(format!(
+                "{operation}: macOS refused to let this process change the installed app, \
+                 which takes code signed by the app's own team: {source}"
+            ))
+        } else {
+            error(format!("{operation}: {source}"))
+        }
+    }
 }
 
 fn io_error(operation: &'static str) -> impl Fn(std::io::Error) -> InstallPlatformError {
