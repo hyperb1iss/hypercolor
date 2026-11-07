@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
+use hypercolor_core::config::paths::IsolatedUserDirs;
 use hypercolor_daemon::api::security::{CredentialAuthority, CredentialGrant, CredentialTier};
 use hypercolor_daemon::daemon::{DaemonRunOptions, build_main_runtime, prepare};
-use hypercolor_daemon::startup::default_config;
+use hypercolor_daemon::startup::{HostPorts, default_config};
 use hypercolor_types::config::NetworkAccessMode;
 
 struct EmptyAuthority;
@@ -25,6 +26,7 @@ impl CredentialAuthority for EmptyAuthority {
 #[test]
 fn prepare_binds_the_network_for_an_authority_with_no_credentials_yet() {
     let directory = tempfile::tempdir().expect("config directory should be created");
+    let dirs = IsolatedUserDirs::claim(directory.path());
     let config_path = directory.path().join("hypercolor.toml");
     let mut config = default_config();
     config.network.access_mode = NetworkAccessMode::LanProtected;
@@ -38,11 +40,14 @@ fn prepare_binds_the_network_for_an_authority_with_no_credentials_yet() {
 
     let runtime = build_main_runtime().expect("runtime should build");
     let prepared = runtime
-        .block_on(prepare(DaemonRunOptions {
-            config: Some(config_path),
-            credential_authority: Some(Arc::new(EmptyAuthority)),
-            ..DaemonRunOptions::default()
-        }))
+        .block_on(prepare(
+            DaemonRunOptions {
+                config: Some(config_path),
+                credential_authority: Some(Arc::new(EmptyAuthority)),
+                ..DaemonRunOptions::default()
+            },
+            HostPorts::isolated(&dirs),
+        ))
         .expect("an authority that can grant control satisfies the network bind");
 
     assert!(

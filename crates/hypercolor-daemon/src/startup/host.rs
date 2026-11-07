@@ -69,8 +69,8 @@ impl HostPorts {
     /// Replace the platform's session monitors, when the process host
     /// supplies its own (a Windows service receives power events itself).
     #[must_use]
-    pub fn with_session_monitors(mut self, monitors: Option<Vec<Box<dyn SessionMonitor>>>) -> Self {
-        self.session_monitors = monitors;
+    pub fn with_session_monitors(mut self, monitors: Vec<Box<dyn SessionMonitor>>) -> Self {
+        self.session_monitors = Some(monitors);
         self
     }
 

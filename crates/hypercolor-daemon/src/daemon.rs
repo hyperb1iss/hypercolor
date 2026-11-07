@@ -7,7 +7,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_core::config::{BootConfig, ConfigManager, LoadedConfig};
-use hypercolor_core::session::SessionMonitor;
 use hypercolor_types::api::system::DaemonStartupPhase;
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
@@ -86,8 +85,6 @@ pub struct DaemonRunOptions {
     /// Corroborated launcher identity resolved by the process host before
     /// runtime startup. On macOS the durable owner snapshot supersedes it.
     pub service_status: Option<ServiceStatus>,
-    /// Platform session monitors supplied by the process host.
-    pub session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
     /// API credentials beyond the environment keys, supplied by a
     /// downstream build. It is needed before any listener is bound,
     /// because it decides whether a network bind is allowed.
@@ -109,6 +106,7 @@ pub struct ApiListenerLease {
 #[doc(hidden)]
 pub struct PreparedDaemon {
     options: DaemonRunOptions,
+    host: HostPorts,
     config: BootConfig,
     config_manager: Arc<ConfigManager>,
     listen_addr: String,
@@ -202,7 +200,7 @@ impl PreparedDaemon {
             self.config_manager,
             self.options.macos_owner_snapshot,
             self.options.service_status.take(),
-            HostPorts::native().with_session_monitors(self.options.session_monitors.take()),
+            self.host,
             progress.clone(),
         )?;
         let render_supervision = daemon_state.domains.output.render_supervision().clone();
@@ -625,8 +623,12 @@ pub fn build_main_runtime() -> Result<tokio::runtime::Runtime> {
 /// # Errors
 ///
 /// Returns an error when startup, serving, or graceful shutdown fails.
-pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-    Box::pin(run_with_extensions(options, shutdown_rx, &[])).await
+pub async fn run(
+    options: DaemonRunOptions,
+    host: HostPorts,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<()> {
+    Box::pin(run_with_extensions(options, host, shutdown_rx, &[])).await
 }
 
 /// Run the daemon with downstream extension installers.
@@ -637,11 +639,12 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
 /// shutdown fails.
 pub async fn run_with_extensions(
     mut options: DaemonRunOptions,
+    host: HostPorts,
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
     adopt_credential_authority(&mut options, extension_installers)?;
-    let prepared = prepare(options).await?;
+    let prepared = prepare(options, host).await?;
     Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
 }
 
@@ -653,7 +656,7 @@ pub async fn run_with_extensions(
 /// Returns an error when configuration, address resolution, authentication
 /// validation, or any final listener bind fails.
 #[doc(hidden)]
-pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
+pub async fn prepare(options: DaemonRunOptions, host: HostPorts) -> Result<PreparedDaemon> {
     // Must land before any registry scan, which resolves the bundled catalog
     // the first time it enumerates effects.
     if options.effects_dir.is_some() {
@@ -757,6 +760,7 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
 
     Ok(PreparedDaemon {
         options,
+        host,
         config,
         config_manager,
         listen_addr,
