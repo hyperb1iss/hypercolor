@@ -98,10 +98,15 @@ async fn connect_powers_on_and_streams_extended_zones() -> TestResult {
         .expect("connected metadata");
     assert_eq!(metadata["device_class"], "extended_multizone");
 
-    let cadence = backend.output_cadence(&device_id).expect("cadence");
+    let cadence = backend.output_policy(&device_id).expect("cadence");
     assert_eq!(cadence.min_interval(), Some(Duration::from_millis(50)));
-    assert_eq!(cadence.max_frame_silence(), Some(Duration::from_secs(1)));
-    assert_eq!(backend.target_fps(&device_id), Some(20));
+    assert_eq!(cadence.replay_after(), Some(Duration::from_secs(1)));
+    assert_eq!(
+        backend
+            .output_policy(&device_id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(20)
+    );
 
     backend.write_colors(&device_id, &[RED; 82]).await?;
     let frames = fake.wait_for(510, 1).await;
@@ -147,9 +152,9 @@ async fn tile_chains_stream_one_set64_per_tile_at_the_budgeted_cadence() -> Test
     backend.adopt_device(&discovered)?;
     backend.connect(&device_id).await?;
 
-    let cadence = backend.output_cadence(&device_id).expect("cadence");
+    let cadence = backend.output_policy(&device_id).expect("cadence");
     assert_eq!(cadence.min_interval(), Some(Duration::from_millis(100)));
-    assert_eq!(cadence.target_fps(), 10);
+    assert_eq!(cadence.display_fps(), 10);
 
     // Three frames are six messages: the first five fit the burst and the
     // sixth waits one message interval.
@@ -199,13 +204,18 @@ async fn worst_case_legacy_frames_are_paced_message_by_message() -> TestResult {
     .await?;
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
 
-    let cadence = backend.output_cadence(&device_id).expect("cadence");
+    let cadence = backend.output_policy(&device_id).expect("cadence");
     assert_eq!(
         cadence.min_interval(),
         Some(Duration::from_millis(50)),
         "the host offers frames at the cheapest frame's cost"
     );
-    assert_eq!(backend.target_fps(&device_id), Some(20));
+    assert_eq!(
+        backend
+            .output_policy(&device_id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(20)
+    );
 
     let started = Instant::now();
     backend.write_colors(&device_id, &alternating(16)).await?;
@@ -449,7 +459,7 @@ async fn connect_fails_when_the_light_goes_away() -> TestResult {
     });
     backend.adopt_device(&discovered)?;
     assert!(backend.connect(&discovered.info.id).await.is_err());
-    assert!(backend.output_cadence(&discovered.info.id).is_none());
+    assert!(backend.output_policy(&discovered.info.id).is_none());
     Ok(())
 }
 

@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputCadence,
+    DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{
     CredentialStore, DeviceSession, FrameDelivery, Session, SessionTable,
@@ -504,12 +504,8 @@ impl DeviceBackend for HueBackend {
         Ok(())
     }
 
-    fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
-        Some(50)
-    }
-
-    fn output_cadence(&self, _id: &DeviceId) -> Option<OutputCadence> {
-        Some(OutputCadence::from_fps(50).with_max_frame_silence(HUE_MAX_FRAME_SILENCE))
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(50).with_replay_after(HUE_MAX_FRAME_SILENCE))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

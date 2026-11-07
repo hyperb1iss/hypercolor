@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, OutputPolicy,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
@@ -363,8 +363,8 @@ impl DeviceBackend for SimulatedDisplayBackend {
             .map_err(|error| DeviceError::write(id, error))
     }
 
-    fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
-        Some(DEFAULT_SIMULATED_DISPLAY_FPS)
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(DEFAULT_SIMULATED_DISPLAY_FPS))
     }
 }
 

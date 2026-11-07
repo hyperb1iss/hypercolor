@@ -1,6 +1,7 @@
 //! Native device backend boundary shared by core and built-in drivers.
 
 use std::collections::HashMap;
+use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -328,99 +329,105 @@ impl DeviceWriteOutcome {
     }
 }
 
-/// Preferred output cadence for a connected device.
+/// How the host should feed one connected device.
+///
+/// The host owns latest-value delivery, pacing, and replay. A policy states
+/// what the device needs from them; it never says how to schedule, and
+/// protocol rules such as message budgets stay in the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputCadence {
+pub struct OutputPolicy {
     min_interval: Option<Duration>,
-    max_frame_silence: Option<Duration>,
-    target_fps: u32,
-    min_identical_sends: u8,
+    replay_after: Option<Duration>,
+    copies_before_idle: NonZeroU8,
 }
 
-impl OutputCadence {
-    /// Build cadence from an integer FPS cap. `0` means unpaced.
+impl OutputPolicy {
+    /// One copy of each frame, unpaced, never replayed.
     #[must_use]
-    pub fn from_fps(target_fps: u32) -> Self {
-        if target_fps == 0 {
-            return Self {
-                min_interval: None,
-                max_frame_silence: None,
-                target_fps,
-                min_identical_sends: 1,
-            };
-        }
-
+    pub const fn unpaced() -> Self {
         Self {
-            min_interval: Some(Duration::from_secs_f64(1.0 / f64::from(target_fps))),
-            max_frame_silence: None,
-            target_fps,
-            min_identical_sends: 1,
+            min_interval: None,
+            replay_after: None,
+            copies_before_idle: NonZeroU8::MIN,
         }
     }
 
-    /// Build cadence from a concrete minimum interval.
+    /// Pace frames to an integer rate. `0` means unpaced.
     #[must_use]
-    pub const fn from_min_interval(min_interval: Duration, target_fps: u32) -> Self {
+    pub fn from_fps(fps: u32) -> Self {
+        if fps == 0 {
+            return Self::unpaced();
+        }
+        Self::from_min_interval(Duration::from_secs_f64(1.0 / f64::from(fps)))
+    }
+
+    /// Pace frames to a concrete minimum interval.
+    #[must_use]
+    pub const fn from_min_interval(min_interval: Duration) -> Self {
         Self {
             min_interval: Some(min_interval),
-            max_frame_silence: None,
-            target_fps,
-            min_identical_sends: 1,
+            ..Self::unpaced()
         }
     }
 
-    /// Require the output worker to resend its cached payload after this much
-    /// transport silence. A zero duration disables cached-payload replay.
-    #[must_use]
-    pub const fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
-        self.max_frame_silence = if max_frame_silence.is_zero() {
-            None
-        } else {
-            Some(max_frame_silence)
-        };
-        self
-    }
-
-    /// Send each payload at least `sends` times before suppressing it as a
-    /// duplicate.
+    /// Resend the latest frame after this much transport silence.
     ///
-    /// The output queue normally drops a frame identical to the one it just
-    /// delivered. A protocol that requires redundant copies before going
-    /// quiet (E1.31 section 6.6.2 asks for three) opts in here; repeats go
-    /// out as the render loop delivers frames, so pacing is unchanged. Values
-    /// below 1 count as 1, which is the default and keeps plain suppression.
+    /// A zero duration disables replay. A replay can never come sooner than
+    /// the minimum interval allows, so a shorter value counts as that
+    /// interval.
     #[must_use]
-    pub const fn with_min_identical_sends(mut self, sends: u8) -> Self {
-        self.min_identical_sends = if sends == 0 { 1 } else { sends };
+    pub fn with_replay_after(mut self, replay_after: Duration) -> Self {
+        self.replay_after = (!replay_after.is_zero())
+            .then(|| replay_after.max(self.min_interval.unwrap_or(Duration::ZERO)));
         self
     }
 
-    /// Minimum transmissions of an unchanged payload before suppression.
+    /// Send each frame this many times before going quiet about it.
+    ///
+    /// The host normally drops a frame identical to the one it just
+    /// delivered. A protocol that requires redundant copies (E1.31 section
+    /// 6.6.2 asks for three) opts in here; repeats go out as the render loop
+    /// delivers frames, so pacing is unchanged.
     #[must_use]
-    pub const fn min_identical_sends(self) -> u8 {
-        self.min_identical_sends
+    pub const fn with_copies_before_idle(mut self, copies: NonZeroU8) -> Self {
+        self.copies_before_idle = copies;
+        self
     }
 
-    /// Minimum interval between output attempts, or `None` for unpaced output.
+    /// Minimum interval between frames, or `None` for unpaced output.
     #[must_use]
     pub const fn min_interval(self) -> Option<Duration> {
         self.min_interval
     }
 
-    /// Maximum time between completed transport writes before the cached
-    /// payload must be resent.
+    /// Transport silence after which the latest frame must be resent.
     #[must_use]
-    pub const fn max_frame_silence(self) -> Option<Duration> {
-        self.max_frame_silence
+    pub const fn replay_after(self) -> Option<Duration> {
+        self.replay_after
     }
 
-    /// Legacy integer target FPS for displays that cannot represent sub-Hz rates.
+    /// Copies of each frame owed before the host may go quiet about it.
     #[must_use]
-    pub const fn target_fps(self) -> u32 {
-        self.target_fps
+    pub const fn copies_before_idle(self) -> NonZeroU8 {
+        self.copies_before_idle
     }
 
-    /// Concrete cadence interval in milliseconds for telemetry.
+    /// The minimum interval as a whole frame rate, for surfaces that show
+    /// one, rounded down so it never claims more than the interval allows.
+    /// `0` means unpaced or slower than one frame a second.
+    #[must_use]
+    pub fn display_fps(self) -> u32 {
+        // The epsilon absorbs the nanosecond rounding in `from_fps`.
+        const INTERVAL_ROUNDING: f64 = 1e-3;
+        self.min_interval
+            .filter(|interval| *interval <= Duration::from_secs(1))
+            .map_or(0, |interval| {
+                let fps = 1.0 / interval.as_secs_f64().max(f64::EPSILON);
+                (fps + INTERVAL_ROUNDING).floor() as u32
+            })
+    }
+
+    /// Minimum interval in milliseconds, for telemetry.
     #[must_use]
     pub fn interval_ms(self) -> Option<u64> {
         self.min_interval.map(|interval| {
@@ -429,17 +436,17 @@ impl OutputCadence {
         })
     }
 
-    /// Maximum transport silence in milliseconds for telemetry.
+    /// Replay window in milliseconds, for telemetry.
     #[must_use]
-    pub fn max_frame_silence_ms(self) -> Option<u64> {
-        self.max_frame_silence.map(|interval| {
+    pub fn replay_after_ms(self) -> Option<u64> {
+        self.replay_after.map(|interval| {
             let millis = interval.as_millis();
             u64::try_from(millis).unwrap_or(u64::MAX)
         })
     }
 }
 
-impl Default for OutputCadence {
+impl Default for OutputPolicy {
     fn default() -> Self {
         Self::from_fps(60)
     }
@@ -798,16 +805,11 @@ pub trait DeviceBackend: Send + Sync {
         })
     }
 
-    /// Preferred output frame rate for a connected device.
+    /// How the host should feed a connected device, or `None` for the
+    /// default policy.
     #[must_use]
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         let _ = id;
         None
-    }
-
-    /// Preferred output cadence for a connected device.
-    #[must_use]
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.target_fps(id).map(OutputCadence::from_fps)
     }
 }

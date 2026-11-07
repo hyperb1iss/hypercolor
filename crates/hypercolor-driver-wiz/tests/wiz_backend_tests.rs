@@ -60,10 +60,15 @@ async fn frames_become_set_pilot_with_power_on_first() -> TestResult {
     let (backend, discovered) = connected(&fake, WizConfig::default()).await?;
     let id = discovered.info.id;
 
-    let cadence = backend.output_cadence(&id).ok_or("cadence")?;
-    assert_eq!(backend.target_fps(&id), Some(20));
+    let cadence = backend.output_policy(&id).ok_or("cadence")?;
+    assert_eq!(
+        backend
+            .output_policy(&id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(20)
+    );
     assert_eq!(cadence.min_interval(), Some(Duration::from_millis(50)));
-    assert_eq!(cadence.max_frame_silence(), Some(Duration::from_secs(2)));
+    assert_eq!(cadence.replay_after(), Some(Duration::from_secs(2)));
 
     backend.write_colors(&id, &[[128, 64, 0]]).await?;
     backend.write_colors(&id, &[[0, 0, 255]]).await?;

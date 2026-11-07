@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{
     CredentialStore, DeviceSession, FrameDelivery, Session, SessionTable,
@@ -382,8 +382,8 @@ impl DeviceBackend for NanoleafBackend {
         Ok(())
     }
 
-    fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
-        Some(10)
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(10))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

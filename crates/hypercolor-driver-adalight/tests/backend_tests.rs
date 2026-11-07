@@ -13,7 +13,7 @@ use hypercolor_driver_adalight::protocol::{AwaWhite, FrameEncoder, FrameLayout, 
 use hypercolor_driver_adalight::{
     AdalightBackend, AdalightConfig, AdalightDeviceConfig, ColorOrder, DISCONNECT_BUDGET,
     KEEPALIVE_INTERVAL, MAX_BLACKOUT_FRAMES, METADATA_DEVICE_CONFIG, configured_devices,
-    output_cadence_for, resolve_device,
+    output_policy_for, resolve_device,
 };
 use hypercolor_driver_api::{
     DeviceBackend, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource,
@@ -671,19 +671,24 @@ async fn cadence_paces_to_the_line_and_refreshes_idle_strips() {
     let device = json!({ "id": "desk", "port": pty.slave_path, "led_count": 300 });
     let id = rig.connected(device.clone()).await;
 
-    let cadence = rig.backend.output_cadence(&id).expect("cadence");
+    let cadence = rig.backend.output_policy(&id).expect("cadence");
     // 906 bytes at 115200 baud occupy the line for 78.646 ms.
     assert_eq!(cadence.min_interval(), Some(Duration::from_micros(78_646)));
-    assert_eq!(cadence.max_frame_silence(), Some(KEEPALIVE_INTERVAL));
-    assert_eq!(cadence.target_fps(), 12);
-    assert_eq!(rig.backend.target_fps(&id), Some(12));
+    assert_eq!(cadence.replay_after(), Some(KEEPALIVE_INTERVAL));
+    assert_eq!(cadence.display_fps(), 12);
+    assert_eq!(
+        rig.backend
+            .output_policy(&id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(12)
+    );
 
     let config: AdalightDeviceConfig = serde_json::from_value(device).expect("device");
     let plan = resolve_device(&config).expect("plan");
-    assert_eq!(output_cadence_for(&plan), cadence);
+    assert_eq!(output_policy_for(&plan), cadence);
 
     rig.backend.disconnect(&id).await.expect("disconnect");
-    assert_eq!(rig.backend.output_cadence(&id), None, "only sessions pace");
+    assert_eq!(rig.backend.output_policy(&id), None, "only sessions pace");
 }
 
 #[tokio::test]

@@ -107,9 +107,14 @@ async fn connect_logs_in_reads_layout_and_enters_realtime() -> TestResult {
         .ok_or("connected metadata")?;
     assert_eq!(metadata["layout_source"], "2d");
 
-    let cadence = backend.output_cadence(&device_id).ok_or("cadence")?;
-    assert_eq!(backend.target_fps(&device_id), Some(60));
-    assert_eq!(cadence.max_frame_silence(), Some(Duration::from_secs(1)));
+    let cadence = backend.output_policy(&device_id).ok_or("cadence")?;
+    assert_eq!(
+        backend
+            .output_policy(&device_id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(60)
+    );
+    assert_eq!(cadence.replay_after(), Some(Duration::from_secs(1)));
     Ok(())
 }
 

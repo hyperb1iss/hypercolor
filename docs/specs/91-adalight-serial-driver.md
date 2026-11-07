@@ -535,8 +535,8 @@ the device; it never authorizes an open (§9.4).
   backlog check (§7.2), and hands the frame to the driver.
 - **Disconnect** discards queued output, sends the blackout frames, and
   closes the port off the async workers, within 1.8 s (§7.6).
-- **Cadence** `OutputCadence::from_min_interval(frame_interval,
-  effective_max_fps).with_max_frame_silence(1 s)`.
+- **Cadence** `OutputPolicy::from_min_interval(frame_interval)
+  .with_replay_after(1 s)`.
 - **Lifecycle** the connect timeout is the default plus `startup_delay_ms`.
   The daemon asks for it before adopting the device, so the delay comes
   from the live config entry for the device id.

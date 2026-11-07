@@ -155,7 +155,7 @@ included, belongs in a `DeviceSession` kept in a `SessionTable`:
 ```rust
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
-    OutputCadence,
+    OutputPolicy,
 };
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId};
@@ -167,7 +167,7 @@ struct AcmeSession {
 
 impl DeviceSession for AcmeSession {
     // Facts fixed at connect, readable without waiting for the session's I/O.
-    type Facts = OutputCadence;
+    type Facts = OutputPolicy;
 
     async fn write_frame(
         &mut self,
@@ -236,7 +236,7 @@ impl DeviceBackend for AcmeBackend {
         self.sessions.frame_sink(id)
     }
 
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         // Govern how often the render loop sends frames to this device.
         self.sessions.facts(id).map(|cadence| *cadence)
     }

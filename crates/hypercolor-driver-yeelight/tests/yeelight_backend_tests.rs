@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{DeviceBackend, DeviceWriteOutcome, DiscoveredDevice};
-use hypercolor_driver_yeelight::backend::representative_color;
+use hypercolor_driver_yeelight::backend::{NORMAL_MODE_REPLAY, representative_color};
 use hypercolor_driver_yeelight::config::YeelightConfig;
 use hypercolor_driver_yeelight::scanner::{fingerprint_for_id, route_from_metadata, search};
 use hypercolor_driver_yeelight::{
@@ -117,8 +117,13 @@ async fn music_mode_streams_scenes_without_a_quota() -> TestResult {
         .await?
         .ok_or("metadata")?;
     assert_eq!(metadata["stream_mode"], "music");
-    let cadence = backend.output_cadence(&id).ok_or("cadence")?;
-    assert_eq!(backend.target_fps(&id), Some(25));
+    let cadence = backend.output_policy(&id).ok_or("cadence")?;
+    assert_eq!(
+        backend
+            .output_policy(&id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(25)
+    );
     assert_eq!(cadence.min_interval(), Some(Duration::from_millis(40)));
 
     for color in [[128, 64, 0], [0, 0, 255], [0, 0, 0], [255, 0, 0]] {
@@ -181,9 +186,9 @@ async fn normal_mode_paces_commands_inside_the_quota() -> TestResult {
     let (backend, discovered) = connected(&fake, config).await?;
     let id = discovered.info.id;
     assert_eq!(discovered.info.capabilities.max_fps, 1);
-    let cadence = backend.output_cadence(&id).ok_or("cadence")?;
+    let cadence = backend.output_policy(&id).ok_or("cadence")?;
     assert_eq!(cadence.min_interval(), Some(Duration::from_secs(1)));
-    assert_eq!(cadence.max_frame_silence(), Some(Duration::from_secs(3)));
+    assert_eq!(cadence.replay_after(), Some(Duration::from_secs(3)));
 
     let first = backend
         .write_colors_shared_outcome(&id, Arc::new(vec![[0, 255, 0]]))
@@ -252,7 +257,12 @@ async fn music_mode_falls_back_when_the_device_never_connects() -> TestResult {
         .ok_or("metadata")?;
     assert_eq!(metadata["stream_mode"], "normal");
     assert_eq!(metadata["music_mode"], "failed");
-    assert_eq!(backend.target_fps(&id), Some(1));
+    assert_eq!(
+        backend
+            .output_policy(&id)
+            .and_then(|policy| policy.replay_after()),
+        Some(NORMAL_MODE_REPLAY)
+    );
     backend.write_colors(&id, &[[255, 0, 0]]).await?;
     let control = fake.wait_for_control(2).await;
     assert_eq!(control[1]["method"], "set_scene");

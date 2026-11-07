@@ -485,7 +485,7 @@ driver sets that silence to 800 ms:
 Section 6.6.2 also says "three packets containing the non-changing
 Property Values ... shall be sent before the initiation of transmission
 suppression." E1.31 devices declare that through the output cadence
-(`OutputCadence::with_min_identical_sends(3)`): the output queue lets an
+(`OutputPolicy::with_copies_before_idle(3)`): the output queue lets an
 unchanged payload through until it has been delivered three times, then
 suppresses it. An unchanged frame reaches the queue two ways. The render
 loop either pushes it again or, when the published frame, brightness, and

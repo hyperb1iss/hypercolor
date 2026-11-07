@@ -14,7 +14,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceInputSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice,
+    DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
@@ -1700,8 +1700,11 @@ impl DeviceBackend for UsbBackend {
         }))
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions.facts(id).and_then(|facts| facts.target_fps)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.sessions
+            .facts(id)
+            .and_then(|facts| facts.target_fps)
+            .map(OutputPolicy::from_fps)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

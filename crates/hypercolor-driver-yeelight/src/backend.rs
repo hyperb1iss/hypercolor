@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputCadence,
+    DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::framing::{BoundedLines, FrameWriteError, FramedWriter, LineError};
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
@@ -79,7 +79,7 @@ impl StreamMode {
 struct YeelightFacts {
     profile: YeelightDeviceProfile,
     info: DeviceInfo,
-    cadence: OutputCadence,
+    policy: OutputPolicy,
     mode: StreamMode,
     capabilities: Capabilities,
     music_enabled: bool,
@@ -377,17 +377,24 @@ impl YeelightOpener {
         } else {
             StreamMode::Normal
         };
-        let cadence = match mode {
-            StreamMode::Music => OutputCadence::from_fps(self.config.max_fps.max(1))
-                .with_max_frame_silence(MUSIC_KEEPALIVE),
+        let (policy, max_fps) = match mode {
+            StreamMode::Music => {
+                let max_fps = self.config.max_fps.max(1);
+                (
+                    OutputPolicy::from_fps(max_fps).with_replay_after(MUSIC_KEEPALIVE),
+                    max_fps,
+                )
+            }
             StreamMode::Normal => {
                 let interval =
                     NORMAL_MODE_COMMAND_INTERVAL.saturating_mul(worst_case_commands(capabilities));
-                OutputCadence::from_min_interval(interval, 1)
-                    .with_max_frame_silence(NORMAL_MODE_REPLAY)
+                (
+                    OutputPolicy::from_min_interval(interval).with_replay_after(NORMAL_MODE_REPLAY),
+                    1,
+                )
             }
         };
-        let info = profile.device_info(cadence.target_fps());
+        let info = profile.device_info(max_fps);
 
         let shared = Arc::new(SessionShared::default());
         let mut session = Session::new(
@@ -395,7 +402,7 @@ impl YeelightOpener {
             YeelightFacts {
                 profile,
                 info,
-                cadence,
+                policy,
                 mode,
                 capabilities,
                 music_enabled: self.config.music_mode,
@@ -708,14 +715,8 @@ impl DeviceBackend for YeelightBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions
-            .facts(id)
-            .map(|facts| facts.cadence.target_fps())
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.sessions.facts(id).map(|facts| facts.cadence)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.sessions.facts(id).map(|facts| facts.policy)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

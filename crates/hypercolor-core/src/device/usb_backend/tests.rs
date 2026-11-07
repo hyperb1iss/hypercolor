@@ -2229,7 +2229,7 @@ async fn a_lianli_late_pairing_reaches_flash_before_the_idle_actor_restarts() {
 #[tokio::test(start_paused = true)]
 async fn a_closed_empty_wireless_actor_reports_failure_through_duplicate_output() {
     use crate::device::output_queue::{OutputLane, OutputQueue};
-    use hypercolor_driver_api::OutputCadence;
+    use hypercolor_driver_api::OutputPolicy;
 
     let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x08];
     let protocol = paced_wireless_protocol(master);
@@ -2274,7 +2274,7 @@ async fn a_closed_empty_wireless_actor_reports_failure_through_duplicate_output(
         USB_OUTPUT_BACKEND_ID.to_owned(),
         device_id,
         OutputLane::frame_sink(sink.clone()),
-        OutputCadence::from_fps(0),
+        OutputPolicy::from_fps(0),
     );
 
     queue.push(Vec::new());

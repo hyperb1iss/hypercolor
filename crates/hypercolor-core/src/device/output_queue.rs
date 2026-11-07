@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceDeliveryStatus, DeviceFrameSink, OutputCadence,
+    DeviceDeliveryStatus, DeviceFrameSink, OutputPolicy,
 };
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde::Serialize;
@@ -984,7 +984,7 @@ impl OutputQueueMetrics {
         backend_id: &str,
         device_id: DeviceId,
         mapped_layout_ids: Vec<String>,
-        cadence: OutputCadence,
+        policy: OutputPolicy,
         uses_frame_sink: bool,
         worker_finished: bool,
     ) -> DeviceOutputStatistics {
@@ -1028,9 +1028,9 @@ impl OutputQueueMetrics {
             backend_id: backend_id.to_owned(),
             device_id,
             mapped_layout_ids,
-            target_fps: cadence.target_fps(),
-            target_interval_ms: cadence.interval_ms(),
-            max_frame_silence_ms: cadence.max_frame_silence_ms(),
+            target_fps: policy.display_fps(),
+            target_interval_ms: policy.interval_ms(),
+            max_frame_silence_ms: policy.replay_after_ms(),
             uses_frame_sink,
             worker_finished,
             worker_recoveries: self.worker_recoveries.load(Ordering::Relaxed),
@@ -1511,7 +1511,7 @@ pub(super) struct OutputQueue {
     tx: watch::Sender<Option<Arc<FramePayload>>>,
     lane: OutputLaneHandle,
     io_task: JoinHandle<()>,
-    cadence: OutputCadence,
+    policy: OutputPolicy,
     uses_frame_sink: bool,
     metrics: Arc<OutputQueueMetrics>,
     delivery_sequence: Arc<StdMutex<DeliverySequence>>,
@@ -1519,7 +1519,7 @@ pub(super) struct OutputQueue {
     active_sequence: Arc<AtomicU64>,
     failure_fence: Arc<AsyncWriteFailureFence>,
     /// Identical copies of the latest payload still owed before duplicate
-    /// suppression applies (see `OutputCadence::with_min_identical_sends`).
+    /// suppression applies (see `OutputPolicy::with_copies_before_idle`).
     identical_sends_owed: u8,
 }
 
@@ -1529,12 +1529,12 @@ impl OutputQueue {
         backend_id: String,
         device_id: DeviceId,
         lane: OutputLaneHandle,
-        cadence: OutputCadence,
+        policy: OutputPolicy,
     ) -> Self {
         let generation = next_queue_generation();
         let metrics = Arc::new(OutputQueueMetrics::new(Instant::now(), generation));
         Self::spawn_with_state(
-            backend_id, device_id, lane, cadence, None, metrics, generation, 0,
+            backend_id, device_id, lane, policy, None, metrics, generation, 0,
         )
     }
 
@@ -1542,7 +1542,7 @@ impl OutputQueue {
         backend_id: String,
         device_id: DeviceId,
         lane: OutputLaneHandle,
-        cadence: OutputCadence,
+        policy: OutputPolicy,
         initial_payload: Option<Arc<FramePayload>>,
         metrics: Arc<OutputQueueMetrics>,
         generation: u64,
@@ -1579,8 +1579,8 @@ impl OutputQueue {
             state: metrics.clone(),
         });
         let io_task = tokio::spawn(async move {
-            let send_interval = cadence.min_interval();
-            let max_frame_silence = cadence.max_frame_silence();
+            let send_interval = policy.min_interval();
+            let replay_after = policy.replay_after();
             let mut next_send_at = Instant::now();
             let mut reassert_at = None::<Instant>;
             let mut pending = rx.borrow_and_update().clone();
@@ -1709,16 +1709,16 @@ impl OutputQueue {
                     }
                 }
 
-                if let Some(max_frame_silence) = max_frame_silence {
+                if let Some(replay_after) = replay_after {
                     let next_interval = match ack.status {
                         DeviceDeliveryStatus::Completed
                         | DeviceDeliveryStatus::Declined
-                        | DeviceDeliveryStatus::Failed => max_frame_silence,
+                        | DeviceDeliveryStatus::Failed => replay_after,
                         DeviceDeliveryStatus::SuppressedDuplicate
                         | DeviceDeliveryStatus::SuppressedCadence => send_interval
                             .filter(|interval| !interval.is_zero())
                             .unwrap_or(OUTPUT_REASSERTION_RETRY_INTERVAL)
-                            .min(max_frame_silence),
+                            .min(replay_after),
                     };
                     reassert_at = Some(advance_deadline(
                         send_completed,
@@ -1737,7 +1737,7 @@ impl OutputQueue {
             tx,
             lane: queue_lane,
             io_task,
-            cadence,
+            policy,
             uses_frame_sink,
             metrics,
             delivery_sequence,
@@ -1753,7 +1753,7 @@ impl OutputQueue {
         backend_id: String,
         device_id: DeviceId,
         lane: OutputLaneHandle,
-        cadence: OutputCadence,
+        policy: OutputPolicy,
     ) -> Self {
         let initial_payload = self.latest_unconfirmed_payload();
         let metrics = Arc::clone(&self.metrics);
@@ -1768,7 +1768,7 @@ impl OutputQueue {
             backend_id,
             device_id,
             lane,
-            cadence,
+            policy,
             initial_payload,
             metrics,
             generation,
@@ -1812,7 +1812,7 @@ impl OutputQueue {
                 return Some(colors);
             }
         } else if !self.latest_matches(&colors) {
-            self.identical_sends_owed = self.cadence.min_identical_sends().saturating_sub(1);
+            self.identical_sends_owed = self.policy.copies_before_idle().get().saturating_sub(1);
         }
         self.metrics.record_received(id);
 
@@ -1910,7 +1910,7 @@ impl OutputQueue {
     }
 
     /// Requeue the latest payload when the backend's cadence still owes an
-    /// identical copy of it (see `OutputCadence::with_min_identical_sends`),
+    /// identical copy of it (see `OutputPolicy::with_copies_before_idle`),
     /// returning its LED count.
     ///
     /// The routed-reuse path calls this for unchanged frames, which never
@@ -1992,7 +1992,7 @@ impl OutputQueue {
             backend_id,
             device_id,
             mapped_layout_ids,
-            self.cadence,
+            self.policy,
             self.uses_frame_sink,
             self.io_task.is_finished(),
         )

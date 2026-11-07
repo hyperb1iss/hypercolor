@@ -261,17 +261,17 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
 }
 
 #[test]
-fn cloud_only_output_cadence_preserves_sub_hz_interval() {
+fn cloud_only_output_policy_preserves_sub_hz_interval() {
     let cloud_device = test_cloud_device();
     let device_id = build_cloud_discovered_device(cloud_device.clone()).info.id;
     let backend = GoveeBackend::new(GoveeConfig::default());
     adopt_cloud_device(&backend, cloud_device);
 
     let cadence = backend
-        .output_cadence(&device_id)
+        .output_policy(&device_id)
         .expect("remembered cloud device should expose cadence");
 
-    assert_eq!(cadence.target_fps(), 0);
+    assert_eq!(cadence.display_fps(), 0);
     assert_eq!(cadence.interval_ms(), Some(6_000));
 }
 

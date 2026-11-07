@@ -11,6 +11,7 @@
 //! discovery metadata never names a receiver here.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::num::NonZeroU8;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
-    DriverConfigSource, DriverConfigView, DriverError, InstallationId, OutputCadence,
+    DriverConfigSource, DriverConfigView, DriverError, InstallationId, OutputPolicy,
 };
 use hypercolor_driver_support::{
     ConfiguredDevices, DeviceSession, FrameDelivery, Session, SessionTable,
@@ -53,7 +54,7 @@ pub const E131_TERMINATION_PACKETS: usize = 3;
 
 /// E1.31 section 6.6.2: three packets of unchanged data before a source
 /// suppresses transmission.
-pub const E131_IDENTICAL_SENDS: u8 = 3;
+pub const E131_IDENTICAL_SENDS: NonZeroU8 = NonZeroU8::new(3).expect("three is not zero");
 
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
 
@@ -267,24 +268,17 @@ impl DeviceBackend for PixelBackend {
         self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions
-            .facts(id)
-            .map(|facts| facts.plan.max_fps)
-            .filter(|fps| *fps > 0)
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         self.sessions.facts(id).map(|facts| {
             let plan = &facts.plan;
-            let identical_sends = if plan.protocol == PixelProtocol::E131 {
+            let copies = if plan.protocol == PixelProtocol::E131 {
                 E131_IDENTICAL_SENDS
             } else {
-                1
+                NonZeroU8::MIN
             };
-            OutputCadence::from_fps(plan.max_fps)
-                .with_max_frame_silence(KEEPALIVE_INTERVAL)
-                .with_min_identical_sends(identical_sends)
+            OutputPolicy::from_fps(plan.max_fps)
+                .with_replay_after(KEEPALIVE_INTERVAL)
+                .with_copies_before_idle(copies)
         })
     }
 

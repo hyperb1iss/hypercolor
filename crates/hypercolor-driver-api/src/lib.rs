@@ -20,7 +20,7 @@ mod pairing;
 pub use backend::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
+    DeviceLifecyclePolicy, DeviceWriteOutcome, OutputPolicy,
 };
 pub use config::{DriverConfigProvider, DriverConfigView};
 pub use controls::{

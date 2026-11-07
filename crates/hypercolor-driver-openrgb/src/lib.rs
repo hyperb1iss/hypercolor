@@ -16,7 +16,7 @@ use hypercolor_driver_api::{
     DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, DiscoveryBatch,
     DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider,
     DriverConfigView, DriverContext, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverRuntimeActions, OutputBinding,
+    DriverPresentationProvider, DriverRuntimeActions, OutputBinding, OutputPolicy,
 };
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionSink, SessionTable};
 use hypercolor_openrgb_sdk::{
@@ -565,7 +565,7 @@ impl DeviceBackend for OpenRgbBackend {
         self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         self.sessions
             .facts(id)
             .map(|facts| facts.target_fps)
@@ -576,6 +576,7 @@ impl DeviceBackend for OpenRgbBackend {
                     .get(id)
                     .map(|route| route.target_fps)
             })
+            .map(OutputPolicy::from_fps)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

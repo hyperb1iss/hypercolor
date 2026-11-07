@@ -23,7 +23,7 @@ use tracing::{info, warn};
 
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceFrameSink, DeviceLifecyclePolicy,
-    DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
@@ -80,7 +80,7 @@ impl SenderShared {
 struct LifxFacts {
     profile: LifxDeviceProfile,
     info: DeviceInfo,
-    cadence: OutputCadence,
+    policy: OutputPolicy,
     shared: Arc<SenderShared>,
 }
 
@@ -503,8 +503,8 @@ impl LifxOpener {
             plan.best_case_messages(),
         );
         let max_fps = max_fps_for(&profile.topology, self.config.max_messages_per_second);
-        let cadence = OutputCadence::from_min_interval(interval, max_fps)
-            .with_max_frame_silence(MIN_FRAME_SILENCE.max(interval.saturating_mul(2)));
+        let policy = OutputPolicy::from_min_interval(interval)
+            .with_replay_after(MIN_FRAME_SILENCE.max(interval.saturating_mul(2)));
         let info = profile.device_info(max_fps);
 
         let shared = Arc::new(SenderShared {
@@ -537,7 +537,7 @@ impl LifxOpener {
             LifxFacts {
                 profile,
                 info,
-                cadence,
+                policy,
                 shared: Arc::clone(&shared),
             },
             LifxSession {
@@ -657,14 +657,8 @@ impl DeviceBackend for LifxBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions
-            .facts(id)
-            .map(|facts| facts.cadence.target_fps())
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.sessions.facts(id).map(|facts| facts.cadence)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.sessions.facts(id).map(|facts| facts.policy)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

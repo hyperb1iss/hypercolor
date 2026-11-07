@@ -33,7 +33,7 @@ use hypercolor_daemon::startup::{
     install_signal_handlers, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state};
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputCadence};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputPolicy};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
     CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, HypercolorConfig, InteractionRoutePolicy,
@@ -336,8 +336,8 @@ impl DeviceBackend for StaticHoldRecordingBackend {
         Ok(())
     }
 
-    fn output_cadence(&self, _id: &DeviceId) -> Option<OutputCadence> {
-        Some(OutputCadence::from_fps(60).with_max_frame_silence(Duration::from_millis(20)))
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(60).with_replay_after(Duration::from_millis(20)))
     }
 }
 

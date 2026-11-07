@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputCadence,
+    DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionSink, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
@@ -79,7 +79,7 @@ struct TwinklyFacts {
     profile: TwinklyDeviceProfile,
     info: DeviceInfo,
     layout_source: LayoutSource,
-    cadence: OutputCadence,
+    policy: OutputPolicy,
     shared: Arc<SessionShared>,
 }
 
@@ -343,7 +343,7 @@ impl TwinklyOpener {
             token.bytes,
         )
         .map_err(|error| anyhow!("{error}"))?;
-        let cadence = OutputCadence::from_fps(max_fps).with_max_frame_silence(RT_KEEPALIVE);
+        let policy = OutputPolicy::from_fps(max_fps).with_replay_after(RT_KEEPALIVE);
 
         let shared = Arc::new(SessionShared {
             yielded: AtomicBool::new(false),
@@ -356,7 +356,7 @@ impl TwinklyOpener {
                 profile,
                 info,
                 layout_source,
-                cadence,
+                policy,
                 shared: Arc::clone(&shared),
             },
             TwinklySession {
@@ -686,14 +686,8 @@ impl DeviceBackend for TwinklyBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions
-            .facts(id)
-            .map(|facts| facts.cadence.target_fps())
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.sessions.facts(id).map(|facts| facts.cadence)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.sessions.facts(id).map(|facts| facts.policy)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

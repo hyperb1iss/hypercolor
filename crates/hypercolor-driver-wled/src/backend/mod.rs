@@ -28,8 +28,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
-    OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceColorFormat, DeviceError, DeviceId, DeviceInfo};
@@ -519,7 +518,7 @@ impl DeviceBackend for WledBackend {
         self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         self.sessions
             .facts(id)
             .map(|facts| facts.target_fps)
@@ -530,12 +529,9 @@ impl DeviceBackend for WledBackend {
                     .get(id)
                     .map(WledDeviceInfo::negotiated_target_fps)
             })
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.target_fps(id).map(|target_fps| {
-            OutputCadence::from_fps(target_fps).with_max_frame_silence(KEEPALIVE_INTERVAL)
-        })
+            .map(|target_fps| {
+                OutputPolicy::from_fps(target_fps).with_replay_after(KEEPALIVE_INTERVAL)
+            })
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

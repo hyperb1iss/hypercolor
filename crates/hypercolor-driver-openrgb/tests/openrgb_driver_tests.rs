@@ -187,7 +187,12 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
         .connect(&device_id)
         .await
         .expect("backend should connect selected controller");
-    assert_eq!(backend.target_fps(&device_id), Some(45));
+    assert_eq!(
+        backend
+            .output_policy(&device_id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(45)
+    );
     tokio::time::sleep(Duration::from_millis(20)).await;
     backend
         .write_colors(&device_id, &[[10, 20, 30], [40, 50, 60]])
@@ -1219,7 +1224,12 @@ async fn writer_paces_to_target_fps_and_drops_superseded_frames() {
         .connect(&device_id)
         .await
         .expect("backend should connect selected controller");
-    assert_eq!(backend.target_fps(&device_id), Some(20));
+    assert_eq!(
+        backend
+            .output_policy(&device_id)
+            .map(hypercolor_driver_api::OutputPolicy::display_fps),
+        Some(20)
+    );
     let frame_sink = backend
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");

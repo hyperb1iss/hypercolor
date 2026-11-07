@@ -13,7 +13,7 @@ use tracing::{info, warn};
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputCadence,
+    DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
@@ -35,7 +35,7 @@ const RECEIVE_BUFFER_LEN: usize = 2048;
 struct WizFacts {
     profile: WizDeviceProfile,
     info: DeviceInfo,
-    cadence: OutputCadence,
+    policy: OutputPolicy,
 }
 
 /// One open connection to a light.
@@ -157,14 +157,14 @@ impl WizOpener {
             .with_context(|| format!("failed to connect the WiZ socket to {addr}"))?;
         let socket = Arc::new(socket);
         let max_fps = self.config.max_fps.max(1);
-        let cadence = OutputCadence::from_fps(max_fps).with_max_frame_silence(STATE_REFRESH);
+        let policy = OutputPolicy::from_fps(max_fps).with_replay_after(STATE_REFRESH);
         let info = profile.device_info(max_fps);
         let mut session = Session::new(
             *id,
             WizFacts {
                 profile: profile.clone(),
                 info,
-                cadence,
+                policy,
             },
             WizSession {
                 device_id: *id,
@@ -346,14 +346,8 @@ impl DeviceBackend for WizBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions
-            .facts(id)
-            .map(|facts| facts.cadence.target_fps())
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.sessions.facts(id).map(|facts| facts.cadence)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.sessions.facts(id).map(|facts| facts.policy)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
-    OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
 };
 use hypercolor_driver_support::{
     CredentialStore, DeviceSession, FrameDelivery, Session, SessionTable,
@@ -69,11 +68,11 @@ impl GoveeRoute {
         Duration::from_millis(1000 / u64::from(fps))
     }
 
-    fn output_cadence(&self, config: &GoveeConfig) -> OutputCadence {
+    fn output_policy(&self, config: &GoveeConfig) -> OutputPolicy {
         if self.address.is_none() {
-            return OutputCadence::from_min_interval(CLOUD_FRAME_INTERVAL, 0);
+            return OutputPolicy::from_min_interval(CLOUD_FRAME_INTERVAL);
         }
-        OutputCadence::from_fps(if self.streams_razer() {
+        OutputPolicy::from_fps(if self.streams_razer() {
             config.razer_fps
         } else {
             config.lan_state_fps
@@ -544,9 +543,9 @@ impl DeviceBackend for GoveeBackend {
             .map_err(|error| DeviceError::write(id, error))
     }
 
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         self.route(id)
-            .map(|route| route.output_cadence(&self.config))
+            .map(|route| route.output_policy(&self.config))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {

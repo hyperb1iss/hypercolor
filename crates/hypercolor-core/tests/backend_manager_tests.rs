@@ -1,6 +1,7 @@
 //! Tests for the `BackendManager` — device routing and frame dispatch.
 
 use std::io;
+use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -10,7 +11,7 @@ use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, OutputCadence,
+    DeviceFrameSink, DeviceWriteOutcome, OutputPolicy,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -132,8 +133,9 @@ impl DeviceBackend for SharedSlowBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.contains(id).then_some(self.target_fps)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.contains(id)
+            .then(|| OutputPolicy::from_fps(self.target_fps))
     }
 }
 
@@ -161,7 +163,7 @@ impl SlowRecordingBackend {
         self
     }
 
-    fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
+    fn with_replay_after(mut self, max_frame_silence: Duration) -> Self {
         self.max_frame_silence = Some(max_frame_silence);
         self
     }
@@ -220,23 +222,19 @@ impl DeviceBackend for SlowRecordingBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        if *id == self.expected_device_id {
-            self.target_fps
-        } else {
-            None
-        }
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.target_fps(id).map(|target_fps| {
-            let cadence = OutputCadence::from_fps(target_fps);
-            let cadence = self.max_frame_silence.map_or(cadence, |max_frame_silence| {
-                cadence.with_max_frame_silence(max_frame_silence)
-            });
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        let target_fps = (*id == self.expected_device_id)
+            .then_some(self.target_fps)
+            .flatten()?;
+        let policy = OutputPolicy::from_fps(target_fps);
+        let policy = self.max_frame_silence.map_or(policy, |replay_after| {
+            policy.with_replay_after(replay_after)
+        });
+        Some(
             self.min_identical_sends
-                .map_or(cadence, |sends| cadence.with_min_identical_sends(sends))
-        })
+                .and_then(NonZeroU8::new)
+                .map_or(policy, |copies| policy.with_copies_before_idle(copies)),
+        )
     }
 }
 
@@ -578,8 +576,8 @@ impl DeviceBackend for FastFrameSinkBackend {
         }) as Arc<dyn DeviceFrameSink>)
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        (*id == self.expected_device_id).then_some(self.target_fps)
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        (*id == self.expected_device_id).then(|| OutputPolicy::from_fps(self.target_fps))
     }
 }
 
@@ -687,7 +685,7 @@ impl FailOnceRecordingBackend {
         }
     }
 
-    fn with_max_frame_silence(mut self, max_frame_silence: Duration) -> Self {
+    fn with_replay_after(mut self, max_frame_silence: Duration) -> Self {
         self.max_frame_silence = Some(max_frame_silence);
         self
     }
@@ -736,11 +734,11 @@ impl DeviceBackend for FailOnceRecordingBackend {
         Ok(())
     }
 
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         (*id == self.expected_device_id).then(|| {
-            let cadence = OutputCadence::from_fps(60);
+            let cadence = OutputPolicy::from_fps(60);
             self.max_frame_silence.map_or(cadence, |max_frame_silence| {
-                cadence.with_max_frame_silence(max_frame_silence)
+                cadence.with_replay_after(max_frame_silence)
             })
         })
     }
@@ -1008,9 +1006,9 @@ impl DeviceBackend for ConnectRecordingBackend {
         Ok(())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
         (*id == self.expected_device_id && self.connected.load(Ordering::Acquire))
-            .then_some(self.target_fps)
+            .then(|| OutputPolicy::from_fps(self.target_fps))
     }
 }
 
@@ -1647,7 +1645,7 @@ fn mapped_device_targets_list_each_binding_with_its_backend() {
 }
 
 #[test]
-fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
+fn unmap_device_clears_cached_display_fps_when_last_mapping_is_removed() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
     let write_count = Arc::new(AtomicUsize::new(0));
@@ -1667,9 +1665,9 @@ fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
         .block_on(manager.connect_device("slow", device_id, "slow:cache-cleanup"))
         .expect("connect should succeed");
 
-    assert_eq!(manager.cached_target_fps("slow", device_id), Some(33));
+    assert_eq!(manager.cached_display_fps("slow", device_id), Some(33));
     assert!(manager.unmap_device("slow:cache-cleanup"));
-    assert_eq!(manager.cached_target_fps("slow", device_id), None);
+    assert_eq!(manager.cached_display_fps("slow", device_id), None);
 }
 
 #[tokio::test]
@@ -1859,7 +1857,7 @@ async fn connect_device_caches_backend_target_fps_for_output_queue() {
     manager.write_frame(&zone_colors, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
-    assert_eq!(manager.cached_target_fps("slow", device_id), Some(37));
+    assert_eq!(manager.cached_display_fps("slow", device_id), Some(37));
 
     let snapshot = manager.debug_snapshot();
     let queue = snapshot
@@ -1937,15 +1935,15 @@ async fn backend_io_connects_once_and_caches_target_fps() {
     let io = manager
         .backend_io("connect_recording")
         .expect("backend io handle should exist");
-    let output_cadence = io.connect(device_id).await.expect("connect should succeed");
+    let output_policy = io.connect(device_id).await.expect("connect should succeed");
 
-    manager.set_cached_output_cadence("connect_recording", device_id, output_cadence);
+    manager.set_cached_output_policy("connect_recording", device_id, output_policy);
     manager.map_device("connect_recording:device", "connect_recording", device_id);
 
-    assert_eq!(output_cadence.target_fps(), 48);
+    assert_eq!(output_policy.display_fps(), 48);
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(
-        manager.cached_target_fps("connect_recording", device_id),
+        manager.cached_display_fps("connect_recording", device_id),
         Some(48)
     );
 }
@@ -2006,13 +2004,13 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     };
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    let output_cadence = io
+    let output_policy = io
         .connect_with_timeout(device_id, Duration::from_millis(20))
         .await
         .expect("timeout should start after the backend lock is acquired");
 
     write_task.await.expect("write task should not panic");
-    assert_eq!(output_cadence.target_fps(), 60);
+    assert_eq!(output_policy.display_fps(), 60);
     assert_eq!(write_count.load(Ordering::Relaxed), 1);
 }
 
@@ -4887,8 +4885,8 @@ async fn output_queue_sends_identical_payloads_up_to_backend_minimum() {
         .expect("connect should succeed");
     assert_eq!(
         manager
-            .cached_output_cadence("slow", device_id)
-            .map(OutputCadence::min_identical_sends),
+            .cached_output_policy("slow", device_id)
+            .map(|policy| policy.copies_before_idle().get()),
         Some(3)
     );
 
@@ -4939,7 +4937,7 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
         Arc::clone(&write_count),
     )
     .with_target_fps(60)
-    .with_max_frame_silence(max_frame_silence);
+    .with_replay_after(max_frame_silence);
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(backend));
@@ -4969,9 +4967,9 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
     assert!(writes.iter().all(|write| write == &expected));
 
     let cadence = manager
-        .cached_output_cadence("slow", device_id)
+        .cached_output_policy("slow", device_id)
         .expect("connected cadence should be cached");
-    assert_eq!(cadence.max_frame_silence(), Some(max_frame_silence));
+    assert_eq!(cadence.replay_after(), Some(max_frame_silence));
 
     let stats = manager.device_output_statistics();
     assert_eq!(stats.len(), 1);
@@ -4994,7 +4992,7 @@ async fn cached_payload_reassertion_uses_normal_failure_and_ack_telemetry() {
 
     let backend =
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts))
-            .with_max_frame_silence(Duration::from_millis(40));
+            .with_replay_after(Duration::from_millis(40));
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(backend));
@@ -5231,7 +5229,7 @@ async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_err
 }
 
 #[tokio::test]
-async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
+async fn write_frame_uses_interval_pacing_for_cached_display_fps() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
     let write_count = Arc::new(AtomicUsize::new(0));
@@ -5641,7 +5639,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
 
     let mut manager = BackendManager::new();
     manager.register_backend(Arc::new(backend));
-    manager.set_cached_target_fps("slow", device_id, 30);
+    manager.set_cached_output_policy("slow", device_id, OutputPolicy::from_fps(30));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, InstallationId, OutputCadence,
+    DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, InstallationId, OutputPolicy,
 };
 use hypercolor_driver_pixel::controls::{pixel_config_values, values_entry};
 use hypercolor_driver_pixel::{
@@ -677,8 +677,8 @@ async fn e131_cadence_requires_three_identical_sends() {
     let (backend, id) = connect(&e131).await;
     assert_eq!(
         backend
-            .output_cadence(&id)
-            .map(OutputCadence::min_identical_sends),
+            .output_policy(&id)
+            .map(|policy| policy.copies_before_idle().get()),
         Some(3)
     );
     for protocol in ["artnet", "ddp"] {
@@ -688,8 +688,8 @@ async fn e131_cadence_requires_three_identical_sends() {
         let (backend, id) = connect(&config).await;
         assert_eq!(
             backend
-                .output_cadence(&id)
-                .map(OutputCadence::min_identical_sends),
+                .output_policy(&id)
+                .map(|policy| policy.copies_before_idle().get()),
             Some(1),
             "{protocol} keeps plain suppression"
         );
@@ -702,23 +702,26 @@ async fn cadence_follows_render_loop_with_keepalive() {
         "id": "free", "host": "127.0.0.1", "protocol": "ddp", "pixel_count": 1
     }));
     let (backend, id) = connect(&config).await;
-    let cadence = backend.output_cadence(&id).expect("cadence");
+    let cadence = backend.output_policy(&id).expect("cadence");
     assert_eq!(cadence.min_interval(), None, "no driver-side frame cap");
-    assert_eq!(cadence.max_frame_silence(), Some(KEEPALIVE_INTERVAL));
+    assert_eq!(cadence.replay_after(), Some(KEEPALIVE_INTERVAL));
     assert_eq!(KEEPALIVE_INTERVAL, Duration::from_millis(800));
-    assert_eq!(backend.target_fps(&id), None);
+    assert_eq!(cadence.display_fps(), 0);
 
     let capped = config_for(json!({
         "id": "capped", "host": "127.0.0.1", "protocol": "e131", "pixel_count": 1,
         "max_fps": 40
     }));
     let (backend, id) = connect(&capped).await;
-    let cadence = backend.output_cadence(&id).expect("cadence");
+    let cadence = backend.output_policy(&id).expect("cadence");
     let interval = cadence.min_interval().expect("capped device paces output");
     assert!(interval.abs_diff(Duration::from_millis(25)) < Duration::from_micros(1));
-    assert_eq!(cadence.target_fps(), 40);
-    assert_eq!(cadence.max_frame_silence(), Some(KEEPALIVE_INTERVAL));
-    assert_eq!(backend.target_fps(&id), Some(40));
+    assert_eq!(cadence.display_fps(), 40);
+    assert_eq!(cadence.replay_after(), Some(KEEPALIVE_INTERVAL));
+    assert_eq!(
+        backend.output_policy(&id).map(OutputPolicy::display_fps),
+        Some(40)
+    );
 }
 
 // ── Authorization by the live config ────────────────────────────────────

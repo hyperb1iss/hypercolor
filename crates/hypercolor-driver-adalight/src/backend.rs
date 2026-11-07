@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceFrameSink, DeviceLifecyclePolicy,
     DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, DriverConfigView, DriverError,
-    OutputCadence,
+    OutputPolicy,
 };
 use hypercolor_driver_support::{
     ConfiguredDevices, DeviceSession, FrameDelivery, Session, SessionTable,
@@ -214,14 +214,8 @@ impl DeviceBackend for AdalightBackend {
         self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.sessions.facts(id).map(|plan| plan.effective_max_fps())
-    }
-
-    fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.sessions
-            .facts(id)
-            .map(|plan| output_cadence_for(&plan))
+    fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
+        self.sessions.facts(id).map(|plan| output_policy_for(&plan))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
@@ -232,9 +226,8 @@ impl DeviceBackend for AdalightBackend {
 /// Output cadence for a plan: the line interval as the minimum spacing,
 /// with a keepalive resend after [`KEEPALIVE_INTERVAL`] of silence.
 #[must_use]
-pub fn output_cadence_for(plan: &AdalightDevicePlan) -> OutputCadence {
-    OutputCadence::from_min_interval(plan.frame_interval(), plan.effective_max_fps())
-        .with_max_frame_silence(KEEPALIVE_INTERVAL)
+pub fn output_policy_for(plan: &AdalightDevicePlan) -> OutputPolicy {
+    OutputPolicy::from_min_interval(plan.frame_interval()).with_replay_after(KEEPALIVE_INTERVAL)
 }
 
 /// Longest a backlog or a single write may go without progress before the

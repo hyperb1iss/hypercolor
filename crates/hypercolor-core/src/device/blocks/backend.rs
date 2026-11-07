@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceInputSink, DeviceWriteOutcome, DiscoveredDevice,
-    DriverRuntimeActions,
+    DriverRuntimeActions, OutputPolicy,
 };
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
@@ -381,7 +381,7 @@ impl DeviceBackend for BlocksBackend {
         }
     }
 
-    fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
-        Some(25)
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        Some(OutputPolicy::from_fps(25))
     }
 }
