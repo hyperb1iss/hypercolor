@@ -23,7 +23,8 @@
     is open, and after it committed. After each kill the Start menu shortcut
     must still start Hypercolor, and one more run of the installer must finish
     the job. A round in which a kill misses its moment proves nothing, so it
-    is thrown away and run again.
+    is thrown away and run again. An installer that fails on its own has not
+    missed anything, so it ends the run.
 
     -Mode Replace installs -PreviousInstaller, which already lays down units,
     and replaces it with the candidate.
@@ -155,12 +156,24 @@ function Wait-Installer {
     }
 }
 
+function Wait-ForKilled {
+    param([Diagnostics.Process[]] $Processes, [string] $Description)
+
+    foreach ($process in $Processes) {
+        if (-not $process.WaitForExit($LauncherDeadlineMilliseconds)) {
+            throw "$Description outlived its kill"
+        }
+    }
+}
+
 function Stop-InstalledHypercolor {
     param([string] $InstallDir)
 
-    Get-Process -Name hypercolor-app, hypercolor-daemon -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
-        Stop-Process -Force -ErrorAction SilentlyContinue
+    $running = @(Get-Process -Name hypercolor-app, hypercolor-daemon -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) })
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    # An installer started next must not find them still closing.
+    Wait-ForKilled -Processes $running -Description "Hypercolor"
 }
 
 function Get-InstalledVersion {
@@ -178,10 +191,22 @@ function Install-Silently {
     Wait-Installer -Process (Start-Process -FilePath $Installer -ArgumentList "/S" -PassThru) -Description $Description
 }
 
+# The installer replaces these records by rename while the kill rounds poll
+# them, and that rename fails over any handle that does not share delete
+# access, which rules out Get-Content.
 function Read-Record {
     param([string] $Name)
 
-    Get-Content -Raw -LiteralPath (Join-Path $StateRoot $Name) | ConvertFrom-Json
+    $stream = [IO.FileStream]::new(
+        (Join-Path $StateRoot $Name),
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+        [IO.StreamReader]::new($stream).ReadToEnd() | ConvertFrom-Json
+    } finally {
+        $stream.Dispose()
+    }
 }
 
 function Get-ActiveUnit {
@@ -505,6 +530,8 @@ function Invoke-KilledInstall {
 
     Write-Host "Killing the installer $Moment"
     $installer = Start-Process -FilePath $CandidateInstaller -ArgumentList "/S" -PassThru
+    # The exit code is only readable through a handle taken while it runs.
+    $null = $installer.Handle
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while (-not $installer.HasExited -and -not (& $Reached)) {
         if ((Get-Date) -gt $deadline) {
@@ -513,7 +540,11 @@ function Invoke-KilledInstall {
         }
     }
     if ($installer.HasExited) {
-        Write-Host "the installer finished before it could be killed $Moment"
+        $left = "journal $(Get-JournalDisposition), pointer moved $(Test-PointerMoved)"
+        if ($SuccessCodes -notcontains $installer.ExitCode) {
+            throw "the installer failed with exit code $($installer.ExitCode) before it could be killed $Moment; $left"
+        }
+        Write-Host "the installer finished with exit code $($installer.ExitCode) before it could be killed $Moment; $left"
         return $false
     }
     Stop-Process -Id $installer.Id -Force -ErrorAction SilentlyContinue
@@ -522,11 +553,7 @@ function Invoke-KilledInstall {
     $running = @(Get-Process -Name hypercolor -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.EndsWith("\unit\hypercolor.exe", [StringComparison]::OrdinalIgnoreCase) })
     $running | Stop-Process -Force -ErrorAction SilentlyContinue
-    foreach ($process in $running) {
-        if (-not $process.WaitForExit($LauncherDeadlineMilliseconds)) {
-            throw "the program the installer ran outlived its kill $Moment"
-        }
-    }
+    Wait-ForKilled -Processes $running -Description "the program the installer ran $Moment"
     Write-Host "killed $Moment; journal $(Get-JournalDisposition), pointer moved $(Test-PointerMoved)"
     $true
 }
