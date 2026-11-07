@@ -130,8 +130,9 @@ test('every signing step waits for the decision, and setup follows the login', (
   const login = order.indexOf('Sign in to Azure');
   assert.ok(login > order.indexOf('Restore unsigned Windows payload'));
   assert.equal(order[login + 1], 'Prepare Artifact Signing');
-  assert.equal(order[login + 2], 'Bundle and sign Windows installer');
-  assert.equal(order[login + 3], 'Verify Windows signatures');
+  assert.equal(order[login + 2], 'Sign Windows programs');
+  assert.equal(order[login + 3], 'Bundle and sign Windows installer');
+  assert.equal(order[login + 4], 'Verify Windows signatures');
   assert.equal(order.at(-1), 'Upload native release bundle');
   // The signing job installs Tauri's own pinned release binary, the same
   // version build-native-app pins, and compiles nothing.
@@ -141,6 +142,9 @@ test('every signing step waits for the decision, and setup follows the login', (
   assert.match(install, /TAURI_CLI_SHA256: [0-9a-f]{64}$/m);
   assert.match(install, /Get-FileHash -Algorithm SHA256/);
   assert.doesNotMatch(job('sign-windows'), /cargo (build|install|binstall)|cargo-cache-build|install-action/);
+  const programs = step(job('sign-windows'), 'Sign Windows programs').text;
+  const signed = programs.indexOf('sign-windows-artifacts.ps1 sign-payload');
+  assert.ok(signed >= 0 && signed < programs.indexOf('produce-windows-unit.ps1'), 'a unit holds signed bytes');
   const bundle = step(job('sign-windows'), 'Bundle and sign Windows installer').text;
   assert.match(bundle, /cargo tauri bundle --ci --bundles nsis --no-binary-patching/);
   assert.match(bundle, /--config \$env:HYPERCOLOR_TAURI_SIGN_CONFIG/);

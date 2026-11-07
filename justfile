@@ -527,7 +527,7 @@ app-bundle-binaries:
 
 [windows]
 app-bundle-binaries:
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper -p hypercolor-windows-launcher --bin hypercolor-launcher --bin hypercolor-update-bootstrap -p hypercolor-install --bin hypercolor-windows-unit
 
 # Stage triple-suffixed sidecars (and Windows-only PawnIO/SMBus payloads) under target/bundle-stage/
 [unix]
@@ -549,10 +549,12 @@ app-bundle *args='': app-assets app-bundle-assets
     cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ if os() == "macos" { "--bundles app" } else { "" } }} {{ args }}
     ./scripts/macos-dev-postsign.sh
 
-# Build native Tauri bundles; installer.nsi needs exactly tauri-cli 2.12.1
+# Build native Tauri bundles; installer.nsi needs exactly tauri-cli 2.12.1.
+# The installer carries a unit of the finished programs, so the unit is
+# produced between building the app and bundling it.
 [windows]
 app-bundle *args='': app-assets app-bundle-assets
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((cargo tauri --version) -ne 'tauri-cli 2.12.1') { throw 'Windows bundles need tauri-cli 2.12.1; install it with: cargo install tauri-cli --version =2.12.1 --locked' }; Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((cargo tauri --version) -ne 'tauri-cli 2.12.1') { throw 'Windows bundles need tauri-cli 2.12.1; install it with: cargo install tauri-cli --version =2.12.1 --locked' }; Set-Location crates/hypercolor-app; cargo tauri build --no-bundle --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; ../../scripts/produce-windows-unit.ps1; cargo tauri bundle --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
 
 # Build the full unsigned Windows NSIS installer package
 [windows]

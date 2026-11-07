@@ -120,8 +120,8 @@ exit 0
 
     $invocations = @(Get-Content $env:HYPERCOLOR_TEST_ARGUMENT_CAPTURE |
         ForEach-Object { ,(ConvertFrom-Json $_) })
-    if ($invocations.Count -ne 20) {
-        throw "Expected 20 Windows Cargo invocations, captured $($invocations.Count)"
+    if ($invocations.Count -ne 22) {
+        throw "Expected 22 Windows Cargo invocations, captured $($invocations.Count)"
     }
     # PowerShell passes comma-separated features as an array; the wrapper
     # stringifies it into one space-separated Cargo feature argument.

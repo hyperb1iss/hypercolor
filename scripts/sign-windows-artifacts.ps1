@@ -6,6 +6,8 @@ Authenticode signing for the Windows release, through Azure Artifact Signing.
   setup     Fetch the pinned Artifact Signing dlib, find signtool, write the
             dlib metadata and the Tauri signCommand config, and cache a code
             signing token while the OIDC login is still fresh.
+  sign-payload  Sign every first-party program a unit or the stage holds, so a
+            unit can be produced from their final bytes.
   sign      Sign one file. Tauri's signCommand runs this for every binary it
             bundles, and makensis runs it on the uninstaller mid-build.
   verify    Prove an installer ships only Hypercolor-signed first-party
@@ -17,7 +19,7 @@ docs/development/RELEASING.md covers the one-time Azure setup.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('resolve', 'setup', 'sign', 'verify', 'selftest')]
+    [ValidateSet('resolve', 'setup', 'sign', 'sign-payload', 'verify', 'selftest')]
     [string] $Command,
 
     # The file to sign (sign) or the probe binary (selftest).
@@ -80,16 +82,39 @@ $MicrosoftRuntimeBinaries = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_
 $MicrosoftSigner = 'Microsoft Corporation'
 $ThirdPartyBinaries = @('PawnIO_setup.exe') + $MicrosoftRuntimeBinaries
 
-# Payload paths (as 7-Zip extracts them) that every installer must carry
-# with a Hypercolor signature.
-$RequiredSignedPayload = @(
+# Where 7-Zip extracts the unit an installer carries.
+$PayloadUnit = '$PLUGINSDIR\unit'
+
+# Programs a build writes to its release directory, each signed in place
+# before the unit is produced: a unit holds their exact bytes.
+$ReleasePrograms = @(
     'hypercolor-app.exe',
     'hypercolor-daemon.exe',
     'hypercolor.exe',
-    'libEGL.dll',
-    'libGLESv2.dll',
-    'tools\hypercolor-smbus-service.exe',
-    'tools\hypercolor-windows-helper.exe',
+    'hypercolor-smbus-service.exe',
+    'hypercolor-update-bootstrap.exe',
+    'hypercolor-windows-helper.exe'
+)
+
+# What the stage holds for itself, unit members and the stable launcher alike.
+$StagedPrograms = @(
+    'dlls\libEGL.dll',
+    'dlls\libGLESv2.dll',
+    'tools\hypercolor-launcher.exe'
+)
+
+# Payload paths (as 7-Zip extracts them) that every installer must carry
+# with a Hypercolor signature.
+$RequiredSignedPayload = @(
+    'Hypercolor.exe',
+    "$PayloadUnit\hypercolor-app.exe",
+    "$PayloadUnit\hypercolor-daemon.exe",
+    "$PayloadUnit\hypercolor.exe",
+    "$PayloadUnit\libEGL.dll",
+    "$PayloadUnit\libGLESv2.dll",
+    "$PayloadUnit\tools\hypercolor-smbus-service.exe",
+    "$PayloadUnit\tools\hypercolor-update-bootstrap.exe",
+    "$PayloadUnit\tools\hypercolor-windows-helper.exe",
     'uninstall.exe'
 )
 
@@ -455,6 +480,18 @@ function Invoke-Sign {
     }
 }
 
+function Invoke-SignPayload {
+    Assert-Windows
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $release = Join-Path $env:CARGO_TARGET_DIR 'release'
+    $stage = Join-Path $repoRoot 'target\bundle-stage'
+    $programs = @($ReleasePrograms | ForEach-Object { Join-Path $release $_ }) +
+        @($StagedPrograms | ForEach-Object { Join-Path $stage $_ })
+    foreach ($program in $programs) {
+        Invoke-Sign $program
+    }
+}
+
 function Find-SevenZip {
     $command = Get-Command 7z -ErrorAction SilentlyContinue
     if ($command) {
@@ -553,16 +590,16 @@ function Invoke-Verify {
     }
 
     # PawnIO's setup must reach users byte for byte, or its install fails.
-    $manifestPath = Join-Path $root 'tools\pawnio\manifest.json'
-    $pawnIoSetup = Join-Path $root 'tools\pawnio\PawnIO_setup.exe'
+    $manifestPath = Join-Path $root "$PayloadUnit\tools\pawnio\manifest.json"
+    $pawnIoSetup = Join-Path $root "$PayloadUnit\tools\pawnio\PawnIO_setup.exe"
     if ((Test-Path -LiteralPath $manifestPath) -and (Test-Path -LiteralPath $pawnIoSetup)) {
         $pinned = (Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json).pawnio_setup.sha256
         $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $pawnIoSetup).Hash
         if ($actual -ne $pinned) {
-            $failures.Add("tools\pawnio\PawnIO_setup.exe hash $actual differs from its pin $pinned")
+            $failures.Add("$PayloadUnit\tools\pawnio\PawnIO_setup.exe hash $actual differs from its pin $pinned")
         }
     } else {
-        $failures.Add('the installer is missing tools\pawnio\PawnIO_setup.exe or its manifest')
+        $failures.Add("the installer is missing $PayloadUnit\tools\pawnio\PawnIO_setup.exe or its manifest")
     }
 
     # The unsigned build of the same inputs passed the upgrade check, so the
@@ -578,9 +615,12 @@ function Invoke-Verify {
             $failures.Add("$lost is in the unsigned installer but not the signed one")
         }
         # 7-Zip may also emit [NSIS].nsi, a script it decompiles from the
-        # installer header rather than a file the installer ships.
+        # installer header rather than a file the installer ships. The unit's
+        # manifest holds every program's hash, so it moves with their
+        # signatures.
         $comparable = $files | Where-Object {
             $_ -in $unsignedFiles -and -not $_.StartsWith('[NSIS]') -and
+                $_ -ne "$PayloadUnit\manifest.json" -and
                 (-not (Test-PeFile $_) -or (Split-Path -Leaf $_) -in $ThirdPartyBinaries)
         }
         foreach ($relative in $comparable) {
@@ -671,6 +711,7 @@ switch ($Command) {
     'resolve' { Invoke-Resolve }
     'setup' { Invoke-Setup }
     'sign' { Invoke-Sign $Path }
+    'sign-payload' { Invoke-SignPayload }
     'verify' { Invoke-Verify }
     'selftest' { Invoke-Selftest }
 }
