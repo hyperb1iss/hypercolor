@@ -13,6 +13,7 @@ use hypercolor_driver_api::{
     DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions,
     DriverTrackedDevice, InstallationId,
 };
+use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
     OpenRgbTeardownPolicy,
@@ -3601,4 +3602,139 @@ async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
     assert_eq!(resize.header.packet_id, PacketId::ResizeZone);
     assert_eq!(&update.payload[4..6], &4_u16.to_le_bytes());
     replacement.disconnect(&id).await.expect("disconnect");
+}
+
+// ── Session contract ────────────────────────────────────────────────────
+
+/// Fake OpenRGB server that counts LED updates and closed connections.
+#[derive(Default)]
+struct ContractServer {
+    updates: AtomicUsize,
+    closes: AtomicUsize,
+}
+
+async fn run_contract_server(listener: TcpListener, state: Arc<ContractServer>) {
+    let controller = controller_payload_v5("Board", "SER123", "hidraw0");
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let state = Arc::clone(&state);
+        let controller = controller.clone();
+        tokio::spawn(async move {
+            let mut decoder = PacketDecoder::new();
+            while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+                if packet.header.packet_id == PacketId::UpdateLeds {
+                    state.updates.fetch_add(1, Ordering::SeqCst);
+                    continue;
+                }
+                answer_standard_client_packet(
+                    &mut stream,
+                    packet.header.packet_id,
+                    &packet,
+                    &controller,
+                )
+                .await;
+            }
+            state.closes.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+}
+
+struct OpenRgbRig {
+    backend: Arc<dyn DeviceBackend>,
+    id: DeviceId,
+    server: Arc<ContractServer>,
+    seen: usize,
+    closes: usize,
+}
+
+#[async_trait]
+impl SessionRig for OpenRgbRig {
+    fn backend(&self) -> &dyn DeviceBackend {
+        self.backend.as_ref()
+    }
+
+    fn device_id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn frame(&self, shade: u8) -> Vec<[u8; 3]> {
+        vec![[shade, 0, 255], [0, shade, 255]]
+    }
+
+    async fn saw_traffic(&mut self, window: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            let count = self.server.updates.load(Ordering::SeqCst);
+            if count > self.seen {
+                self.seen = count;
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    async fn discard_traffic(&mut self) {
+        self.seen = self.server.updates.load(Ordering::SeqCst);
+    }
+
+    /// The last session on an endpoint takes the pooled SDK connection with
+    /// it, so the server sees that connection close.
+    async fn assert_transport_released(&mut self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let closes = self.server.closes.load(Ordering::SeqCst);
+            if closes > self.closes {
+                self.closes = closes;
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a closed session left its SDK connection open"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn openrgb_sessions_keep_the_contract() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let state = Arc::new(ContractServer::default());
+    let server = tokio::spawn(run_contract_server(listener, Arc::clone(&state)));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let id = devices[0].info.id;
+
+    let mut rig = OpenRgbRig {
+        backend,
+        id,
+        server: Arc::clone(&state),
+        seen: 0,
+        closes: state.closes.load(Ordering::SeqCst),
+    };
+    assert_session_contract(&mut rig).await;
+    server.abort();
 }
