@@ -667,8 +667,8 @@ port; Art-Net uses the 6454 socket from section 5.4 while one is held, or
 the ephemeral IPv4 socket as its fallback. No socket enables
 `SO_BROADCAST`. Writes lock the device session, so frames to one device
 never interleave. `frame_sink` returns a cloneable lane over the same
-session, and `deliver_colors_shared_observed` reports transport start once
-the session is held.
+session, and a submitted frame reports transport start once the session is
+held.
 
 The core output queue keeps a device's frame sink after disconnect until it
 removes the queue, so the session carries a closed flag. Closing sets it

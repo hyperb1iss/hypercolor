@@ -192,8 +192,13 @@ impl Protocol for MyFamilyProtocol {
 
     // encode_frame_into is the hot path; implement this.
     // The default trait implementation delegates to encode_frame (allocating).
-    // Override it here to reuse the buffer instead.
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    // Override it here to reuse the buffer instead. The FrameBatch says what
+    // came of the frame: written whole, written in part, unchanged, or held.
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = self.normalize(colors);
         let mut buffer = CommandBuffer::new(commands);
 
@@ -217,6 +222,7 @@ impl Protocol for MyFamilyProtocol {
             TransferType::Primary,
         );
         buffer.finish();
+        FrameBatch::WHOLE
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

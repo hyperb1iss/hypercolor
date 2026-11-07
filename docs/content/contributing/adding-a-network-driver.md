@@ -154,10 +154,10 @@ included, belongs in a `DeviceSession` kept in a `SessionTable`:
 
 ```rust
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
-    OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, Frame, OutputPolicy,
+    SkipReason, Submission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId};
 
 struct AcmeSession {
@@ -169,17 +169,14 @@ impl DeviceSession for AcmeSession {
     // Facts fixed at connect, readable without waiting for the session's I/O.
     type Facts = OutputPolicy;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
         // Encode one frame. Called on every render tick; keep allocations minimal.
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
-        // Send it.
-        Ok(DeviceWriteOutcome::Sent)
+        // A frame the device already shows settles without touching the wire:
+        // return attempt.skip(SkipReason::Unchanged).into();
+        let transmission = attempt.start();
+        // Send it. A failed send settles with transmission.failed(error).
+        transmission.written().into()
     }
 
     async fn finish(&mut self) -> Result<(), DeviceError> {
@@ -229,7 +226,7 @@ impl DeviceBackend for AcmeBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
@@ -242,6 +239,17 @@ impl DeviceBackend for AcmeBackend {
     }
 }
 ```
+
+Each frame carries an `Attempt`, and the receipt says what became of it. `Attempt::start` marks
+the first transport I/O and exactly one terminal call settles it: `skip` for a frame that was not
+written (`Unchanged`, `Deferred { retry_at }`, or `Superseded`), `reject` for a failure before any
+I/O, and on the started `Transmission`, `written`, `answered` for a peer that replied, or `failed`.
+Settling consumes it, so a frame cannot report twice, and an attempt dropped unsettled still
+reports. `Written` counts bytes of the submitted frame, three per LED, whatever the wire format
+adds. A driver that hands the frame to its own worker wraps it in a `MailboxFrame`, moves the
+attempt to that worker, and returns `Submission::Pending`. A lane that has to wait for its own
+reasons (a quota, a backlog, another application holding the device) answers `Readiness::Deferred`
+and skips with its `retry_at`, and the host offers the latest frame again then.
 
 The table keeps the session contract for you. When `disconnect` returns `Ok`, new operations
 are revoked, admitted I/O has settled or been cancelled, `finish` ran, tasks started with

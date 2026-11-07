@@ -245,7 +245,7 @@ averaged. Host brightness scales the engine color with `Rgb::scale` first.
 | Color | Color, no `set_scene` | only the changed `set_rgb` and `set_bright` |
 | off or unknown | White | `set_power on`, `set_bright` |
 | White | White | `set_bright` |
-| a state | the same state | nothing (`SuppressedDuplicate`) |
+| a state | the same state | nothing (`SkipReason::Unchanged`) |
 
 ---
 
@@ -265,7 +265,7 @@ Without music mode the driver stays inside the per-connection quota:
   frame (1 for `set_scene` lights, 2 for white lights, 3 for color lights
   without `set_scene`), reported as 1 fps.
 - A write that arrives before the previous frame's commands have used up
-  their seconds returns `SuppressedCadence` without touching the device.
+  their seconds defers until they have, without touching the device.
 - A quota error pauses output for 15 s and marks the light's state unknown:
   the rejected command never landed, so the first frame after the pause is
   sent in full even when the color has not changed.

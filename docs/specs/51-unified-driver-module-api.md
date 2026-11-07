@@ -1342,7 +1342,7 @@ The current `BackendManager` already protects the render loop by routing frames
 into per-device latest-value output queues. `write_frame_with_brightness()`
 builds per-device color payloads and calls `OutputQueue::push()`. The queue uses
 a `watch` channel so a new payload replaces stale work instead of waiting behind
-it. The actual `DeviceBackend::write_colors_shared()` call happens in an output
+it. The actual `DeviceBackend::submit_frame()` call happens in an output
 worker task, not inside the render loop.
 
 That means a slow physical write should affect only that output worker's

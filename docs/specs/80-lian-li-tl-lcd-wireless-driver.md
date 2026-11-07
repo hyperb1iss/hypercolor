@@ -1143,9 +1143,9 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   reads as a backlog until its base delay catches up (about a minute),
   and its halvings reach its neighbours. In simulation, a 1.5 to 2.5 s
   jump on one of two clusters left the other at 29 to 31 fps throughout,
-  while the jumped cluster regrew by one frame per status. A frame's delivery acknowledgement counts only the
-  pixels written (`Protocol::written_frame_bytes`); a frame written to no
-  cluster is acknowledged as suppressed.
+  while the jumped cluster regrew by one frame per status. A frame's receipt counts only the
+  pixels written (`FrameBatch::Write::pixel_bytes`); a frame written to no
+  cluster is `FrameBatch::Held` while a newer frame waits, or `Unchanged`.
 - **The frame pump.** The protocol's frame pump (`Protocol::frame_pump_interval`
   and `pump_frame_into`) runs every 5 ms and returns nothing when nothing is
   due. It polls the table while sends are unconfirmed and sends the held
