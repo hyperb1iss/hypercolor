@@ -2212,6 +2212,37 @@ fn nsis_function_body<'a>(name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("installer.nsi should define {name}"))
 }
 
+/// The proof lane runs on every installer change, from the last flat release,
+/// through a kill at each step that can be seen from outside, with the update
+/// service and without it, and through the uninstaller.
+#[test]
+fn installer_lane_proves_adoption_kills_and_the_managed_switch() {
+    for step in [
+        "- name: Prove installs, upgrades, kills and uninstalls",
+        "FLAT_RELEASE: v0.9.0",
+        "-Profile dev -SkipUi -SkipEffects -NoServo -ManagedUpdate",
+        "foreach ($mode in \"Silent\", \"Interactive\", \"Killed\")",
+        "-Mode Fresh -CandidateInstaller $openSource",
+        "-Mode Fresh -CandidateInstaller $managed -Managed",
+        "-Mode Replace -PreviousInstaller $managed -CandidateInstaller $openSource",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(step),
+            "installer lane is missing {step}"
+        );
+    }
+    for moment in [
+        "while publishing the unit",
+        "inside the transaction",
+        "after the transaction committed",
+    ] {
+        assert!(
+            WINDOWS_UPGRADE_TEST_PS1.contains(moment),
+            "the kill test skips {moment}"
+        );
+    }
+}
+
 /// Upstream's template treats an upgrade as "uninstall, then install" unless
 /// `/UPDATE` is passed, and that uninstall deletes the autostart entry and
 /// shortcuts. The fork upgrades in place, the `/UPDATE` way, whenever an
