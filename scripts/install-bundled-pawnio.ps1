@@ -1,6 +1,10 @@
 param(
     [string]$AssetRoot = "",
     [string]$ModuleDestination = "",
+    # Skip the per-user copy. An installer sets this: the broker loads the
+    # modules beside its own image, and an elevated write into a directory
+    # the user owns would go wherever that user pointed it.
+    [switch]$NoUserModules,
     [switch]$Force,
     [switch]$Silent
 )
@@ -178,6 +182,9 @@ if (-not (Test-IsAdministrator)) {
         "-ModuleDestination",
         $ModuleDestination
     )
+    if ($NoUserModules) {
+        $arguments += "-NoUserModules"
+    }
     if ($Force) {
         $arguments += "-Force"
     }
@@ -221,7 +228,9 @@ if (-not $pawnIoHome -or $Force) {
 
 $moduleExtractRoot = Expand-VerifiedBundledModules
 try {
-    Copy-BundledModules $moduleExtractRoot $ModuleDestination
+    if (-not $NoUserModules) {
+        Copy-BundledModules $moduleExtractRoot $ModuleDestination
+    }
 
     if ($pawnIoHome) {
         $sharedModuleDir = Join-Path $pawnIoHome "modules"
@@ -237,7 +246,9 @@ Write-Host "PawnIO hardware access is ready"
 if ($pawnIoHome) {
     Write-Host "  Runtime: $pawnIoHome"
 }
-Write-Host "  User modules: $ModuleDestination"
+if (-not $NoUserModules) {
+    Write-Host "  User modules: $ModuleDestination"
+}
 
 if ($rebootRequired) {
     Write-Host "Restart required to complete PawnIO driver activation."

@@ -70,6 +70,9 @@ fn io_failure(context: &str, source: impl std::fmt::Display) -> InstallPlatformE
 
 /// `path` as the file system spells it, so a short name or a verbatim
 /// prefix cannot read as a different directory to a handle's final path.
+/// Only for the unit's source, whose bytes are proven whatever it is. The
+/// release root stays as given: the installer goes on to write through that
+/// exact path, so a link in it has to be refused, not resolved.
 fn canonical(path: &Path) -> io::Result<PathBuf> {
     let resolved = fs::canonicalize(path)?;
     Ok(resolved
@@ -78,10 +81,16 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
         .map_or_else(|| resolved.clone(), PathBuf::from))
 }
 
-/// Make Administrators the owner of the release root. An elevated account
-/// can create it under `Program Files` but cannot hold what a directory
-/// handle for writing asks of that parent, so the tool does it by path.
+/// Create the release root if it is new and make Administrators its owner.
+/// An elevated account can create it under `Program Files` but cannot hold
+/// what a directory handle for writing asks of that parent, so both happen
+/// by path, after the store proved no link or replaceable ancestor is on it.
 fn take_release_root(root: &Path) -> Result<(), InstallPlatformError> {
+    match fs::create_dir(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(source) => return Err(io_failure("create the install directory", source)),
+    }
     let system = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .ok_or_else(|| error("SystemRoot is not set"))?;
@@ -139,19 +148,18 @@ impl NativeSetup {
             .map_err(|source| io_failure("take over the owner of new files", source))?;
         let state_root = prepare_machine_update_directory()
             .map_err(|source| io_failure("prepare the update state directory", source))?;
-        fs::create_dir_all(&request.install_dir)
-            .map_err(|source| io_failure("create the install directory", source))?;
-        take_release_root(&request.install_dir)?;
-        let release_root = canonical(&request.install_dir)
-            .map_err(|source| io_failure("resolve the install directory", source))?;
         let source = canonical(&request.source)
             .map_err(|source| io_failure("resolve the unit's location", source))?;
         let store = InstallStore::with_roots(
-            &release_root,
+            &request.install_dir,
             &state_root,
             MAX_MANAGED_INSTALL_JOURNAL_BYTES,
         )
         .map_err(|source| io_failure("open the release store", source))?;
+        store
+            .require_safe_release_path()
+            .map_err(|source| io_failure("check the install directory", source))?;
+        take_release_root(&request.install_dir)?;
         let lock = store.acquire_lock().map_err(|source| match source {
             InstallStoreError::LockContended => {
                 error("an update of this installation is running; try again once it has finished")

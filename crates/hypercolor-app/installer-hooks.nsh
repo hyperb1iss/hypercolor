@@ -49,11 +49,19 @@
 ; absent on a fresh install, and so is every effect.
 !macro HYPERCOLOR_RETIRE_FLAT_LAYOUT
   ; The app's autostart value named the flat program, which is about to go.
-  ; The app moves other accounts' values when it next starts.
-  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
-  ${If} $0 != ""
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" '"$INSTDIR\${MAINBINARYNAME}.exe" --minimized'
-  ${EndIf}
+  ; Whoever elevated this may not be whoever sits at the desktop, so every
+  ; signed-in account moves here. An account that is not signed in has no
+  ; hive to reach, and the app moves its value when it next starts.
+  StrCpy $R8 0
+  ${Do}
+    EnumRegKey $R9 HKU "" $R8
+    ${IfThen} $R9 == "" ${|} ${Break} ${|}
+    IntOp $R8 $R8 + 1
+    ReadRegStr $0 HKU "$R9\Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    ${If} $0 != ""
+      WriteRegStr HKU "$R9\Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" '"$INSTDIR\${MAINBINARYNAME}.exe" --minimized'
+    ${EndIf}
+  ${Loop}
   Delete "$INSTDIR\${HYPERCOLOR_APP}"
   Delete "$INSTDIR\hypercolor-daemon.exe"
   Delete "$INSTDIR\libEGL.dll"
@@ -106,7 +114,7 @@
 
   DetailPrint "Installing Hypercolor hardware access (this may take a moment)..."
   ${DisableX64FSRedirection}
-  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\pawnio" -BrokerExe "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\hypercolor-smbus-service.exe" -Silent -ReinstallService'
+  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\pawnio" -BrokerExe "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\hypercolor-smbus-service.exe" -NoUserModules -Silent -ReinstallService'
   Pop $R0
   DetailPrint "  Hardware access exit code: $R0"
 

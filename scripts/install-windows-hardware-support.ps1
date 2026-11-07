@@ -2,6 +2,7 @@ param(
     [string]$AssetRoot = "",
     [string]$BrokerExe = "",
     [string]$ModuleDestination = "",
+    [switch]$NoUserModules,
     [switch]$ForcePawnIo,
     [switch]$Silent,
     [switch]$ReinstallService,
@@ -56,6 +57,9 @@ if (-not (Test-IsAdministrator)) {
         "-ModuleDestination",
         $ModuleDestination
     )
+    if ($NoUserModules) {
+        $arguments += "-NoUserModules"
+    }
     if ($ForcePawnIo) {
         $arguments += "-ForcePawnIo"
     }
@@ -146,6 +150,9 @@ try {
     $pawnIoArgs = @{
         AssetRoot         = $AssetRoot
         ModuleDestination = $ModuleDestination
+    }
+    if ($NoUserModules) {
+        $pawnIoArgs["NoUserModules"] = $true
     }
     if ($ForcePawnIo) {
         $pawnIoArgs["Force"] = $true

@@ -20,9 +20,10 @@
 
     -Mode Killed upgrades the same way, but kills the installer and the
     program it runs while the unit is being published, while the transaction
-    is open, and after it committed. The machine must keep a Hypercolor that
-    starts at each kill it can still check, and one more run of the installer
-    must finish the job.
+    is open, and after it committed. After each kill the Start menu shortcut
+    must still start Hypercolor, and one more run of the installer must finish
+    the job. A round in which a kill misses its moment proves nothing, so it
+    is thrown away and run again.
 
     -Mode Replace installs -PreviousInstaller, which already lays down units,
     and replaces it with the candidate.
@@ -59,6 +60,8 @@ $Administrators = [Security.Principal.SecurityIdentifier] "S-1-5-32-544"
 $SuccessCodes = @(0, 3010)
 $StartDeadlineSeconds = 60
 $UninstallDeadlineSeconds = 180
+$LauncherDeadlineMilliseconds = 30000
+$KillRounds = 3
 
 Add-Type -TypeDefinition @"
 using System;
@@ -196,8 +199,16 @@ function Find-Failures {
 
     $failures = @()
     $launcher = Join-Path $InstallDir "Hypercolor.exe"
-    if ((Get-Item -LiteralPath $launcher -ErrorAction SilentlyContinue).Name -cne "Hypercolor.exe") {
-        $failures += "the launcher is not at $launcher under its own name"
+    if (-not (Test-Path -LiteralPath $launcher)) {
+        $failures += "the launcher is not at $launcher"
+    }
+    # NTFS ignores case, so a listing is the only place the spelling shows,
+    # and nothing depends on it.
+    $spelled = (Get-ChildItem -LiteralPath $InstallDir -Force | Where-Object { $_.Name -ieq "Hypercolor.exe" }).Name
+    if ($spelled -cne "Hypercolor.exe") {
+        Write-Host "::warning::the launcher is spelled '$spelled'"
+    } else {
+        Write-Host "the launcher is spelled $spelled"
     }
     foreach ($flat in "hypercolor-app.exe", "hypercolor-daemon.exe", "libEGL.dll", "vcruntime140.dll", "ui", "effects", "tools") {
         if (Test-Path -LiteralPath (Join-Path $InstallDir $flat)) {
@@ -348,9 +359,18 @@ function Find-StandardUserFailures {
         & net.exe localgroup Users $name /add 2>$null | Out-Null
         $secret = ConvertTo-SecureString $password -AsPlainText -Force
         $credential = [pscredential]::new($name, $secret)
+        # -Wait would also wait for the app the launcher leaves running. The
+        # process's own wait needs its handle read first, or its exit code
+        # is lost with it.
         $launch = Start-Process -FilePath (Join-Path $InstallDir "Hypercolor.exe") -ArgumentList "--minimized" `
-            -WorkingDirectory $env:SystemRoot -Credential $credential -LoadUserProfile -Wait -PassThru
+            -WorkingDirectory $env:SystemRoot -Credential $credential -LoadUserProfile -PassThru
+        $null = $launch.Handle
+        $finished = $launch.WaitForExit($LauncherDeadlineMilliseconds)
         Stop-InstalledHypercolor -InstallDir $InstallDir
+        if (-not $finished) {
+            Stop-Process -Id $launch.Id -Force -ErrorAction SilentlyContinue
+            return @("the launcher did not finish for a standard user")
+        }
         if ($launch.ExitCode -ne 0) {
             return @("the launcher refused a standard user with exit code $($launch.ExitCode)")
         }
@@ -447,8 +467,25 @@ function Show-BrokerState {
     }
 }
 
+function Get-JournalDisposition {
+    try {
+        (Read-Record "install-journal.json").disposition
+    } catch {
+        "none"
+    }
+}
+
+# The pointer names something other than the release this run started from.
+function Test-PointerMoved {
+    try {
+        (Get-ActiveUnit) -ne $script:previousUnit
+    } catch {
+        $false
+    }
+}
+
 # Start the candidate and kill it and the program it runs the moment
-# $Reached says so. Returns whether it got that far.
+# $Reached says so. Returns whether it was still running by then.
 function Invoke-KilledInstall {
     param([string] $Moment, [scriptblock] $Reached)
 
@@ -460,7 +497,6 @@ function Invoke-KilledInstall {
             Stop-Process -Id $installer.Id -Force
             throw "the installer never reached the moment $Moment"
         }
-        Start-Sleep -Milliseconds 10
     }
     if ($installer.HasExited) {
         Write-Host "the installer finished before it could be killed $Moment"
@@ -471,21 +507,73 @@ function Invoke-KilledInstall {
     Get-Process -Name hypercolor -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.EndsWith("\unit\hypercolor.exe", [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force -ErrorAction SilentlyContinue
-    $journal = Join-Path $StateRoot "install-journal.json"
-    $disposition = if (Test-Path -LiteralPath $journal) { (Read-Record "install-journal.json").disposition } else { "none" }
-    Write-Host "killed $Moment; journal $disposition, pointer $(Test-Path -LiteralPath (Join-Path $StateRoot 'active.json'))"
+    Write-Host "killed $Moment; journal $(Get-JournalDisposition), pointer moved $(Test-PointerMoved)"
     $true
 }
 
-function Assert-StillStarts {
-    param([string] $InstallDir, [string] $Moment, [bool] $Flat)
+# What the person at this machine clicks has to work after any kill.
+function Assert-ShortcutStarts {
+    param([string] $InstallDir, [string] $Moment)
 
-    if (-not $Flat) {
-        return
+    $target = (New-Object -ComObject WScript.Shell).CreateShortcut($startMenuLink).TargetPath
+    Start-Process -FilePath $target -ArgumentList "--minimized" | Out-Null
+    $started = Wait-ForProgram -Name hypercolor-app -Directory $InstallDir
+    Stop-InstalledHypercolor -InstallDir $InstallDir
+    if (-not $started) {
+        throw "killed $Moment, the Start menu shortcut ran $target and nothing started"
     }
-    foreach ($member in "hypercolor-app.exe", "hypercolor-daemon.exe", "tools\hypercolor-smbus-service.exe", "ui") {
-        if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $member))) {
-            throw "killed $Moment, the flat release lost $member before anything replaced it"
+}
+
+# One run through every moment. Returns false when a kill missed its moment,
+# which leaves the run open for the caller to finish.
+function Invoke-KillRound {
+    param([string] $InstallDir)
+
+    $moments = @(
+        @{ Name = "while publishing the unit"; Open = $false; Reached = {
+            @(Get-ChildItem -Path (Join-Path $InstallDir "units") -Filter ".hypercolor-stage-*" -Force -ErrorAction SilentlyContinue).Count -gt 0 } },
+        @{ Name = "inside the transaction"; Open = $true; Reached = {
+            (Get-JournalDisposition) -eq "forward" } },
+        @{ Name = "after the transaction committed"; Open = $false; Reached = {
+            (Get-JournalDisposition) -eq "committed" -and (Test-PointerMoved) } }
+    )
+    foreach ($moment in $moments) {
+        if (-not (Invoke-KilledInstall -Moment $moment.Name -Reached $moment.Reached)) {
+            return $false
+        }
+        if ($moment.Open -and (Get-JournalDisposition) -notin "forward", "rollback") {
+            Write-Host "the kill landed after the transaction ended"
+            return $false
+        }
+        Assert-ShortcutStarts -InstallDir $InstallDir -Moment $moment.Name
+    }
+    $true
+}
+
+# Lay down the previous release and give it a user's state.
+function Install-Previous {
+    Install-Silently -Installer $PreviousInstaller -Description "the previous release"
+    $script:from = Get-InstalledVersion
+    $script:installDir = Get-InstallDirectory
+    $script:wasFlat = Test-FlatLayout -InstallDir $script:installDir
+    $previousApp = Join-Path $script:installDir $(if ($script:wasFlat) { "hypercolor-app.exe" } else { "Hypercolor.exe" })
+    # A running Hypercolor would make the wizard ask to close it.
+    Stop-InstalledHypercolor -InstallDir $script:installDir
+    if (-not $script:wasFlat) {
+        $script:previousUnit = Get-ActiveUnit
+        $script:previousInstallation = (Read-Record "installation.json").installation_id
+    }
+
+    Set-ItemProperty -Path $RunKey -Name "Hypercolor" -Value "`"$previousApp`" --minimized"
+    Remove-Item -Path $desktopLink -ErrorAction SilentlyContinue
+    if ($script:wasFlat) {
+        $script:staleFiles = @(
+            (Join-Path $script:installDir "ui\previous-release-asset.js"),
+            (Join-Path $script:installDir "effects\bundled\removed-effect.html")
+        )
+        foreach ($stale in $script:staleFiles) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stale) | Out-Null
+            Set-Content -Path $stale -Value "left behind by the previous release"
         }
     }
 }
@@ -496,40 +584,16 @@ if ($Mode -ne "Fresh" -and -not $PreviousInstaller) {
 Assert-Clean -Description "the machine before this run"
 
 $from = $null
+$installDir = $null
 $previousUnit = $null
 $previousInstallation = $null
-$autostart = $null
 $desktopLink = Join-Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) "Hypercolor.lnk"
 $startMenuLink = Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "Hypercolor.lnk"
 $staleFiles = @()
 $wasFlat = $false
 
 if ($Mode -ne "Fresh") {
-    Install-Silently -Installer $PreviousInstaller -Description "the previous release"
-    $from = Get-InstalledVersion
-    $installDir = Get-InstallDirectory
-    $wasFlat = Test-FlatLayout -InstallDir $installDir
-    $previousApp = Join-Path $installDir $(if ($wasFlat) { "hypercolor-app.exe" } else { "Hypercolor.exe" })
-    # A running Hypercolor would make the wizard ask to close it.
-    Stop-InstalledHypercolor -InstallDir $installDir
-    if (-not $wasFlat) {
-        $previousUnit = Get-ActiveUnit
-        $previousInstallation = (Read-Record "installation.json").installation_id
-    }
-
-    $autostart = "`"$previousApp`" --minimized"
-    Set-ItemProperty -Path $RunKey -Name "Hypercolor" -Value $autostart
-    Remove-Item -Path $desktopLink -ErrorAction SilentlyContinue
-    if ($wasFlat) {
-        $staleFiles = @(
-            (Join-Path $installDir "ui\previous-release-asset.js"),
-            (Join-Path $installDir "effects\bundled\removed-effect.html")
-        )
-        foreach ($stale in $staleFiles) {
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stale) | Out-Null
-            Set-Content -Path $stale -Value "left behind by the previous release"
-        }
-    }
+    Install-Previous
 }
 
 switch ($Mode) {
@@ -542,20 +606,14 @@ switch ($Mode) {
         Stop-InstalledHypercolor -InstallDir (Get-InstallDirectory)
     }
     "Killed" {
-        $moments = @(
-            @{ Name = "while publishing the unit"; Flat = $true; Reached = {
-                @(Get-ChildItem -Path (Join-Path $installDir "units") -Filter ".hypercolor-stage-*" -Force -ErrorAction SilentlyContinue).Count -gt 0 } },
-            @{ Name = "inside the transaction"; Flat = $true; Reached = {
-                Test-Path -LiteralPath (Join-Path $StateRoot "install-journal.json") } },
-            @{ Name = "after the transaction committed"; Flat = $false; Reached = {
-                Test-Path -LiteralPath (Join-Path $StateRoot "active.json") } }
-        )
-        foreach ($moment in $moments) {
-            if (Invoke-KilledInstall -Moment $moment.Name -Reached $moment.Reached) {
-                Assert-StillStarts -InstallDir $installDir -Moment $moment.Name -Flat ($wasFlat -and $moment.Flat)
-            } else {
-                break
+        for ($round = 1; -not (Invoke-KillRound -InstallDir $installDir); $round += 1) {
+            if ($round -ge $KillRounds) {
+                throw "$KillRounds rounds could not land every kill"
             }
+            Write-Host "Starting over: a kill missed its moment"
+            Install-Silently -Installer $CandidateInstaller -Description "the candidate, to end the round"
+            Invoke-Uninstall -InstallDir $installDir
+            Install-Previous
         }
         Install-Silently -Installer $CandidateInstaller -Description "the candidate, after being killed"
     }
