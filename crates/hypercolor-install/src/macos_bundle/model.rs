@@ -17,6 +17,8 @@ pub const MACOS_BUNDLE_STAGING_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
 pub const MACOS_BUNDLE_PARTIAL_SUFFIX: &str = ".partial";
 /// Suffix of a staged bundle that is being removed.
 pub const MACOS_BUNDLE_DISCARD_SUFFIX: &str = ".discard";
+/// The store inventory inside a bundle, where the code seal covers it.
+pub const MACOS_BUNDLE_INVENTORY: &str = "Contents/Resources/durable-stores.json";
 
 const DAEMON_IN_BUNDLE: &str = "Contents/MacOS/hypercolor-daemon";
 const MAX_CONFIG_PATH_BYTES: usize = 1024;

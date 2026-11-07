@@ -64,11 +64,13 @@ impl ValidatedManifest {
 pub(crate) const MACOS_BUNDLE_ROOT: &str = "Hypercolor.app";
 /// The store inventory every managed unit carries, beside the bundle.
 pub(crate) const MACOS_BUNDLE_DURABLE_STORES: &str = "share/hypercolor/durable-stores.json";
+/// The CLI inside a bundle unit.
+pub(crate) const MACOS_BUNDLE_CLI: &str = "Hypercolor.app/Contents/MacOS/hypercolor";
 /// The app, the daemon and the CLI, in that order.
 pub(crate) const MACOS_BUNDLE_EXECUTABLES: [&str; 3] = [
     "Hypercolor.app/Contents/MacOS/hypercolor-app",
     "Hypercolor.app/Contents/MacOS/hypercolor-daemon",
-    "Hypercolor.app/Contents/MacOS/hypercolor",
+    MACOS_BUNDLE_CLI,
 ];
 const MACOS_BUNDLE_TARGETS: [(&str, &str); 2] = [
     ("macos-aarch64", "aarch64-apple-darwin"),

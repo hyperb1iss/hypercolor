@@ -346,6 +346,11 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()> {
+    // An installation's launcher is a copy of this program; see the role.
+    #[cfg(target_os = "macos")]
+    if let Some(status) = hypercolor_install::macos_bundle::run_macos_bundle_launcher_role() {
+        std::process::exit(status);
+    }
     #[cfg(unix)]
     match parse_install_release_invocation(std::env::args_os()) {
         Some(Ok(args)) => return install_command::execute(&args),

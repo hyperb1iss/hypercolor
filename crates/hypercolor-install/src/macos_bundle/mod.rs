@@ -11,9 +11,14 @@
 //! [`MacosBundleExecutor`] in `native`, and the daemon's service manager
 //! behind [`MacosBundleService`], which [`MacosBundleLaunchdService`]
 //! implements over [`MacosBundleAgent`], native in `native_agent`.
+//!
+//! The update agents run the launcher, which picks the release that may
+//! run, in `launcher`.
 
 mod executor;
+mod installation;
 mod launchd;
+mod launcher;
 mod model;
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 mod native;
@@ -28,15 +33,22 @@ mod swap;
 mod tests;
 
 pub use executor::MacosBundleExecutor;
+pub use installation::{
+    MACOS_BUNDLE_INSTALLATION_FILE, MACOS_BUNDLE_LAUNCHER_NAME, MacosBundleInstallation,
+    MacosBundleRoots,
+};
 pub use launchd::{
     MACOS_BUNDLE_START_DEADLINE, MacosBundleAgent, MacosBundleAgentJob, MacosBundleLaunchdService,
 };
+pub use launcher::{
+    MacosBundleLauncherError, run_macos_bundle_launcher_role, select_macos_bundle_update_executor,
+};
 pub use model::{
-    MACOS_BUNDLE_DISCARD_SUFFIX, MACOS_BUNDLE_NAME, MACOS_BUNDLE_PARTIAL_SUFFIX,
-    MACOS_BUNDLE_STAGING_MARGIN_BYTES, MACOS_BUNDLE_STAGING_ROOT_NAME, MacosBundleConfig,
-    MacosBundleIdentity, MacosBundleMaterialization, MacosBundleMember, MacosBundleMemberKind,
-    MacosBundleObservation, MacosBundleRunningDaemon, MacosBundleServiceObservation,
-    MacosBundleSlot, MacosBundleUnit,
+    MACOS_BUNDLE_DISCARD_SUFFIX, MACOS_BUNDLE_INVENTORY, MACOS_BUNDLE_NAME,
+    MACOS_BUNDLE_PARTIAL_SUFFIX, MACOS_BUNDLE_STAGING_MARGIN_BYTES, MACOS_BUNDLE_STAGING_ROOT_NAME,
+    MacosBundleConfig, MacosBundleIdentity, MacosBundleMaterialization, MacosBundleMember,
+    MacosBundleMemberKind, MacosBundleObservation, MacosBundleRunningDaemon,
+    MacosBundleServiceObservation, MacosBundleSlot, MacosBundleUnit,
 };
 #[cfg(target_os = "macos")]
 pub use native::MacosBundleNativeExecutor;
