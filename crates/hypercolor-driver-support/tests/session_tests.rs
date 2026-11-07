@@ -2,13 +2,13 @@
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
-    DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceFrameSink, DeviceWriteOutcome,
+    DeliveryResult, DeviceDeliveryId, DeviceFrameSink, Frame, FrameObserver, IoStage, Receipt,
+    Submission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId};
 use tokio::sync::{Semaphore, oneshot};
 
@@ -78,20 +78,15 @@ impl DeviceSession for FakeSession {
     const SETTLE: Duration = Duration::from_millis(40);
     const CLEANUP: Duration = Duration::from_millis(40);
 
-    async fn write_frame(
-        &mut self,
-        _colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (_, attempt) = frame.into_parts();
+        let transmission = attempt.start();
         if let Some(gate) = &self.behavior.gate {
             let _permit = gate.acquire().await.expect("gate stays open");
         }
         self.wire.frames.fetch_add(1, Ordering::SeqCst);
         self.wire.note("frame");
-        Ok(DeviceWriteOutcome::Sent)
+        transmission.written().into()
     }
 
     async fn finish(&mut self) -> Result<(), DeviceError> {
@@ -216,24 +211,39 @@ fn is_disconnected(error: &DeviceError) -> bool {
 #[derive(Default)]
 struct CountingObserver {
     started: AtomicUsize,
+    settled: AtomicUsize,
 }
 
-impl DeviceDeliveryObserver for CountingObserver {
+impl FrameObserver for CountingObserver {
     fn transport_started(&self, _id: DeviceDeliveryId) {
         self.started.fetch_add(1, Ordering::SeqCst);
     }
-}
 
-fn delivery_id() -> DeviceDeliveryId {
-    DeviceDeliveryId {
-        queue_generation: 1,
-        sequence: 1,
+    fn settled(&self, _receipt: &Receipt) {
+        self.settled.fetch_add(1, Ordering::SeqCst);
     }
 }
 
-async fn deliver(sink: &dyn DeviceFrameSink, observer: Arc<CountingObserver>) -> DeviceDeliveryAck {
-    sink.deliver_colors_shared_observed(delivery_id(), Arc::new(FRAME.to_vec()), observer)
-        .await
+/// Offer one frame and return the receipt its submission handed back.
+async fn deliver(
+    id: DeviceId,
+    sink: &dyn DeviceFrameSink,
+    observer: Arc<CountingObserver>,
+) -> Receipt {
+    let frame = Frame::new(
+        id,
+        DeviceDeliveryId {
+            queue_generation: 1,
+            sequence: 1,
+        },
+        observer,
+        Instant::now(),
+        Arc::new(FRAME.to_vec()),
+    );
+    match sink.submit(frame).await {
+        Submission::Settled(receipt) => receipt,
+        Submission::Pending => panic!("the fake writes inline"),
+    }
 }
 
 #[tokio::test]
@@ -245,17 +255,15 @@ async fn open_session_writes_through_table_and_sink() {
     assert_eq!(fixture.table.facts(&fixture.id).as_deref(), Some(&"facts"));
 
     let sink = fixture.table.require(&fixture.id).expect("sink");
-    assert_eq!(
-        sink.write(&FRAME).await.expect("write"),
-        DeviceWriteOutcome::Sent
-    );
+    sink.write(&FRAME).await.expect("write");
 
     let frame_sink = fixture.table.frame_sink(&fixture.id).expect("frame sink");
     assert!(!frame_sink.is_closed());
     let observer = Arc::new(CountingObserver::default());
-    let ack = deliver(frame_sink.as_ref(), Arc::clone(&observer)).await;
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    let receipt = deliver(fixture.id, frame_sink.as_ref(), Arc::clone(&observer)).await;
+    assert!(matches!(receipt.result(), DeliveryResult::Written { .. }));
     assert_eq!(observer.started.load(Ordering::SeqCst), 1);
+    assert_eq!(observer.settled.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.frames(), 2);
 }
 
@@ -274,15 +282,20 @@ async fn retained_sink_is_revoked_and_holds_no_state_after_close() {
     assert!(fixture.table.frame_sink(&fixture.id).is_none());
 
     let error = sink
-        .write_colors_shared(Arc::new(FRAME.to_vec()))
+        .write_direct(fixture.id, Arc::new(FRAME.to_vec()))
         .await
         .expect_err("retained sink must reject");
     assert!(is_disconnected(&error));
 
     let observer = Arc::new(CountingObserver::default());
-    let ack = deliver(sink.as_ref(), Arc::clone(&observer)).await;
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
-    assert!(!ack.transport_started);
+    let receipt = deliver(fixture.id, sink.as_ref(), Arc::clone(&observer)).await;
+    assert!(matches!(
+        receipt.result(),
+        DeliveryResult::Failed {
+            stage: IoStage::Admission,
+            ..
+        }
+    ));
     assert_eq!(observer.started.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.frames(), 0);
 }
@@ -326,10 +339,7 @@ async fn admitted_write_finishes_before_cleanup_runs() {
     tokio::time::sleep(Duration::from_millis(10)).await;
     gate.add_permits(1);
 
-    assert_eq!(
-        write.await.expect("write task").expect("settled write"),
-        DeviceWriteOutcome::Sent
-    );
+    write.await.expect("write task").expect("settled write");
     let (fixture, result) = close.await.expect("close task");
     result.expect("close");
     assert_eq!(
@@ -446,10 +456,10 @@ async fn reconnect_is_a_new_generation() {
 
     assert!(old.is_closed());
     assert!(!new.is_closed());
-    old.write_colors_shared(Arc::new(FRAME.to_vec()))
+    old.write_direct(fixture.id, Arc::new(FRAME.to_vec()))
         .await
         .expect_err("old generation stays revoked");
-    new.write_colors_shared(Arc::new(FRAME.to_vec()))
+    new.write_direct(fixture.id, Arc::new(FRAME.to_vec()))
         .await
         .expect("new generation writes");
     assert_eq!(fixture.frames(), 1);
@@ -950,16 +960,16 @@ async fn dropped_session_transmits_nothing_and_releases_state() {
     let sink = fixture.table.frame_sink(&fixture.id).expect("sink");
 
     let Fixture {
+        id,
         table,
         transport,
         wire,
-        ..
     } = fixture;
     drop(table);
 
     assert!(sink.is_closed());
     assert_eq!(Arc::strong_count(&transport), 1);
-    sink.write_colors_shared(Arc::new(FRAME.to_vec()))
+    sink.write_direct(id, Arc::new(FRAME.to_vec()))
         .await
         .expect_err("abandoned sessions reject");
     assert_eq!(wire.frames.load(Ordering::SeqCst), 0);
@@ -1034,7 +1044,9 @@ async fn transact_reaches_the_state_until_the_session_closes() {
     let sink = fixture.table.require(&fixture.id).expect("sink");
 
     sink.transact(async |session| {
-        session.write_frame(&FRAME, None).await.expect("write");
+        let _ = session
+            .submit(Frame::direct(DeviceId::new(), Arc::new(FRAME.to_vec())))
+            .await;
     })
     .await
     .expect("open session");
@@ -1043,7 +1055,9 @@ async fn transact_reaches_the_state_until_the_session_closes() {
     fixture.table.close(&fixture.id).await.expect("close");
     let error = sink
         .transact(async |session| {
-            session.write_frame(&FRAME, None).await.expect("write");
+            let _ = session
+                .submit(Frame::direct(DeviceId::new(), Arc::new(FRAME.to_vec())))
+                .await;
         })
         .await
         .expect_err("a closed session rejects");

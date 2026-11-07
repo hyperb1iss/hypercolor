@@ -14,9 +14,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
     DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceInputSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
+    DeviceLifecyclePolicy, DiscoveredDevice, Frame, MailboxFrame, OutputPolicy, Submission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
 use hypercolor_hal::protocol::Protocol;
 use hypercolor_hal::protocol_config::{
@@ -116,100 +116,6 @@ struct PendingUsbDevice {
     usb_path: Option<String>,
     descriptor: &'static DeviceDescriptor,
     info_template: DeviceInfo,
-}
-
-struct UsbFramePayload {
-    colors: Arc<Vec<[u8; 3]>>,
-    delivery_id: Option<DeviceDeliveryId>,
-    delivery_observer: Option<Arc<dyn DeviceDeliveryObserver>>,
-    delivery_tx: StdMutex<Option<oneshot::Sender<DeviceDeliveryAck>>>,
-    delivery_state: AtomicU8,
-}
-
-impl UsbFramePayload {
-    fn untracked(colors: Arc<Vec<[u8; 3]>>) -> Self {
-        Self {
-            colors,
-            delivery_id: None,
-            delivery_observer: None,
-            delivery_tx: StdMutex::new(None),
-            delivery_state: AtomicU8::new(DELIVERY_PENDING),
-        }
-    }
-
-    fn tracked(
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
-        Self::tracked_observed(id, colors, None)
-    }
-
-    fn tracked_observed(
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        delivery_observer: Option<Arc<dyn DeviceDeliveryObserver>>,
-    ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
-        let (delivery_tx, delivery_rx) = oneshot::channel();
-        (
-            Self {
-                colors,
-                delivery_id: Some(id),
-                delivery_observer,
-                delivery_tx: StdMutex::new(Some(delivery_tx)),
-                delivery_state: AtomicU8::new(DELIVERY_PENDING),
-            },
-            delivery_rx,
-        )
-    }
-
-    fn acknowledge(&self, ack: DeviceDeliveryAck) {
-        if let Ok(mut delivery_tx) = self.delivery_tx.lock()
-            && let Some(delivery_tx) = delivery_tx.take()
-        {
-            let _ = delivery_tx.send(ack);
-        }
-    }
-
-    fn reject_pending(&self, error: DeviceError) {
-        let Some(id) = self.delivery_id else {
-            return;
-        };
-        if self
-            .delivery_state
-            .compare_exchange(
-                DELIVERY_PENDING,
-                DELIVERY_REJECTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return;
-        }
-        self.acknowledge(DeviceDeliveryAck::rejected(id, error));
-    }
-
-    /// Claim this frame for the actor: it is encoded at most once, and a
-    /// disconnect no longer rejects it. Transport I/O is announced apart,
-    /// since the protocol may hold the frame and write nothing.
-    fn claim(&self) -> bool {
-        self.delivery_id.is_none()
-            || self
-                .delivery_state
-                .compare_exchange(
-                    DELIVERY_PENDING,
-                    DELIVERY_STARTED,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-    }
-
-    fn announce_transport_started(&self) {
-        if let (Some(id), Some(observer)) = (self.delivery_id, &self.delivery_observer) {
-            observer.transport_started(id);
-        }
-    }
 }
 
 struct UsbDisplayPayload {
@@ -350,7 +256,7 @@ struct UsbDevice {
     transport_name: &'static str,
     target_fps: Option<u32>,
     resolved_led_count: usize,
-    frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
+    frame_tx: watch::Sender<Option<Arc<MailboxFrame>>>,
     display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
     command_tx: mpsc::UnboundedSender<UsbDeviceCommand>,
     actor_task: Option<JoinHandle<()>>,
@@ -401,15 +307,11 @@ impl UsbDevice {
         Ok(())
     }
 
-    fn queue_colors(&self, device_id: DeviceId, colors: Arc<Vec<[u8; 3]>>) {
-        let previous = self
-            .frame_tx
-            .send_replace(Some(Arc::new(UsbFramePayload::untracked(colors))));
-        if let Some(previous) = previous {
-            previous.reject_pending(DeviceError::write(
-                device_id,
-                "USB frame was superseded before transport started",
-            ));
+    /// Post a frame for the actor, replacing any it has not claimed.
+    fn post_frame(&self, frame: Frame) {
+        let frame = Arc::new(MailboxFrame::new(frame));
+        if let Some(previous) = self.frame_tx.send_replace(Some(frame)) {
+            previous.supersede();
         }
     }
 
@@ -484,7 +386,7 @@ impl UsbDevice {
             let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
             self.active.store(false, Ordering::Release);
             if let Some(pending) = self.frame_tx.send_replace(None) {
-                pending.reject_pending(DeviceError::Disconnected {
+                pending.reject(DeviceError::Disconnected {
                     device: device_id.to_string(),
                 });
             }
@@ -606,7 +508,7 @@ impl Drop for UsbDevice {
         self.active.store(false, Ordering::Release);
         let device_id = self.info_template.id;
         if let Some(pending) = self.frame_tx.send_replace(None) {
-            pending.reject_pending(DeviceError::Disconnected {
+            pending.reject(DeviceError::Disconnected {
                 device: device_id.to_string(),
             });
         }
@@ -623,7 +525,7 @@ impl Drop for UsbDevice {
 
 struct UsbFrameSink {
     device_id: DeviceId,
-    frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
+    frame_tx: watch::Sender<Option<Arc<MailboxFrame>>>,
     active: Arc<AtomicBool>,
     lifecycle_gate: Arc<StdMutex<()>>,
     last_async_error: Arc<StdMutex<Option<DeviceError>>>,
@@ -635,61 +537,24 @@ impl DeviceFrameSink for UsbFrameSink {
         !self.active.load(Ordering::Acquire) || self.frame_tx.is_closed()
     }
 
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        self.publish(Arc::new(UsbFramePayload::untracked(colors)))
-    }
-
-    async fn deliver_colors_shared(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> DeviceDeliveryAck {
-        let (payload, delivery_rx) = UsbFramePayload::tracked(id, colors);
-        if let Err(error) = self.publish(Arc::new(payload)) {
-            return DeviceDeliveryAck::rejected(id, error);
+    /// The worker that owns the transport settles the attempt, and the host
+    /// waits for that, which is how a slow device pushes back on its queue.
+    async fn submit(&self, mut frame: Frame) -> Submission {
+        let receipt = frame.wait_for_receipt();
+        let frame = Arc::new(MailboxFrame::new(frame));
+        if let Err(error) = self.publish(Arc::clone(&frame)) {
+            frame.reject(error);
         }
-
-        delivery_rx.await.unwrap_or_else(|_| {
-            DeviceDeliveryAck::rejected(
-                id,
-                DeviceError::Disconnected {
-                    device: self.device_id.to_string(),
-                },
-            )
-        })
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let (payload, delivery_rx) = UsbFramePayload::tracked_observed(id, colors, Some(observer));
-        if let Err(error) = self.publish(Arc::new(payload)) {
-            return DeviceDeliveryAck::rejected(id, error);
-        }
-
-        delivery_rx.await.unwrap_or_else(|_| {
-            DeviceDeliveryAck::rejected(
-                id,
-                DeviceError::Disconnected {
-                    device: self.device_id.to_string(),
-                },
-            )
-        })
+        receipt.settled().await
     }
 }
 
 impl UsbFrameSink {
-    fn publish(&self, payload: Arc<UsbFramePayload>) -> Result<(), DeviceError> {
+    fn publish(&self, payload: Arc<MailboxFrame>) -> Result<(), DeviceError> {
         let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
         self.ensure_ready()?;
         if let Some(previous) = self.frame_tx.send_replace(Some(payload)) {
-            previous.reject_pending(DeviceError::write(
-                self.device_id,
-                "USB frame was superseded before transport started",
-            ));
+            previous.supersede();
         }
         Ok(())
     }
@@ -903,12 +768,10 @@ struct UsbSession {
 }
 
 impl UsbSession {
-    async fn queue_colors(&mut self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
+    fn note_frame(&mut self, colors: &[[u8; 3]]) {
         let id = self.device_id;
         let device = &mut self.device;
-        device.ensure_actor_ready(id).await?;
-
-        let frame_stats = summarize_frame(colors.as_slice());
+        let frame_stats = summarize_frame(colors);
         if !device.frame_diagnostics_emitted {
             debug!(
                 device_id = %id,
@@ -945,9 +808,6 @@ impl UsbSession {
             lit_led_count = frame_stats.lit_led_count,
             "usb frame queued for device actor"
         );
-
-        device.queue_colors(id, colors);
-        Ok(())
     }
 }
 
@@ -964,13 +824,15 @@ impl DeviceSession for UsbSession {
     /// Joining the actor can take as long as stopping it.
     const RELEASE: Duration = USB_ACTOR_SHUTDOWN_TIMEOUT.saturating_add(Duration::from_millis(100));
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        _delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.queue_colors(Arc::new(colors.to_vec())).await?;
-        Ok(DeviceWriteOutcome::Sent)
+    /// Post the frame for the actor, which owns the attempt from here.
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        if let Err(error) = self.device.ensure_actor_ready(self.device_id).await {
+            let (_, attempt) = frame.into_parts();
+            return attempt.reject(error).into();
+        }
+        self.note_frame(frame.colors());
+        self.device.post_frame(frame);
+        Submission::Pending
     }
 
     async fn finish(&mut self) -> Result<(), DeviceError> {
@@ -1444,7 +1306,7 @@ impl UsbBackend {
             "USB connect resolved protocol topology"
         );
         let target_fps = fps_from_frame_interval(protocol.frame_interval());
-        let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+        let (frame_tx, frame_rx) = watch::channel(None::<Arc<MailboxFrame>>);
         let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let active = Arc::new(AtomicBool::new(true));
@@ -1637,19 +1499,7 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.write_colors_shared(id, Arc::new(colors.to_vec()))
-            .await
-    }
-
-    async fn write_colors_shared(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<(), DeviceError> {
-        self.sessions
-            .require(id)?
-            .transact(async |session| session.queue_colors(colors).await)
-            .await?
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn write_display_payload_owned(

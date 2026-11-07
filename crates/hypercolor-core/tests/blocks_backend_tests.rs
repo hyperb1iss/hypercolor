@@ -2,14 +2,14 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::device::{
     BackendManager, BlocksBackend, BlocksScanner, DeviceOutputStatistics,
 };
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceDeliveryStatus, DeviceWriteOutcome,
+    DeliveryResult, DeviceBackend, DeviceDeliveryId, Frame, FrameObserver, PeerDisposition,
+    Receipt, Submission,
 };
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId};
 use hypercolor_types::event::ZoneColors;
@@ -155,11 +155,13 @@ async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
     Ok(())
 }
 
-/// Observer for direct backend deliveries; these tests read the terminal ack.
-struct IgnoreTransportStart;
+/// Observer for direct backend deliveries; these tests read the receipt.
+struct IgnoreDelivery;
 
-impl DeviceDeliveryObserver for IgnoreTransportStart {
+impl FrameObserver for IgnoreDelivery {
     fn transport_started(&self, _id: DeviceDeliveryId) {}
+
+    fn settled(&self, _receipt: &Receipt) {}
 }
 
 async fn deliver(
@@ -167,31 +169,44 @@ async fn deliver(
     device_id: &DeviceId,
     sequence: u64,
     colors: Vec<[u8; 3]>,
-) -> DeviceDeliveryAck {
+) -> Receipt {
     let id = DeviceDeliveryId {
         queue_generation: 1,
         sequence,
     };
-    let ack = backend
-        .deliver_colors_shared_observed(
-            device_id,
-            id,
-            Arc::new(colors),
-            Arc::new(IgnoreTransportStart),
-        )
-        .await;
-    assert_eq!(ack.id, id);
-    ack
+    let frame = Frame::new(
+        *device_id,
+        id,
+        Arc::new(IgnoreDelivery),
+        Instant::now(),
+        Arc::new(colors),
+    );
+    let Submission::Settled(receipt) = backend.submit_frame(device_id, frame).await else {
+        panic!("Blocks writes inline");
+    };
+    assert_eq!(receipt.id(), id);
+    receipt
 }
 
-fn assert_declined(ack: &DeviceDeliveryAck) {
-    assert_eq!(ack.status, DeviceDeliveryStatus::Declined);
-    assert!(ack.transport_started, "the frame reached blocksd");
-    assert_eq!(
-        ack.completed_payload_bytes, 0,
-        "a declined frame is not sent"
+fn assert_declined(receipt: &Receipt) {
+    assert!(
+        matches!(
+            receipt.result(),
+            DeliveryResult::Written {
+                peer: Some(PeerDisposition::Declined),
+                ..
+            }
+        ),
+        "the frame reached blocksd and it said no: {:?}",
+        receipt.result()
     );
-    assert_eq!(ack.error, None, "a decline is not a transport failure");
+}
+
+fn written_bytes(receipt: &Receipt) -> u64 {
+    match receipt.result() {
+        DeliveryResult::Written { bytes, .. } => *bytes,
+        other => panic!("expected a written frame, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -209,15 +224,10 @@ async fn blocks_backend_reports_a_declined_grid_frame_and_keeps_the_connection()
 
     let declined = deliver(&backend, &device_id, 1, vec![[0xFF, 0x00, 0xFF]]).await;
     assert_declined(&declined);
-    assert_eq!(
-        backend
-            .write_colors_shared_outcome(&device_id, Arc::new(vec![[0xFF, 0x00, 0xFF]]))
-            .await?,
-        DeviceWriteOutcome::Declined
-    );
-    let accepted = deliver(&backend, &device_id, 2, vec![[0x00, 0xFF, 0x00]; 225]).await;
-    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(accepted.completed_payload_bytes, 675);
+    let declined = deliver(&backend, &device_id, 2, vec![[0xFF, 0x00, 0xFF]]).await;
+    assert_declined(&declined);
+    let accepted = deliver(&backend, &device_id, 3, vec![[0x00, 0xFF, 0x00]; 225]).await;
+    assert_eq!(written_bytes(&accepted), 675);
 
     // All three frames arrived on the one connection the fake serves, so the
     // declines did not drop it.
@@ -254,8 +264,9 @@ async fn blocks_backend_fails_an_unknown_grid_ack_byte_and_reconnects() -> TestR
     backend.connect(&device_id).await?;
 
     let garbled = deliver(&backend, &device_id, 1, vec![[1, 2, 3]]).await;
-    assert_eq!(garbled.status, DeviceDeliveryStatus::Failed);
-    let error = garbled.error.ok_or("an unknown ack byte fails the frame")?;
+    let error = garbled
+        .into_result()
+        .expect_err("an unknown ack byte fails the frame");
     assert!(
         error.to_string().contains("acknowledgement byte 0x7f"),
         "the error names the byte: {error}"
@@ -263,14 +274,17 @@ async fn blocks_backend_fails_an_unknown_grid_ack_byte_and_reconnects() -> TestR
 
     let dropped = deliver(&backend, &device_id, 2, vec![[1, 2, 3]]).await;
     assert!(
-        matches!(dropped.error, Some(DeviceError::Disconnected { .. })),
+        matches!(
+            dropped.clone().into_result(),
+            Err(DeviceError::Disconnected { .. })
+        ),
         "the failure dropped the connection: {:?}",
-        dropped.error
+        dropped.result()
     );
 
     backend.connect(&device_id).await?;
     let accepted = deliver(&backend, &device_id, 3, vec![[1, 2, 3]]).await;
-    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
+    written_bytes(&accepted);
     task.await??;
     Ok(())
 }
@@ -481,8 +495,7 @@ async fn blocks_backend_reports_a_declined_key_frame_and_retries_on_the_same_con
     let declined = deliver(&backend, &device.info.id, 1, key_colors().to_vec()).await;
     assert_declined(&declined);
     let accepted = deliver(&backend, &device.info.id, 2, key_colors().to_vec()).await;
-    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(accepted.completed_payload_bytes, 72);
+    assert_eq!(written_bytes(&accepted), 72);
     task.await??;
     Ok(())
 }

@@ -6,11 +6,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, Frame, OutputPolicy, SkipReason,
+    Submission,
 };
-use hypercolor_driver_support::{
-    CredentialStore, DeviceSession, FrameDelivery, Session, SessionTable,
-};
+use hypercolor_driver_support::{CredentialStore, DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::net::UdpSocket;
 
@@ -191,35 +190,35 @@ impl GoveeSession {
         }
     }
 
-    async fn send_color(
-        &self,
-        command: LanCommand,
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<()> {
-        let started = || {
-            if let Some(delivery) = delivery {
-                delivery.transport_started();
+    /// Whether this route can carry `command` at all.
+    fn check_route(&self, command: &LanCommand) -> Result<()> {
+        match command {
+            LanCommand::Razer { .. } if self.route.address.is_none() => {
+                bail!("Govee device {} has no LAN address", self.device_id)
             }
-        };
+            LanCommand::ColorWc { .. }
+                if self.route.address.is_none() && self.route.cloud_id.is_none() =>
+            {
+                bail!("Govee device {} is not cloud-backed", self.device_id)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    async fn send_color(&self, command: LanCommand) -> Result<()> {
         match command {
             LanCommand::Razer { pt } => {
                 let address = self.route.address.with_context(|| {
                     format!("Govee device {} has no LAN address", self.device_id)
                 })?;
-                started();
                 self.link.send_lan(address, LanCommand::Razer { pt }).await
             }
             LanCommand::ColorWc { red, green, blue } => {
                 if let Some(address) = self.route.address {
-                    started();
                     self.link
                         .send_lan(address, LanCommand::ColorWc { red, green, blue })
                         .await
                 } else {
-                    if self.route.cloud_id.is_none() {
-                        bail!("Govee device {} is not cloud-backed", self.device_id);
-                    }
-                    started();
                     self.link
                         .send_cloud(
                             &self.route,
@@ -232,50 +231,8 @@ impl GoveeSession {
                         .await
                 }
             }
-            _ => unreachable!("Govee write_colors only emits color frame commands"),
+            _ => unreachable!("Govee frames only emit color frame commands"),
         }
-    }
-
-    async fn write_colors(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome> {
-        if colors.is_empty() {
-            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
-        }
-
-        let (command, sent_frame) = if self.route.streams_razer()
-            && self
-                .route
-                .profile
-                .razer_led_count
-                .is_some_and(|count| usize::from(count) == colors.len())
-            && let Some(pt) = encode_razer_frame_base64(colors)
-        {
-            (LanCommand::Razer { pt }, colors.to_vec())
-        } else {
-            let [red, green, blue] = mean_color(colors);
-            (
-                LanCommand::ColorWc { red, green, blue },
-                vec![[red, green, blue]],
-            )
-        };
-
-        if self.last_sent.as_deref() == Some(sent_frame.as_slice()) {
-            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
-        }
-        if self.last_write_at.is_some_and(|last_write| {
-            last_write.elapsed() < self.route.frame_interval(&self.config)
-        }) {
-            return Ok(DeviceWriteOutcome::SuppressedCadence);
-        }
-
-        self.send_color(command, delivery).await?;
-
-        self.last_sent = Some(sent_frame);
-        self.last_write_at = Some(Instant::now());
-        Ok(DeviceWriteOutcome::Sent)
     }
 
     async fn shut_down(&self) -> Result<()> {
@@ -314,14 +271,55 @@ impl DeviceSession for GoveeSession {
 
     const CLEANUP: Duration = CLEANUP_BUDGET;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
-        self.write_colors(colors, delivery)
-            .await
-            .map_err(|error| DeviceError::write(self.device_id, error))
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let colors = colors.as_slice();
+        if colors.is_empty() {
+            return attempt.skip(SkipReason::Unchanged).into();
+        }
+
+        let (command, sent_frame) = if self.route.streams_razer()
+            && self
+                .route
+                .profile
+                .razer_led_count
+                .is_some_and(|count| usize::from(count) == colors.len())
+            && let Some(pt) = encode_razer_frame_base64(colors)
+        {
+            (LanCommand::Razer { pt }, colors.to_vec())
+        } else {
+            let [red, green, blue] = mean_color(colors);
+            (
+                LanCommand::ColorWc { red, green, blue },
+                vec![[red, green, blue]],
+            )
+        };
+
+        if self.last_sent.as_deref() == Some(sent_frame.as_slice()) {
+            return attempt.skip(SkipReason::Unchanged).into();
+        }
+        if let Some(last_write) = self.last_write_at {
+            let retry_at = last_write + self.route.frame_interval(&self.config);
+            if Instant::now() < retry_at {
+                return attempt.skip(SkipReason::Deferred { retry_at }).into();
+            }
+        }
+        if let Err(error) = self.check_route(&command) {
+            return attempt
+                .reject(DeviceError::write(self.device_id, error))
+                .into();
+        }
+
+        let transmission = attempt.start();
+        if let Err(error) = self.send_color(command).await {
+            return transmission
+                .failed(DeviceError::write(self.device_id, error))
+                .into();
+        }
+
+        self.last_sent = Some(sent_frame);
+        self.last_write_at = Some(Instant::now());
+        transmission.written().into()
     }
 
     async fn finish(&mut self) -> std::result::Result<(), DeviceError> {
@@ -528,7 +526,7 @@ impl DeviceBackend for GoveeBackend {
         id: &DeviceId,
         colors: &[[u8; 3]],
     ) -> std::result::Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(

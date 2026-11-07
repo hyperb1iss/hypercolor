@@ -11,11 +11,9 @@ use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, Frame, OutputPolicy, Submission,
 };
-use hypercolor_driver_support::{
-    CredentialStore, DeviceSession, FrameDelivery, Session, SessionTable,
-};
+use hypercolor_driver_support::{CredentialStore, DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use super::scanner::load_auth_token;
@@ -73,11 +71,9 @@ struct NanoleafSession {
 impl DeviceSession for NanoleafSession {
     type Facts = DeviceInfo;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let colors = colors.as_slice();
         if colors.len() != self.led_count {
             let should_warn = self
                 .last_size_mismatch_warn_at
@@ -93,7 +89,7 @@ impl DeviceSession for NanoleafSession {
             }
         }
 
-        let frame = if self.brightness == u8::MAX {
+        let scaled = if self.brightness == u8::MAX {
             colors
         } else {
             let brightness = f32::from(self.brightness) / f32::from(u8::MAX);
@@ -105,14 +101,13 @@ impl DeviceSession for NanoleafSession {
             }
             self.scaled_colors.as_slice()
         };
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
+        let transmission = attempt.start();
+        match self.stream.send_frame(scaled, self.transition_time).await {
+            Ok(()) => transmission.written().into(),
+            Err(error) => transmission
+                .failed(DeviceError::write(self.device_id, error))
+                .into(),
         }
-        self.stream
-            .send_frame(frame, self.transition_time)
-            .await
-            .map_err(|error| DeviceError::write(self.device_id, error))?;
-        Ok(DeviceWriteOutcome::Sent)
     }
 }
 
@@ -370,7 +365,7 @@ impl DeviceBackend for NanoleafBackend {
         id: &DeviceId,
         colors: &[[u8; 3]],
     ) -> std::result::Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(

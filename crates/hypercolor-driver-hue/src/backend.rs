@@ -11,12 +11,10 @@ use tracing::{debug, info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice, Frame,
+    OutputPolicy, Submission,
 };
-use hypercolor_driver_support::{
-    CredentialStore, DeviceSession, FrameDelivery, Session, SessionTable,
-};
+use hypercolor_driver_support::{CredentialStore, DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use super::bridge::HueBridgeClient;
@@ -113,11 +111,9 @@ impl DeviceSession for HueSession {
 
     const CLEANUP: Duration = HUE_CLEANUP_BUDGET;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let colors = colors.as_slice();
         let expected_led_count = usize::try_from(self.info.total_led_count()).unwrap_or(usize::MAX);
         if colors.len() != expected_led_count {
             let should_warn = self
@@ -139,24 +135,27 @@ impl DeviceSession for HueSession {
             colors,
             self.brightness,
         );
-        let sent = if self.use_cie_xy {
+        let (transmission, sent) = if self.use_cie_xy {
             let cie_colors = collapsed
                 .iter()
                 .zip(self.channel_gamuts.iter().copied())
                 .map(|(color, gamut)| rgb_to_cie_xyb(color[0], color[1], color[2], &gamut))
                 .collect::<Vec<CieXyb>>();
-            if let Some(delivery) = delivery {
-                delivery.transport_started();
-            }
-            self.stream.send_frame(cie_colors.as_slice()).await
+            let transmission = attempt.start();
+            (
+                transmission,
+                self.stream.send_frame(cie_colors.as_slice()).await,
+            )
         } else {
-            if let Some(delivery) = delivery {
-                delivery.transport_started();
-            }
-            self.stream.send_rgb_frame(&collapsed).await
+            let transmission = attempt.start();
+            (transmission, self.stream.send_rgb_frame(&collapsed).await)
         };
-        sent.map_err(|error| DeviceError::write(self.device_id, error))?;
-        Ok(DeviceWriteOutcome::Sent)
+        match sent {
+            Ok(()) => transmission.written().into(),
+            Err(error) => transmission
+                .failed(DeviceError::write(self.device_id, error))
+                .into(),
+        }
     }
 
     /// Close the DTLS stream and take the bridge out of entertainment mode.
@@ -492,7 +491,7 @@ impl DeviceBackend for HueBackend {
         id: &DeviceId,
         colors: &[[u8; 3]],
     ) -> std::result::Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(

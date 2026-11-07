@@ -60,10 +60,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::time::{Duration, Instant};
 
-use hypercolor_driver_api::{
-    DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver, DeviceFrameSink,
-    DeviceWriteOutcome,
-};
+use hypercolor_driver_api::{DeviceFrameSink, Frame, Submission};
 use hypercolor_types::device::{DeviceError, DeviceId};
 use tokio::sync::{Mutex, Notify, OwnedMutexGuard, watch};
 use tokio::task::JoinHandle;
@@ -85,26 +82,6 @@ pub const DEFAULT_RELEASE: Duration = Duration::from_millis(100);
 /// Time cancelled I/O gets to release the session. Cancellation drops the
 /// write at its next await, so this only covers a busy runtime.
 const CANCEL_GRACE: Duration = Duration::from_millis(100);
-
-/// Host delivery one frame write reports its transport start to.
-#[derive(Clone)]
-pub struct FrameDelivery {
-    id: DeviceDeliveryId,
-    observer: Arc<dyn DeviceDeliveryObserver>,
-}
-
-impl FrameDelivery {
-    /// Delivery this write belongs to.
-    #[must_use]
-    pub const fn id(&self) -> DeviceDeliveryId {
-        self.id
-    }
-
-    /// Report that transport I/O for this frame has begun.
-    pub fn transport_started(&self) {
-        self.observer.transport_started(self.id);
-    }
-}
 
 /// Protocol state of one open device connection.
 ///
@@ -137,34 +114,12 @@ pub trait DeviceSession: Send + 'static {
     /// generation stays Closing.
     const RELEASE: Duration = DEFAULT_RELEASE;
 
-    /// Write one frame to the device.
+    /// Offer one frame to the device.
     ///
     /// The future may be dropped at any await once close runs out of
     /// patience, so it must leave nothing behind that outlives the session.
-    fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> impl Future<Output = Result<DeviceWriteOutcome, DeviceError>> + Send;
-
-    /// Deliver one queue-qualified frame and acknowledge its terminal state.
-    fn deliver_frame(
-        &mut self,
-        delivery: FrameDelivery,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> impl Future<Output = DeviceDeliveryAck> + Send {
-        async move {
-            let payload_bytes = colors.len().saturating_mul(3);
-            let started_at = Instant::now();
-            let result = self.write_frame(colors.as_slice(), Some(&delivery)).await;
-            DeviceDeliveryAck::from_write_result(
-                delivery.id(),
-                payload_bytes,
-                started_at.elapsed(),
-                result,
-            )
-        }
-    }
+    /// Dropping the frame's attempt reports it as cancelled.
+    fn submit(&mut self, frame: Frame) -> impl Future<Output = Submission> + Send;
 
     /// Run protocol cleanup: say goodbye on the wire.
     ///
@@ -263,7 +218,7 @@ impl<S> Slot<S> {
 /// Exclusive access to a live session.
 ///
 /// Close waits for this to drop, so hold it across short bookkeeping only.
-/// Device I/O goes through [`SessionSink::write`] or
+/// Device I/O goes through [`DeviceFrameSink::submit`] or
 /// [`SessionSink::transact`], which close can cancel.
 pub struct Admitted<S> {
     state: OwnedMutexGuard<Option<S>>,
@@ -349,18 +304,15 @@ impl<S> SessionSink<S> {
 }
 
 impl<S: DeviceSession> SessionSink<S> {
-    /// Write one frame unless the session was closed.
+    /// Write one frame outside the host queue and wait for how it ended.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError::Disconnected`] when the session is revoked or
-    /// close cancelled this write, and whatever the write itself returns.
-    pub async fn write(&self, colors: &[[u8; 3]]) -> Result<DeviceWriteOutcome, DeviceError> {
-        let mut session = self.admit().await?;
-        self.slot
-            .until_cancelled(session.write_frame(colors, None))
+    /// close cancelled this write, and whatever the write itself failed with.
+    pub async fn write(&self, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        self.write_direct(self.device_id, Arc::new(colors.to_vec()))
             .await
-            .unwrap_or_else(|| Err(disconnected(self.device_id)))
     }
 }
 
@@ -370,33 +322,16 @@ impl<S: DeviceSession> DeviceFrameSink for SessionSink<S> {
         self.is_revoked()
     }
 
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        self.write(colors.as_slice()).await.map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write(colors.as_slice()).await
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
+    async fn submit(&self, frame: Frame) -> Submission {
         let Some(mut session) = self.slot.admit().await else {
-            return DeviceDeliveryAck::rejected(id, disconnected(self.device_id));
+            let (_, attempt) = frame.into_parts();
+            return attempt.reject(disconnected(self.device_id)).into();
         };
-        let delivery = FrameDelivery { id, observer };
+        // A cancelled write drops its attempt, which reports the cancellation.
         self.slot
-            .until_cancelled(session.deliver_frame(delivery, colors))
+            .until_cancelled(session.submit(frame))
             .await
-            .unwrap_or_else(|| {
-                DeviceDeliveryAck::failed(id, true, Duration::ZERO, disconnected(self.device_id))
-            })
+            .unwrap_or(Submission::Pending)
     }
 }
 

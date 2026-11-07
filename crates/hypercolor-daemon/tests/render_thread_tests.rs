@@ -67,9 +67,7 @@ use hypercolor_daemon::domain::DeviceBindingMigrationContext;
 use hypercolor_daemon::domain::layout::LayoutContext;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
-use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, Frame, Submission};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
 #[cfg(feature = "wgpu")]
@@ -515,14 +513,9 @@ impl DeviceBackend for TransientWriteFailureBackend {
         ))
     }
 
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        observer.transport_started(delivery_id);
+    async fn submit_frame(&self, device_id: &DeviceId, frame: Frame) -> Submission {
+        let (_, attempt) = frame.into_parts();
+        let transmission = attempt.start();
         self.deliveries.fetch_add(1, Ordering::SeqCst);
         if *device_id == self.device_id
             && self
@@ -532,14 +525,14 @@ impl DeviceBackend for TransientWriteFailureBackend {
                 })
                 .is_ok()
         {
-            return DeviceDeliveryAck::failed_transient(
-                delivery_id,
-                true,
-                Duration::ZERO,
-                DeviceError::write(device_id, "hid write reported a short count"),
-            );
+            return transmission
+                .failed_transient(DeviceError::write(
+                    device_id,
+                    "hid write reported a short count",
+                ))
+                .into();
         }
-        DeviceDeliveryAck::completed(delivery_id, colors.len().saturating_mul(3), Duration::ZERO)
+        transmission.written().into()
     }
 }
 

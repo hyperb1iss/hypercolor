@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, Frame, OutputPolicy, PeerDisposition, SkipReason,
+    Submission,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -354,13 +354,12 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
         bail!("borrowed color path should not be used for shared payload backend")
     }
 
-    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
+    async fn submit_frame(&self, id: &DeviceId, frame: Frame) -> Submission {
+        assert_eq!(*id, self.expected_device_id, "unexpected device id");
+        let (colors, attempt) = frame.into_parts();
+        let transmission = attempt.start();
         self.writes.lock().await.push(colors);
-        Ok(())
+        transmission.written().into()
     }
 }
 
@@ -379,7 +378,12 @@ impl DeviceFrameSink for FastFrameSink {
         false
     }
 
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn submit(&self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let transmission = attempt.start();
+        if let Some(block_release) = &self.block_release {
+            block_release.notified().await;
+        }
         if self
             .panic_next
             .as_ref()
@@ -391,29 +395,7 @@ impl DeviceFrameSink for FastFrameSink {
             recorded_writes.lock().await.push(colors.as_ref().clone());
         }
         self.writes.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let Some(block_release) = &self.block_release else {
-            return self.deliver_colors_shared(id, colors).await;
-        };
-        observer.transport_started(id);
-        let transport_started_at = Instant::now();
-        block_release.notified().await;
-        let payload_bytes = colors.len().saturating_mul(3);
-        let result = self.write_colors_shared(colors).await;
-        DeviceDeliveryAck::from_write_result(
-            id,
-            payload_bytes,
-            transport_started_at.elapsed(),
-            result.map(|()| DeviceWriteOutcome::Sent),
-        )
+        transmission.written().into()
     }
 }
 
@@ -427,26 +409,10 @@ impl DeviceFrameSink for SuppressingFrameSink {
         false
     }
 
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        self.write_colors_shared_outcome(colors).await.map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        _colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome> {
+    async fn submit(&self, frame: Frame) -> Submission {
         self.attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(DeviceWriteOutcome::SuppressedCadence)
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        _observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let result = self.write_colors_shared_outcome(colors).await;
-        DeviceDeliveryAck::from_write_result(id, 0, Duration::ZERO, result)
+        let (_, attempt) = frame.into_parts();
+        attempt.skip(SkipReason::Unchanged).into()
     }
 }
 
@@ -5686,6 +5652,8 @@ enum ScriptedDelivery {
     Decline,
     TransientFailure,
     Failure,
+    Defer(Duration),
+    Supersede,
 }
 
 struct ScriptedFrameSink {
@@ -5699,17 +5667,8 @@ impl DeviceFrameSink for ScriptedFrameSink {
         false
     }
 
-    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
-        bail!("scripted sink only answers queue-qualified deliveries")
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        observer.transport_started(id);
+    async fn submit(&self, frame: Frame) -> Submission {
+        let (_, attempt) = frame.into_parts();
         let next = self
             .script
             .lock()
@@ -5717,18 +5676,18 @@ impl DeviceFrameSink for ScriptedFrameSink {
             .pop_front()
             .unwrap_or(ScriptedDelivery::Complete);
         let error = DeviceError::write("scripted", "hid write reported a short count");
-        let ack = match next {
-            ScriptedDelivery::Complete => {
-                DeviceDeliveryAck::completed(id, colors.len().saturating_mul(3), Duration::ZERO)
-            }
-            ScriptedDelivery::Decline => DeviceDeliveryAck::declined(id, Duration::ZERO),
-            ScriptedDelivery::TransientFailure => {
-                DeviceDeliveryAck::failed_transient(id, true, Duration::ZERO, error)
-            }
-            ScriptedDelivery::Failure => DeviceDeliveryAck::failed(id, true, Duration::ZERO, error),
+        let receipt = match next {
+            ScriptedDelivery::Defer(wait) => attempt.skip(SkipReason::Deferred {
+                retry_at: Instant::now() + wait,
+            }),
+            ScriptedDelivery::Supersede => attempt.skip(SkipReason::Superseded),
+            ScriptedDelivery::Complete => attempt.start().written(),
+            ScriptedDelivery::Decline => attempt.start().answered(PeerDisposition::Declined),
+            ScriptedDelivery::TransientFailure => attempt.start().failed_transient(error),
+            ScriptedDelivery::Failure => attempt.start().failed(error),
         };
         self.attempts.fetch_add(1, Ordering::SeqCst);
-        ack
+        receipt.into()
     }
 }
 
@@ -5891,6 +5850,62 @@ async fn async_failures_keep_fatal_lane_failures_non_transient() {
         "the newest failure carries its own producer classification"
     );
     assert_eq!(failures[0].consecutive_failures, 2);
+}
+
+// ── Frames that were not written ────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_deferred_frame_comes_back_when_its_lane_said_it_would() {
+    let wait = Duration::from_millis(30);
+    let (mut manager, attempts, layout) =
+        scripted_sink_manager([ScriptedDelivery::Defer(wait), ScriptedDelivery::Complete]).await;
+    let frame = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[10, 20, 30]; 2],
+    }];
+
+    manager.write_frame(&frame, &layout);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while attempts.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the deferred frame should be offered again with no new frame and no replay window");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].frames_suppressed, 1);
+    assert_eq!(stats[0].frames_sent, 1);
+    assert_eq!(stats[0].transport_started, 1, "only the write touched it");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "written once, then quiet"
+    );
+}
+
+#[tokio::test]
+async fn a_superseded_frame_counts_as_dropped_and_still_goes_out_again() {
+    let (mut manager, attempts, layout) =
+        scripted_sink_manager([ScriptedDelivery::Supersede, ScriptedDelivery::Complete]).await;
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].frames_dropped, 1);
+    assert_eq!(stats[0].coalesced_backend_overrun, 1);
+    assert_eq!(stats[0].frames_sent, 0);
+    assert_eq!(stats[0].errors_total, 0);
+    assert_eq!(stats[0].transport_failed, 0);
+    assert!(manager.async_write_failures().is_empty());
+
+    // Whatever replaced it was not a newer queued frame, so the same colors
+    // have still not reached the device and must not dedupe away.
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].frames_sent, 1);
+    assert_eq!(stats[0].frames_suppressed, 0);
 }
 
 // ── Device declines ─────────────────────────────────────────────────────────

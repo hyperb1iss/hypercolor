@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use hypercolor_driver_api::{
-    DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryStatus, DeviceLifecyclePolicy,
-    DeviceWriteOutcome, DriverError, ErrorRecoverability,
+    DeviceDeliveryAck, DeviceDeliveryId, DeviceLifecyclePolicy, DriverError, ErrorRecoverability,
 };
 use hypercolor_types::device::DeviceError;
 
@@ -62,24 +61,6 @@ fn lifecycle_policy_owns_typed_connect_retry_decisions() {
 }
 
 #[test]
-fn delivery_ack_preserves_typed_device_error() {
-    let error = DeviceError::Timeout {
-        after: Duration::from_millis(25),
-    };
-    let ack = DeviceDeliveryAck::from_write_result(
-        DeviceDeliveryId {
-            queue_generation: 4,
-            sequence: 9,
-        },
-        3,
-        Duration::from_millis(25),
-        Err::<DeviceWriteOutcome, _>(error.clone()),
-    );
-
-    assert_eq!(ack.error, Some(error));
-}
-
-#[test]
 fn delivery_ack_marks_only_transient_failures_transient() {
     let id = DeviceDeliveryId {
         queue_generation: 4,
@@ -100,40 +81,6 @@ fn delivery_ack_marks_only_transient_failures_transient() {
     );
 
     assert!(!DeviceDeliveryAck::failed(id, true, Duration::ZERO, error.clone()).transient);
-    assert!(!DeviceDeliveryAck::rejected(id, error.clone()).transient);
+    assert!(!DeviceDeliveryAck::rejected(id, error).transient);
     assert!(!DeviceDeliveryAck::completed(id, 3, Duration::ZERO).transient);
-    assert!(
-        !DeviceDeliveryAck::from_write_result(
-            id,
-            3,
-            Duration::ZERO,
-            Err::<DeviceWriteOutcome, _>(error)
-        )
-        .transient
-    );
-}
-
-#[test]
-fn delivery_ack_reports_a_declined_write_as_neither_completed_nor_failed() {
-    let id = DeviceDeliveryId {
-        queue_generation: 4,
-        sequence: 11,
-    };
-    let ack = DeviceDeliveryAck::from_write_result(
-        id,
-        675,
-        Duration::from_millis(3),
-        Ok(DeviceWriteOutcome::Declined),
-    );
-
-    assert_eq!(
-        ack,
-        DeviceDeliveryAck::declined(id, Duration::from_millis(3))
-    );
-    assert_eq!(ack.status, DeviceDeliveryStatus::Declined);
-    assert!(ack.transport_started, "the payload reached the device");
-    assert_eq!(ack.completed_payload_bytes, 0, "nothing was delivered");
-    assert_eq!(ack.error, None, "a decline is not a transport failure");
-    assert!(!ack.transient);
-    assert!(!DeviceWriteOutcome::Declined.is_sent());
 }

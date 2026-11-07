@@ -19,13 +19,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceFrameSink, DeviceLifecyclePolicy,
-    DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, DriverConfigView, DriverError,
-    OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice,
+    DriverConfigSource, DriverConfigView, DriverError, Frame, OutputPolicy, Readiness, SkipReason,
+    Submission,
 };
-use hypercolor_driver_support::{
-    ConfiguredDevices, DeviceSession, FrameDelivery, Session, SessionTable,
-};
+use hypercolor_driver_support::{ConfiguredDevices, DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_serial::{
@@ -211,7 +209,7 @@ impl DeviceBackend for AdalightBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
@@ -347,15 +345,14 @@ impl AdalightSession {
         }
     }
 
-    async fn write_colors(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome> {
-        self.warn_on_size_mismatch(colors.len());
+    /// Whether the line can take a frame, or why it never will.
+    fn readiness(&mut self) -> Result<Readiness> {
         match self.drain_verdict() {
-            DrainVerdict::Clear => {}
-            DrainVerdict::Backlogged => return Ok(DeviceWriteOutcome::SuppressedCadence),
+            DrainVerdict::Clear => Ok(Readiness::Ready),
+            // The backlog is frames the line still has to carry.
+            DrainVerdict::Backlogged => Ok(Readiness::Deferred {
+                retry_at: Instant::now() + self.plan.frame_time().min(Duration::from_secs(1)),
+            }),
             DrainVerdict::Stalled {
                 queued,
                 stalled_for,
@@ -365,13 +362,6 @@ impl AdalightSession {
                 stalled_for.as_millis()
             ),
         }
-        self.encoder.encode(colors);
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
-        self.send_frame(self.stall_budget).await?;
-        self.has_sent = true;
-        Ok(DeviceWriteOutcome::Sent)
     }
 
     /// Send black frames so the strip goes dark when output stops. Frames
@@ -494,31 +484,32 @@ impl DeviceSession for AdalightSession {
     /// A wedged driver can hold a tty close for its full closing wait.
     const RELEASE: Duration = DISCONNECT_BUDGET;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write_colors(colors, delivery)
-            .await
-            .map_err(|error| DeviceError::write(self.device_id, format!("{error:#}")))
-    }
-
-    /// Acknowledge encoded frame bytes, which is what the line carries.
-    async fn deliver_frame(
-        &mut self,
-        delivery: FrameDelivery,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = self.plan.frame_bytes();
-        let started_at = Instant::now();
-        let result = self.write_frame(colors.as_slice(), Some(&delivery)).await;
-        DeviceDeliveryAck::from_write_result(
-            delivery.id(),
-            payload_bytes,
-            started_at.elapsed(),
-            result,
-        )
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let device_id = self.device_id;
+        self.warn_on_size_mismatch(colors.len());
+        match self.readiness() {
+            Ok(Readiness::Ready) => {}
+            Ok(Readiness::Deferred { retry_at }) => {
+                return attempt.skip(SkipReason::Deferred { retry_at }).into();
+            }
+            Err(error) => {
+                let error = DeviceError::write(device_id, format!("{error:#}"));
+                return attempt.reject(error).into();
+            }
+        }
+        self.encoder.encode(colors.as_slice());
+        let transmission = attempt.start();
+        match self.send_frame(self.stall_budget).await {
+            Ok(()) => {
+                self.has_sent = true;
+                transmission.written().into()
+            }
+            Err(error) => {
+                let error = DeviceError::write(device_id, format!("{error:#}"));
+                transmission.failed(error).into()
+            }
+        }
     }
 
     /// Black out the strip.

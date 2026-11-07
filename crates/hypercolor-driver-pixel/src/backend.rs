@@ -18,12 +18,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
-    DriverConfigSource, DriverConfigView, DriverError, InstallationId, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, DriverConfigSource,
+    DriverConfigView, DriverError, Frame, InstallationId, OutputPolicy, Submission,
 };
-use hypercolor_driver_support::{
-    ConfiguredDevices, DeviceSession, FrameDelivery, Session, SessionTable,
-};
+use hypercolor_driver_support::{ConfiguredDevices, DeviceSession, Session, SessionTable};
 use hypercolor_pixel_protocols::artnet::{
     ARTNET_PORT, ArtDmxPacket, ArtDmxSequenceTracker, PortAddress,
 };
@@ -265,7 +263,7 @@ impl DeviceBackend for PixelBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {
@@ -415,11 +413,7 @@ impl PixelSession {
         })
     }
 
-    async fn write_colors(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome> {
+    fn encode(&mut self, colors: &[[u8; 3]]) {
         let pixel_count = self.plan.total_pixels() as usize;
         if colors.len() != pixel_count {
             let should_warn = self
@@ -442,12 +436,6 @@ impl PixelSession {
             pixel_count,
             &mut self.stream,
         );
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
-        self.send_stream(false).await?;
-        self.has_sent = true;
-        Ok(DeviceWriteOutcome::Sent)
     }
 
     /// Send a black frame and, for E1.31, terminate every universe stream.
@@ -533,14 +521,19 @@ impl PixelSession {
 impl DeviceSession for PixelSession {
     type Facts = PixelFacts;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write_colors(colors, delivery)
-            .await
-            .map_err(|error| DeviceError::write(self.device_id, error))
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        self.encode(colors.as_slice());
+        let transmission = attempt.start();
+        match self.send_stream(false).await {
+            Ok(()) => {
+                self.has_sent = true;
+                transmission.written().into()
+            }
+            Err(error) => transmission
+                .failed(DeviceError::write(self.device_id, error))
+                .into(),
+        }
     }
 
     /// Send the black frame and E1.31 termination. Dropping the session

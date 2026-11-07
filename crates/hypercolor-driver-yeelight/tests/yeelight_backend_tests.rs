@@ -6,7 +6,10 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_driver_api::{DeviceBackend, DeviceWriteOutcome, DiscoveredDevice};
+use hypercolor_driver_api::{DeviceBackend, DiscoveredDevice, OutputPolicy};
+use hypercolor_driver_conformance::{
+    OfferToBackend, assert_deferred, assert_unchanged, assert_written,
+};
 use hypercolor_driver_yeelight::backend::{NORMAL_MODE_REPLAY, representative_color};
 use hypercolor_driver_yeelight::config::YeelightConfig;
 use hypercolor_driver_yeelight::scanner::{fingerprint_for_id, route_from_metadata, search};
@@ -127,10 +130,8 @@ async fn music_mode_streams_scenes_without_a_quota() -> TestResult {
     assert_eq!(cadence.min_interval(), Some(Duration::from_millis(40)));
 
     for color in [[128, 64, 0], [0, 0, 255], [0, 0, 0], [255, 0, 0]] {
-        let outcome = backend
-            .write_colors_shared_outcome(&id, Arc::new(vec![color]))
-            .await?;
-        assert_eq!(outcome, DeviceWriteOutcome::Sent);
+        let outcome = backend.offer(&id, Arc::new(vec![color])).await;
+        assert_written(&outcome);
     }
     let music = fake.wait_for_music(4).await;
     let calls: Vec<(String, serde_json::Value)> = music
@@ -169,10 +170,8 @@ async fn music_mode_streams_scenes_without_a_quota() -> TestResult {
         "frames never touch the control connection"
     );
 
-    let duplicate = backend
-        .write_colors_shared_outcome(&id, Arc::new(vec![[255, 0, 0]]))
-        .await?;
-    assert_eq!(duplicate, DeviceWriteOutcome::SuppressedDuplicate);
+    let duplicate = backend.offer(&id, Arc::new(vec![[255, 0, 0]])).await;
+    assert_unchanged(&duplicate);
     Ok(())
 }
 
@@ -190,14 +189,10 @@ async fn normal_mode_paces_commands_inside_the_quota() -> TestResult {
     assert_eq!(cadence.min_interval(), Some(Duration::from_secs(1)));
     assert_eq!(cadence.replay_after(), Some(Duration::from_secs(3)));
 
-    let first = backend
-        .write_colors_shared_outcome(&id, Arc::new(vec![[0, 255, 0]]))
-        .await?;
-    let early = backend
-        .write_colors_shared_outcome(&id, Arc::new(vec![[0, 0, 255]]))
-        .await?;
-    assert_eq!(first, DeviceWriteOutcome::Sent);
-    assert_eq!(early, DeviceWriteOutcome::SuppressedCadence);
+    let first = backend.offer(&id, Arc::new(vec![[0, 255, 0]])).await;
+    let early = backend.offer(&id, Arc::new(vec![[0, 0, 255]])).await;
+    assert_written(&first);
+    assert_deferred(&early);
     let control = fake.wait_for_control(1).await;
     assert_eq!(control.len(), 1);
     assert_eq!(control[0]["method"], "set_scene");
@@ -227,17 +222,13 @@ async fn quota_errors_pause_normal_mode_output() -> TestResult {
     };
     let (backend, discovered) = connected(&fake, config).await?;
     let id = discovered.info.id;
-    let first = backend
-        .write_colors_shared_outcome(&id, Arc::new(vec![[0, 255, 0]]))
-        .await?;
-    assert_eq!(first, DeviceWriteOutcome::Sent);
+    let first = backend.offer(&id, Arc::new(vec![[0, 255, 0]])).await;
+    assert_written(&first);
     // Wait out the one-second command interval; the quota error has
     // arrived by then and blocks the next frame.
     tokio::time::sleep(Duration::from_millis(1_100)).await;
-    let blocked = backend
-        .write_colors_shared_outcome(&id, Arc::new(vec![[0, 0, 255]]))
-        .await?;
-    assert_eq!(blocked, DeviceWriteOutcome::SuppressedCadence);
+    let blocked = backend.offer(&id, Arc::new(vec![[0, 0, 255]])).await;
+    assert_deferred(&blocked);
     assert_eq!(fake.control_lines().len(), 1);
     Ok(())
 }
@@ -260,7 +251,7 @@ async fn music_mode_falls_back_when_the_device_never_connects() -> TestResult {
     assert_eq!(
         backend
             .output_policy(&id)
-            .and_then(|policy| policy.replay_after()),
+            .and_then(OutputPolicy::replay_after),
         Some(NORMAL_MODE_REPLAY)
     );
     backend.write_colors(&id, &[[255, 0, 0]]).await?;
@@ -307,7 +298,7 @@ async fn disconnect_stops_music_mode_and_closes_the_sink() -> TestResult {
     }
     assert_eq!(fake.closed_connections(), (1, 1));
     assert!(matches!(
-        sink.write_colors_shared(Arc::new(vec![[1, 2, 3]])).await,
+        sink.write_direct(id, Arc::new(vec![[1, 2, 3]])).await,
         Err(DeviceError::Disconnected { .. })
     ));
     let control = fake.wait_for_control(2).await;
@@ -366,21 +357,11 @@ async fn a_quota_rejected_frame_is_resent_after_the_pause() -> TestResult {
     let id = discovered.info.id;
 
     let green = Arc::new(vec![[0, 255, 0]]);
-    assert_eq!(
-        backend
-            .write_colors_shared_outcome(&id, Arc::clone(&green))
-            .await?,
-        DeviceWriteOutcome::Sent
-    );
+    assert_written(&backend.offer(&id, Arc::clone(&green)).await);
     // Past the one-second command interval and the 200 ms pause, the host's
     // replay of the same static color must reach the light again.
     tokio::time::sleep(Duration::from_millis(1_100)).await;
-    assert_eq!(
-        backend
-            .write_colors_shared_outcome(&id, Arc::clone(&green))
-            .await?,
-        DeviceWriteOutcome::Sent
-    );
+    assert_written(&backend.offer(&id, Arc::clone(&green)).await);
     let control = fake.wait_for_control(2).await;
     assert_eq!(control.len(), 2);
     assert_eq!(control[0]["params"], control[1]["params"]);
@@ -585,8 +566,7 @@ async fn writes_racing_disconnect_leave_no_connection_open() -> TestResult {
     for shade in 0..32_u8 {
         let sink = Arc::clone(&sink);
         writers.push(tokio::spawn(async move {
-            sink.write_colors_shared(Arc::new(vec![[shade, 0, 255]]))
-                .await
+            sink.write_direct(id, Arc::new(vec![[shade, 0, 255]])).await
         }));
     }
     backend.disconnect(&id).await?;
@@ -594,7 +574,7 @@ async fn writes_racing_disconnect_leave_no_connection_open() -> TestResult {
         let _ = writer.await?;
     }
     assert!(matches!(
-        sink.write_colors_shared(Arc::new(vec![[1, 2, 3]])).await,
+        sink.write_direct(id, Arc::new(vec![[1, 2, 3]])).await,
         Err(DeviceError::Disconnected { .. })
     ));
     for _ in 0..200 {

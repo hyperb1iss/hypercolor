@@ -28,9 +28,10 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DiscoveredDevice, Frame, OutputPolicy, SkipReason,
+    Submission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceColorFormat, DeviceError, DeviceId, DeviceInfo};
 
 use health::{
@@ -78,15 +79,13 @@ impl DeviceSession for WledDevice {
     /// One HTTP exit from realtime mode, plus the clear frame before it.
     const CLEANUP: Duration = REALTIME_HTTP_TIMEOUT.saturating_add(CLEAR_FRAME_BOUND);
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let colors = colors.as_slice();
         let device_id = self.device_id;
-        self.ensure_ready_for_output()
-            .await
-            .map_err(|error| DeviceError::write(device_id, error))?;
+        if let Err(error) = self.ensure_ready_for_output().await {
+            return attempt.reject(DeviceError::write(device_id, error)).into();
+        }
         let expected_led_count = usize::from(self.led_count);
 
         if colors.len() != expected_led_count {
@@ -110,10 +109,17 @@ impl DeviceSession for WledDevice {
             WledProtocol::E131 => self.color_format,
         };
         let pixel_data = encode_colors(colors, wire_format, expected_led_count);
+        if self.shows_already(&pixel_data) {
+            return attempt.skip(SkipReason::Unchanged).into();
+        }
 
-        self.send_frame_outcome_observed(&pixel_data, delivery)
-            .await
-            .map_err(|error| DeviceError::write(device_id, error))
+        let transmission = attempt.start();
+        match self.send_frame_forced(&pixel_data).await {
+            Ok(()) => transmission.written().into(),
+            Err(error) => transmission
+                .failed(DeviceError::write(device_id, error))
+                .into(),
+        }
     }
 
     /// Blank the strip and hand it back to WLED's own effects. Both steps
@@ -515,7 +521,7 @@ impl DeviceBackend for WledBackend {
         id: &DeviceId,
         colors: &[[u8; 3]],
     ) -> std::result::Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     fn output_policy(&self, id: &DeviceId) -> Option<OutputPolicy> {

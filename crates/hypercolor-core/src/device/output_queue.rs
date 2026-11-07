@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceDeliveryStatus, DeviceFrameSink, OutputPolicy,
+    DeliveryResult, DeviceBackend, DeviceDeliveryId, DeviceFrameSink, Frame, FrameObserver,
+    OutputPolicy, PeerDisposition, Receipt, SkipReason, Submission,
 };
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde::Serialize;
@@ -64,23 +64,10 @@ impl OutputLane {
         }
     }
 
-    async fn deliver_colors_shared(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
+    async fn submit(&self, frame: Frame) -> Submission {
         match self {
-            Self::Backend { backend, device_id } => {
-                backend
-                    .deliver_colors_shared_observed(device_id, id, colors, observer)
-                    .await
-            }
-            Self::FrameSink { frame_sink } => {
-                frame_sink
-                    .deliver_colors_shared_observed(id, colors, observer)
-                    .await
-            }
+            Self::Backend { backend, device_id } => backend.submit_frame(device_id, frame).await,
+            Self::FrameSink { frame_sink } => frame_sink.submit(frame).await,
         }
     }
 }
@@ -666,10 +653,12 @@ struct OutputQueueMetrics {
     last_handled_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
     last_error_sequence: AtomicU64,
-    /// Most recent delivery the device declined. A declined payload is
-    /// terminal for its attempt but still undelivered, so dedupe and retry
-    /// treat it like a failed one without surfacing it to device lifecycle.
-    last_declined_sequence: AtomicU64,
+    /// Most recent delivery the device declined or something else replaced.
+    /// Such a payload is terminal for its attempt but still undelivered, so
+    /// dedupe and retry treat it like a failed one without surfacing it to
+    /// device lifecycle. A direct write can replace a queued frame with no
+    /// newer frame behind it, and the same colors must still go out after.
+    last_undelivered_sequence: AtomicU64,
     /// Failed deliveries since the last completed one; written only while
     /// holding `retained_failure`.
     consecutive_failures: AtomicU32,
@@ -705,7 +694,7 @@ impl OutputQueueMetrics {
             last_handled_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
             last_error_sequence: AtomicU64::new(0),
-            last_declined_sequence: AtomicU64::new(0),
+            last_undelivered_sequence: AtomicU64::new(0),
             consecutive_failures: AtomicU32::new(0),
             retained_failure: StdMutex::new(None),
         }
@@ -723,7 +712,7 @@ impl OutputQueueMetrics {
         self.last_handled_sequence.store(0, Ordering::Relaxed);
         self.last_success_sequence.store(0, Ordering::Relaxed);
         self.last_error_sequence.store(0, Ordering::Relaxed);
-        self.last_declined_sequence.store(0, Ordering::Relaxed);
+        self.last_undelivered_sequence.store(0, Ordering::Relaxed);
         self.consecutive_failures.store(0, Ordering::Relaxed);
         *retained_failure = None;
     }
@@ -856,7 +845,7 @@ impl OutputQueueMetrics {
             duration_micros(sent_at.saturating_duration_since(self.started_at)),
             Ordering::Relaxed,
         );
-        self.last_declined_sequence
+        self.last_undelivered_sequence
             .store(id.sequence, Ordering::Release);
     }
 
@@ -865,7 +854,7 @@ impl OutputQueueMetrics {
         self.last_handled_sequence
             .load(Ordering::Relaxed)
             .max(self.last_error_sequence.load(Ordering::Relaxed))
-            .max(self.last_declined_sequence.load(Ordering::Relaxed))
+            .max(self.last_undelivered_sequence.load(Ordering::Relaxed))
     }
 
     /// Whether the attempt for `sequence` failed or was declined and no later
@@ -875,7 +864,7 @@ impl OutputQueueMetrics {
         let last_handled_sequence = self.last_handled_sequence.load(Ordering::Relaxed);
         [
             self.last_error_sequence.load(Ordering::Relaxed),
-            self.last_declined_sequence.load(Ordering::Relaxed),
+            self.last_undelivered_sequence.load(Ordering::Relaxed),
         ]
         .into_iter()
         .any(|terminal| sequence == terminal && terminal > last_handled_sequence)
@@ -920,42 +909,21 @@ impl OutputQueueMetrics {
         }
     }
 
-    fn record_delivery_ack(
-        &self,
-        ack: &DeviceDeliveryAck,
-        queue_wait: Duration,
-        total_latency: Duration,
-        completed_at: Instant,
-    ) {
-        if !self.is_current(ack.id) {
+    /// Count a frame a lane's own mailbox replaced before it finished.
+    fn record_superseded(&self, id: DeviceDeliveryId) {
+        // Held so a generation switch cannot land between the check and stores.
+        let _retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.is_current(id) {
             return;
         }
-        if ack.transport_started {
-            self.record_transport_started(ack.id);
-        }
-
-        match ack.status {
-            DeviceDeliveryStatus::Completed => self.record_write_success(
-                ack.id,
-                queue_wait,
-                ack.transport_latency,
-                total_latency,
-                completed_at,
-                ack.completed_payload_bytes,
-            ),
-            DeviceDeliveryStatus::SuppressedDuplicate | DeviceDeliveryStatus::SuppressedCadence => {
-                self.record_write_suppressed(ack.id, completed_at);
-            }
-            DeviceDeliveryStatus::Declined => self.record_write_declined(ack.id, completed_at),
-            DeviceDeliveryStatus::Failed => self.record_write_error(
-                ack.id,
-                completed_at,
-                ack.error.clone().unwrap_or_else(|| {
-                    DeviceError::protocol("output queue", "delivery failed without an error")
-                }),
-                ack.transient,
-            ),
-        }
+        self.coalesced_backend_overrun
+            .fetch_add(1, Ordering::Relaxed);
+        self.frames_dropped.fetch_add(1, Ordering::Relaxed);
+        self.last_undelivered_sequence
+            .fetch_max(id.sequence, Ordering::AcqRel);
     }
 
     fn record_transport_started(&self, id: DeviceDeliveryId) {
@@ -1125,9 +1093,35 @@ impl OutputQueueMetrics {
     }
 }
 
-impl DeviceDeliveryObserver for OutputQueueMetrics {
+impl FrameObserver for OutputQueueMetrics {
     fn transport_started(&self, id: DeviceDeliveryId) {
         self.record_transport_started(id);
+    }
+
+    fn settled(&self, receipt: &Receipt) {
+        let id = receipt.id();
+        let at = receipt.settled_at();
+        match receipt.result() {
+            DeliveryResult::Written {
+                peer: Some(PeerDisposition::Declined),
+                ..
+            } => self.record_write_declined(id, at),
+            DeliveryResult::Written { bytes, .. } => self.record_write_success(
+                id,
+                receipt.queue_wait(),
+                receipt.transport_latency(),
+                receipt.total_latency(),
+                at,
+                *bytes,
+            ),
+            DeliveryResult::NotWritten(SkipReason::Superseded) => self.record_superseded(id),
+            DeliveryResult::NotWritten(SkipReason::Unchanged | SkipReason::Deferred { .. }) => {
+                self.record_write_suppressed(id, at);
+            }
+            DeliveryResult::Failed {
+                error, transient, ..
+            } => self.record_write_error(id, at, error.clone(), *transient),
+        }
     }
 }
 
@@ -1496,6 +1490,41 @@ impl DeviceStagingBuffer {
     }
 }
 
+/// When to offer the latest frame again after this result.
+///
+/// A deferred frame comes back when its lane said it would be ready, whether
+/// or not the policy replays, because the device has not seen it. Everything
+/// else follows the replay window; an unchanged frame retries at the next
+/// send slot, since the host may still owe the device a keepalive.
+fn next_reassertion(
+    result: Option<&DeliveryResult>,
+    now: Instant,
+    send_interval: Option<Duration>,
+    replay_after: Option<Duration>,
+) -> Option<Instant> {
+    match result {
+        Some(DeliveryResult::NotWritten(SkipReason::Deferred { retry_at })) => {
+            let replay_at = replay_after.map(|replay_after| now + replay_after);
+            Some(replay_at.map_or(*retry_at, |replay_at| replay_at.min(*retry_at)))
+        }
+        Some(DeliveryResult::NotWritten(SkipReason::Unchanged)) => {
+            replay_after.map(|replay_after| {
+                let retry = send_interval
+                    .filter(|interval| !interval.is_zero())
+                    .unwrap_or(OUTPUT_REASSERTION_RETRY_INTERVAL)
+                    .min(replay_after);
+                advance_deadline(now, retry, now)
+            })
+        }
+        Some(
+            DeliveryResult::NotWritten(SkipReason::Superseded)
+            | DeliveryResult::Written { .. }
+            | DeliveryResult::Failed { .. },
+        )
+        | None => replay_after.map(|replay_after| advance_deadline(now, replay_after, now)),
+    }
+}
+
 /// Whether `payload` was handled without a later error.
 fn payload_delivered(metrics: &OutputQueueMetrics, payload: &FramePayload) -> bool {
     let last_handled_sequence = metrics.last_handled_sequence.load(Ordering::Relaxed);
@@ -1642,39 +1671,38 @@ impl OutputQueue {
                     continue;
                 };
 
-                let write_started = Instant::now();
-                let queue_wait = write_started.saturating_duration_since(frame.produced_at);
                 phase_for_task.store(WORKER_PHASE_TRANSPORT, Ordering::Release);
                 active_sequence_for_task.store(frame.id.sequence, Ordering::Release);
-                let ack = lane
-                    .deliver_colors_shared(
+                let submission = lane
+                    .submit(Frame::new(
+                        device_id,
                         frame.id,
-                        Arc::clone(&frame.colors),
                         metrics_for_task.clone(),
-                    )
+                        frame.produced_at,
+                        Arc::clone(&frame.colors),
+                    ))
                     .await;
                 let send_completed = Instant::now();
                 active_sequence_for_task.store(0, Ordering::Release);
                 phase_for_task.store(WORKER_PHASE_IDLE, Ordering::Release);
-                metrics_for_task.record_delivery_ack(
-                    &ack,
-                    queue_wait,
-                    send_completed.saturating_duration_since(frame.produced_at),
-                    send_completed,
-                );
 
-                match ack.status {
-                    DeviceDeliveryStatus::Completed
-                    | DeviceDeliveryStatus::SuppressedDuplicate
-                    | DeviceDeliveryStatus::SuppressedCadence => {
+                // A pending frame reports to the metrics when it settles. It
+                // is on its way, so it schedules as written.
+                let result = match &submission {
+                    Submission::Settled(receipt) => Some(receipt.result()),
+                    Submission::Pending => None,
+                };
+
+                match result {
+                    Some(DeliveryResult::Written {
+                        peer: Some(PeerDisposition::Declined),
+                        ..
+                    }) => {}
+                    None | Some(DeliveryResult::Written { .. } | DeliveryResult::NotWritten(_)) => {
                         last_logged_write_error = None;
                         repeated_write_failures_since_log = 0;
                     }
-                    DeviceDeliveryStatus::Declined => {}
-                    DeviceDeliveryStatus::Failed => {
-                        let error = ack.error.clone().unwrap_or_else(|| {
-                            DeviceError::protocol(device_id, "delivery failed without an error")
-                        });
+                    Some(DeliveryResult::Failed { error, .. }) => {
                         let error_text = error.to_string();
 
                         if last_logged_write_error.as_deref() == Some(error_text.as_str()) {
@@ -1709,23 +1737,7 @@ impl OutputQueue {
                     }
                 }
 
-                if let Some(replay_after) = replay_after {
-                    let next_interval = match ack.status {
-                        DeviceDeliveryStatus::Completed
-                        | DeviceDeliveryStatus::Declined
-                        | DeviceDeliveryStatus::Failed => replay_after,
-                        DeviceDeliveryStatus::SuppressedDuplicate
-                        | DeviceDeliveryStatus::SuppressedCadence => send_interval
-                            .filter(|interval| !interval.is_zero())
-                            .unwrap_or(OUTPUT_REASSERTION_RETRY_INTERVAL)
-                            .min(replay_after),
-                    };
-                    reassert_at = Some(advance_deadline(
-                        send_completed,
-                        next_interval,
-                        send_completed,
-                    ));
-                }
+                reassert_at = next_reassertion(result, send_completed, send_interval, replay_after);
 
                 if let Some(interval) = send_interval {
                     next_send_at = advance_deadline(next_send_at, interval, Instant::now());

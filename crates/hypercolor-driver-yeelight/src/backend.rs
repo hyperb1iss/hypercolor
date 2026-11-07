@@ -14,11 +14,11 @@ use tracing::{debug, info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice, Frame,
+    OutputPolicy, Readiness, SkipReason, Submission,
 };
 use hypercolor_driver_support::framing::{BoundedLines, FrameWriteError, FramedWriter, LineError};
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::YEELIGHT_DRIVER_ID;
@@ -111,11 +111,12 @@ impl SessionShared {
         }
     }
 
-    fn quota_blocked(&self, now: Instant) -> bool {
+    /// When the device's quota lifts, while it still blocks commands.
+    fn quota_lifts_at(&self, now: Instant) -> Option<Instant> {
         self.quota_blocked_until
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .is_some_and(|until| now < until)
+            .filter(|until| now < *until)
     }
 }
 
@@ -153,6 +154,21 @@ fn write_deadline() -> tokio::time::Instant {
     tokio::time::Instant::now() + WRITE_TIMEOUT
 }
 
+impl YeelightSession {
+    /// Outside music mode the lane waits out both the device's quota and its
+    /// own command pacing. Which one is longer is what the host needs.
+    fn readiness(&self, now: Instant) -> Readiness {
+        if self.mode != StreamMode::Normal {
+            return Readiness::Ready;
+        }
+        let pacing = self.next_allowed_at.filter(|next| now < *next);
+        match self.shared.quota_lifts_at(now).max(pacing) {
+            Some(retry_at) => Readiness::Deferred { retry_at },
+            None => Readiness::Ready,
+        }
+    }
+}
+
 impl DeviceSession for YeelightSession {
     type Facts = YeelightFacts;
 
@@ -160,29 +176,23 @@ impl DeviceSession for YeelightSession {
     const SETTLE: Duration = WRITE_TIMEOUT;
     const CLEANUP: Duration = WRITE_TIMEOUT.saturating_add(Duration::from_millis(100));
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
         if let Some(reason) = self.shared.failure() {
-            return Err(DeviceError::write(self.device_id, reason));
+            return attempt
+                .reject(DeviceError::write(self.device_id, reason))
+                .into();
         }
         let now = Instant::now();
         if self.shared.quota_rejected.swap(false, Ordering::AcqRel) {
             // The rejected command's state never landed; resend in full.
             self.last_state = None;
         }
-        if self.mode == StreamMode::Normal {
-            if self.shared.quota_blocked(now) {
-                return Ok(DeviceWriteOutcome::SuppressedCadence);
-            }
-            if self.next_allowed_at.is_some_and(|next| now < next) {
-                return Ok(DeviceWriteOutcome::SuppressedCadence);
-            }
+        if let Readiness::Deferred { retry_at } = self.readiness(now) {
+            return attempt.skip(SkipReason::Deferred { retry_at }).into();
         }
 
-        let color = representative_color(colors);
+        let color = representative_color(colors.as_slice());
         let color = if self.brightness == u8::MAX {
             color
         } else {
@@ -202,7 +212,7 @@ impl DeviceSession for YeelightSession {
             commands_for(self.last_state, next, self.capabilities)
         };
         if commands.is_empty() {
-            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
+            return attempt.skip(SkipReason::Unchanged).into();
         }
 
         let mut payload = String::new();
@@ -210,24 +220,24 @@ impl DeviceSession for YeelightSession {
             let id = self.next_id();
             payload.push_str(&command.encode(id));
         }
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
         let writer = match self.mode {
             StreamMode::Music => self.music.as_mut(),
             StreamMode::Normal => Some(&mut self.control),
         };
         let Some(writer) = writer else {
-            return Err(DeviceError::Disconnected {
+            let error = DeviceError::Disconnected {
                 device: self.device_id.to_string(),
-            });
+            };
+            return attempt.reject(error).into();
         };
+        let transmission = attempt.start();
         match writer.write(payload.as_bytes(), write_deadline()).await {
             Ok(()) => {}
             Err(FrameWriteError::Closed) => {
-                return Err(DeviceError::Disconnected {
+                let error = DeviceError::Disconnected {
                     device: self.device_id.to_string(),
-                });
+                };
+                return transmission.failed(error).into();
             }
             Err(error) => {
                 // The writer already gave up its connection. Close the
@@ -235,7 +245,9 @@ impl DeviceSession for YeelightSession {
                 let reason = format!("Yeelight command write failed: {error}");
                 self.shared.mark_failed(reason.clone());
                 self.close_connections();
-                return Err(DeviceError::write(self.device_id, reason));
+                return transmission
+                    .failed(DeviceError::write(self.device_id, reason))
+                    .into();
             }
         }
         self.last_state = Some(next);
@@ -245,7 +257,7 @@ impl DeviceSession for YeelightSession {
             self.next_allowed_at =
                 Some(now + NORMAL_MODE_COMMAND_INTERVAL.saturating_mul(commands));
         }
-        Ok(DeviceWriteOutcome::Sent)
+        transmission.written().into()
     }
 
     /// Leave music mode. Dropping the session then closes both connections.
@@ -707,7 +719,7 @@ impl DeviceBackend for YeelightBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {

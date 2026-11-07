@@ -5,14 +5,14 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, InstallationId, OutputPolicy,
+    DeliveryResult, DeviceBackend, DiscoveredDevice, DriverConfigSource, InstallationId, IoStage,
+    OutputPolicy,
 };
+use hypercolor_driver_conformance::{DeliveryLog, OfferToSink, assert_written};
 use hypercolor_driver_pixel::controls::{pixel_config_values, values_entry};
 use hypercolor_driver_pixel::{
     KEEPALIVE_INTERVAL, METADATA_DEVICE_CONFIG, PixelBackend, PixelConfig, configured_devices,
@@ -486,14 +486,6 @@ async fn short_frames_pad_with_black() {
     assert_eq!(&packet[10..], &[20, 10, 30, 0, 0, 0, 0, 0, 0]);
 }
 
-struct CountingObserver(Arc<AtomicUsize>);
-
-impl DeviceDeliveryObserver for CountingObserver {
-    fn transport_started(&self, _id: DeviceDeliveryId) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
 #[tokio::test]
 async fn frame_sink_delivers_and_reports_transport_start() {
     let (receiver, addr) = loopback_receiver().await;
@@ -506,26 +498,14 @@ async fn frame_sink_delivers_and_reports_transport_start() {
         .frame_sink(&id)
         .expect("connected device has a sink");
 
-    let outcome = sink
-        .write_colors_shared_outcome(Arc::new(gradient(4)))
-        .await
-        .expect("sink write");
-    assert_eq!(outcome, DeviceWriteOutcome::Sent);
+    let outcome = sink.offer_to_sink(id, Arc::new(gradient(4))).await;
+    assert_written(&outcome);
     recv(&receiver).await;
 
-    let started = Arc::new(AtomicUsize::new(0));
-    let ack = sink
-        .deliver_colors_shared_observed(
-            DeviceDeliveryId {
-                queue_generation: 1,
-                sequence: 1,
-            },
-            Arc::new(gradient(4)),
-            Arc::new(CountingObserver(Arc::clone(&started))),
-        )
-        .await;
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(started.load(Ordering::Relaxed), 1);
+    let log = Arc::new(DeliveryLog::default());
+    let _ = sink.submit(log.frame(id, 1, gradient(4))).await;
+    assert_written(&log.settled(1).await[0]);
+    assert_eq!(log.started(), [1]);
     recv(&receiver).await;
 }
 
@@ -542,9 +522,7 @@ async fn frame_sink_rejects_writes_after_disconnect() {
         .frame_sink(&id)
         .expect("connected device has a sink");
     assert!(!sink.is_closed());
-    sink.write_colors_shared_outcome(Arc::new(vec![[9, 9, 9]]))
-        .await
-        .expect("write before disconnect");
+    sink.offer_to_sink(id, Arc::new(vec![[9, 9, 9]])).await;
     recv(&receiver).await;
 
     backend.disconnect(&id).await.expect("disconnect");
@@ -552,24 +530,20 @@ async fn frame_sink_rejects_writes_after_disconnect() {
     assert!(sink.is_closed());
 
     assert!(matches!(
-        sink.write_colors_shared_outcome(Arc::new(vec![[1, 1, 1]]))
-            .await,
+        sink.write_direct(id, Arc::new(vec![[1, 1, 1]])).await,
         Err(DeviceError::Disconnected { .. })
     ));
-    let started = Arc::new(AtomicUsize::new(0));
-    let ack = sink
-        .deliver_colors_shared_observed(
-            DeviceDeliveryId {
-                queue_generation: 1,
-                sequence: 7,
-            },
-            Arc::new(vec![[2, 2, 2]]),
-            Arc::new(CountingObserver(Arc::clone(&started))),
-        )
-        .await;
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
-    assert!(!ack.transport_started);
-    assert_eq!(started.load(Ordering::Relaxed), 0);
+    let log = Arc::new(DeliveryLog::default());
+    let _ = sink.submit(log.frame(id, 7, vec![[2, 2, 2]])).await;
+    let receipts = log.settled(1).await;
+    assert!(matches!(
+        receipts[0].result(),
+        DeliveryResult::Failed {
+            stage: IoStage::Admission,
+            ..
+        }
+    ));
+    assert!(log.started().is_empty());
     assert_quiet(&receiver).await;
 }
 
@@ -582,9 +556,7 @@ async fn repeated_connect_keeps_the_stream_without_a_blackout() {
     }));
     let (backend, id) = connect(&config).await;
     let sink = backend.frame_sink(&id).expect("sink");
-    sink.write_colors_shared_outcome(Arc::new(vec![[5, 5, 5]]))
-        .await
-        .expect("write before reconnect");
+    sink.offer_to_sink(id, Arc::new(vec![[5, 5, 5]])).await;
     recv(&receiver).await;
 
     backend.connect(&id).await.expect("repeated connect");

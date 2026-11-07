@@ -5,6 +5,7 @@ use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::delivery::{DeviceDeliveryId, Frame, Receipt, Submission};
 use crate::discovery::DiscoveredDevice;
 use hypercolor_types::device::{
     DeviceError, DeviceId, DeviceInfo, ErrorRecoverability, OwnedDisplayFramePayload,
@@ -127,32 +128,6 @@ impl Default for DeviceLifecyclePolicy {
     }
 }
 
-/// Result of accepting a color frame into a device output lane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceWriteOutcome {
-    /// The frame was sent to the transport or handed to an async transport worker.
-    Sent,
-    /// The lane intentionally skipped an identical frame.
-    SuppressedDuplicate,
-    /// The lane intentionally skipped a frame inside its cadence window.
-    SuppressedCadence,
-    /// The transport delivered the frame and the device declined it.
-    ///
-    /// The device keeps showing what it showed before. A decline is neither
-    /// a delivery nor a transport failure: the session stays healthy and a
-    /// later frame may be accepted.
-    Declined,
-}
-
-/// Queue-qualified identity for one device-frame delivery attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct DeviceDeliveryId {
-    /// Generation of the output queue that issued this attempt.
-    pub queue_generation: u64,
-    /// Monotonic sequence within the queue.
-    pub sequence: u64,
-}
-
 /// Terminal state reported for one device-frame delivery attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceDeliveryStatus {
@@ -202,35 +177,6 @@ pub trait DeviceDeliveryObserver: Send + Sync {
 }
 
 impl DeviceDeliveryAck {
-    /// Build an acknowledgement from a legacy synchronous lane result.
-    #[must_use]
-    pub fn from_write_result(
-        id: DeviceDeliveryId,
-        payload_bytes: usize,
-        transport_latency: Duration,
-        result: Result<DeviceWriteOutcome, DeviceError>,
-    ) -> Self {
-        match result {
-            Ok(DeviceWriteOutcome::Sent) => Self {
-                id,
-                status: DeviceDeliveryStatus::Completed,
-                transport_started: true,
-                completed_payload_bytes: u64::try_from(payload_bytes).unwrap_or(u64::MAX),
-                transport_latency,
-                error: None,
-                transient: false,
-            },
-            Ok(DeviceWriteOutcome::SuppressedDuplicate) => {
-                Self::suppressed(id, DeviceDeliveryStatus::SuppressedDuplicate)
-            }
-            Ok(DeviceWriteOutcome::SuppressedCadence) => {
-                Self::suppressed(id, DeviceDeliveryStatus::SuppressedCadence)
-            }
-            Ok(DeviceWriteOutcome::Declined) => Self::declined(id, transport_latency),
-            Err(error) => Self::failed(id, true, transport_latency, error),
-        }
-    }
-
     /// Build an acknowledgement for a transport attempt rejected before I/O.
     #[must_use]
     pub fn rejected(id: DeviceDeliveryId, error: DeviceError) -> Self {
@@ -306,26 +252,6 @@ impl DeviceDeliveryAck {
             transient: true,
             ..Self::failed(id, transport_started, transport_latency, error)
         }
-    }
-
-    fn suppressed(id: DeviceDeliveryId, status: DeviceDeliveryStatus) -> Self {
-        Self {
-            id,
-            status,
-            transport_started: false,
-            completed_payload_bytes: 0,
-            transport_latency: Duration::ZERO,
-            error: None,
-            transient: false,
-        }
-    }
-}
-
-impl DeviceWriteOutcome {
-    /// Whether this outcome represents bytes accepted for transport output.
-    #[must_use]
-    pub const fn is_sent(self) -> bool {
-        matches!(self, Self::Sent)
     }
 }
 
@@ -462,57 +388,32 @@ pub trait DeviceFrameSink: Send + Sync {
     /// exits, so the next delivery can report the failure to device lifecycle.
     fn is_closed(&self) -> bool;
 
-    /// Push shared LED color data to this device's output lane.
+    /// Offer one frame to this lane.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the device output lane is no longer available or
-    /// the driver has observed an asynchronous transport failure.
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError>;
+    /// The frame's attempt settles exactly once, wherever it goes from here,
+    /// and its observer hears about it. Returning [`Submission::Settled`]
+    /// hands the receipt back too; a lane that passed the attempt to a worker
+    /// returns [`Submission::Pending`].
+    async fn submit(&self, frame: Frame) -> Submission;
 
-    /// Push shared LED color data and report whether the lane actually sent it.
+    /// Write one frame outside the host queue and wait for how it ended.
     ///
     /// # Errors
     ///
-    /// Returns an error if the device output lane is no longer available or
-    /// the driver has observed an asynchronous transport failure.
-    async fn write_colors_shared_outcome(
+    /// Returns the attempt's error when it failed. A skipped frame is not a
+    /// failure.
+    async fn write_direct(
         &self,
+        device_id: DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write_colors_shared(colors)
+    ) -> Result<(), DeviceError> {
+        let mut frame = Frame::direct(device_id, colors);
+        let receipt = frame.wait_for_receipt();
+        let _ = self.submit(frame).await;
+        receipt
+            .received()
             .await
-            .map(|()| DeviceWriteOutcome::Sent)
-    }
-
-    /// Deliver a queue-qualified payload and acknowledge its terminal state.
-    ///
-    /// Drivers with their own output actor override this method so the future
-    /// resolves after that actor completes or fails the matching transport I/O.
-    async fn deliver_colors_shared(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = std::time::Instant::now();
-        let result = self.write_colors_shared_outcome(colors).await;
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
-    }
-
-    /// Deliver a queue-qualified payload with live transport-start observation.
-    ///
-    /// Actor-backed drivers override this method and notify `observer` at the
-    /// precise point their transport I/O begins. The default preserves legacy
-    /// terminal acknowledgement behavior for synchronous sinks.
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        observer.transport_started(id);
-        self.deliver_colors_shared(id, colors).await
+            .map_or(Ok(()), Receipt::into_result)
     }
 }
 
@@ -656,60 +557,18 @@ pub trait DeviceBackend: Send + Sync {
     /// Returns an error if the device is disconnected or the write fails.
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError>;
 
-    /// Push shared LED color data to a connected device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device is disconnected or the write fails.
-    async fn write_colors_shared(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<(), DeviceError> {
-        self.write_colors(id, colors.as_slice()).await
-    }
-
-    /// Push shared LED color data and report whether the backend actually sent it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device is disconnected or the write fails.
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        if let Some(sink) = self.frame_sink(id) {
-            return sink.write_colors_shared_outcome(colors).await;
-        }
-        self.write_colors_shared(id, colors)
-            .await
-            .map(|()| DeviceWriteOutcome::Sent)
-    }
-
-    /// Deliver a queue-qualified payload with live transport-start observation.
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
+    /// Offer one frame to a connected device, through its frame sink when it
+    /// has one.
+    async fn submit_frame(&self, device_id: &DeviceId, frame: Frame) -> Submission {
         if let Some(sink) = self.frame_sink(device_id) {
-            return sink
-                .deliver_colors_shared_observed(delivery_id, colors, observer)
-                .await;
+            return sink.submit(frame).await;
         }
-        observer.transport_started(delivery_id);
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = std::time::Instant::now();
-        let result = self.write_colors_shared_outcome(device_id, colors).await;
-        DeviceDeliveryAck::from_write_result(
-            delivery_id,
-            payload_bytes,
-            started_at.elapsed(),
-            result,
-        )
+        let (colors, attempt) = frame.into_parts();
+        let transmission = attempt.start();
+        match self.write_colors(device_id, &colors).await {
+            Ok(()) => transmission.written().into(),
+            Err(error) => transmission.failed(error).into(),
+        }
     }
 
     /// Deliver a queue-qualified display payload with terminal observation.

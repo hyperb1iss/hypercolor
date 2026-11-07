@@ -4,14 +4,14 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use hypercolor_driver_api::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy,
+    DiscoveredDevice, Frame, OutputPolicy, SkipReason, Submission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
 use hypercolor_hal::smbus_registry::build_smbus_protocol;
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusTransport};
@@ -47,44 +47,6 @@ struct SmBusSession {
     frame_commands: Vec<ProtocolCommand>,
 }
 
-impl SmBusSession {
-    async fn write(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<FrameWrite, DeviceError> {
-        self.protocol
-            .encode_frame_into(colors, &mut self.frame_commands);
-        if self.frame_commands.is_empty() {
-            return Ok(FrameWrite::Unchanged);
-        }
-        let payload_bytes = self
-            .protocol
-            .written_frame_bytes()
-            .unwrap_or_else(|| colors.len().saturating_mul(3));
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
-        let result = run_commands(
-            self.protocol.as_ref(),
-            self.transport.as_ref(),
-            self.frame_commands.as_slice(),
-        )
-        .await;
-        self.protocol.frame_write_finished(result.is_ok());
-        result
-            .map(|()| FrameWrite::Written { payload_bytes })
-            .map_err(|error| {
-                map_hal_transport_error(
-                    self.device_id,
-                    SMBUS_OUTPUT_BACKEND_ID,
-                    DeviceTransportOperation::Write,
-                    &error,
-                )
-            })
-    }
-}
-
 impl DeviceSession for SmBusSession {
     type Facts = SmBusFacts;
 
@@ -95,41 +57,36 @@ impl DeviceSession for SmBusSession {
     /// A shutdown sequence retries on a busy bus.
     const CLEANUP: Duration = Duration::from_secs(2);
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.write(colors, delivery)
-            .await
-            .map(|_| DeviceWriteOutcome::Sent)
-    }
-
-    async fn deliver_frame(
-        &mut self,
-        delivery: FrameDelivery,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> DeviceDeliveryAck {
-        let started_at = Instant::now();
-        let mut payload_bytes = 0;
-        let result =
-            self.write(colors.as_slice(), Some(&delivery))
-                .await
-                .map(|write| match write {
-                    FrameWrite::Unchanged => DeviceWriteOutcome::SuppressedDuplicate,
-                    FrameWrite::Written {
-                        payload_bytes: bytes,
-                    } => {
-                        payload_bytes = bytes;
-                        DeviceWriteOutcome::Sent
-                    }
-                });
-        DeviceDeliveryAck::from_write_result(
-            delivery.id(),
-            payload_bytes,
-            started_at.elapsed(),
-            result,
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        self.protocol
+            .encode_frame_into(colors.as_slice(), &mut self.frame_commands);
+        if self.frame_commands.is_empty() {
+            return attempt.skip(SkipReason::Unchanged).into();
+        }
+        let written_bytes = self.protocol.written_frame_bytes();
+        let transmission = attempt.start();
+        let result = run_commands(
+            self.protocol.as_ref(),
+            self.transport.as_ref(),
+            self.frame_commands.as_slice(),
         )
+        .await;
+        self.protocol.frame_write_finished(result.is_ok());
+        match result {
+            Ok(()) => match written_bytes {
+                Some(bytes) => transmission.written_part(bytes).into(),
+                None => transmission.written().into(),
+            },
+            Err(error) => transmission
+                .failed(map_hal_transport_error(
+                    self.device_id,
+                    SMBUS_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    &error,
+                ))
+                .into(),
+        }
     }
 
     async fn finish(&mut self) -> Result<(), DeviceError> {
@@ -288,7 +245,7 @@ impl DeviceBackend for SmBusBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn connected_device_info(
@@ -369,18 +326,6 @@ async fn connect_pending_device(
             frame_commands: Vec::new(),
         },
     ))
-}
-
-/// What one frame write put on the bus.
-#[derive(Debug, Clone, Copy)]
-enum FrameWrite {
-    /// The protocol encoded nothing to send, so no transport I/O ran.
-    Unchanged,
-    /// The transport wrote the frame's commands.
-    Written {
-        /// Pixel bytes the commands carried.
-        payload_bytes: usize,
-    },
 }
 
 async fn run_init_sequence(

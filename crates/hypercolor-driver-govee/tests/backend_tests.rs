@@ -1,11 +1,9 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DiscoveredDevice, DiscoveryConnectBehavior,
+use hypercolor_driver_api::{DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_conformance::{
+    DeliveryLog, SessionRig, assert_session_contract, assert_unchanged, assert_written,
 };
-use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
 use hypercolor_driver_govee::lan::razer::encode_razer_mode_base64;
@@ -17,8 +15,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::UdpSocket;
 use tokio::time::{Duration, timeout};
-
-struct CountingDeliveryObserver(Arc<AtomicUsize>);
 
 fn adopt_lan_device(backend: &GoveeBackend, device: GoveeLanDevice, target: std::net::SocketAddr) {
     let info = build_device_info(&device);
@@ -53,12 +49,6 @@ fn adopt_cloud_device(backend: &GoveeBackend, device: V1Device) {
     backend
         .adopt_device(&build_cloud_discovered_device(device))
         .expect("Govee backend should adopt cloud discovery metadata");
-}
-
-impl DeviceDeliveryObserver for CountingDeliveryObserver {
-    fn transport_started(&self, _id: DeviceDeliveryId) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 #[tokio::test]
@@ -227,36 +217,19 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
     adopt_cloud_device(&backend, cloud_device);
     backend.connect(&device_id).await.expect("connect");
 
-    let colors = Arc::new(vec![[255, 0, 0], [0, 0, 255]]);
-    let starts = Arc::new(AtomicUsize::new(0));
-    let observer: Arc<dyn DeviceDeliveryObserver> =
-        Arc::new(CountingDeliveryObserver(Arc::clone(&starts)));
-    let first = backend
-        .deliver_colors_shared_observed(
-            &device_id,
-            DeviceDeliveryId {
-                queue_generation: 43,
-                sequence: 1,
-            },
-            Arc::clone(&colors),
-            Arc::clone(&observer),
-        )
+    let colors = vec![[255, 0, 0], [0, 0, 255]];
+    let log = Arc::new(DeliveryLog::default());
+    let _ = backend
+        .submit_frame(&device_id, log.frame(device_id, 1, colors.clone()))
         .await;
-    let duplicate = backend
-        .deliver_colors_shared_observed(
-            &device_id,
-            DeviceDeliveryId {
-                queue_generation: 43,
-                sequence: 2,
-            },
-            colors,
-            observer,
-        )
+    let _ = backend
+        .submit_frame(&device_id, log.frame(device_id, 2, colors))
         .await;
 
-    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(duplicate.status, DeviceDeliveryStatus::SuppressedDuplicate);
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    let receipts = log.settled(2).await;
+    assert_written(&receipts[0]);
+    assert_unchanged(&receipts[1]);
+    assert_eq!(log.started(), [1]);
     assert_eq!(requests.await.expect("server task should join").len(), 2);
 }
 
@@ -456,7 +429,7 @@ async fn retained_sink_goes_dark_when_the_device_disconnects() {
     assert!(recv_payload(&receiver).await.contains("\"turn\""));
     assert!(sink.is_closed());
     assert!(
-        sink.write_colors_shared(Arc::new(vec![[9, 9, 9]]))
+        sink.write_direct(id, Arc::new(vec![[9, 9, 9]]))
             .await
             .is_err()
     );

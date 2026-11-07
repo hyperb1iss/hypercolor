@@ -229,7 +229,7 @@ async fn retained_sink_does_not_keep_6454_bound() {
     let rebound = bind_6454().expect("disconnect releases 6454 even while a sink is retained");
     assert!(sink.is_closed());
     assert!(
-        sink.write_colors_shared_outcome(std::sync::Arc::new(vec![[1, 1, 1]]))
+        sink.write_direct(id, std::sync::Arc::new(vec![[1, 1, 1]]))
             .await
             .is_err()
     );
@@ -270,7 +270,7 @@ async fn concurrent_reconnects_leave_one_open_session_and_release_6454() {
     for sink in [&first_sink, &current_sink] {
         assert!(sink.is_closed());
         assert!(
-            sink.write_colors_shared_outcome(std::sync::Arc::new(vec![[2, 2, 2]]))
+            sink.write_direct(id, std::sync::Arc::new(vec![[2, 2, 2]]))
                 .await
                 .is_err()
         );

@@ -7,13 +7,15 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveredDevice,
-    DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation, DiscoveryRequest,
-    DriverConfigSource, DriverConfigView, DriverContext, DriverContextProvider,
-    DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions,
-    DriverTrackedDevice, InstallationId,
+    DeliveryResult, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryBatch,
+    DiscoveryConnectBehavior, DiscoveryObservation, DiscoveryRequest, DriverConfigSource,
+    DriverConfigView, DriverContext, DriverContextProvider, DriverCredentialStore,
+    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
+    InstallationId, IoStage, SkipReason, Submission,
 };
-use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
+use hypercolor_driver_conformance::{
+    DeliveryLog, OfferToSink, SessionRig, assert_session_contract, assert_written,
+};
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
     OpenRgbTeardownPolicy,
@@ -254,18 +256,11 @@ async fn endpoint_reconnects_with_bounded_backoff_after_socket_close() {
         .frame_sink(&device_id)
         .expect("connected controller should expose a frame sink");
     let ack = sink
-        .deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 3,
-                sequence: 1,
-            },
-            Arc::new(vec![[90, 80, 70], [60, 50, 40]]),
-        )
+        .offer_to_sink(device_id, Arc::new(vec![[90, 80, 70], [60, 50, 40]]))
         .await;
 
-    assert_eq!(
-        ack.status,
-        DeviceDeliveryStatus::Failed,
+    assert!(
+        ack.into_result().is_err(),
         "the dropped socket surfaces on the next frame"
     );
 
@@ -273,17 +268,11 @@ async fn endpoint_reconnects_with_bounded_backoff_after_socket_close() {
     for _ in 0..40 {
         let ack = tokio::time::timeout(
             Duration::from_secs(1),
-            sink.deliver_colors_shared(
-                DeviceDeliveryId {
-                    queue_generation: 3,
-                    sequence: 2,
-                },
-                Arc::new(vec![[11, 22, 33], [44, 55, 66]]),
-            ),
+            sink.offer_to_sink(device_id, Arc::new(vec![[11, 22, 33], [44, 55, 66]])),
         )
         .await
         .expect("frames during backoff must fail fast, not hang");
-        if ack.status == DeviceDeliveryStatus::Completed {
+        if matches!(ack.result(), DeliveryResult::Written { .. }) {
             recovered = true;
             break;
         }
@@ -621,18 +610,20 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");
 
-    frame_sink
-        .write_colors_shared(Arc::new(vec![[1, 2, 3], [4, 5, 6]]))
-        .await
-        .expect("sink should accept first queued frame");
-    frame_sink
-        .write_colors_shared(Arc::new(vec![[7, 8, 9], [10, 11, 12]]))
-        .await
-        .expect("sink should replace stale queued frame");
-    frame_sink
-        .write_colors_shared(Arc::new(vec![[13, 14, 15], [16, 17, 18]]))
-        .await
-        .expect("sink should accept latest queued frame");
+    // Posted together, so the newest replaces the others before the writer
+    // takes one.
+    let (first, second, third) = tokio::join!(
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 2, 3], [4, 5, 6]])),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[7, 8, 9], [10, 11, 12]])),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[13, 14, 15], [16, 17, 18]])),
+    );
+    for stale in [&first, &second] {
+        assert!(matches!(
+            stale.result(),
+            DeliveryResult::NotWritten(SkipReason::Superseded)
+        ));
+    }
+    assert_written(&third);
 
     let update = server.await.expect("server task should join");
     assert_eq!(update.header.device_index, 0);
@@ -740,19 +731,20 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     let frame_sink = backend
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");
-    let delivery_id = DeviceDeliveryId {
-        queue_generation: 11,
-        sequence: 29,
-    };
-    let delivery =
-        frame_sink.deliver_colors_shared(delivery_id, Arc::new(vec![[21, 22, 23], [24, 25, 26]]));
-    let ack = tokio::time::timeout(Duration::from_secs(1), delivery)
+    let log = Arc::new(DeliveryLog::default());
+    let delivery = frame_sink.submit(log.frame(device_id, 29, vec![[21, 22, 23], [24, 25, 26]]));
+    let submission = tokio::time::timeout(Duration::from_secs(1), delivery)
         .await
         .expect("delivery acknowledgement should arrive");
-    assert_eq!(ack.id, delivery_id);
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
-    assert!(ack.transport_started);
-    assert_eq!(ack.completed_payload_bytes, 6);
+    let Submission::Settled(receipt) = submission else {
+        panic!("the sink waits for the writer");
+    };
+    assert_eq!(receipt.id().sequence, 29);
+    assert!(matches!(
+        receipt.result(),
+        DeliveryResult::Written { bytes: 6, .. }
+    ));
+    assert_eq!(log.started(), [29]);
 
     let update = server.await.expect("server task should join");
     assert_eq!(update.header.device_index, 0);
@@ -810,7 +802,7 @@ async fn disconnect_completes_while_frame_sink_writers_race() {
             for frame_index in 0_u8..64 {
                 let color = writer_index.saturating_mul(64).saturating_add(frame_index);
                 let _ = frame_sink
-                    .write_colors_shared(Arc::new(vec![[color, 10, 20], [color, 30, 40]]))
+                    .write_direct(device_id, Arc::new(vec![[color, 10, 20], [color, 30, 40]]))
                     .await;
                 tokio::task::yield_now().await;
             }
@@ -876,21 +868,24 @@ async fn disconnect_restores_previous_openrgb_mode() {
         .await
         .expect("backend should restore previous mode on disconnect");
     let error = frame_sink
-        .write_colors_shared(Arc::new(vec![[20, 30, 40]; 2]))
+        .write_direct(device_id, Arc::new(vec![[20, 30, 40]; 2]))
         .await
         .expect_err("stale frame sink should stop after disconnect");
     assert!(error.to_string().contains("disconnected"));
-    let rejected_id = DeviceDeliveryId {
-        queue_generation: 4,
-        sequence: 8,
-    };
-    let rejected = frame_sink
-        .deliver_colors_shared(rejected_id, Arc::new(vec![[20, 30, 40]; 2]))
+    let log = Arc::new(DeliveryLog::default());
+    let _ = frame_sink
+        .submit(log.frame(device_id, 8, vec![[20, 30, 40]; 2]))
         .await;
-    assert_eq!(rejected.id, rejected_id);
-    assert_eq!(rejected.status, DeviceDeliveryStatus::Failed);
-    assert!(!rejected.transport_started);
-    assert_eq!(rejected.completed_payload_bytes, 0);
+    let rejected = log.settled(1).await.remove(0);
+    assert_eq!(rejected.id().sequence, 8);
+    assert!(matches!(
+        rejected.result(),
+        DeliveryResult::Failed {
+            stage: IoStage::Admission,
+            ..
+        }
+    ));
+    assert!(log.started().is_empty());
 
     let TeardownOutcome::Packet(restore) = server.await.expect("server task should join") else {
         panic!("restore teardown should write a packet");
@@ -1236,43 +1231,28 @@ async fn writer_paces_to_target_fps_and_drops_superseded_frames() {
 
     let first = tokio::time::timeout(
         Duration::from_secs(1),
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 5,
-                sequence: 1,
-            },
-            Arc::new(vec![[1, 1, 1], [1, 1, 1]]),
-        ),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 1, 1], [1, 1, 1]])),
     )
     .await
     .expect("first frame should be written immediately");
-    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    assert_written(&first);
     let first_done = tokio::time::Instant::now();
 
     let (superseded, latest) = tokio::join!(
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 5,
-                sequence: 2,
-            },
-            Arc::new(vec![[2, 2, 2], [2, 2, 2]]),
-        ),
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 5,
-                sequence: 3,
-            },
-            Arc::new(vec![[3, 3, 3], [3, 3, 3]]),
-        ),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[2, 2, 2], [2, 2, 2]])),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[3, 3, 3], [3, 3, 3]])),
     );
     let latest_done = tokio::time::Instant::now();
 
-    assert_eq!(superseded.status, DeviceDeliveryStatus::Failed);
     assert!(
-        !superseded.transport_started,
-        "the superseded frame must never reach the socket"
+        matches!(
+            superseded.result(),
+            DeliveryResult::NotWritten(SkipReason::Superseded)
+        ),
+        "the superseded frame must never reach the socket: {:?}",
+        superseded.result()
     );
-    assert_eq!(latest.status, DeviceDeliveryStatus::Completed);
+    assert_written(&latest);
     assert!(
         latest_done.duration_since(first_done) >= Duration::from_millis(40),
         "second write must wait for the 50 ms slot, got {:?}",
@@ -1343,6 +1323,7 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
             .await
             .expect("backend should connect controller");
     }
+    let (fast_id, slow_id) = (fast.info.id, slow.info.id);
     let fast_sink = backend
         .frame_sink(&fast.info.id)
         .expect("fast controller should expose a frame sink");
@@ -1356,14 +1337,18 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
     for millis in 0_u16..300 {
         if millis % 5 == 0 {
             let tick = u8::try_from(millis / 5).expect("fixture tick fits");
-            fast_sink
-                .write_colors_shared(Arc::new(vec![[tick, 0, 0], [tick, 0, 0]]))
-                .await
-                .expect("fast frame should queue");
-            slow_sink
-                .write_colors_shared(Arc::new(vec![[0, tick, 0], [0, tick, 0]]))
-                .await
-                .expect("slow frame should queue");
+            // A sink waits for its writer, which waits for this paused clock.
+            let frame = Arc::new(vec![[tick, 0, 0], [tick, 0, 0]]);
+            let sink = Arc::clone(&fast_sink);
+            drop(tokio::spawn(async move {
+                let _ = sink.write_direct(fast_id, frame).await;
+            }));
+            let frame = Arc::new(vec![[0, tick, 0], [0, tick, 0]]);
+            let sink = Arc::clone(&slow_sink);
+            drop(tokio::spawn(async move {
+                let _ = sink.write_direct(slow_id, frame).await;
+            }));
+            tokio::task::yield_now().await;
         }
         // Tokio rounds timer deadlines to milliseconds. Observe each 10 ms
         // fast slot after that rounding boundary, without changing either rate.
@@ -1809,29 +1794,18 @@ async fn write_path_pads_and_truncates_frames_to_controller_shape() {
         .frame_sink(&device_id)
         .expect("connected controller should expose frame sink");
 
-    let oversized = frame_sink.deliver_colors_shared(
-        DeviceDeliveryId {
-            queue_generation: 1,
-            sequence: 1,
-        },
-        Arc::new(vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
-    );
+    let oversized =
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]]));
     let ack = tokio::time::timeout(Duration::from_secs(1), oversized)
         .await
         .expect("oversized frame should be acknowledged");
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    assert_written(&ack);
 
-    let undersized = frame_sink.deliver_colors_shared(
-        DeviceDeliveryId {
-            queue_generation: 1,
-            sequence: 2,
-        },
-        Arc::new(vec![[9, 9, 9]]),
-    );
+    let undersized = frame_sink.offer_to_sink(device_id, Arc::new(vec![[9, 9, 9]]));
     let ack = tokio::time::timeout(Duration::from_secs(1), undersized)
         .await
         .expect("undersized frame should be acknowledged");
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    assert_written(&ack);
 
     let updates = server.await.expect("server task should join");
     assert_eq!(updates.len(), 2);
@@ -1889,21 +1863,14 @@ async fn device_list_update_with_new_shape_disables_output_until_rescan() {
         .expect("connected controller should expose frame sink");
     let ack = tokio::time::timeout(
         Duration::from_secs(2),
-        frame_sink.deliver_colors_shared(
-            DeviceDeliveryId {
-                queue_generation: 2,
-                sequence: 1,
-            },
-            Arc::new(vec![[1, 2, 3], [4, 5, 6]]),
-        ),
+        frame_sink.offer_to_sink(device_id, Arc::new(vec![[1, 2, 3], [4, 5, 6]])),
     )
     .await
     .expect("frame after shape change should be acknowledged");
 
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
     let error = ack
-        .error
-        .expect("failed ack should carry the shape-change error");
+        .into_result()
+        .expect_err("a failed frame should carry the shape-change error");
     assert!(
         error
             .to_string()

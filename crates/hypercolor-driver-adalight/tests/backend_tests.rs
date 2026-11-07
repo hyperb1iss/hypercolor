@@ -16,9 +16,11 @@ use hypercolor_driver_adalight::{
     output_policy_for, resolve_device,
 };
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource,
+    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DriverConfigSource,
 };
-use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
+use hypercolor_driver_conformance::{
+    OfferToBackend, SessionRig, assert_session_contract, assert_written,
+};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde_json::{Value, json};
@@ -186,12 +188,8 @@ async fn awa_frames_carry_order_white_and_trailer() {
         .await;
 
     let colors = [[200, 100, 50], [1, 2, 3]];
-    let outcome = rig
-        .backend
-        .write_colors_shared_outcome(&id, Arc::new(colors.to_vec()))
-        .await
-        .expect("write");
-    assert_eq!(outcome, DeviceWriteOutcome::Sent);
+    let outcome = rig.backend.offer(&id, Arc::new(colors.to_vec())).await;
+    assert_written(&outcome);
 
     let expected = expected_frame(Framing::Awa(AwaWhite::Host), ColorOrder::Grb, &colors, 2);
     assert_eq!(&expected[..6], b"AWa\x00\x01\x54");

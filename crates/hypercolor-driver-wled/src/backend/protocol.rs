@@ -17,8 +17,6 @@ use serde::Deserialize;
 use tokio::net::UdpSocket;
 
 use super::cache::WledDeviceInfo;
-use hypercolor_driver_api::DeviceWriteOutcome;
-use hypercolor_driver_support::FrameDelivery;
 use hypercolor_pixel_protocols::ddp::{
     DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DdpSequence, build_ddp_frame,
 };
@@ -158,48 +156,18 @@ impl WledDevice {
         ]
     }
 
-    /// Send a frame of raw pixel bytes to this device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the UDP send fails.
-    pub async fn send_frame(&mut self, pixel_data: &[u8]) -> Result<()> {
-        self.send_frame_outcome(pixel_data).await.map(|_| ())
-    }
-
-    /// Send a frame of raw pixel bytes and report whether it reached UDP.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the UDP send fails.
-    pub async fn send_frame_outcome(&mut self, pixel_data: &[u8]) -> Result<DeviceWriteOutcome> {
-        self.send_frame_outcome_observed(pixel_data, None).await
-    }
-
-    pub(super) async fn send_frame_outcome_observed(
-        &mut self,
-        pixel_data: &[u8],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome> {
-        let force_send = self
+    /// Whether `pixel_data` is close enough to the last frame sent to skip,
+    /// which never holds once a keepalive is due.
+    pub(super) fn shows_already(&self, pixel_data: &[u8]) -> bool {
+        let keepalive_due = self
             .last_frame_at
             .is_none_or(|last_frame_at| last_frame_at.elapsed() >= KEEPALIVE_INTERVAL);
 
-        if !force_send
+        !keepalive_due
             && self.last_sent_pixels.as_deref().is_some_and(|last| {
                 self.dedup_threshold > 0
                     && pixels_match_with_threshold(last, pixel_data, self.dedup_threshold)
             })
-        {
-            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
-        }
-
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
-        self.send_frame_forced(pixel_data)
-            .await
-            .map(|()| DeviceWriteOutcome::Sent)
     }
 
     /// Send a frame immediately, bypassing deduplication.

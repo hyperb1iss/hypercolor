@@ -12,10 +12,10 @@ use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice, Frame,
+    OutputPolicy, Submission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::WIZ_DRIVER_ID;
@@ -52,12 +52,9 @@ struct WizSession {
 impl DeviceSession for WizSession {
     type Facts = WizFacts;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let color = representative_color(colors);
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let color = representative_color(colors.as_slice());
         let color = if self.brightness == u8::MAX {
             color
         } else {
@@ -71,17 +68,14 @@ impl DeviceSession for WizSession {
         let signing = self.signing_key.as_ref().map(|key| (key, unix_seconds()));
         let datagram = encode_set_pilot(pilot, power_on, signing);
 
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
+        let transmission = attempt.start();
+        if let Err(error) = self.socket.send(datagram.as_bytes()).await {
+            let error =
+                DeviceError::write(self.device_id, format!("WiZ datagram send failed: {error}"));
+            return transmission.failed(error).into();
         }
-        self.socket
-            .send(datagram.as_bytes())
-            .await
-            .map_err(|error| {
-                DeviceError::write(self.device_id, format!("WiZ datagram send failed: {error}"))
-            })?;
         self.lit = Some(lit);
-        Ok(DeviceWriteOutcome::Sent)
+        transmission.written().into()
     }
 }
 
@@ -338,7 +332,7 @@ impl DeviceBackend for WizBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {

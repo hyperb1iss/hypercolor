@@ -13,10 +13,10 @@ use tracing::{debug, info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice, OutputPolicy,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice, Frame,
+    OutputPolicy, SkipReason, Submission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionSink, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionSink, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::TWINKLY_DRIVER_ID;
@@ -151,17 +151,20 @@ impl DeviceSession for TwinklySession {
 
     const CLEANUP: Duration = RESTORE_TIMEOUT.saturating_add(Duration::from_millis(100));
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
+    async fn submit(&mut self, frame: Frame) -> Submission {
+        let (colors, attempt) = frame.into_parts();
+        let colors = colors.as_slice();
         if let Some(reason) = self.shared.failure() {
-            return Err(DeviceError::write(self.device_id, reason));
+            return attempt
+                .reject(DeviceError::write(self.device_id, reason))
+                .into();
         }
         if self.shared.yielded.load(Ordering::Acquire) {
             // Another app holds the login: frames would carry a dead token.
-            return Ok(DeviceWriteOutcome::Declined);
+            // Nothing was sent, so this is the lane waiting, not the device
+            // refusing.
+            let retry_at = Instant::now() + RT_KEEPALIVE;
+            return attempt.skip(SkipReason::Deferred { retry_at }).into();
         }
 
         let led_count = self.encoder.led_count();
@@ -192,18 +195,17 @@ impl DeviceSession for TwinklySession {
             self.encoder.encode(&self.scaled)
         };
 
-        if let Some(delivery) = delivery {
-            delivery.transport_started();
-        }
+        let transmission = attempt.start();
         for datagram in datagrams {
-            self.socket.send(datagram).await.map_err(|error| {
-                DeviceError::write(
+            if let Err(error) = self.socket.send(datagram).await {
+                let error = DeviceError::write(
                     self.device_id,
                     format!("Twinkly datagram send failed: {error}"),
-                )
-            })?;
+                );
+                return transmission.failed(error).into();
+            }
         }
-        Ok(DeviceWriteOutcome::Sent)
+        transmission.written().into()
     }
 
     /// Put the device back in the mode it had before connect, bounded by
@@ -678,7 +680,7 @@ impl DeviceBackend for TwinklyBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {

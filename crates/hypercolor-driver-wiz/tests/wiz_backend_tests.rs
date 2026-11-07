@@ -96,8 +96,7 @@ async fn brightness_scales_the_dimming_level() -> TestResult {
     let id = discovered.info.id;
     backend.set_brightness(&id, 128).await?;
     let sink = backend.frame_sink(&id).ok_or("frame sink")?;
-    sink.write_colors_shared(Arc::new(vec![[255, 0, 0]]))
-        .await?;
+    sink.write_direct(id, Arc::new(vec![[255, 0, 0]])).await?;
     let pilots = fake.wait_for_pilots(1).await;
     assert_eq!(
         pilots[0].params,
@@ -172,7 +171,7 @@ async fn disconnect_closes_the_sink() -> TestResult {
     backend.disconnect(&id).await?;
     assert!(sink.is_closed());
     assert!(matches!(
-        sink.write_colors_shared(Arc::new(vec![[1, 2, 3]])).await,
+        sink.write_direct(id, Arc::new(vec![[1, 2, 3]])).await,
         Err(DeviceError::Disconnected { .. })
     ));
     assert!(matches!(

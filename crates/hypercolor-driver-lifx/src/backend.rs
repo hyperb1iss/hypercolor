@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -22,10 +22,10 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceFrameSink, DeviceLifecyclePolicy,
-    DeviceWriteOutcome, DiscoveredDevice, OutputPolicy,
+    Attempt, BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice,
+    Frame, MailboxFrame, OutputPolicy, SkipReason, Submission, Transmission,
 };
-use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
+use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::color::{HsbkEncoder, clamp_kelvin};
@@ -52,28 +52,13 @@ struct AdoptedDevice {
 /// One frame waiting in a device's latest-frame slot.
 struct FrameRequest {
     sequence: u64,
-    colors: Arc<Vec<[u8; 3]>>,
-    /// Host delivery, so the sender can report the moment transport starts.
-    delivery: Option<FrameDelivery>,
+    frame: MailboxFrame,
 }
 
 /// State the sender task and its callers share.
 #[derive(Debug, Default)]
 struct SenderShared {
     brightness: AtomicU8,
-    /// Last send failure. Invariant: set by a failed datagram send and
-    /// cleared only by a later successful one, so no submission reports
-    /// success while a failure is unresolved.
-    failure: StdMutex<Option<String>>,
-}
-
-impl SenderShared {
-    fn failure(&self) -> Option<String> {
-        self.failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
 }
 
 /// What a connect learned, plus the state shared with the sender.
@@ -87,100 +72,36 @@ struct LifxFacts {
 /// Mailbox to one light's sender task, which owns the socket.
 struct LifxSession {
     device_id: DeviceId,
-    shared: Arc<SenderShared>,
     frames: watch::Sender<Option<Arc<FrameRequest>>>,
-    settled: watch::Receiver<u64>,
-}
-
-impl LifxSession {
-    /// Hand a frame to the sender, replacing any frame not yet started.
-    ///
-    /// The sequence is derived from the slot inside its write lock, so the
-    /// slot's sequence only grows and every `settle` eventually wakes. The
-    /// frame is published even while a send failure is unresolved (so the
-    /// sender can retry and clear it), but the failure is returned.
-    fn submit(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-        delivery: Option<FrameDelivery>,
-    ) -> Result<u64, DeviceError> {
-        let mut sequence = 0;
-        self.frames.send_modify(|slot| {
-            sequence = slot.as_ref().map_or(0, |frame| frame.sequence) + 1;
-            *slot = Some(Arc::new(FrameRequest {
-                sequence,
-                colors,
-                delivery,
-            }));
-        });
-        if let Some(failure) = self.shared.failure() {
-            return Err(DeviceError::write(self.device_id, failure));
-        }
-        Ok(sequence)
-    }
-
-    /// Wait until `sequence`, or a newer frame that replaced it, is on the
-    /// wire.
-    async fn settle(&self, sequence: u64) -> Result<(), DeviceError> {
-        let mut settled = self.settled.clone();
-        settled
-            .wait_for(|done| *done >= sequence)
-            .await
-            .map_err(|_| DeviceError::Disconnected {
-                device: self.device_id.to_string(),
-            })?;
-        if let Some(failure) = self.shared.failure() {
-            return Err(DeviceError::write(self.device_id, failure));
-        }
-        Ok(())
-    }
 }
 
 impl DeviceSession for LifxSession {
     type Facts = LifxFacts;
 
-    async fn write_frame(
-        &mut self,
-        colors: &[[u8; 3]],
-        delivery: Option<&FrameDelivery>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let sequence = self.submit(Arc::new(colors.to_vec()), delivery.cloned())?;
-        self.settle(sequence).await?;
-        Ok(DeviceWriteOutcome::Sent)
-    }
-
-    /// Acknowledge the handoff to the device sender.
+    /// Hand a frame to the sender, replacing any frame not yet started.
     ///
-    /// `Sent` covers a frame "handed to an async transport worker", so a
-    /// successful handoff acks as completed, but with `transport_started`
-    /// false: the sender reports transport start itself when the frame's
-    /// first datagram goes out, and never for a frame replaced before that.
-    /// Invariant: while a send failure is unresolved, the handoff acks as a
-    /// transient failure instead, so the host cannot clear a retained
-    /// failure until a later datagram send has succeeded.
-    fn deliver_frame(
-        &mut self,
-        delivery: FrameDelivery,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> impl Future<Output = DeviceDeliveryAck> + Send {
-        let id = delivery.id();
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        std::future::ready(match self.submit(colors, Some(delivery)) {
-            Ok(_) => {
-                let mut ack = DeviceDeliveryAck::from_write_result(
-                    id,
-                    payload_bytes,
-                    started_at.elapsed(),
-                    Ok(DeviceWriteOutcome::Sent),
-                );
-                ack.transport_started = false;
-                ack
-            }
-            Err(error) => {
-                DeviceDeliveryAck::failed_transient(id, false, started_at.elapsed(), error)
-            }
-        })
+    /// The attempt goes with it: the sender owns the transport, so it settles
+    /// the attempt when the frame finishes or a newer frame replaces it, and
+    /// the host stays free to offer that newer frame meanwhile. The sequence
+    /// is derived from the slot inside its write lock, so it only grows.
+    fn submit(&mut self, frame: Frame) -> impl Future<Output = Submission> + Send {
+        if self.frames.is_closed() {
+            let (_, attempt) = frame.into_parts();
+            let error = DeviceError::Disconnected {
+                device: self.device_id.to_string(),
+            };
+            return std::future::ready(attempt.reject(error).into());
+        }
+        let frame = MailboxFrame::new(frame);
+        let mut replaced = None;
+        self.frames.send_modify(|slot| {
+            let sequence = slot.as_ref().map_or(0, |frame| frame.sequence) + 1;
+            replaced = slot.replace(Arc::new(FrameRequest { sequence, frame }));
+        });
+        if let Some(replaced) = replaced {
+            replaced.frame.supersede();
+        }
+        std::future::ready(Submission::Pending)
     }
 }
 
@@ -246,8 +167,35 @@ struct DeviceSender {
     duration_ms: u32,
     budget: MessageBudget,
     shared: Arc<SenderShared>,
-    settled: watch::Sender<u64>,
+    /// Whether the last send failed, so a failure and its recovery log once.
+    failing: bool,
     last_size_mismatch_warn_at: Option<Instant>,
+}
+
+/// How far the frame being sent has got.
+enum Progress {
+    Waiting(Attempt),
+    Sending(Transmission),
+}
+
+impl Progress {
+    fn started(self) -> Transmission {
+        match self {
+            Self::Waiting(attempt) => attempt.start(),
+            Self::Sending(transmission) => transmission,
+        }
+    }
+
+    fn superseded(self) {
+        match self {
+            Self::Waiting(attempt) => {
+                attempt.skip(SkipReason::Superseded);
+            }
+            Self::Sending(transmission) => {
+                transmission.superseded();
+            }
+        }
+    }
 }
 
 impl DeviceSender {
@@ -259,10 +207,7 @@ impl DeviceSender {
                 && request.sequence > last_settled
             {
                 match self.transmit(request, &mut frames).await {
-                    Some(sequence) => {
-                        last_settled = sequence;
-                        self.settled.send_replace(sequence);
-                    }
+                    Some(sequence) => last_settled = sequence,
                     None => return,
                 }
                 continue;
@@ -300,20 +245,22 @@ impl DeviceSender {
     }
 
     /// Encode `request` into the candidate encoder. Returns its cost.
-    fn prepare(&mut self, request: &FrameRequest) -> Option<usize> {
-        self.warn_on_size_mismatch(&request.colors);
+    fn prepare(&mut self, request: &FrameRequest) -> Result<usize, DeviceError> {
+        self.warn_on_size_mismatch(request.frame.colors());
         let converter = self.converter();
         let mut address = self.address;
-        match self
-            .candidate
-            .encode(&request.colors, &converter, self.duration_ms, &mut address)
-        {
-            Ok(count) => Some(count),
-            Err(error) => {
-                self.record_failure(format!("LIFX frame could not be encoded: {error}"));
-                None
-            }
-        }
+        self.candidate
+            .encode(
+                request.frame.colors(),
+                &converter,
+                self.duration_ms,
+                &mut address,
+            )
+            .map_err(|error| {
+                let failure = format!("LIFX frame could not be encoded: {error}");
+                self.record_failure(&failure);
+                DeviceError::write(self.device_id, failure)
+            })
     }
 
     /// Make the candidate the active frame, committing its sequence numbers.
@@ -323,27 +270,18 @@ impl DeviceSender {
         self.address.sequence = self.address.sequence.wrapping_add(count);
     }
 
-    fn record_failure(&self, failure: String) {
-        let mut slot = self
-            .shared
-            .failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if slot.is_none() {
+    fn record_failure(&mut self, failure: &str) {
+        if !self.failing {
             warn!(device_id = %self.device_id, error = %failure, "LIFX output failed");
         }
-        *slot = Some(failure);
+        self.failing = true;
     }
 
-    fn record_success(&self) {
-        let mut slot = self
-            .shared
-            .failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if slot.take().is_some() {
+    fn record_success(&mut self) {
+        if self.failing {
             info!(device_id = %self.device_id, "LIFX output recovered");
         }
+        self.failing = false;
     }
 
     /// Send the newest frame to completion. Returns the sequence of the
@@ -354,9 +292,15 @@ impl DeviceSender {
         frames: &mut watch::Receiver<Option<Arc<FrameRequest>>>,
     ) -> Option<u64> {
         let mut current = request;
-        if self.prepare(&current).is_none() {
+        // Nothing to claim means a newer frame already replaced this one.
+        let Some(attempt) = current.frame.claim() else {
+            return Some(current.sequence);
+        };
+        if let Err(error) = self.prepare(&current) {
+            attempt.reject_transient(error);
             return Some(current.sequence);
         }
+        let mut progress = Progress::Waiting(attempt);
         self.activate();
         let mut sent = 0_usize;
         let mut considered = current.sequence;
@@ -365,6 +309,7 @@ impl DeviceSender {
         loop {
             let total = self.active.datagram_count();
             if sent >= total {
+                progress.started().written();
                 return Some(current.sequence);
             }
 
@@ -377,14 +322,24 @@ impl DeviceSender {
                 && newer.sequence > considered
             {
                 considered = newer.sequence;
-                if let Some(cost) = self.prepare(&newer)
-                    && commitment.admits(cost)
-                {
-                    commitment.replaced(cost);
-                    self.activate();
-                    current = newer;
-                    sent = 0;
-                    continue;
+                match self.prepare(&newer) {
+                    Ok(cost) if commitment.admits(cost) => {
+                        if let Some(attempt) = newer.frame.claim() {
+                            commitment.replaced(cost);
+                            self.activate();
+                            progress.superseded();
+                            progress = Progress::Waiting(attempt);
+                            current = newer;
+                            sent = 0;
+                            continue;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        if let Some(attempt) = newer.frame.claim() {
+                            attempt.reject_transient(error);
+                        }
+                    }
                 }
             }
 
@@ -402,17 +357,17 @@ impl DeviceSender {
             }
 
             let Some(datagram) = self.active.datagram(sent) else {
+                progress.started().written();
                 return Some(current.sequence);
             };
-            if sent == 0
-                && let Some(delivery) = &current.delivery
-            {
-                delivery.transport_started();
-            }
+            let transmission = progress.started();
             if let Err(error) = self.socket.send(datagram).await {
-                self.record_failure(format!("LIFX datagram send failed: {error}"));
+                let failure = format!("LIFX datagram send failed: {error}");
+                self.record_failure(&failure);
+                transmission.failed_transient(DeviceError::write(self.device_id, failure));
                 return Some(current.sequence);
             }
+            progress = Progress::Sending(transmission);
             self.record_success();
             self.budget.record(Instant::now());
             sent += 1;
@@ -509,10 +464,8 @@ impl LifxOpener {
 
         let shared = Arc::new(SenderShared {
             brightness: AtomicU8::new(u8::MAX),
-            failure: StdMutex::new(None),
         });
         let (frames, frames_rx) = watch::channel(None);
-        let (settled_tx, settled) = watch::channel(0);
         let sender = DeviceSender {
             device_id,
             socket,
@@ -529,7 +482,7 @@ impl LifxOpener {
             duration_ms: u32::from(self.config.transition_ms),
             budget: MessageBudget::new(self.config.max_messages_per_second),
             shared: Arc::clone(&shared),
-            settled: settled_tx,
+            failing: false,
             last_size_mismatch_warn_at: None,
         };
         let mut session = Session::new(
@@ -538,14 +491,9 @@ impl LifxOpener {
                 profile,
                 info,
                 policy,
-                shared: Arc::clone(&shared),
-            },
-            LifxSession {
-                device_id,
                 shared,
-                frames,
-                settled,
             },
+            LifxSession { device_id, frames },
         );
         session.spawn(sender.run(frames_rx));
         Ok(session)
@@ -643,7 +591,7 @@ impl DeviceBackend for LifxBackend {
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.sessions.require(id)?.write(colors).await.map(|_| ())
+        self.sessions.require(id)?.write(colors).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {

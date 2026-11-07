@@ -6,12 +6,12 @@
 //! once a session is closed, a frame sink retained from it rejects, nothing
 //! reaches the device, and the session's transport is gone.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus, DeviceFrameSink,
+    DeliveryResult, DeviceBackend, DeviceDeliveryId, DeviceFrameSink, Frame, FrameObserver,
+    IoStage, Receipt, SkipReason,
 };
 use hypercolor_types::device::{DeviceError, DeviceId};
 use tokio::net::UdpSocket;
@@ -74,13 +74,171 @@ pub trait SessionRig: Send {
     }
 }
 
+/// What an observer saw of the attempts offered to one lane.
 #[derive(Default)]
-struct StartCounter(AtomicUsize);
+pub struct DeliveryLog {
+    started: Mutex<Vec<DeviceDeliveryId>>,
+    receipts: Mutex<Vec<Receipt>>,
+}
 
-impl DeviceDeliveryObserver for StartCounter {
-    fn transport_started(&self, _id: DeviceDeliveryId) {
-        self.0.fetch_add(1, Ordering::SeqCst);
+impl DeliveryLog {
+    /// A frame for `id` that reports to this log.
+    #[must_use]
+    pub fn frame(self: &Arc<Self>, id: DeviceId, sequence: u64, colors: Vec<[u8; 3]>) -> Frame {
+        Frame::new(
+            id,
+            DeviceDeliveryId {
+                queue_generation: 1,
+                sequence,
+            },
+            Arc::clone(self) as Arc<dyn FrameObserver>,
+            Instant::now(),
+            Arc::new(colors),
+        )
     }
+
+    /// Sequences whose transport started, in order.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the log's lock is poisoned.
+    #[must_use]
+    pub fn started(&self) -> Vec<u64> {
+        self.started
+            .lock()
+            .expect("start log")
+            .iter()
+            .map(|id| id.sequence)
+            .collect()
+    }
+
+    /// Receipts so far, in settling order.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the log's lock is poisoned.
+    #[must_use]
+    pub fn receipts(&self) -> Vec<Receipt> {
+        self.receipts.lock().expect("receipt log").clone()
+    }
+
+    /// Wait for `count` attempts to settle.
+    ///
+    /// # Panics
+    ///
+    /// Panics when they have not within [`TRAFFIC_WAIT`].
+    pub async fn settled(&self, count: usize) -> Vec<Receipt> {
+        let deadline = Instant::now() + TRAFFIC_WAIT;
+        loop {
+            let receipts = self.receipts();
+            if receipts.len() >= count {
+                return receipts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} of {count} attempts settled",
+                receipts.len()
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+impl FrameObserver for DeliveryLog {
+    fn transport_started(&self, id: DeviceDeliveryId) {
+        self.started.lock().expect("start log").push(id);
+    }
+
+    fn settled(&self, receipt: &Receipt) {
+        self.receipts
+            .lock()
+            .expect("receipt log")
+            .push(receipt.clone());
+    }
+}
+
+/// Offer one frame to a backend outside the host queue and wait for how it
+/// ended.
+#[async_trait::async_trait]
+pub trait OfferToBackend {
+    /// See the trait.
+    async fn offer(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Receipt;
+}
+
+#[async_trait::async_trait]
+impl<T: DeviceBackend + ?Sized> OfferToBackend for T {
+    async fn offer(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Receipt {
+        let mut frame = Frame::direct(*id, colors);
+        let receipt = frame.wait_for_receipt();
+        let _ = self.submit_frame(id, frame).await;
+        receipt.received().await.expect("an attempt always settles")
+    }
+}
+
+/// Offer one frame to a sink outside the host queue and wait for how it
+/// ended.
+#[async_trait::async_trait]
+pub trait OfferToSink {
+    /// See the trait.
+    async fn offer_to_sink(&self, id: DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Receipt;
+}
+
+#[async_trait::async_trait]
+impl<T: DeviceFrameSink + ?Sized> OfferToSink for T {
+    async fn offer_to_sink(&self, id: DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Receipt {
+        let mut frame = Frame::direct(id, colors);
+        let receipt = frame.wait_for_receipt();
+        let _ = self.submit(frame).await;
+        receipt.received().await.expect("an attempt always settles")
+    }
+}
+
+/// Assert the transport completed the write.
+///
+/// # Panics
+///
+/// Panics on any other result.
+#[track_caller]
+pub fn assert_written(receipt: &Receipt) {
+    assert!(
+        matches!(receipt.result(), DeliveryResult::Written { .. }),
+        "expected a written frame, got {:?}",
+        receipt.result()
+    );
+}
+
+/// Assert the lane skipped a frame the device already shows.
+///
+/// # Panics
+///
+/// Panics on any other result.
+#[track_caller]
+pub fn assert_unchanged(receipt: &Receipt) {
+    assert!(
+        matches!(
+            receipt.result(),
+            DeliveryResult::NotWritten(SkipReason::Unchanged)
+        ),
+        "expected an unchanged frame, got {:?}",
+        receipt.result()
+    );
+}
+
+/// Assert the lane could not take the frame yet.
+///
+/// # Panics
+///
+/// Panics on any other result.
+#[track_caller]
+pub fn assert_deferred(receipt: &Receipt) {
+    assert!(
+        matches!(
+            receipt.result(),
+            DeliveryResult::NotWritten(SkipReason::Deferred { .. })
+        ),
+        "expected a deferred frame, got {:?}",
+        receipt.result()
+    );
 }
 
 fn assert_disconnected(result: Result<(), DeviceError>, operation: &str) {
@@ -94,37 +252,32 @@ fn assert_disconnected(result: Result<(), DeviceError>, operation: &str) {
 async fn assert_sink_is_revoked(rig: &mut impl SessionRig, sink: &dyn DeviceFrameSink, shade: u8) {
     assert!(sink.is_closed(), "a closed session's sink must say so");
     rig.discard_traffic().await;
+    let id = rig.device_id();
 
     assert_disconnected(
-        sink.write_colors_shared(Arc::new(rig.frame(shade))).await,
+        sink.write_direct(id, Arc::new(rig.frame(shade))).await,
         "a retained sink must reject writes",
     );
-    let starts = Arc::new(StartCounter::default());
-    let ack = sink
-        .deliver_colors_shared_observed(
-            DeviceDeliveryId {
-                queue_generation: 1,
-                sequence: u64::from(shade),
-            },
-            Arc::new(rig.frame(shade.wrapping_add(1))),
-            Arc::clone(&starts) as Arc<dyn DeviceDeliveryObserver>,
-        )
-        .await;
-    assert_eq!(
-        ack.status,
-        DeviceDeliveryStatus::Failed,
-        "a retained sink must fail deliveries"
+    let log = Arc::new(DeliveryLog::default());
+    let frame = log.frame(id, u64::from(shade), rig.frame(shade.wrapping_add(1)));
+    let _ = sink.submit(frame).await;
+    let receipts = log.settled(1).await;
+    assert_eq!(receipts.len(), 1, "an attempt settles exactly once");
+    assert!(
+        matches!(
+            receipts[0].result(),
+            DeliveryResult::Failed {
+                stage: IoStage::Admission,
+                ..
+            }
+        ),
+        "a retained sink must refuse a frame before transport: {:?}",
+        receipts[0].result()
     );
     assert!(
-        !ack.transport_started,
-        "a rejected delivery must not claim transport"
-    );
-    assert_eq!(
-        starts.0.load(Ordering::SeqCst),
-        0,
+        log.started().is_empty(),
         "a rejected delivery must not report transport start"
     );
-
     assert!(
         !rig.saw_traffic(QUIET_WINDOW).await,
         "nothing may reach the device after its session closes"
@@ -146,7 +299,7 @@ async fn assert_stream_works(rig: &mut impl SessionRig, shade: u8, what: &str) {
         .frame_sink(&id)
         .unwrap_or_else(|| panic!("{what}: an open session has a sink"));
     rig.discard_traffic().await;
-    sink.write_colors_shared(Arc::new(rig.frame(shade)))
+    sink.write_direct(id, Arc::new(rig.frame(shade)))
         .await
         .unwrap_or_else(|error| panic!("{what}: write failed: {error}"));
     assert!(
@@ -168,10 +321,24 @@ pub async fn assert_session_contract<R: SessionRig>(rig: &mut R) {
     rig.backend().connect(&id).await.expect("connect");
     let first = rig.backend().frame_sink(&id).expect("connected sink");
     assert!(!first.is_closed(), "a fresh sink must be open");
-    first
-        .write_colors_shared(Arc::new(rig.frame(10)))
-        .await
-        .expect("write to an open session");
+    let colors = rig.frame(10);
+    let bytes = u64::try_from(colors.len() * 3).expect("frame size");
+    let log = Arc::new(DeliveryLog::default());
+    let _ = first.submit(log.frame(id, 1, colors)).await;
+    let receipts = log.settled(1).await;
+    assert_eq!(receipts.len(), 1, "an attempt settles exactly once");
+    assert_eq!(
+        log.started(),
+        [1],
+        "a written frame reports its transport start"
+    );
+    match receipts[0].result() {
+        DeliveryResult::Written { bytes: written, .. } => assert_eq!(
+            *written, bytes,
+            "written bytes count the frame, three per LED, excluding framing"
+        ),
+        other => panic!("a frame to an open session must be written: {other:?}"),
+    }
     assert!(
         rig.saw_traffic(TRAFFIC_WAIT).await,
         "an open session must reach the device"
@@ -194,7 +361,7 @@ pub async fn assert_session_contract<R: SessionRig>(rig: &mut R) {
     let second = rig.backend().frame_sink(&id).expect("reconnected sink");
     assert!(!second.is_closed(), "the new generation must be open");
     second
-        .write_colors_shared(Arc::new(rig.frame(40)))
+        .write_direct(id, Arc::new(rig.frame(40)))
         .await
         .expect("write to the new generation");
     assert!(

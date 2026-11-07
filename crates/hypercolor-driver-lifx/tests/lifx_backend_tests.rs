@@ -4,13 +4,13 @@
 mod support;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceDeliveryStatus, DiscoveredDevice,
+    DeliveryResult, DeviceBackend, DiscoveredDevice, IoStage, Receipt, SkipReason, Submission,
 };
+use hypercolor_driver_conformance::DeliveryLog;
 use hypercolor_driver_lifx::LifxBackend;
 use hypercolor_driver_lifx::backend::FrameCommitment;
 use hypercolor_driver_lifx::color::{Hsbk, HsbkEncoder};
@@ -233,11 +233,11 @@ async fn worst_case_legacy_frames_are_paced_message_by_message() -> TestResult {
     Ok(())
 }
 
-fn delivery(sequence: u64) -> DeviceDeliveryId {
-    DeviceDeliveryId {
-        queue_generation: 1,
-        sequence,
-    }
+fn is_superseded(receipt: &Receipt) -> bool {
+    matches!(
+        receipt.result(),
+        DeliveryResult::NotWritten(SkipReason::Superseded)
+    )
 }
 
 fn is_solid_run(run: &Received, zones: u8) -> bool {
@@ -255,22 +255,20 @@ async fn a_cheaper_newer_frame_replaces_a_paced_tail() -> TestResult {
     .await?;
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
     let sink = backend.frame_sink(&device_id).expect("frame sink");
-    let observer = Arc::new(RecordingObserver::default());
+    let observer = Arc::new(DeliveryLog::default());
 
     // Sixteen runs: five leave in the burst, the rest are paced 50 ms apart.
     let old = sink
-        .deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
+        .submit(observer.frame(device_id, 1, alternating(16)))
         .await;
-    assert_eq!(
-        old.status,
-        DeviceDeliveryStatus::Completed,
-        "handed to the sender"
+    assert!(
+        matches!(old, Submission::Pending),
+        "the sender owns the frame now"
     );
     tokio::time::sleep(Duration::from_millis(80)).await;
-    let newer = sink
-        .deliver_colors_shared_observed(delivery(2), Arc::new(vec![RED; 16]), observer.clone())
+    let _ = sink
+        .submit(observer.frame(device_id, 2, vec![RED; 16]))
         .await;
-    assert_eq!(newer.status, DeviceDeliveryStatus::Completed);
 
     let runs = loop {
         let runs = fake.wait_for(501, 1).await;
@@ -295,6 +293,16 @@ async fn a_cheaper_newer_frame_replaces_a_paced_tail() -> TestResult {
         runs[solid].payload[14], 1,
         "the newer frame carries the apply"
     );
+    let receipts = observer.settled(2).await;
+    assert!(
+        is_superseded(&receipts[0]),
+        "the abandoned frame says so: {:?}",
+        receipts[0].result()
+    );
+    assert!(matches!(
+        receipts[1].result(),
+        DeliveryResult::Written { .. }
+    ));
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         fake.received_of_type(501).len(),
@@ -315,11 +323,12 @@ async fn an_equally_costly_newer_frame_waits_so_frames_still_finish() -> TestRes
     .await?;
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
     let sink = backend.frame_sink(&device_id).expect("frame sink");
-    let observer = Arc::new(RecordingObserver::default());
+    let observer = Arc::new(DeliveryLog::default());
 
     let mut flipped = alternating(16);
     flipped.reverse();
-    sink.deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
+    let _ = sink
+        .submit(observer.frame(device_id, 1, alternating(16)))
         .await;
     for sequence in 2..12 {
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -328,7 +337,8 @@ async fn an_equally_costly_newer_frame_waits_so_frames_still_finish() -> TestRes
         } else {
             alternating(16)
         };
-        sink.deliver_colors_shared_observed(delivery(sequence), Arc::new(colors), observer.clone())
+        let _ = sink
+            .submit(observer.frame(device_id, sequence, colors))
             .await;
     }
 
@@ -353,12 +363,10 @@ async fn direct_writes_preempt_a_paced_tail_and_wait_for_their_frame() -> TestRe
     .await?;
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
     let sink = backend.frame_sink(&device_id).expect("frame sink");
-    sink.deliver_colors_shared_observed(
-        delivery(1),
-        Arc::new(alternating(16)),
-        Arc::new(RecordingObserver::default()),
-    )
-    .await;
+    let observer = Arc::new(DeliveryLog::default());
+    let _ = sink
+        .submit(observer.frame(device_id, 1, alternating(16)))
+        .await;
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     // An identify flash: a solid frame written directly. write_colors only
@@ -384,19 +392,6 @@ async fn direct_writes_preempt_a_paced_tail_and_wait_for_their_frame() -> TestRe
     Ok(())
 }
 
-#[derive(Default)]
-struct RecordingObserver {
-    started: Mutex<Vec<DeviceDeliveryId>>,
-}
-
-impl DeviceDeliveryObserver for RecordingObserver {
-    fn transport_started(&self, id: DeviceDeliveryId) {
-        self.started.lock().expect("observer lock").push(id);
-    }
-
-    fn delivery_terminal(&self, _ack: &DeviceDeliveryAck) {}
-}
-
 #[tokio::test]
 async fn frame_sink_reports_completed_deliveries() -> TestResult {
     let fake = FakeLifx::spawn(vec![FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb)]).await?;
@@ -408,26 +403,25 @@ async fn frame_sink_reports_completed_deliveries() -> TestResult {
     backend.connect(&device_id).await?;
 
     let sink = backend.frame_sink(&device_id).expect("frame sink");
-    let observer = Arc::new(RecordingObserver::default());
-    let id = DeviceDeliveryId {
-        queue_generation: 1,
-        sequence: 1,
-    };
-    let ack = sink
-        .deliver_colors_shared_observed(id, Arc::new(vec![RED]), observer.clone())
-        .await;
-    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    let observer = Arc::new(DeliveryLog::default());
+    let submission = sink.submit(observer.frame(device_id, 1, vec![RED])).await;
     assert!(
-        !ack.transport_started,
-        "the handoff itself is not transport"
+        matches!(submission, Submission::Pending),
+        "the sender owns the frame"
     );
     let frames = fake.wait_for(102, 1).await;
     assert_eq!(frames.len(), 1);
     assert_eq!(
-        observer.started.lock().expect("observer lock").as_slice(),
-        &[id],
+        observer.started(),
+        [1],
         "the sender reports transport start when the frame goes out"
     );
+    let receipts = observer.settled(1).await;
+    assert_eq!(receipts.len(), 1, "the frame settles once, written");
+    assert!(matches!(
+        receipts[0].result(),
+        DeliveryResult::Written { bytes: 3, .. }
+    ));
     Ok(())
 }
 
@@ -472,91 +466,84 @@ fn legacy_strip_fake() -> Vec<FakeDevice> {
     )]
 }
 
-// Gap: a handoff must not report transport start, or success while a send
-// failure is unresolved.
+// Gap: a handoff is not a delivery, so each frame settles with what really
+// happened to it.
 #[tokio::test(flavor = "current_thread")]
 #[cfg_attr(
     windows,
     ignore = "Windows does not surface ICMP refusal on a connected UDP send"
 )]
-async fn handoffs_never_report_success_over_an_unresolved_failure() -> TestResult {
+async fn every_frame_settles_with_what_really_happened() -> TestResult {
     let fake = FakeLifx::spawn(legacy_strip_fake()).await?;
     let addr = fake.addr();
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
     let sink = backend.frame_sink(&device_id).expect("frame sink");
-    let observer = Arc::new(RecordingObserver::default());
+    let observer = Arc::new(DeliveryLog::default());
 
     // Two frames handed over back to back: the first is replaced before it
     // reaches the wire, so only the second ever reports transport start.
     let first = sink
-        .deliver_colors_shared_observed(delivery(1), Arc::new(vec![RED; 16]), observer.clone())
+        .submit(observer.frame(device_id, 1, vec![RED; 16]))
         .await;
     let second = sink
-        .deliver_colors_shared_observed(delivery(2), Arc::new(vec![BLUE; 16]), observer.clone())
+        .submit(observer.frame(device_id, 2, vec![BLUE; 16]))
         .await;
-    for ack in [&first, &second] {
-        assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
-        assert!(!ack.transport_started, "a handoff is not transport");
-    }
+    assert!(matches!(first, Submission::Pending));
+    assert!(matches!(second, Submission::Pending));
+    let receipts = observer.settled(2).await;
+    assert!(is_superseded(&receipts[0]), "{:?}", receipts[0].result());
+    assert!(matches!(
+        receipts[1].result(),
+        DeliveryResult::Written { .. }
+    ));
+    assert_eq!(observer.started(), [2]);
     fake.wait_for(501, 1).await;
-    assert_eq!(
-        observer.started.lock().expect("observer lock").as_slice(),
-        &[delivery(2)]
-    );
 
     // With the light gone, the connected socket starts refusing sends.
     drop(fake);
     let mut sequence = 3;
     let failed = loop {
         tokio::time::sleep(Duration::from_millis(60)).await;
-        let ack = sink
-            .deliver_colors_shared_observed(
-                delivery(sequence),
-                Arc::new(vec![RED; 16]),
-                observer.clone(),
-            )
+        let seen = observer.receipts().len();
+        let _ = sink
+            .submit(observer.frame(device_id, sequence, vec![RED; 16]))
             .await;
         sequence += 1;
-        if ack.status == DeviceDeliveryStatus::Failed {
-            break ack;
+        let receipt = observer.settled(seen + 1).await.remove(seen);
+        if matches!(receipt.result(), DeliveryResult::Failed { .. }) {
+            break receipt;
         }
         assert!(sequence < 40, "the refused send never surfaced");
     };
-    assert!(failed.transient, "the session keeps running");
-
-    // No send has happened since, so the failure must still be reported.
-    let still = sink
-        .deliver_colors_shared_observed(
-            delivery(sequence),
-            Arc::new(vec![RED; 16]),
-            observer.clone(),
-        )
-        .await;
-    assert_eq!(
-        still.status,
-        DeviceDeliveryStatus::Failed,
-        "failures are sticky"
+    assert!(
+        matches!(
+            failed.result(),
+            DeliveryResult::Failed {
+                stage: IoStage::Transport,
+                transient: true,
+                ..
+            }
+        ),
+        "the session keeps running: {:?}",
+        failed.result()
     );
 
-    // The light comes back on the same port; a later successful send clears
-    // the failure and handoffs succeed again.
+    // The light comes back on the same port and frames go out again.
     let fake = FakeLifx::spawn_on(addr, legacy_strip_fake()).await?;
     let mut recovered = false;
     for attempt in 0..40 {
         tokio::time::sleep(Duration::from_millis(60)).await;
-        let ack = sink
-            .deliver_colors_shared_observed(
-                delivery(sequence + 1 + attempt),
-                Arc::new(vec![BLUE; 16]),
-                observer.clone(),
-            )
+        let seen = observer.receipts().len();
+        let _ = sink
+            .submit(observer.frame(device_id, sequence + attempt, vec![BLUE; 16]))
             .await;
-        if ack.status == DeviceDeliveryStatus::Completed {
+        let receipt = observer.settled(seen + 1).await.remove(seen);
+        if matches!(receipt.result(), DeliveryResult::Written { .. }) {
             recovered = true;
             break;
         }
     }
-    assert!(recovered, "a successful send clears the failure");
+    assert!(recovered, "frames are written again once sends succeed");
     assert!(!fake.wait_for(501, 1).await.is_empty());
     Ok(())
 }
@@ -608,27 +595,22 @@ async fn alternating_cheap_and_expensive_frames_still_apply() -> TestResult {
     let fake = FakeLifx::spawn(legacy_strip_fake()).await?;
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
     let sink = backend.frame_sink(&device_id).expect("frame sink");
-    let observer = Arc::new(RecordingObserver::default());
+    let observer = Arc::new(DeliveryLog::default());
 
-    sink.deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
+    let _ = sink
+        .submit(observer.frame(device_id, 1, alternating(16)))
         .await;
     let mut sequence = 2;
     for _ in 0..8 {
         // Let the sender spend its burst or send at its slot, then park.
         tokio::time::sleep(Duration::from_millis(55)).await;
-        sink.deliver_colors_shared_observed(
-            delivery(sequence),
-            Arc::new(vec![RED; 16]),
-            observer.clone(),
-        )
-        .await;
+        let _ = sink
+            .submit(observer.frame(device_id, sequence, vec![RED; 16]))
+            .await;
         tokio::time::sleep(Duration::from_millis(2)).await;
-        sink.deliver_colors_shared_observed(
-            delivery(sequence + 1),
-            Arc::new(alternating(16)),
-            observer.clone(),
-        )
-        .await;
+        let _ = sink
+            .submit(observer.frame(device_id, sequence + 1, alternating(16)))
+            .await;
         tokio::time::sleep(Duration::from_millis(2)).await;
         sequence += 2;
     }
@@ -686,23 +668,32 @@ async fn disconnect_stops_the_sender_before_returning() -> TestResult {
     let fake = FakeLifx::spawn(legacy_strip_fake()).await?;
     let (backend, device_id) = connect_legacy_strip(&fake).await?;
     let sink = backend.frame_sink(&device_id).expect("frame sink");
-    let observer = Arc::new(RecordingObserver::default());
+    let observer = Arc::new(DeliveryLog::default());
 
     // Keep a paced worst-case frame in flight, then disconnect mid-tail.
-    sink.deliver_colors_shared_observed(delivery(1), Arc::new(alternating(16)), observer.clone())
+    let _ = sink
+        .submit(observer.frame(device_id, 1, alternating(16)))
         .await;
     tokio::time::sleep(Duration::from_millis(120)).await;
     backend.disconnect(&device_id).await?;
 
     assert!(sink.is_closed(), "retained sinks see a closed lane");
-    let rejected = sink
-        .deliver_colors_shared_observed(delivery(2), Arc::new(vec![RED; 16]), observer.clone())
+    let _ = sink
+        .submit(observer.frame(device_id, 2, vec![RED; 16]))
         .await;
-    assert_eq!(rejected.status, DeviceDeliveryStatus::Failed);
-    assert!(matches!(
-        rejected.error,
-        Some(DeviceError::Disconnected { .. })
-    ));
+    let rejected = observer.settled(2).await.remove(1);
+    assert!(
+        matches!(
+            rejected.result(),
+            DeliveryResult::Failed {
+                stage: IoStage::Admission,
+                error: DeviceError::Disconnected { .. },
+                ..
+            }
+        ),
+        "{:?}",
+        rejected.result()
+    );
 
     // Whatever was sent before disconnect returned has landed well within
     // this pause; nothing may arrive after it.

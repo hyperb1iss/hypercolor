@@ -7,16 +7,17 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryCoverage,
+    DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryCoverage,
     DiscoveryObservation,
 };
-use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
+use hypercolor_driver_conformance::{
+    DeliveryLog, OfferToBackend, SessionRig, assert_session_contract, assert_unchanged,
+    assert_written,
+};
 use hypercolor_driver_support::MdnsScope;
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
@@ -42,14 +43,6 @@ const DDP_FLAG_PUSH: u8 = 0x01;
 const DDP_DTYPE_RGB8: u8 = 0x0B;
 const DDP_DTYPE_RGBW8: u8 = 0x1B;
 const DDP_ID_DEFAULT: u8 = 0x01;
-
-struct CountingDeliveryObserver(Arc<AtomicUsize>);
-
-impl DeviceDeliveryObserver for CountingDeliveryObserver {
-    fn transport_started(&self, _id: DeviceDeliveryId) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 // ── DDP Header Layout Tests ────────────────────────────────────────────
 
@@ -1367,7 +1360,7 @@ async fn closing_one_session_leaves_the_shared_socket_running() {
     backend.disconnect(&first).await.expect("disconnect");
 
     let sink = backend.frame_sink(&second).expect("second sink");
-    sink.write_colors_shared(Arc::new(vec![[1, 2, 3]; 4]))
+    sink.write_direct(second, Arc::new(vec![[1, 2, 3]; 4]))
         .await
         .expect("the other session keeps its socket");
     let mut packet = [0_u8; 64];
@@ -1399,7 +1392,7 @@ async fn repeated_connect_keeps_the_open_session() {
     backend.connect(&id).await.expect("repeated connect");
 
     assert!(!sink.is_closed());
-    sink.write_colors_shared(Arc::new(vec![[1, 2, 3]; 4]))
+    sink.write_direct(id, Arc::new(vec![[1, 2, 3]; 4]))
         .await
         .expect("the open session keeps streaming");
     let mut packet = [0_u8; 64];
@@ -1495,11 +1488,8 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
         .expect("connect should succeed");
 
     let colors = Arc::new(vec![[1, 2, 3], [4, 5, 6]]);
-    let first_outcome = backend
-        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
-        .await
-        .expect("first write should succeed");
-    assert_eq!(first_outcome, DeviceWriteOutcome::Sent);
+    let first_outcome = backend.offer(&device_id, Arc::clone(&colors)).await;
+    assert_written(&first_outcome);
 
     let mut packet = [0_u8; 64];
     let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
@@ -1509,11 +1499,8 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     assert_eq!(len, DDP_HEADER_SIZE + 12);
     assert_eq!(&packet[10..22], &[1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0]);
 
-    let duplicate_outcome = backend
-        .write_colors_shared_outcome(&device_id, Arc::clone(&colors))
-        .await
-        .expect("duplicate write should succeed");
-    assert_eq!(duplicate_outcome, DeviceWriteOutcome::SuppressedDuplicate);
+    let duplicate_outcome = backend.offer(&device_id, Arc::clone(&colors)).await;
+    assert_unchanged(&duplicate_outcome);
     let mut dedup_packet = [0_u8; 64];
     assert!(
         timeout(
@@ -1526,11 +1513,8 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     );
 
     tokio::time::sleep(Duration::from_millis(2_100)).await;
-    let keepalive_outcome = backend
-        .write_colors_shared_outcome(&device_id, colors)
-        .await
-        .expect("keepalive write should succeed");
-    assert_eq!(keepalive_outcome, DeviceWriteOutcome::Sent);
+    let keepalive_outcome = backend.offer(&device_id, colors).await;
+    assert_written(&keepalive_outcome);
     let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
         .await
         .expect("expected keepalive DDP frame")
@@ -1562,22 +1546,11 @@ async fn frame_sink_reports_wled_dedup_as_suppressed() {
     let sink = backend
         .frame_sink(&device_id)
         .expect("connected WLED device should expose a frame sink");
-    let colors = Arc::new(vec![[7, 8, 9], [1, 2, 3]]);
-    let starts = Arc::new(AtomicUsize::new(0));
-    let observer: Arc<dyn DeviceDeliveryObserver> =
-        Arc::new(CountingDeliveryObserver(Arc::clone(&starts)));
-    let first_ack = sink
-        .deliver_colors_shared_observed(
-            DeviceDeliveryId {
-                queue_generation: 41,
-                sequence: 1,
-            },
-            Arc::clone(&colors),
-            Arc::clone(&observer),
-        )
-        .await;
-    assert_eq!(first_ack.status, DeviceDeliveryStatus::Completed);
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    let colors = vec![[7, 8, 9], [1, 2, 3]];
+    let log = Arc::new(DeliveryLog::default());
+    let _ = sink.submit(log.frame(device_id, 1, colors.clone())).await;
+    assert_written(&log.settled(1).await[0]);
+    assert_eq!(log.started(), [1]);
 
     let mut packet = [0_u8; 64];
     timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
@@ -1585,21 +1558,9 @@ async fn frame_sink_reports_wled_dedup_as_suppressed() {
         .expect("expected first DDP frame")
         .expect("recv first DDP frame");
 
-    let duplicate_ack = sink
-        .deliver_colors_shared_observed(
-            DeviceDeliveryId {
-                queue_generation: 41,
-                sequence: 2,
-            },
-            colors,
-            observer,
-        )
-        .await;
-    assert_eq!(
-        duplicate_ack.status,
-        DeviceDeliveryStatus::SuppressedDuplicate
-    );
-    assert_eq!(starts.load(Ordering::Relaxed), 1);
+    let _ = sink.submit(log.frame(device_id, 2, colors)).await;
+    assert_unchanged(&log.settled(2).await[1]);
+    assert_eq!(log.started(), [1], "a skipped frame never starts transport");
 
     assert!(
         timeout(Duration::from_millis(150), receiver.recv_from(&mut packet))

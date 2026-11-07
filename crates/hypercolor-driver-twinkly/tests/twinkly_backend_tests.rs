@@ -5,8 +5,8 @@ mod support;
 
 use std::time::Duration;
 
-use hypercolor_driver_api::DeviceWriteOutcome;
 use hypercolor_driver_api::{DeviceBackend, DiscoveredDevice};
+use hypercolor_driver_conformance::{OfferToBackend, assert_deferred, assert_written};
 use hypercolor_driver_twinkly::config::TwinklyConfig;
 use hypercolor_driver_twinkly::{
     ContentionPolicy, TwinklyBackend, TwinklyEndpoint, TwinklyScanOptions, TwinklyScanner,
@@ -142,7 +142,7 @@ async fn frames_stream_as_version_three_fragments_with_the_token() -> TestResult
     }
 
     let sink = backend.frame_sink(&device_id).ok_or("frame sink")?;
-    sink.write_colors_shared(std::sync::Arc::new(vec![[1, 2, 3]; 400]))
+    sink.write_direct(device_id, std::sync::Arc::new(vec![[1, 2, 3]; 400]))
         .await?;
     let datagrams = fake.wait_for_datagrams(4).await;
     assert_eq!(&datagrams[2][12..15], &[1, 2, 3]);
@@ -229,11 +229,10 @@ async fn the_first_lost_login_yields_then_resumes_with_a_fresh_token() -> TestRe
     fake.revoke_token();
     assert!(wait_for_state(&backend, &device_id, "yielded_to_another_app").await);
     assert_eq!(logins(&fake), 1, "no re-login on the first loss");
-    assert_eq!(
-        backend
-            .write_colors_shared_outcome(&device_id, std::sync::Arc::new(vec![[9, 9, 9]; 3]))
-            .await?,
-        DeviceWriteOutcome::Declined
+    assert_deferred(
+        &backend
+            .offer(&device_id, std::sync::Arc::new(vec![[9, 9, 9]; 3]))
+            .await,
     );
 
     assert!(wait_for_state(&backend, &device_id, "streaming").await);
@@ -290,7 +289,7 @@ async fn disconnect_stops_streaming_and_upkeep() -> TestResult {
         Err(DeviceError::Disconnected { .. })
     ));
     assert!(matches!(
-        sink.write_colors_shared(std::sync::Arc::new(vec![[0, 0, 0]; 3]))
+        sink.write_direct(device_id, std::sync::Arc::new(vec![[0, 0, 0]; 3]))
             .await,
         Err(DeviceError::Disconnected { .. })
     ));
@@ -455,11 +454,10 @@ async fn a_resume_whose_mode_switch_fails_rearms_and_recovers() -> TestResult {
     assert!(wait_for_state(&backend, &device_id, "streaming").await);
     assert_eq!(logins(&fake), 3);
     assert_eq!(fake.mode(), "rt");
-    assert_eq!(
-        backend
-            .write_colors_shared_outcome(&device_id, std::sync::Arc::new(vec![[1, 2, 3]; 3]))
-            .await?,
-        DeviceWriteOutcome::Sent
+    assert_written(
+        &backend
+            .offer(&device_id, std::sync::Arc::new(vec![[1, 2, 3]; 3]))
+            .await,
     );
     Ok(())
 }
