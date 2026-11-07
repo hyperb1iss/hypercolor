@@ -12,9 +12,12 @@
 //! behind [`MacosBundleService`], which [`MacosBundleLaunchdService`]
 //! implements over [`MacosBundleAgent`], native in `native_agent`.
 //!
-//! The update agents run the launcher, which picks the release that may
-//! run, in `launcher`.
+//! A bundle reaches the platform through [`adopt_macos_bundle`], which turns
+//! what the DMG left in Applications into its first unit. The update agents
+//! run the launcher, which picks the release that may run, in `launcher`.
 
+mod adoption;
+mod agents;
 mod executor;
 mod installation;
 mod launchd;
@@ -32,6 +35,15 @@ mod swap;
 #[cfg(test)]
 mod tests;
 
+pub use adoption::{
+    MacosBundleAdoptionHost, MacosBundleAdoptionOutcome, MacosBundleAdoptionRequest,
+    adopt_macos_bundle, macos_bundle_in_applications,
+};
+pub use agents::{
+    MACOS_BUNDLE_DAEMON_LABEL, MACOS_BUNDLE_UPDATE_ACTIVATE_LABEL,
+    MACOS_BUNDLE_UPDATE_PREPARE_LABEL, MACOS_BUNDLE_UPDATE_RECOVER_LABEL,
+    MacosBundleAgentDefinition, macos_bundle_daemon_agent, macos_bundle_update_agents,
+};
 pub use executor::MacosBundleExecutor;
 pub use installation::{
     MACOS_BUNDLE_INSTALLATION_FILE, MACOS_BUNDLE_LAUNCHER_NAME, MacosBundleInstallation,

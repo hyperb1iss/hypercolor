@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::super::{InstallPlatformError, PlatformOwnerReceipt, PlatformTransactionRecord, UnitId};
+use super::super::{
+    InstallDisposition, InstallPlatformError, PlatformOwnerReceipt, PlatformTransactionRecord,
+    UnitId,
+};
 use super::model::{MacosBundleIdentity, MacosBundleRunningDaemon, MacosBundleUnit, error};
 use super::swap::SwapPlan;
 
@@ -48,6 +51,29 @@ impl BundleBinding {
 }
 
 impl BundleRecord {
+    /// The record of `unit` adopted where it stood: a first install's shape,
+    /// with nothing displaced and no daemon to go back to.
+    pub(super) fn adopted(installed_bundle: PathBuf, unit: &MacosBundleUnit) -> Self {
+        Self {
+            installed_bundle,
+            staging_name: unit.id().as_str().to_owned(),
+            candidate: BundleBinding::of(unit),
+            prior: None,
+            baseline: None,
+            autostart: true,
+        }
+    }
+
+    /// The binding a transaction that ended in `disposition` left installed,
+    /// once it has ended.
+    pub(super) fn outcome(&self, disposition: InstallDisposition) -> Option<&BundleBinding> {
+        match disposition {
+            InstallDisposition::Committed => Some(&self.candidate),
+            InstallDisposition::RolledBack => self.prior.as_ref(),
+            InstallDisposition::Forward | InstallDisposition::Rollback => None,
+        }
+    }
+
     pub(super) fn plan(&self) -> SwapPlan<'_> {
         SwapPlan {
             prior: self.prior.as_ref().map(|prior| &prior.identity),

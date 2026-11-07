@@ -2,7 +2,7 @@
 //! test can crash at.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -184,6 +184,10 @@ impl MacosBundleExecutor for FakeExecutor {
             cloned_files: 1,
             copied_files: 0,
         })
+    }
+
+    fn snapshot_installed(&mut self, _destination: &Path) -> Result<(), InstallPlatformError> {
+        Err(fail("the fake installation holds no bytes to copy"))
     }
 
     fn exchange(&mut self, name: &str) -> Result<(), InstallPlatformError> {

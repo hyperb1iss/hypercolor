@@ -488,6 +488,10 @@ impl<T: MacosBundleExecutor> MacosBundleExecutor for Crashing<T> {
         self.around("materialize", |inner| inner.materialize(source, unit, name))
     }
 
+    fn snapshot_installed(&mut self, destination: &Path) -> Result<(), InstallPlatformError> {
+        self.inner.snapshot_installed(destination)
+    }
+
     fn exchange(&mut self, name: &str) -> Result<(), InstallPlatformError> {
         self.around("exchange", |inner| inner.exchange(name))
     }

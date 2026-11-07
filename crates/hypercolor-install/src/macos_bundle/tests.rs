@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod adoption_tests;
 mod coordinator_tests;
 mod fakes;
 mod fixture;
