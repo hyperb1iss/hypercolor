@@ -92,7 +92,7 @@ impl MacosDirectLaunchdBootstrapExpectation {
         })
     }
 
-    /// Absolute diagnostic path where the retained property list was opened.
+    /// Absolute path launchd reads the property list from.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -129,7 +129,7 @@ impl MacosDirectLaunchdBootstrapExpectation {
     }
 }
 
-/// Retained exact property-list object submitted to launchctl without reopening its path.
+/// Retained exact property list, proven unchanged around its submission to launchd.
 #[derive(Debug)]
 pub struct MacosDirectLaunchdBootstrapSource {
     #[cfg_attr(
@@ -218,6 +218,7 @@ pub fn parse_direct_launchd_autostart_state(
 ///
 /// A missing label has launchd's default enabled state. Current symbolic values
 /// and the legacy boolean representation are accepted with identical meaning.
+/// Only the `disabled services` block is read, wherever launchctl indents it.
 pub fn parse_launchd_autostart_state(
     target_label: &str,
     stdout: &[u8],
@@ -230,7 +231,7 @@ pub fn parse_launchd_autostart_state(
     let stdout = std::str::from_utf8(stdout).map_err(|_| {
         MacosOwnerExecutionError::new("launchctl disabled-state output is not UTF-8")
     })?;
-    let mut lines = stdout.lines();
+    let mut lines = stdout.lines().skip_while(|line| line.trim().is_empty());
     if lines.next().map(str::trim) != Some("disabled services = {") {
         return Err(MacosOwnerExecutionError::new(
             "launchctl disabled-state output has the wrong header",
@@ -238,15 +239,10 @@ pub fn parse_launchd_autostart_state(
     }
     let mut target = None;
     let mut closed = false;
-    while let Some(line) = lines.next() {
+    for line in lines {
         let line = line.trim();
         if line == "}" {
             closed = true;
-            if lines.any(|remaining| !remaining.trim().is_empty()) {
-                return Err(MacosOwnerExecutionError::new(
-                    "launchctl disabled-state output has trailing content",
-                ));
-            }
             break;
         }
         if line.is_empty() {

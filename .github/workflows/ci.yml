@@ -535,6 +535,10 @@ jobs:
             --test process_lifetime_tests \
             --test app_control_tests
           ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked --no-tests=fail \
+            -p hypercolor-macos-owner --lib \
+            -E 'test(/bootstrap/)'
+          ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-macos-session \
             --test process_memory_tests

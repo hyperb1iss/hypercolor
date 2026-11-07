@@ -138,6 +138,13 @@ fn launchctl_parser_distinguishes_exact_missing_service_from_loaded_owner() {
         MacosDirectLaunchdState::Loaded { pid: 4_242 }
     );
 
+    let current_missing = format!("Bad request.\n{missing}");
+    assert_eq!(
+        parse_direct_launchd_service_state(UID, Some(113), b"", current_missing.as_bytes())
+            .expect("launchctl's current missing-service output should parse"),
+        MacosDirectLaunchdState::NotLoaded
+    );
+
     let wrong_missing = b"Could not find service \"other.service\" in domain for user gui: 501\n";
     assert!(parse_direct_launchd_service_state(UID, Some(113), b"", wrong_missing).is_err());
     assert!(

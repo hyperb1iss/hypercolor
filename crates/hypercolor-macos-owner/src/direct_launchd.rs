@@ -365,8 +365,9 @@ pub fn parse_direct_launchd_service_state(
 
 /// Parse bounded `launchctl print` output for one agent label.
 ///
-/// Status 113 is accepted only with launchctl's exact missing-service line.
-/// Successful output holds at most one process ID, and it must be positive.
+/// Status 113 is accepted only with launchctl's exact missing-service line,
+/// which current releases put after a `Bad request.` line. Successful output
+/// holds at most one process ID, and it must be positive.
 pub fn parse_launchd_job(
     label: &str,
     uid: u32,
@@ -389,12 +390,16 @@ pub fn parse_launchd_job(
             let expected =
                 format!("Could not find service \"{label}\" in domain for user gui: {uid}");
             let normalized_stderr = stderr.strip_suffix('\n').unwrap_or(stderr);
+            let normalized_stderr = normalized_stderr
+                .strip_prefix("Bad request.\n")
+                .unwrap_or(normalized_stderr);
             if stdout.is_empty() && normalized_stderr == expected {
                 return Ok(MacosLaunchdJob::NotLoaded);
             }
-            return Err(MacosOwnerExecutionError::new(
-                "launchctl returned status 113 without exact missing-service output",
-            ));
+            return Err(MacosOwnerExecutionError::new(format!(
+                "launchctl returned status 113 without exact missing-service output: {}",
+                stderr.trim()
+            )));
         }
         code => {
             return Err(MacosOwnerExecutionError::new(format!(
