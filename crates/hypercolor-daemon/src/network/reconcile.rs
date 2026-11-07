@@ -10,6 +10,7 @@
 //! up (one USB family among several) are disconnected the same way.
 
 use std::collections::{BTreeSet, HashSet};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hypercolor_driver_api::{DriverConfigView, DriverContextProvider, OutputBinding};
@@ -20,6 +21,12 @@ use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, info, warn};
 
 use crate::discovery::{DiscoveryRuntime, execute_lifecycle_actions, sync_registry_state};
+
+/// Longest one retired backend may hold up reconciliation, which every other
+/// driver's config change waits behind. Sessions are revoked immediately and
+/// connects are bounded, so only a wedged transport close gets anywhere near
+/// this.
+const RETIRE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What one reconciliation pass changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -195,9 +202,13 @@ pub async fn reconcile_driver_output_backends(
             .collect()
     };
     for (backend_id, backend) in retired {
-        if let Err(error) = backend.retire().await {
-            warn!(backend_id = %backend_id, error = %error,
-                "retiring an output backend reported a failed cleanup");
+        match tokio::time::timeout(RETIRE_TIMEOUT, backend.retire()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!(backend_id = %backend_id, error = %error,
+                "retiring an output backend reported a failed cleanup"),
+            // Its sessions are already revoked; only the wait is abandoned.
+            Err(_) => warn!(backend_id = %backend_id,
+                "an output backend is still closing a session; its replacement may find a port busy"),
         }
         info!(backend_id = %backend_id, "unregistered output backend for disabled driver");
         report.unregistered.push(backend_id);

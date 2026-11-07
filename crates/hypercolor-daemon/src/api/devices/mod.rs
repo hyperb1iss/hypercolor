@@ -1436,9 +1436,12 @@ async fn prepare_identify_backend(
             "temporarily connecting device for identify"
         );
         let runtime = crate::api::discovery_runtime(state);
+        let connect_timeout = direct_backend.lifecycle_policy(info).connect_timeout();
         let connect = async {
             crate::discovery::adopt_discovered_device(&runtime, device_id, &direct_backend).await?;
-            direct_backend.connect(device_id).await
+            direct_backend
+                .connect_with_timeout(device_id, connect_timeout)
+                .await
         };
         if let Err(error) = connect.await {
             warn!(
