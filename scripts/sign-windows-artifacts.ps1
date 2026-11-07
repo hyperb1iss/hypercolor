@@ -483,7 +483,8 @@ function Invoke-Sign {
 function Invoke-SignPayload {
     Assert-Windows
     $repoRoot = Split-Path -Parent $PSScriptRoot
-    $release = Join-Path $env:CARGO_TARGET_DIR 'release'
+    $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repoRoot 'target' }
+    $release = Join-Path $targetDir 'release'
     $stage = Join-Path $repoRoot 'target\bundle-stage'
     $programs = @($ReleasePrograms | ForEach-Object { Join-Path $release $_ }) +
         @($StagedPrograms | ForEach-Object { Join-Path $stage $_ })

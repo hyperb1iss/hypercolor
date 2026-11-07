@@ -48,6 +48,13 @@
 ; killed installer leaves a Hypercolor that still starts. Every name here is
 ; absent on a fresh install, and so is every effect.
 !macro HYPERCOLOR_RETIRE_FLAT_LAYOUT
+  ; A daemon service names a program that does not outlive this install, and
+  ; the app supervises the daemon from now on. It stays registered until here,
+  ; so an install that failed leaves it to come back at the next boot.
+  ${If} ${FileExists} "$PLUGINSDIR\hypercolor-daemon-services.ps1"
+    nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -Action Remove -InstallDir "$INSTDIR"'
+    Pop $0
+  ${EndIf}
   ; The app's autostart value named the flat program, which is about to go.
   ; Whoever elevated this may not be whoever sits at the desktop, so every
   ; signed-in account moves here. An account that is not signed in has no
@@ -187,13 +194,11 @@
 ; run on its own: as a Windows service registered by
 ; install-windows-service.ps1, or as a process the user started. Any of
 ; those still running from $INSTDIR would keep the transaction from starting.
-; installer-daemon-services.ps1 stops them, bounding every wait, and removes
-; those services, because the program each one names does not outlive this
-; install and the app supervises the daemon from now on.
+; installer-daemon-services.ps1 stops them, bounding every wait.
 !macro HYPERCOLOR_STOP_DAEMON
   DetailPrint "Stopping any Hypercolor daemon running from $INSTDIR"
   File "/oname=$PLUGINSDIR\hypercolor-daemon-services.ps1" "${HYPERCOLOR_HOOKS_DIR}\installer-daemon-services.ps1"
-  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -InstallDir "$INSTDIR"'
+  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -Action Stop -InstallDir "$INSTDIR"'
   Pop $0
 !macroend
 

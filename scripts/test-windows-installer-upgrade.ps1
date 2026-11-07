@@ -7,8 +7,8 @@
     Every run ends by uninstalling and checking nothing stayed behind, so
     runs follow each other on one machine.
 
-    -Mode Fresh installs -CandidateInstaller on a clean machine, then again
-    over itself.
+    -Mode Fresh checks -CandidateInstaller refuses a folder standard users
+    can change, then installs it on a clean machine and again over itself.
 
     -Mode Interactive and -Mode Silent install -PreviousInstaller, give it the
     state a real user would have (start with Windows on, the desktop shortcut
@@ -302,9 +302,15 @@ function Find-UpdateServiceFailures {
     if ($Service.StartMode -ne "Auto" -or -not $Service.DelayedAutoStart) {
         $failures += "the update service starts $($Service.StartMode), delayed $($Service.DelayedAutoStart)"
     }
-    $coordinator = (Get-Acl -LiteralPath (Join-Path $StateRoot "coordinator")).Access |
-        Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $User }
-    if (-not ($coordinator.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Modify)) {
+    $granted = 0
+    foreach ($ace in (Get-Acl -LiteralPath (Join-Path $StateRoot "coordinator")).Access) {
+        if ($ace.AccessControlType -eq "Allow" -and
+            $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $User) {
+            $granted = $granted -bor [int] $ace.FileSystemRights
+        }
+    }
+    $modify = [int] [Security.AccessControl.FileSystemRights]::Modify
+    if (($granted -band $modify) -ne $modify) {
         $failures += "the installing user may not write the coordinator's records"
     }
     foreach ($slot in "slot-a.exe", "slot-b.exe") {
@@ -512,11 +518,44 @@ function Invoke-KilledInstall {
     }
     Stop-Process -Id $installer.Id -Force -ErrorAction SilentlyContinue
     $installer.WaitForExit()
-    Get-Process -Name hypercolor -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.EndsWith("\unit\hypercolor.exe", [StringComparison]::OrdinalIgnoreCase) } |
-        Stop-Process -Force -ErrorAction SilentlyContinue
+    # The records are read next, so nothing may still be writing them.
+    $running = @(Get-Process -Name hypercolor -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.EndsWith("\unit\hypercolor.exe", [StringComparison]::OrdinalIgnoreCase) })
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    foreach ($process in $running) {
+        if (-not $process.WaitForExit($LauncherDeadlineMilliseconds)) {
+            throw "the program the installer ran outlived its kill $Moment"
+        }
+    }
     Write-Host "killed $Moment; journal $(Get-JournalDisposition), pointer moved $(Test-PointerMoved)"
     $true
+}
+
+# A folder a standard user could change never holds what the update service
+# runs, so the installer has to stop before it lays anything down there.
+function Assert-RefusesUnsafeFolder {
+    $folder = Join-Path $env:SystemDrive "hypercolor-unsafe-folder"
+    New-Item -ItemType Directory -Force -Path $folder | Out-Null
+    try {
+        & icacls.exe $folder /grant "*S-1-5-32-545:(OI)(CI)M" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "could not open $folder to Users"
+        }
+        Write-Host "Installing into a folder Users can change: $folder"
+        $refused = Start-Process -FilePath $CandidateInstaller -ArgumentList "/S", "/D=$folder" -PassThru
+        $refused.WaitForExit()
+        if ($SuccessCodes -contains $refused.ExitCode) {
+            throw "the installer accepted $folder, which Users can change"
+        }
+        if (Test-Path -LiteralPath (Join-Path $folder "units")) {
+            throw "the installer refused $folder only after writing to it"
+        }
+        if (Test-Path -LiteralPath $UninstallKey) {
+            throw "a refused install left an uninstall entry"
+        }
+    } finally {
+        Remove-Item -LiteralPath $folder -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # What the person at this machine clicks has to work after any kill.
@@ -626,6 +665,7 @@ switch ($Mode) {
         Install-Silently -Installer $CandidateInstaller -Description "the candidate, after being killed"
     }
     "Fresh" {
+        Assert-RefusesUnsafeFolder
         Install-Silently -Installer $CandidateInstaller -Description "the candidate"
         $failures = @(Find-Failures -InstallDir (Get-InstallDirectory))
         if ($failures) {
