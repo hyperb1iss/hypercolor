@@ -371,6 +371,12 @@ impl<S: DeviceSession> Session<S> {
         }
     }
 
+    /// Facts this session was opened with.
+    #[must_use]
+    pub fn facts(&self) -> Arc<S::Facts> {
+        Arc::clone(&self.facts)
+    }
+
     /// Sink over this session, for tasks that need to reach its state.
     #[must_use]
     pub fn sink(&self) -> SessionSink<S> {

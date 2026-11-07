@@ -3,21 +3,19 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
+    DiscoveredDevice, OutputCadence,
 };
+use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::WIZ_DRIVER_ID;
@@ -33,40 +31,58 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const REJECTION_WARN_INTERVAL: Duration = Duration::from_mins(1);
 const RECEIVE_BUFFER_LEN: usize = 2048;
 
-/// Connected device: immutable facts plus the shared stream state.
-struct SessionHandle {
+/// What a connect learned about the device.
+struct WizFacts {
     profile: WizDeviceProfile,
     info: DeviceInfo,
     cadence: OutputCadence,
-    stream: Mutex<StreamState>,
+}
+
+/// One open connection to a light.
+struct WizSession {
+    device_id: DeviceId,
+    profile: WizDeviceProfile,
+    signing_key: Option<SigningKey>,
+    /// Shared with the reply watcher, which close joins before this drops.
     socket: Arc<UdpSocket>,
-    closed: AtomicBool,
-    watcher: StdMutex<Option<JoinHandle<()>>>,
-}
-
-impl SessionHandle {
-    fn shut_down(&self) {
-        self.closed.store(true, Ordering::Release);
-        if let Some(task) = self
-            .watcher
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
-            task.abort();
-        }
-    }
-}
-
-impl Drop for SessionHandle {
-    fn drop(&mut self) {
-        self.shut_down();
-    }
-}
-
-struct StreamState {
     brightness: u8,
     lit: Option<bool>,
+}
+
+impl DeviceSession for WizSession {
+    type Facts = WizFacts;
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        let color = representative_color(colors);
+        let color = if self.brightness == u8::MAX {
+            color
+        } else {
+            let [r, g, b] = color;
+            let scaled = Rgb::new(r, g, b).scale(f32::from(self.brightness) / f32::from(u8::MAX));
+            [scaled.r, scaled.g, scaled.b]
+        };
+        let pilot = Pilot::from_color(color, self.profile.class, self.profile.min_dimming);
+        let lit = !matches!(pilot, Pilot::Off);
+        let power_on = lit && self.lit != Some(true);
+        let signing = self.signing_key.as_ref().map(|key| (key, unix_seconds()));
+        let datagram = encode_set_pilot(pilot, power_on, signing);
+
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
+        }
+        self.socket
+            .send(datagram.as_bytes())
+            .await
+            .map_err(|error| {
+                DeviceError::write(self.device_id, format!("WiZ datagram send failed: {error}"))
+            })?;
+        self.lit = Some(lit);
+        Ok(DeviceWriteOutcome::Sent)
+    }
 }
 
 /// WiZ backend implementing [`DeviceBackend`].
@@ -75,7 +91,7 @@ pub struct WizBackend {
     signing_key: Option<SigningKey>,
     request_policy: RequestPolicy,
     adopted: StdRwLock<HashMap<DeviceId, SocketAddr>>,
-    sessions: StdRwLock<HashMap<DeviceId, Arc<SessionHandle>>>,
+    sessions: SessionTable<WizSession>,
 }
 
 impl WizBackend {
@@ -92,7 +108,7 @@ impl WizBackend {
             signing_key,
             request_policy: RequestPolicy::default(),
             adopted: StdRwLock::new(HashMap::new()),
-            sessions: StdRwLock::new(HashMap::new()),
+            sessions: SessionTable::new(),
         }
     }
 
@@ -103,21 +119,7 @@ impl WizBackend {
         self
     }
 
-    fn session(&self, id: &DeviceId) -> Option<Arc<SessionHandle>> {
-        self.sessions
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    }
-
-    fn connected(&self, id: &DeviceId) -> Result<Arc<SessionHandle>, DeviceError> {
-        self.session(id).ok_or_else(|| DeviceError::Disconnected {
-            device: id.to_string(),
-        })
-    }
-
-    async fn open_session(&self, id: &DeviceId, addr: SocketAddr) -> Result<SessionHandle> {
+    async fn open_session(&self, id: &DeviceId, addr: SocketAddr) -> Result<Session<WizSession>> {
         let profile = probe_device(addr, self.request_policy).await?;
         if profile.device_id() != *id {
             bail!(
@@ -139,64 +141,24 @@ impl WizBackend {
         let max_fps = self.config.max_fps.max(1);
         let cadence = OutputCadence::from_fps(max_fps).with_max_frame_silence(STATE_REFRESH);
         let info = profile.device_info(max_fps);
-        let watcher = tokio::spawn(watch_replies(
+        let mut session = Session::new(
             *id,
-            Arc::clone(&socket),
-            self.signing_key.is_some(),
-        ));
-        Ok(SessionHandle {
-            profile,
-            info,
-            cadence,
-            stream: Mutex::new(StreamState {
+            WizFacts {
+                profile: profile.clone(),
+                info,
+                cadence,
+            },
+            WizSession {
+                device_id: *id,
+                profile,
+                signing_key: self.signing_key.clone(),
+                socket: Arc::clone(&socket),
                 brightness: u8::MAX,
                 lit: None,
-            }),
-            socket,
-            closed: AtomicBool::new(false),
-            watcher: StdMutex::new(Some(watcher)),
-        })
-    }
-
-    async fn write_session(
-        device_id: &DeviceId,
-        handle: &SessionHandle,
-        signing_key: Option<&SigningKey>,
-        colors: &[[u8; 3]],
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        if handle.closed.load(Ordering::Acquire) {
-            return Err(DeviceError::Disconnected {
-                device: device_id.to_string(),
-            });
-        }
-        let mut stream = handle.stream.lock().await;
-        let color = representative_color(colors);
-        let color = if stream.brightness == u8::MAX {
-            color
-        } else {
-            let [r, g, b] = color;
-            let scaled = Rgb::new(r, g, b).scale(f32::from(stream.brightness) / f32::from(u8::MAX));
-            [scaled.r, scaled.g, scaled.b]
-        };
-        let pilot = Pilot::from_color(color, handle.profile.class, handle.profile.min_dimming);
-        let lit = !matches!(pilot, Pilot::Off);
-        let power_on = lit && stream.lit != Some(true);
-        let signing = signing_key.map(|key| (key, unix_seconds()));
-        let datagram = encode_set_pilot(pilot, power_on, signing);
-
-        if let Some((id, observer)) = delivery {
-            observer.transport_started(id);
-        }
-        handle
-            .socket
-            .send(datagram.as_bytes())
-            .await
-            .map_err(|error| {
-                DeviceError::write(device_id, format!("WiZ datagram send failed: {error}"))
-            })?;
-        stream.lit = Some(lit);
-        Ok(DeviceWriteOutcome::Sent)
+            },
+        );
+        session.spawn(watch_replies(*id, socket, self.signing_key.is_some()));
+        Ok(session)
     }
 }
 
@@ -267,50 +229,6 @@ async fn watch_replies(device_id: DeviceId, socket: Arc<UdpSocket>, signed: bool
     }
 }
 
-struct WizFrameSink {
-    device_id: DeviceId,
-    handle: Arc<SessionHandle>,
-    signing_key: Option<SigningKey>,
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for WizFrameSink {
-    fn is_closed(&self) -> bool {
-        self.handle.closed.load(Ordering::Acquire)
-    }
-
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        WizBackend::write_session(
-            &self.device_id,
-            &self.handle,
-            self.signing_key.as_ref(),
-            colors.as_slice(),
-            None,
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let result = WizBackend::write_session(
-            &self.device_id,
-            &self.handle,
-            self.signing_key.as_ref(),
-            colors.as_slice(),
-            Some((id, observer.as_ref())),
-        )
-        .await;
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
-    }
-}
-
 #[async_trait::async_trait]
 impl DeviceBackend for WizBackend {
     fn info(&self) -> BackendInfo {
@@ -337,7 +255,7 @@ impl DeviceBackend for WizBackend {
         &self,
         id: &DeviceId,
     ) -> Result<Option<DeviceInfo>, DeviceError> {
-        Ok(self.session(id).map(|handle| handle.info.clone()))
+        Ok(self.sessions.facts(id).map(|facts| facts.info.clone()))
     }
 
     async fn connected_device_metadata(
@@ -345,8 +263,9 @@ impl DeviceBackend for WizBackend {
         id: &DeviceId,
     ) -> Result<Option<HashMap<String, String>>, DeviceError> {
         Ok(self
-            .session(id)
-            .map(|handle| profile_metadata(&handle.profile)))
+            .sessions
+            .facts(id)
+            .map(|facts| profile_metadata(&facts.profile)))
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
@@ -358,7 +277,8 @@ impl DeviceBackend for WizBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        if self.session(id).is_some() {
+        self.sessions.ensure_accepting(id)?;
+        if self.sessions.is_open(id) {
             return Ok(());
         }
         let addr = self
@@ -368,76 +288,52 @@ impl DeviceBackend for WizBackend {
             .get(id)
             .copied()
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        let handle = self
+        let session = self
             .open_session(id, addr)
             .await
             .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
+        let facts = session.facts();
+        self.sessions.install(session).await?;
         info!(
             device_id = %id,
             %addr,
-            mac = %handle.profile.mac,
-            class = %handle.profile.class,
+            mac = %facts.profile.mac,
+            class = %facts.profile.class,
             signed = self.signing_key.is_some(),
-            max_fps = handle.info.capabilities.max_fps,
+            max_fps = facts.info.capabilities.max_fps,
             "Connected to WiZ device"
         );
-        let previous = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(handle));
-        if let Some(previous) = previous {
-            previous.shut_down();
-        }
         Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let removed = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-        match removed {
-            Some(handle) => {
-                handle.shut_down();
-                info!(device_id = %id, mac = %handle.profile.mac, "Disconnected from WiZ device");
-                Ok(())
-            }
-            None => Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            }),
-        }
+        self.sessions.close(id).await?;
+        info!(device_id = %id, "Disconnected from WiZ device");
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.sessions.retire().await
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        let handle = self.connected(id)?;
-        Self::write_session(id, &handle, self.signing_key.as_ref(), colors, None)
-            .await
-            .map(|_| ())
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
-        let handle = self.connected(id)?;
-        handle.stream.lock().await.brightness = brightness;
+        self.sessions.require(id)?.admit().await?.brightness = brightness;
         Ok(())
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.session(id).map(|handle| handle.cadence.target_fps())
+        self.sessions.facts(id).map(|facts| facts.cadence.target_fps())
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.session(id).map(|handle| handle.cadence)
+        self.sessions.facts(id).map(|facts| facts.cadence)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.session(id).map(|handle| {
-            Arc::new(WizFrameSink {
-                device_id: *id,
-                handle,
-                signing_key: self.signing_key.clone(),
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.sessions.frame_sink(id)
     }
 }

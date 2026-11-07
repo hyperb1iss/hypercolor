@@ -54,6 +54,7 @@ pub struct PilotRecord {
 struct State {
     methods: Vec<String>,
     pilots: Vec<PilotRecord>,
+    last_pilot_source: Option<SocketAddr>,
 }
 
 /// A running fake device.
@@ -79,6 +80,9 @@ impl FakeWiz {
             let mut buffer = vec![0_u8; 2048];
             while let Ok((len, source)) = socket.recv_from(&mut buffer).await {
                 let raw = String::from_utf8_lossy(&buffer[..len]).to_string();
+                if raw.contains("setPilot") {
+                    task_state.lock().expect("state lock").last_pilot_source = Some(source);
+                }
                 if let Some(reply) = respond(&spec, &task_state, &raw) {
                     let _ = socket.send_to(reply.as_bytes(), source).await;
                 }
@@ -97,6 +101,11 @@ impl FakeWiz {
 
     pub fn pilots(&self) -> Vec<PilotRecord> {
         self.state.lock().expect("state lock").pilots.clone()
+    }
+
+    /// Address the newest `setPilot` came from.
+    pub fn last_pilot_source(&self) -> Option<SocketAddr> {
+        self.state.lock().expect("state lock").last_pilot_source
     }
 
     pub async fn wait_for_pilots(&self, count: usize) -> Vec<PilotRecord> {
