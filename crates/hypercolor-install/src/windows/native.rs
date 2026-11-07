@@ -34,10 +34,10 @@ use super::model::{
     WindowsUnitBinding, error,
 };
 use super::payload::bind_windows_unit;
-use crate::release_selection::{ReleaseRecords as _, decode_active_pointer};
 use super::store::InstallStore;
 use super::update_service::{ScmUpdateService, install_bootstrap, restore_bootstrap};
 use crate::local_http::{MAX_HTTP_RESPONSE_BYTES, http_get};
+use crate::release_selection::{ReleaseRecords as _, decode_active_pointer};
 use crate::{InstallPlatformError, LocalHttpResponse, UnitId, UnitRecord};
 
 /// `ERROR_SERVICE_DOES_NOT_EXIST`.

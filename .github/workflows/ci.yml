@@ -587,6 +587,21 @@ jobs:
             cargo nextest run --locked --no-tests=fail \
             -p hypercolor-install --lib \
             -E 'test(/^(macos_bundle|macho_cdhash)::/)'
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked --no-tests=fail \
+            -p hypercolor --test macos_launcher_role_tests
+
+      # Only the official release builds the adoption code, so this is where
+      # it compiles; no other lane sets the feature.
+      - name: Clippy the managed-update app
+        if: matrix.lane == 'capabilities'
+        run: |
+          mkdir -p crates/hypercolor-ui/dist
+          printf '<!doctype html><title>Hypercolor test fixture</title>' \
+            > crates/hypercolor-ui/dist/index.html
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked -p hypercolor-app --features managed-update --all-targets \
+            -- -D warnings
 
       - name: Build deployment and Sequoia availability fixtures
         if: matrix.lane == 'workspace'
