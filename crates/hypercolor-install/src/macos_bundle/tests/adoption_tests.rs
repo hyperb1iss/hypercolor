@@ -1020,6 +1020,10 @@ fn the_agents_run_the_installed_bundle_and_the_launcher_and_survive_any_path() {
             !text.contains("RunAtLoad"),
             "only a kickstart or the marker starts it"
         );
+        assert!(
+            text.contains("<key>RUST_LOG</key><string>warn,hypercolor=info</string>"),
+            "the CLI reads no other filter, so its log would stay empty: {text}"
+        );
     }
     for definition in [&prepare, &activate] {
         let text = std::str::from_utf8(&definition.bytes).expect("utf-8");

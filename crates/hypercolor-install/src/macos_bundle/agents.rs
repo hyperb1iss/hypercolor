@@ -24,6 +24,9 @@ const DAEMON_THROTTLE_SECONDS: u32 = 3;
 const RECOVER_THROTTLE_SECONDS: u32 = 10;
 /// `0o077`: what an activator writes is this user's alone.
 const UPDATE_UMASK: u32 = 63;
+/// What an activator logs: the CLI reads `RUST_LOG`, not the daemon's
+/// `HYPERCOLOR_LOG`, and its default says nothing about a transaction.
+const UPDATE_LOG_FILTER: &str = "warn,hypercolor=info";
 
 /// One agent's property list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,7 +143,8 @@ fn update_agent(
          <key>Umask</key><integer>{UPDATE_UMASK}</integer>\n\
          {output}\
          <key>EnvironmentVariables</key><dict>\
-         <key>HYPERCOLOR_LOG</key><string>info</string></dict>\n",
+         <key>RUST_LOG</key><string>{UPDATE_LOG_FILTER}</string>\
+         <key>NO_COLOR</key><string>1</string></dict>\n",
         program = program_arguments(&[
             text(launcher)?,
             "--role",
