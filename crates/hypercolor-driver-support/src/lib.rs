@@ -14,7 +14,12 @@ pub mod http;
 mod mdns;
 pub mod network;
 pub mod pairing;
+mod session;
 
 pub use configured::{ConfiguredDevice, ConfiguredDevices, ResolveDevices};
 pub use credentials::CredentialStore;
 pub use mdns::{MdnsBrowser, MdnsScope, MdnsService};
+pub use session::{
+    Admitted, DEFAULT_CLEANUP, DEFAULT_SETTLE, DeviceSession, FrameDelivery, Session, SessionSink,
+    SessionTable,
+};

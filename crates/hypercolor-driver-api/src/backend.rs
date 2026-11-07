@@ -619,6 +619,15 @@ pub trait DeviceBackend: Send + Sync {
     /// Returns an error if the disconnect operation fails.
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError>;
 
+    /// Close every session on this backend and refuse new ones, for good.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if protocol cleanup failed for a session.
+    async fn retire(&self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
     /// Push LED color data to a connected device.
     ///
     /// # Errors

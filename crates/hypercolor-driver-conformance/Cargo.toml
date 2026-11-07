@@ -1,0 +1,19 @@
+[package]
+name = "hypercolor-driver-conformance"
+description = "Contract tests every Hypercolor driver runs against its own emulator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-driver-api = { workspace = true }
+hypercolor-types = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }

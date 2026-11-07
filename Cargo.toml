@@ -179,6 +179,7 @@ hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop
 hypercolor-windows-telemetry = { path = "crates/hypercolor-windows-telemetry", version = "0.9.0" }
 hypercolor-driver-adalight = { path = "crates/hypercolor-driver-adalight", version = "0.9.0" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api", version = "0.9.0" }
+hypercolor-driver-conformance = { path = "crates/hypercolor-driver-conformance" }
 hypercolor-driver-support = { path = "crates/hypercolor-driver-support", version = "0.9.0" }
 hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", version = "0.9.0", default-features = false }
 hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue", version = "0.9.0" }
