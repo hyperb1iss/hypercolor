@@ -90,7 +90,7 @@ const fn bool_true() -> bool {
 pub struct HueBackend {
     config: HueConfig,
     credential_store: Arc<CredentialStore>,
-    discovered: StdRwLock<HashMap<DeviceId, HueDiscoveredBridge>>,
+    discovered: Arc<StdRwLock<HashMap<DeviceId, HueDiscoveredBridge>>>,
     sessions: SessionTable<HueSession>,
 }
 
@@ -183,16 +183,168 @@ impl HueBackend {
         Self {
             config,
             credential_store,
-            discovered: StdRwLock::new(HashMap::new()),
+            discovered: Arc::new(StdRwLock::new(HashMap::new())),
             sessions: SessionTable::new(),
+        }
+    }
+
+    fn opener(&self) -> HueOpener {
+        HueOpener {
+            config: self.config.clone(),
+            credential_store: Arc::clone(&self.credential_store),
+            discovered: Arc::clone(&self.discovered),
         }
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "Hue backend lifecycle bundles discovery enrichment, streaming bootstrap, and frame mapping"
-)]
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct HueOpener {
+    config: HueConfig,
+    credential_store: Arc<CredentialStore>,
+    discovered: Arc<StdRwLock<HashMap<DeviceId, HueDiscoveredBridge>>>,
+}
+
+impl HueOpener {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the Hue connect walks credentials, bridge state, entertainment setup, and the stream in one sequence"
+    )]
+    async fn open_session(
+        &self,
+        id: &DeviceId,
+        discovered: HueDiscoveredBridge,
+    ) -> std::result::Result<Session<HueSession>, DeviceError> {
+        let (api_key, client_key) =
+            load_bridge_credentials(&self.credential_store, &discovered.bridge_id, discovered.ip)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Hue bridge {} at {} requires pairing credentials",
+                        discovered.info.name, discovered.ip
+                    )
+                })
+                .map_err(|error| DeviceError::connection(id, error))?;
+
+        let client = HueBridgeClient::authenticated_with_port(
+            discovered.ip,
+            discovered.api_port,
+            api_key.clone(),
+        );
+        let bridge_identity = client.bridge_identity().await.unwrap_or(HueBridgeIdentity {
+            bridge_id: discovered.bridge_id.clone(),
+            name: discovered.info.name.clone(),
+            model_id: discovered.info.model.clone().unwrap_or_default(),
+            sw_version: discovered.info.firmware_version.clone().unwrap_or_default(),
+        });
+        let lights = client
+            .lights()
+            .await
+            .context("failed to fetch Hue bridge lights")
+            .map_err(|error| DeviceError::connection(id, error))?;
+        let configs = client
+            .entertainment_configs()
+            .await
+            .context("failed to fetch Hue entertainment configurations")
+            .map_err(|error| DeviceError::connection(id, error))?;
+        let entertainment_config = choose_entertainment_config(
+            self.config.entertainment_config.as_deref(),
+            configs.as_slice(),
+        )
+        .or(discovered.entertainment_config.clone())
+        .with_context(|| {
+            format!(
+                "Hue bridge {} does not expose a compatible entertainment configuration",
+                discovered.info.name
+            )
+        })
+        .map_err(|error| DeviceError::connection(id, error))?;
+
+        client
+            .start_streaming(&entertainment_config.id)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to activate Hue entertainment config {} on {}",
+                    entertainment_config.name, discovered.info.name
+                )
+            })
+            .map_err(|error| DeviceError::connection(id, error))?;
+
+        let stream = match HueStreamSession::connect(
+            discovered.ip,
+            &api_key,
+            &client_key,
+            &entertainment_config.id,
+            entertainment_config.channels.clone(),
+        )
+        .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = client.stop_streaming(&entertainment_config.id).await;
+                let error = error.context(format!(
+                    "failed to establish Hue entertainment stream for {}",
+                    discovered.info.name
+                ));
+                return Err(DeviceError::connection(id, error));
+            }
+        };
+
+        let info = build_device_info(
+            &bridge_identity.bridge_id,
+            &bridge_identity.name,
+            Some(bridge_identity.model_id.as_str()),
+            Some(bridge_identity.sw_version.as_str()),
+            Some(&entertainment_config),
+            lights.as_slice(),
+        );
+        let channel_gamuts =
+            resolve_channel_gamuts(entertainment_config.channels.as_slice(), lights.as_slice());
+
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                *id,
+                HueDiscoveredBridge {
+                    bridge_id: bridge_identity.bridge_id.clone(),
+                    ip: discovered.ip,
+                    api_port: discovered.api_port,
+                    info: info.clone(),
+                    entertainment_config: Some(entertainment_config.clone()),
+                    lights,
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata,
+                },
+            );
+
+        info!(
+            device_id = %id,
+            bridge_id = %bridge_identity.bridge_id,
+            ip = %discovered.ip,
+            channels = entertainment_config.channels.len(),
+            "Connected to Hue bridge"
+        );
+        Ok(Session::new(
+            *id,
+            (),
+            HueSession {
+                device_id: *id,
+                bridge_id: bridge_identity.bridge_id.clone(),
+                client,
+                stream,
+                entertainment_config,
+                channel_gamuts,
+                info,
+                brightness: u8::MAX,
+                use_cie_xy: self.config.use_cie_xy,
+                last_size_mismatch_warn_at: None,
+            },
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for HueBackend {
     fn info(&self) -> BackendInfo {
@@ -307,152 +459,22 @@ impl DeviceBackend for HueBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-
-        let discovered = self
-            .discovered
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(discovered) = discovered else {
-            return Err(DeviceError::NotAdopted { device_id: *id });
-        };
-
-        let (api_key, client_key) =
-            load_bridge_credentials(&self.credential_store, &discovered.bridge_id, discovered.ip)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Hue bridge {} at {} requires pairing credentials",
-                        discovered.info.name, discovered.ip
-                    )
-                })
-                .map_err(|error| DeviceError::connection(id, error))?;
-
-        let client = HueBridgeClient::authenticated_with_port(
-            discovered.ip,
-            discovered.api_port,
-            api_key.clone(),
-        );
-        let bridge_identity = client.bridge_identity().await.unwrap_or(HueBridgeIdentity {
-            bridge_id: discovered.bridge_id.clone(),
-            name: discovered.info.name.clone(),
-            model_id: discovered.info.model.clone().unwrap_or_default(),
-            sw_version: discovered.info.firmware_version.clone().unwrap_or_default(),
-        });
-        let lights = client
-            .lights()
-            .await
-            .context("failed to fetch Hue bridge lights")
-            .map_err(|error| DeviceError::connection(id, error))?;
-        let configs = client
-            .entertainment_configs()
-            .await
-            .context("failed to fetch Hue entertainment configurations")
-            .map_err(|error| DeviceError::connection(id, error))?;
-        let entertainment_config = choose_entertainment_config(
-            self.config.entertainment_config.as_deref(),
-            configs.as_slice(),
-        )
-        .or(discovered.entertainment_config.clone())
-        .with_context(|| {
-            format!(
-                "Hue bridge {} does not expose a compatible entertainment configuration",
-                discovered.info.name
-            )
-        })
-        .map_err(|error| DeviceError::connection(id, error))?;
-
-        client
-            .start_streaming(&entertainment_config.id)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to activate Hue entertainment config {} on {}",
-                    entertainment_config.name, discovered.info.name
-                )
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let discovered = self
+                    .discovered
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .cloned();
+                let opener = self.opener();
+                async move {
+                    let discovered = discovered.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    opener.open_session(&id, discovered).await
+                }
             })
-            .map_err(|error| DeviceError::connection(id, error))?;
-
-        let stream = match HueStreamSession::connect(
-            discovered.ip,
-            &api_key,
-            &client_key,
-            &entertainment_config.id,
-            entertainment_config.channels.clone(),
-        )
-        .await
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                let _ = client.stop_streaming(&entertainment_config.id).await;
-                let error = error.context(format!(
-                    "failed to establish Hue entertainment stream for {}",
-                    discovered.info.name
-                ));
-                return Err(DeviceError::connection(id, error));
-            }
-        };
-
-        let info = build_device_info(
-            &bridge_identity.bridge_id,
-            &bridge_identity.name,
-            Some(bridge_identity.model_id.as_str()),
-            Some(bridge_identity.sw_version.as_str()),
-            Some(&entertainment_config),
-            lights.as_slice(),
-        );
-        let channel_gamuts =
-            resolve_channel_gamuts(entertainment_config.channels.as_slice(), lights.as_slice());
-
-        self.discovered
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                *id,
-                HueDiscoveredBridge {
-                    bridge_id: bridge_identity.bridge_id.clone(),
-                    ip: discovered.ip,
-                    api_port: discovered.api_port,
-                    info: info.clone(),
-                    entertainment_config: Some(entertainment_config.clone()),
-                    lights,
-                    connect_behavior: discovered.connect_behavior,
-                    metadata: discovered.metadata,
-                },
-            );
-
-        let channels = entertainment_config.channels.len();
-        ticket
-            .install(Session::new(
-                *id,
-                (),
-                HueSession {
-                    device_id: *id,
-                    bridge_id: bridge_identity.bridge_id.clone(),
-                    client,
-                    stream,
-                    entertainment_config,
-                    channel_gamuts,
-                    info,
-                    brightness: u8::MAX,
-                    use_cie_xy: self.config.use_cie_xy,
-                    last_size_mismatch_warn_at: None,
-                },
-            ))
-            .await?;
-
-        info!(
-            device_id = %id,
-            bridge_id = %bridge_identity.bridge_id,
-            ip = %discovered.ip,
-            channels,
-            "Connected to Hue bridge"
-        );
-        Ok(())
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {

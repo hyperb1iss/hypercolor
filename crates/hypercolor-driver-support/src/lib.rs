@@ -20,6 +20,6 @@ pub use configured::{ConfiguredDevice, ConfiguredDevices, ResolveDevices};
 pub use credentials::CredentialStore;
 pub use mdns::{MdnsBrowser, MdnsScope, MdnsService};
 pub use session::{
-    Admitted, DEFAULT_CLEANUP, DEFAULT_RELEASE, DEFAULT_SETTLE, DeviceSession, FrameDelivery,
-    OpenTicket, Session, SessionSink, SessionTable,
+    Admitted, DEFAULT_CLEANUP, DEFAULT_OPEN, DEFAULT_RELEASE, DEFAULT_SETTLE, DeviceSession,
+    FrameDelivery, Session, SessionSink, SessionTable,
 };

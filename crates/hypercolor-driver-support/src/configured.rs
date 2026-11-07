@@ -23,6 +23,16 @@ pub struct ConfiguredDevices<P> {
     resolve: ResolveDevices<P>,
 }
 
+impl<P> Clone for ConfiguredDevices<P> {
+    fn clone(&self) -> Self {
+        Self {
+            driver_id: self.driver_id,
+            config: Arc::clone(&self.config),
+            resolve: self.resolve,
+        }
+    }
+}
+
 /// One device resolved from one reading of the live config.
 pub struct ConfiguredDevice<P> {
     plan: Arc<P>,

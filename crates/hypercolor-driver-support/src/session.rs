@@ -4,11 +4,11 @@
 //! state machine per device:
 //!
 //! ```text
-//!             begin_open                install
+//!               open                   opened
 //! (nothing) -------------> Opening ----------------> Open
 //!     ^                       |                        |
-//!     |  connect failed       |  retired while         |  close, retire,
-//!     +-----------------------+  opening               |  moved device
+//!     |  open failed          |  retired, or nobody    |  close, retire,
+//!     +-----------------------+  waiting any more      |  moved device
 //!     ^                       v                        v
 //!     +------------------- Closing <-------------------+
 //!        cleanup finished
@@ -19,7 +19,13 @@
 //! Device state outside any one connection (a controller registration keyed
 //! by device id, entertainment mode on a bridge, realtime mode on a strip)
 //! therefore never sees two generations: a new connection starts after the
-//! old one's cleanup, and concurrent connects of one device share one open.
+//! old one's cleanup.
+//!
+//! The table owns every open. An open runs as its own task and connects only
+//! wait for it, so concurrent connects of one device share one open and one
+//! result, and a connect that gives up leaves any native work the open is
+//! doing in the table's hands. An open that finishes with nobody waiting ends
+//! closed, so a connect that timed out leaves nothing running.
 //!
 //! Each [`Session`] is the sole owner of its protocol state and tasks. A
 //! [`SessionSink`] refers to the session's slot, not to the state, so holding
@@ -39,11 +45,13 @@
 //! that gives up early never leaves a half-closed session behind. An error
 //! means one of those steps failed or has not finished, and a generation that
 //! has not finished stays Closing, so a reconnect or a retirement waits for
-//! it instead of racing a transport that is still in use.
+//! it instead of racing a transport that is still in use. Every wait for a
+//! close is bounded by what the session was allowed, so a wedged transport
+//! holds its own device and never a caller.
 //!
 //! Retiring a table closes everything in it, refuses every later connect, and
-//! waits for every Opening and Closing generation, so a connect still in
-//! flight ends up closed instead of published.
+//! waits for every Opening and Closing generation, so an open still in flight
+//! ends up closed instead of published.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -57,9 +65,13 @@ use hypercolor_driver_api::{
     DeviceWriteOutcome,
 };
 use hypercolor_types::device::{DeviceError, DeviceId};
-use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
+
+/// Default [`DeviceSession::OPEN`], past every connect timeout a driver asks
+/// the host for.
+pub const DEFAULT_OPEN: Duration = Duration::from_secs(30);
 
 /// Default [`DeviceSession::SETTLE`].
 pub const DEFAULT_SETTLE: Duration = Duration::from_millis(500);
@@ -104,6 +116,14 @@ pub trait DeviceSession: Send + 'static {
     /// Facts fixed for the life of the session, readable without waiting
     /// for its I/O.
     type Facts: Send + Sync + 'static;
+
+    /// How long an open may run before the table drops it.
+    ///
+    /// Connects stop waiting on their own timeouts, but the open carries on,
+    /// so this has to outlast them. An open that awaits blocking native work
+    /// sets [`Duration::MAX`]: dropping that wait would detach the work, so
+    /// the open ends when the work does.
+    const OPEN: Duration = DEFAULT_OPEN;
 
     /// How long admitted I/O may keep running once the session is revoked
     /// before close cancels it.
@@ -543,28 +563,41 @@ async fn finish_close<S: DeviceSession>(
     result
 }
 
-/// Wait for a close, reporting a timeout when it runs past everything the
-/// session was allowed. The close keeps running and the device stays Closing.
-async fn await_close<S: DeviceSession>(
-    mut close: JoinHandle<Result<(), DeviceError>>,
-) -> Result<(), DeviceError> {
-    let budget = S::SETTLE
+/// Everything a close is allowed before a caller stops waiting for it. The
+/// close keeps running and the device stays Closing.
+fn close_budget<S: DeviceSession>() -> Duration {
+    S::SETTLE
         .saturating_add(S::SETTLE)
         .saturating_add(CANCEL_GRACE)
         .saturating_add(S::CLEANUP)
-        .saturating_add(S::RELEASE);
-    match tokio::time::timeout(budget, &mut close).await {
-        Ok(joined) => {
-            joined.unwrap_or_else(|error| Err(DeviceError::protocol("device session", error)))
-        }
-        Err(_) => Err(DeviceError::Timeout { after: budget }),
+        .saturating_add(S::RELEASE)
+}
+
+/// Wait for a close task.
+async fn join_close(close: JoinHandle<Result<(), DeviceError>>) -> Result<(), DeviceError> {
+    close
+        .await
+        .unwrap_or_else(|error| Err(DeviceError::protocol("device session", error)))
+}
+
+/// How an open ended, once it has. Every connect waiting on it gets a copy.
+type OpenOutcome = Option<Result<(), DeviceError>>;
+
+/// Wait for an open and share its result.
+async fn wait_for_open(mut outcome: watch::Receiver<OpenOutcome>) -> Result<(), DeviceError> {
+    match outcome.wait_for(Option::is_some).await {
+        Ok(outcome) => outcome.clone().expect("wait_for saw an outcome"),
+        Err(_) => Err(DeviceError::protocol(
+            "device session",
+            "an open ended without a result",
+        )),
     }
 }
 
 /// Where one device stands in its table.
 enum Generation<S: DeviceSession> {
-    /// A connect holds the [`OpenTicket`].
-    Opening,
+    /// An open task is running. Connects subscribe to learn how it ends.
+    Opening(Arc<watch::Sender<OpenOutcome>>),
     /// The session is live.
     Open(Session<S>),
     /// A close task is running.
@@ -603,65 +636,75 @@ impl<S: DeviceSession> TableState<S> {
         }
         match std::mem::replace(generation, Generation::Closing) {
             Generation::Open(session) => Some(session),
-            Generation::Opening | Generation::Closing => None,
+            Generation::Opening(_) | Generation::Closing => None,
         }
     }
 }
 
-/// The right to open one device.
-///
-/// While this exists the device is Opening: nobody else opens it, and a close
-/// or a retirement waits to see how the connect ends. Dropping it gives the
-/// right back, so a connect that fails or gets cancelled needs no cleanup
-/// here.
-#[must_use = "dropping a ticket gives up the open"]
-pub struct OpenTicket<S: DeviceSession> {
+/// Keeps a device Opening for exactly as long as its open task lives.
+struct OpeningEntry<S: DeviceSession> {
     shared: Arc<TableShared<S>>,
     device_id: DeviceId,
+    outcome: Arc<watch::Sender<OpenOutcome>>,
     held: bool,
 }
 
-impl<S: DeviceSession> OpenTicket<S> {
-    /// Publish the session this ticket was for.
+impl<S: DeviceSession> OpeningEntry<S> {
+    /// Publish what the open produced, unless it no longer belongs.
     ///
-    /// # Errors
-    ///
-    /// Returns [`DeviceError::ConnectionFailed`] when the table was retired
-    /// in the meantime. The session is closed through its normal cleanup,
-    /// so nothing it opened survives the refusal.
-    pub async fn install(mut self, session: Session<S>) -> Result<(), DeviceError> {
-        debug_assert_eq!(session.device_id, self.device_id);
+    /// A retired table refuses the session, and one nobody is waiting for is
+    /// nobody's: the connect behind it gave up, so nothing would ever use or
+    /// close it. Either way it closes through normal cleanup, so nothing it
+    /// opened survives. The checks and the publication share one lock, so a
+    /// retirement or a connect joining this open lands on one side of them.
+    async fn settle(mut self, opened: Result<Session<S>, DeviceError>) -> Result<(), DeviceError> {
+        let session = opened?;
         let device_id = self.device_id;
-        self.held = false;
         let refused = {
             let mut state = self.shared.write();
+            self.held = false;
             if state.retired {
                 state.devices.insert(device_id, Generation::Closing);
-                Some(session)
+                Some((session, retired(device_id)))
+            } else if self.outcome.receiver_count() == 0 {
+                state.devices.insert(device_id, Generation::Closing);
+                Some((session, abandoned(device_id)))
             } else {
                 state.devices.insert(device_id, Generation::Open(session));
                 None
             }
         };
         self.shared.changed.notify_waiters();
-        let Some(session) = refused else {
+        let Some((session, refusal)) = refused else {
             return Ok(());
         };
-        let close = session.begin_close(Arc::clone(&self.shared));
-        if let Err(error) = await_close::<S>(close).await {
+        if let Err(error) = join_close(session.begin_close(Arc::clone(&self.shared))).await {
             debug!(%device_id, %error, "cleanup of a refused session failed");
         }
-        Err(retired(device_id))
+        Err(refusal)
     }
 }
 
-impl<S: DeviceSession> Drop for OpenTicket<S> {
+impl<S: DeviceSession> Drop for OpeningEntry<S> {
     fn drop(&mut self) {
         if self.held {
             self.shared.write().devices.remove(&self.device_id);
             self.shared.changed.notify_waiters();
         }
     }
+}
+
+/// Run one open to its end, whoever is still waiting for it.
+async fn run_open<S: DeviceSession>(
+    opening: OpeningEntry<S>,
+    open: impl Future<Output = Result<Session<S>, DeviceError>>,
+) {
+    let outcome = Arc::clone(&opening.outcome);
+    let opened = tokio::time::timeout(S::OPEN, open)
+        .await
+        .unwrap_or(Err(DeviceError::Timeout { after: S::OPEN }));
+    let result = opening.settle(opened).await;
+    outcome.send_replace(Some(result));
 }
 
 /// Every session of one backend.
@@ -732,89 +775,152 @@ impl<S: DeviceSession> SessionTable<S> {
             .map(|sink| Arc::new(sink) as Arc<dyn DeviceFrameSink>)
     }
 
-    /// Claim the right to open `id`, or `None` when it is already open.
+    /// Open `id` unless it is open already.
     ///
-    /// A connect already in flight for `id` is joined, and a close in flight
-    /// is waited out, so this returns with the device in a settled state.
+    /// `open` builds the future that does the work, and runs only when this
+    /// call starts an open. The future runs on a task the table owns, so it
+    /// outlives this call: dropping this call stops the wait, never the open.
+    /// A connect that arrives during an open shares its result, and one that
+    /// arrives during a close waits it out.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::ConnectionFailed`] once the table is retired.
-    pub async fn begin_open(&self, id: &DeviceId) -> Result<Option<OpenTicket<S>>, DeviceError> {
-        self.open_unless(id, |_| true).await
+    /// Returns what the open returned, [`DeviceError::ConnectionFailed`] once
+    /// the table is retired, and [`DeviceError::Timeout`] when a close in the
+    /// way runs past its budget.
+    pub async fn open<F, Fut>(&self, id: &DeviceId, open: F) -> Result<(), DeviceError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Session<S>, DeviceError>> + Send + 'static,
+    {
+        self.open_unless(id, |_| true, open).await
     }
 
-    /// Like [`Self::begin_open`], for a device whose target can move: an open
-    /// session `keep` turns down is closed, cleanup included, before the
-    /// ticket is issued.
+    /// Like [`Self::open`], for a device whose target can move: an open
+    /// session `keep` turns down is closed, cleanup included, before the new
+    /// open starts.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::ConnectionFailed`] once the table is retired.
-    pub async fn open_unless(
+    /// As [`Self::open`].
+    pub async fn open_unless<F, Fut>(
         &self,
         id: &DeviceId,
         keep: impl Fn(&S::Facts) -> bool,
-    ) -> Result<Option<OpenTicket<S>>, DeviceError> {
+        open: F,
+    ) -> Result<(), DeviceError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Session<S>, DeviceError>> + Send + 'static,
+    {
+        enum Step<S: DeviceSession> {
+            Start(
+                Arc<watch::Sender<OpenOutcome>>,
+                watch::Receiver<OpenOutcome>,
+            ),
+            Join(watch::Receiver<OpenOutcome>),
+            CloseMoved(Session<S>),
+            WaitForClose,
+        }
+
+        let budget = close_budget::<S>();
+        let mut close_seen_at = None;
+        let mut open = Some(open);
         loop {
             // Created before reading the table: `notify_waiters` reaches a
             // `Notified` from the moment it exists, so no change can slip
             // between the read and the wait.
             let changed = self.shared.changed.notified();
-            let moved = {
+            let step = {
                 let mut state = self.shared.write();
                 if state.retired {
                     return Err(retired(*id));
                 }
                 match state.devices.get(id) {
                     None => {
-                        state.devices.insert(*id, Generation::Opening);
-                        return Ok(Some(OpenTicket {
-                            shared: Arc::clone(&self.shared),
-                            device_id: *id,
-                            held: true,
-                        }));
+                        let (outcome, waiting) = watch::channel(None);
+                        let outcome = Arc::new(outcome);
+                        state
+                            .devices
+                            .insert(*id, Generation::Opening(Arc::clone(&outcome)));
+                        Step::Start(outcome, waiting)
                     }
-                    Some(Generation::Open(session)) if keep(&session.facts) => return Ok(None),
-                    Some(Generation::Open(_)) => state.begin_closing(*id),
-                    Some(Generation::Opening | Generation::Closing) => None,
+                    Some(Generation::Open(session)) if keep(&session.facts) => return Ok(()),
+                    Some(Generation::Open(_)) => match state.begin_closing(*id) {
+                        Some(session) => Step::CloseMoved(session),
+                        None => Step::WaitForClose,
+                    },
+                    Some(Generation::Opening(outcome)) => Step::Join(outcome.subscribe()),
+                    Some(Generation::Closing) => Step::WaitForClose,
                 }
             };
-            if let Some(session) = moved {
-                let close = session.begin_close(Arc::clone(&self.shared));
-                if let Err(error) = await_close::<S>(close).await {
-                    debug!(device_id = %id, %error, "closing a moved session failed");
+            match step {
+                Step::Start(outcome, waiting) => {
+                    let opening = OpeningEntry {
+                        shared: Arc::clone(&self.shared),
+                        device_id: *id,
+                        outcome,
+                        held: true,
+                    };
+                    let open = open.take().expect("a connect starts one open and returns");
+                    tokio::spawn(run_open(opening, open()));
+                    return wait_for_open(waiting).await;
+                }
+                // The open may have been for a target `keep` turns down, so
+                // a success goes around again.
+                Step::Join(waiting) => wait_for_open(waiting).await?,
+                Step::CloseMoved(session) => {
+                    let close = session.begin_close(Arc::clone(&self.shared));
+                    match tokio::time::timeout(budget, join_close(close)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            debug!(device_id = %id, %error, "closing a moved session failed");
+                        }
+                        Err(_) => return Err(DeviceError::Timeout { after: budget }),
+                    }
+                }
+                Step::WaitForClose => {
+                    let close_seen_at = *close_seen_at.get_or_insert_with(Instant::now);
+                    let left = budget.saturating_sub(close_seen_at.elapsed());
+                    if tokio::time::timeout(left, changed).await.is_err() {
+                        return Err(DeviceError::Timeout { after: budget });
+                    }
                 }
             }
-            changed.await;
         }
     }
 
-    /// Close the session open for `id`, once any connect in flight settles.
+    /// Close the session open for `id`, once any open in flight settles.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError::Disconnected`] when no session is open, the
     /// cleanup failure when protocol cleanup fails or times out, and
-    /// [`DeviceError::Timeout`] when the close is still running. The session
-    /// is revoked either way, and an unfinished close keeps the device
-    /// Closing.
+    /// [`DeviceError::Timeout`] when the device has not closed within what
+    /// its close was allowed. The session is revoked either way, and an
+    /// unfinished close keeps the device Closing.
     pub async fn close(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        loop {
-            let changed = self.shared.changed.notified();
-            let session = {
-                let mut state = self.shared.write();
-                match state.devices.get(id) {
-                    None => return Err(disconnected(*id)),
-                    Some(Generation::Open(_)) => state.begin_closing(*id),
-                    Some(Generation::Opening | Generation::Closing) => None,
+        let budget = close_budget::<S>();
+        let close = async {
+            loop {
+                let changed = self.shared.changed.notified();
+                let session = {
+                    let mut state = self.shared.write();
+                    match state.devices.get(id) {
+                        None => return Err(disconnected(*id)),
+                        Some(Generation::Open(_)) => state.begin_closing(*id),
+                        Some(Generation::Opening(_) | Generation::Closing) => None,
+                    }
+                };
+                if let Some(session) = session {
+                    return join_close(session.begin_close(Arc::clone(&self.shared))).await;
                 }
-            };
-            if let Some(session) = session {
-                return await_close::<S>(session.begin_close(Arc::clone(&self.shared))).await;
+                changed.await;
             }
-            changed.await;
-        }
+        };
+        tokio::time::timeout(budget, close)
+            .await
+            .unwrap_or(Err(DeviceError::Timeout { after: budget }))
     }
 
     /// Close every session, refuse all later connects, and wait for every
@@ -822,8 +928,10 @@ impl<S: DeviceSession> SessionTable<S> {
     ///
     /// # Errors
     ///
-    /// Returns the first cleanup failure since retirement began. Every
-    /// session is revoked either way.
+    /// Returns the first cleanup failure since retirement began, and
+    /// [`DeviceError::Timeout`] when a generation is still running after what
+    /// it was allowed. Every session is revoked either way, and an open or a
+    /// close still running finishes under the table.
     pub async fn retire(&self) -> Result<(), DeviceError> {
         let closing: Vec<_> = {
             let mut state = self.shared.write();
@@ -842,16 +950,23 @@ impl<S: DeviceSession> SessionTable<S> {
         for session in closing {
             drop(session.begin_close(Arc::clone(&self.shared)));
         }
-        loop {
-            let changed = self.shared.changed.notified();
-            {
-                let state = self.shared.read();
-                if state.devices.is_empty() {
-                    return state.failure.clone().map_or(Ok(()), Err);
+        let budget = close_budget::<S>();
+        let budget = budget.saturating_add(S::OPEN.min(budget));
+        let settled = async {
+            loop {
+                let changed = self.shared.changed.notified();
+                {
+                    let state = self.shared.read();
+                    if state.devices.is_empty() {
+                        return state.failure.clone().map_or(Ok(()), Err);
+                    }
                 }
+                changed.await;
             }
-            changed.await;
-        }
+        };
+        tokio::time::timeout(budget, settled)
+            .await
+            .unwrap_or(Err(DeviceError::Timeout { after: budget }))
     }
 }
 
@@ -863,4 +978,8 @@ fn disconnected(device_id: DeviceId) -> DeviceError {
 
 fn retired(device_id: DeviceId) -> DeviceError {
     DeviceError::connection(device_id, "the backend serving this device was retired")
+}
+
+fn abandoned(device_id: DeviceId) -> DeviceError {
+    DeviceError::connection(device_id, "every connect waiting on this open gave up")
 }

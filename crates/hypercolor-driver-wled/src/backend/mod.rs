@@ -201,8 +201,8 @@ pub struct WledBackend {
     /// Default protocol for new connections.
     default_protocol: WledProtocol,
 
-    /// Shared UDP socket used by all connected WLED devices.
-    shared_socket: OnceCell<Arc<UdpSocket>>,
+    /// Output state every session of this backend shares.
+    shared: Arc<WledShared>,
 
     /// Whether connect/disconnect should manage WLED realtime mode over HTTP.
     realtime_http_enabled: bool,
@@ -212,67 +212,20 @@ pub struct WledBackend {
 
     /// E1.31 sender CID (stable UUID per backend instance).
     e131_cid: uuid::Uuid,
+}
+
+/// Output state every session of one backend shares.
+struct WledShared {
+    /// UDP socket used by all connected WLED devices.
+    socket: OnceCell<Arc<UdpSocket>>,
 
     /// Next available E1.31 universe number for auto-allocation.
     next_e131_universe: StdMutex<u16>,
 }
 
-impl WledBackend {
-    /// Create a new WLED backend.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            sessions: SessionTable::new(),
-            device_addrs: StdRwLock::new(HashMap::new()),
-            device_infos: StdRwLock::new(HashMap::new()),
-            default_protocol: WledProtocol::default(),
-            shared_socket: OnceCell::new(),
-            realtime_http_enabled: true,
-            dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
-            e131_cid: uuid::Uuid::now_v7(),
-            next_e131_universe: StdMutex::new(1),
-        }
-    }
-
-    /// Set the default protocol for new connections.
-    pub fn set_protocol(&mut self, protocol: WledProtocol) {
-        self.default_protocol = protocol;
-    }
-
-    /// Enable or disable HTTP realtime-mode lifecycle calls.
-    pub fn set_realtime_http_enabled(&mut self, enabled: bool) {
-        self.realtime_http_enabled = enabled;
-    }
-
-    /// Set the global fuzzy dedup threshold for newly connected devices.
-    pub fn set_dedup_threshold(&mut self, threshold: u8) {
-        self.dedup_threshold = threshold;
-    }
-
-    /// The local address of the shared UDP socket, if initialized.
-    #[must_use]
-    pub fn shared_socket_local_addr(&self) -> Option<SocketAddr> {
-        self.shared_socket
-            .get()
-            .and_then(|socket| socket.local_addr().ok())
-    }
-
-    /// The local UDP socket used by a connected device, if available.
-    #[must_use]
-    pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
-        self.sessions.facts(id).and_then(|facts| facts.local_addr)
-    }
-
-    /// The starting E1.31 universe assigned to a connected device.
-    #[must_use]
-    pub fn connected_e131_start_universe(&self, id: &DeviceId) -> Option<u16> {
-        self.sessions
-            .facts(id)
-            .map(|facts| facts.e131_start_universe)
-    }
-
-    async fn ensure_shared_socket(&self) -> Result<Arc<UdpSocket>> {
-        self.shared_socket
+impl WledShared {
+    async fn ensure_socket(&self) -> Result<Arc<UdpSocket>> {
+        self.socket
             .get_or_try_init(|| async {
                 UdpSocket::bind("0.0.0.0:0")
                     .await
@@ -305,6 +258,64 @@ impl WledBackend {
         let start_universe = *next_universe;
         *next_universe = next_universe.saturating_add(universes_needed.max(1));
         start_universe
+    }
+}
+
+impl WledBackend {
+    /// Create a new WLED backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sessions: SessionTable::new(),
+            device_addrs: StdRwLock::new(HashMap::new()),
+            device_infos: StdRwLock::new(HashMap::new()),
+            default_protocol: WledProtocol::default(),
+            shared: Arc::new(WledShared {
+                socket: OnceCell::new(),
+                next_e131_universe: StdMutex::new(1),
+            }),
+            realtime_http_enabled: true,
+            dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
+            e131_cid: uuid::Uuid::now_v7(),
+        }
+    }
+
+    /// Set the default protocol for new connections.
+    pub fn set_protocol(&mut self, protocol: WledProtocol) {
+        self.default_protocol = protocol;
+    }
+
+    /// Enable or disable HTTP realtime-mode lifecycle calls.
+    pub fn set_realtime_http_enabled(&mut self, enabled: bool) {
+        self.realtime_http_enabled = enabled;
+    }
+
+    /// Set the global fuzzy dedup threshold for newly connected devices.
+    pub fn set_dedup_threshold(&mut self, threshold: u8) {
+        self.dedup_threshold = threshold;
+    }
+
+    /// The local address of the shared UDP socket, if initialized.
+    #[must_use]
+    pub fn shared_socket_local_addr(&self) -> Option<SocketAddr> {
+        self.shared
+            .socket
+            .get()
+            .and_then(|socket| socket.local_addr().ok())
+    }
+
+    /// The local UDP socket used by a connected device, if available.
+    #[must_use]
+    pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
+        self.sessions.facts(id).and_then(|facts| facts.local_addr)
+    }
+
+    /// The starting E1.31 universe assigned to a connected device.
+    #[must_use]
+    pub fn connected_e131_start_universe(&self, id: &DeviceId) -> Option<u16> {
+        self.sessions
+            .facts(id)
+            .map(|facts| facts.e131_start_universe)
     }
 }
 
@@ -398,87 +409,96 @@ impl DeviceBackend for WledBackend {
                 .ok_or(DeviceError::NotAdopted { device_id: *id })?
         };
         let ip = api_addr.ip();
+        let id = *id;
         // A device that moved closes first, so its realtime exit cannot land
         // on the session replacing it.
-        let Some(ticket) = self
-            .sessions
-            .open_unless(id, |open| open.api_addr == api_addr)
-            .await?
-        else {
-            return Ok(());
-        };
-        let wled_info = {
-            let device_infos = self
-                .device_infos
-                .read()
-                .unwrap_or_else(PoisonError::into_inner);
-            device_infos
-                .get(id)
-                .cloned()
-                .ok_or(DeviceError::NotAdopted { device_id: *id })?
-        };
-        let socket = self
-            .ensure_shared_socket()
+        self.sessions
+            .open_unless(
+                &id,
+                |open| open.api_addr == api_addr,
+                || {
+                    let wled_info = self
+                        .device_infos
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get(&id)
+                        .cloned();
+                    let shared = Arc::clone(&self.shared);
+                    let protocol = self.default_protocol;
+                    let e131_cid = self.e131_cid;
+                    let dedup_threshold = self.dedup_threshold;
+                    let realtime_http_enabled = self.realtime_http_enabled;
+                    async move {
+                        let wled_info =
+                            wled_info.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                        let socket = shared
+                            .ensure_socket()
+                            .await
+                            .map_err(|error| DeviceError::connection(id, error))?;
+
+                        let port = match protocol {
+                            WledProtocol::Ddp => DDP_PORT,
+                            WledProtocol::E131 => E131_PORT,
+                        };
+                        let pixel_addr = SocketAddr::new(ip, port);
+
+                        let color_format = if wled_info.rgbw {
+                            WledColorFormat::Rgbw
+                        } else {
+                            WledColorFormat::Rgb
+                        };
+                        let e131_start_universe = shared.allocate_e131_start_universe(
+                            color_format,
+                            wled_info.led_count,
+                            protocol,
+                        );
+
+                        let device = WledDevice {
+                            device_id: id,
+                            ip,
+                            api_addr,
+                            protocol,
+                            pixel_addr,
+                            color_format,
+                            led_count: wled_info.led_count,
+                            info: wled_info,
+                            socket,
+                            ddp_sequence: DdpSequence::default(),
+                            e131_sequences: E131SequenceTracker::default(),
+                            e131_cid,
+                            e131_start_universe,
+                            dedup_threshold,
+                            last_sent_pixels: None,
+                            consecutive_failures: 0,
+                            last_success_at: None,
+                            last_size_mismatch_warn_at: None,
+                            realtime_mode_active: false,
+                            stream_initialized: false,
+                            realtime_http_enabled,
+                            frames_sent: 0,
+                            last_frame_at: None,
+                        };
+
+                        info!(
+                            device_id = %id,
+                            ip = %ip,
+                            protocol = ?protocol,
+                            leds = device.led_count,
+                            start_universe = device.e131_start_universe,
+                            "Connected to WLED device"
+                        );
+
+                        let facts = WledFacts {
+                            api_addr,
+                            target_fps: device.info.negotiated_target_fps(),
+                            e131_start_universe: device.e131_start_universe,
+                            local_addr: device.socket.local_addr().ok(),
+                        };
+                        Ok(Session::new(id, facts, device))
+                    }
+                },
+            )
             .await
-            .map_err(|error| DeviceError::connection(id, error))?;
-
-        let port = match self.default_protocol {
-            WledProtocol::Ddp => DDP_PORT,
-            WledProtocol::E131 => E131_PORT,
-        };
-        let pixel_addr = SocketAddr::new(ip, port);
-
-        let color_format = if wled_info.rgbw {
-            WledColorFormat::Rgbw
-        } else {
-            WledColorFormat::Rgb
-        };
-        let protocol = self.default_protocol;
-        let e131_start_universe =
-            self.allocate_e131_start_universe(color_format, wled_info.led_count, protocol);
-
-        let device = WledDevice {
-            device_id: *id,
-            ip,
-            api_addr,
-            protocol,
-            pixel_addr,
-            color_format,
-            led_count: wled_info.led_count,
-            info: wled_info,
-            socket,
-            ddp_sequence: DdpSequence::default(),
-            e131_sequences: E131SequenceTracker::default(),
-            e131_cid: self.e131_cid,
-            e131_start_universe,
-            dedup_threshold: self.dedup_threshold,
-            last_sent_pixels: None,
-            consecutive_failures: 0,
-            last_success_at: None,
-            last_size_mismatch_warn_at: None,
-            realtime_mode_active: false,
-            stream_initialized: false,
-            realtime_http_enabled: self.realtime_http_enabled,
-            frames_sent: 0,
-            last_frame_at: None,
-        };
-
-        info!(
-            device_id = %id,
-            ip = %ip,
-            protocol = ?protocol,
-            leds = device.led_count,
-            start_universe = device.e131_start_universe,
-            "Connected to WLED device"
-        );
-
-        let facts = WledFacts {
-            api_addr,
-            target_fps: device.info.negotiated_target_fps(),
-            e131_start_universe: device.e131_start_universe,
-            local_addr: device.socket.local_addr().ok(),
-        };
-        ticket.install(Session::new(*id, facts, device)).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {

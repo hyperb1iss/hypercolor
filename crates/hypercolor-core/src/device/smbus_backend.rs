@@ -88,6 +88,10 @@ impl SmBusSession {
 impl DeviceSession for SmBusSession {
     type Facts = SmBusFacts;
 
+    /// Init transactions run on blocking threads with the native handle, and
+    /// dropping the wait would detach them.
+    const OPEN: Duration = Duration::MAX;
+
     /// A shutdown sequence retries on a busy bus.
     const CLEANUP: Duration = Duration::from_secs(2);
 
@@ -143,6 +147,8 @@ impl DeviceSession for SmBusSession {
     }
 
     /// The native handle goes with the session, whatever else holds a sink.
+    /// A transaction cancelled past settlement still runs on its blocking
+    /// thread with that handle, and closing the transport waits it out.
     async fn release(self) -> Result<(), DeviceError> {
         self.transport
             .close()
@@ -236,38 +242,38 @@ impl DeviceBackend for SmBusBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            debug!(device_id = %id, "SMBus device already connected; skipping duplicate connect");
-            return Ok(());
-        };
-
-        let pending = {
-            let pending_guard = self.pending.read().unwrap_or_else(PoisonError::into_inner);
-            pending_guard
-                .get(id)
-                .cloned()
-                .ok_or(DeviceError::NotAdopted { device_id: *id })?
-        };
-
-        debug!(
-            device_id = %id,
-            bus_path = pending.bus_path,
-            address = format_args!("0x{:02X}", pending.address),
-            "attempting SMBus connect"
-        );
-
-        let bus_arbiter = SmBusBusArbiter::for_bus(&pending.bus_path);
-        let session = connect_pending_device(*id, &pending, &self.transport_factory, bus_arbiter)
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let pending = self
+                    .pending
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .cloned();
+                let transport_factory = Arc::clone(&self.transport_factory);
+                async move {
+                    let pending = pending.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    debug!(
+                        device_id = %id,
+                        bus_path = pending.bus_path,
+                        address = format_args!("0x{:02X}", pending.address),
+                        "attempting SMBus connect"
+                    );
+                    let bus_arbiter = SmBusBusArbiter::for_bus(&pending.bus_path);
+                    connect_pending_device(id, &pending, &transport_factory, bus_arbiter)
+                        .await
+                        .map_err(|error| {
+                            map_hal_transport_error(
+                                id,
+                                SMBUS_OUTPUT_BACKEND_ID,
+                                DeviceTransportOperation::Disconnect,
+                                &error,
+                            )
+                        })
+                }
+            })
             .await
-            .map_err(|error| {
-                map_hal_transport_error(
-                    *id,
-                    SMBUS_OUTPUT_BACKEND_ID,
-                    DeviceTransportOperation::Disconnect,
-                    &error,
-                )
-            })?;
-        ticket.install(session).await
     }
 
     async fn retire(&self) -> Result<(), DeviceError> {

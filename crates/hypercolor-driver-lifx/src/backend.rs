@@ -447,6 +447,22 @@ impl LifxBackend {
         self
     }
 
+    fn opener(&self) -> LifxOpener {
+        LifxOpener {
+            config: self.config.clone(),
+            request_policy: self.request_policy,
+        }
+    }
+}
+
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct LifxOpener {
+    config: LifxConfig,
+    request_policy: RequestPolicy,
+}
+
+impl LifxOpener {
     async fn open_session(
         &self,
         device_id: DeviceId,
@@ -584,33 +600,36 @@ impl DeviceBackend for LifxBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-        let route = self
-            .adopted
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-
-        let session = self
-            .open_session(*id, &route)
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let route = self
+                    .adopted
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .cloned();
+                let opener = self.opener();
+                async move {
+                    let route = route.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    let session = opener
+                        .open_session(id, &route)
+                        .await
+                        .map_err(|error| DeviceError::connection(id, error))?;
+                    let facts = session.facts();
+                    info!(
+                        device_id = %id,
+                        serial = %route.serial,
+                        addr = %route.addr,
+                        class = facts.profile.topology.class_name(),
+                        leds = facts.info.total_led_count(),
+                        max_fps = facts.info.capabilities.max_fps,
+                        "Connected to LIFX device"
+                    );
+                    Ok(session)
+                }
+            })
             .await
-            .map_err(|error| DeviceError::connection(id, error))?;
-        let facts = session.facts();
-        ticket.install(session).await?;
-        info!(
-            device_id = %id,
-            serial = %route.serial,
-            addr = %route.addr,
-            class = facts.profile.topology.class_name(),
-            leds = facts.info.total_led_count(),
-            max_fps = facts.info.capabilities.max_fps,
-            "Connected to LIFX device"
-        );
-        Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

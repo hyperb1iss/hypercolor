@@ -119,6 +119,24 @@ impl WizBackend {
         self
     }
 
+    fn opener(&self) -> WizOpener {
+        WizOpener {
+            config: self.config.clone(),
+            signing_key: self.signing_key.clone(),
+            request_policy: self.request_policy,
+        }
+    }
+}
+
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct WizOpener {
+    config: WizConfig,
+    signing_key: Option<SigningKey>,
+    request_policy: RequestPolicy,
+}
+
+impl WizOpener {
     async fn open_session(&self, id: &DeviceId, addr: SocketAddr) -> Result<Session<WizSession>> {
         let profile = probe_device(addr, self.request_policy).await?;
         if profile.device_id() != *id {
@@ -277,32 +295,36 @@ impl DeviceBackend for WizBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-        let addr = self
-            .adopted
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .copied()
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        let session = self
-            .open_session(id, addr)
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let addr = self
+                    .adopted
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .copied();
+                let opener = self.opener();
+                async move {
+                    let addr = addr.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    let session = opener
+                        .open_session(&id, addr)
+                        .await
+                        .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
+                    let facts = session.facts();
+                    info!(
+                        device_id = %id,
+                        %addr,
+                        mac = %facts.profile.mac,
+                        class = %facts.profile.class,
+                        signed = opener.signing_key.is_some(),
+                        max_fps = facts.info.capabilities.max_fps,
+                        "Connected to WiZ device"
+                    );
+                    Ok(session)
+                }
+            })
             .await
-            .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
-        let facts = session.facts();
-        ticket.install(session).await?;
-        info!(
-            device_id = %id,
-            %addr,
-            mac = %facts.profile.mac,
-            class = %facts.profile.class,
-            signed = self.signing_key.is_some(),
-            max_fps = facts.info.capabilities.max_fps,
-            "Connected to WiZ device"
-        );
-        Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

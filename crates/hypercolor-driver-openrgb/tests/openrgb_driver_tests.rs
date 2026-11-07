@@ -3743,3 +3743,62 @@ async fn openrgb_sessions_keep_the_contract() {
     assert_session_contract(&mut rig).await;
     server.abort();
 }
+
+#[tokio::test]
+async fn retiring_during_a_connect_leaves_the_endpoint_unpinned() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let state = Arc::new(ContractServer::default());
+    let server = tokio::spawn(run_contract_server(listener, Arc::clone(&state)));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(host.driver_context(DESCRIPTOR.id), view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let id = devices[0].info.id;
+
+    let mut rig = OpenRgbRig {
+        backend,
+        id,
+        server: Arc::clone(&state),
+        seen: 0,
+    };
+    // Discovery's own connection ending says nothing about this one.
+    rig.assert_transport_released().await;
+
+    let (connected, retired) = {
+        let backend = rig.backend();
+        tokio::join!(backend.connect(&id), async {
+            tokio::task::yield_now().await;
+            backend.retire().await
+        })
+    };
+
+    retired.expect("retire");
+    connected.expect_err("the connect lost to retirement");
+    assert!(
+        state.accepts.load(Ordering::SeqCst) > 1,
+        "the connect reached the endpoint"
+    );
+    rig.assert_transport_released().await;
+    server.abort();
+}

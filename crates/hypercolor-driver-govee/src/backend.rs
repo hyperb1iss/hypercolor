@@ -369,6 +369,22 @@ impl GoveeBackend {
             .cloned()
     }
 
+    fn opener(&self) -> GoveeOpener {
+        GoveeOpener {
+            config: self.config.clone(),
+            link: self.link.clone(),
+        }
+    }
+}
+
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct GoveeOpener {
+    config: GoveeConfig,
+    link: GoveeLink,
+}
+
+impl GoveeOpener {
     /// Wake the device and open its stream.
     async fn open_session(&self, id: DeviceId, route: GoveeRoute) -> Result<Session<GoveeSession>> {
         let mut razer_enabled = false;
@@ -484,17 +500,20 @@ impl DeviceBackend for GoveeBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-        let route = self
-            .route(id)
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        let session = self
-            .open_session(*id, route)
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let route = self.route(&id);
+                let opener = self.opener();
+                async move {
+                    let route = route.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    opener
+                        .open_session(id, route)
+                        .await
+                        .map_err(|error| DeviceError::connection(id, error))
+                }
+            })
             .await
-            .map_err(|error| DeviceError::connection(id, error))?;
-        ticket.install(session).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {

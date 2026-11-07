@@ -273,6 +273,26 @@ impl TwinklyBackend {
         self
     }
 
+    fn opener(&self) -> TwinklyOpener {
+        TwinklyOpener {
+            config: self.config.clone(),
+            request_timeout: self.request_timeout,
+            upkeep_interval: self.upkeep_interval,
+            contention: self.contention,
+        }
+    }
+}
+
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct TwinklyOpener {
+    config: TwinklyConfig,
+    request_timeout: Duration,
+    upkeep_interval: Duration,
+    contention: ContentionPolicy,
+}
+
+impl TwinklyOpener {
     async fn open_session(
         &self,
         id: &DeviceId,
@@ -613,35 +633,38 @@ impl DeviceBackend for TwinklyBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-        let endpoint = self
-            .adopted
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .copied()
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-
-        let session = self
-            .open_session(id, endpoint)
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let endpoint = self
+                    .adopted
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .copied();
+                let opener = self.opener();
+                async move {
+                    let endpoint = endpoint.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    let session = opener
+                        .open_session(&id, endpoint)
+                        .await
+                        .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
+                    let facts = session.facts();
+                    info!(
+                        device_id = %id,
+                        %endpoint,
+                        mac = %facts.profile.mac,
+                        leds = facts.info.total_led_count(),
+                        profile = %facts.profile.led_profile,
+                        rt_protocol = %facts.profile.rt_protocol(),
+                        layout = facts.layout_source.as_str(),
+                        max_fps = facts.info.capabilities.max_fps,
+                        "Connected to Twinkly device"
+                    );
+                    Ok(session)
+                }
+            })
             .await
-            .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
-        let facts = session.facts();
-        ticket.install(session).await?;
-        info!(
-            device_id = %id,
-            %endpoint,
-            mac = %facts.profile.mac,
-            leds = facts.info.total_led_count(),
-            profile = %facts.profile.led_profile,
-            rt_protocol = %facts.profile.rt_protocol(),
-            layout = facts.layout_source.as_str(),
-            max_fps = facts.info.capabilities.max_fps,
-            "Connected to Twinkly device"
-        );
-        Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

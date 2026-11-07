@@ -1,6 +1,6 @@
 //! The session contract, proven against a fake device.
 
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -57,6 +57,11 @@ struct Behavior {
     release_gate: Option<Arc<Semaphore>>,
     /// Cleanup never finishes.
     hang_finish: bool,
+    /// The open waits for a permit, standing in for blocking native work
+    /// that dropping a future could not stop.
+    open_gate: Option<Arc<Semaphore>>,
+    /// The open fails with this.
+    open_error: Option<DeviceError>,
 }
 
 struct FakeSession {
@@ -69,6 +74,7 @@ struct FakeSession {
 impl DeviceSession for FakeSession {
     type Facts = &'static str;
 
+    const OPEN: Duration = Duration::from_millis(600);
     const SETTLE: Duration = Duration::from_millis(40);
     const CLEANUP: Duration = Duration::from_millis(40);
 
@@ -139,15 +145,25 @@ impl Fixture {
         )
     }
 
-    /// What a driver's connect does: claim the device, set it up, publish.
-    /// The yield is where real setup awaits the network.
-    async fn connect(&self, behavior: Behavior) -> Result<(), DeviceError> {
-        let Some(ticket) = self.table.begin_open(&self.id).await? else {
-            return Ok(());
-        };
-        self.wire.engage();
-        tokio::task::yield_now().await;
-        ticket.install(self.session(behavior)).await
+    /// What a driver's connect does: hand the table an open that sets the
+    /// device up. The yield is where real setup awaits the network.
+    async fn connect(&self, mut behavior: Behavior) -> Result<(), DeviceError> {
+        self.table
+            .open(&self.id, || {
+                let wire = Arc::clone(&self.wire);
+                let gate = behavior.open_gate.take();
+                let failure = behavior.open_error.take();
+                let session = self.session(behavior);
+                async move {
+                    wire.engage();
+                    tokio::task::yield_now().await;
+                    if let Some(gate) = gate {
+                        let _permit = gate.acquire().await.expect("gate stays open");
+                    }
+                    failure.map_or(Ok(session), Err)
+                }
+            })
+            .await
     }
 
     async fn open(&self, behavior: Behavior) {
@@ -155,13 +171,29 @@ impl Fixture {
     }
 
     async fn publish(&self, session: Session<FakeSession>) {
-        let ticket = self
-            .table
-            .begin_open(&self.id)
+        self.table
+            .open(&self.id, || async move { Ok(session) })
             .await
-            .expect("claim")
-            .expect("nothing open");
-        ticket.install(session).await.expect("install");
+            .expect("open");
+    }
+
+    /// A connect whose open stops at `gate`, and whose caller walks away
+    /// while it is there, the way a lifecycle connect timeout does.
+    async fn connect_and_give_up(&self, gate: &Arc<Semaphore>) {
+        let gave_up = tokio::time::timeout(
+            Duration::from_millis(5),
+            self.connect(Behavior {
+                open_gate: Some(Arc::clone(gate)),
+                ..Behavior::default()
+            }),
+        )
+        .await
+        .is_err();
+        assert!(gave_up, "the open is still at its gate");
+    }
+
+    fn opens(&self) -> usize {
+        self.wire.opens.load(Ordering::SeqCst)
     }
 
     fn transport_released(&self) -> bool {
@@ -436,7 +468,7 @@ async fn concurrent_connects_share_one_open() {
     second.expect("second");
     third.expect("third");
 
-    assert_eq!(fixture.wire.opens.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.opens(), 1);
     assert_eq!(
         fixture.finishes(),
         0,
@@ -446,22 +478,36 @@ async fn concurrent_connects_share_one_open() {
 }
 
 #[tokio::test]
-async fn a_connect_queued_behind_a_failed_one_opens_for_itself() {
+async fn connects_waiting_on_an_open_share_its_failure() {
     let fixture = Fixture::new();
-    let ticket = fixture
-        .table
-        .begin_open(&fixture.id)
-        .await
-        .expect("claim")
-        .expect("nothing open");
+    let gate = Arc::new(Semaphore::new(0));
 
-    let (queued, ()) = tokio::join!(fixture.connect(Behavior::default()), async {
-        tokio::task::yield_now().await;
-        drop(ticket);
-    });
+    let (first, second, ()) = tokio::join!(
+        fixture.connect(Behavior {
+            open_gate: Some(Arc::clone(&gate)),
+            open_error: Some(DeviceError::connection(fixture.id, "the device said no")),
+            ..Behavior::default()
+        }),
+        async {
+            tokio::task::yield_now().await;
+            fixture.connect(Behavior::default()).await
+        },
+        async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            gate.add_permits(1);
+        },
+    );
 
-    queued.expect("the queued connect takes over");
-    assert!(fixture.table.is_open(&fixture.id));
+    assert!(matches!(first, Err(DeviceError::ConnectionFailed { .. })));
+    assert_eq!(first, second, "both connects get the one result");
+    assert_eq!(fixture.opens(), 1, "nobody retried behind the failure");
+    assert!(!fixture.table.is_open(&fixture.id));
+
+    fixture.open(Behavior::default()).await;
+    assert!(
+        fixture.table.is_open(&fixture.id),
+        "a failed open gives the device back"
+    );
 }
 
 #[tokio::test]
@@ -483,11 +529,7 @@ async fn reconnect_waits_for_the_old_generation_to_finish_closing() {
         },
         async {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            assert_eq!(
-                fixture.wire.opens.load(Ordering::SeqCst),
-                1,
-                "the reconnect must wait out the close"
-            );
+            assert_eq!(fixture.opens(), 1, "the reconnect must wait out the close");
             gate.add_permits(1);
         },
     );
@@ -510,49 +552,56 @@ async fn a_moved_device_closes_before_its_new_session_opens() {
     fixture.open(Behavior::default()).await;
     let old = fixture.table.frame_sink(&fixture.id).expect("old sink");
 
-    let kept = fixture
+    let session = fixture.session(Behavior::default());
+    fixture
         .table
-        .open_unless(&fixture.id, |facts| *facts == "facts")
+        .open_unless(
+            &fixture.id,
+            |facts| *facts == "facts",
+            || async move { Ok(session) },
+        )
         .await
         .expect("keep");
-    assert!(kept.is_none(), "a matching session stays open");
-    assert!(!old.is_closed());
+    assert!(!old.is_closed(), "a matching session stays open");
 
-    let ticket = fixture
+    let session = fixture.session(Behavior::default());
+    fixture
         .table
-        .open_unless(&fixture.id, |facts| *facts == "somewhere else")
+        .open_unless(
+            &fixture.id,
+            |facts| *facts == "somewhere else",
+            || async move { Ok(session) },
+        )
         .await
-        .expect("move")
-        .expect("the old session closed");
+        .expect("move");
     assert!(old.is_closed());
     assert_eq!(fixture.finishes(), 1);
-    assert!(fixture.transport_released());
-    ticket
-        .install(fixture.session(Behavior::default()))
-        .await
-        .expect("install");
+    assert!(fixture.table.is_open(&fixture.id));
 }
 
 #[tokio::test]
 async fn close_waits_to_see_how_a_connect_ends() {
     let fixture = Fixture::new();
-    let ticket = fixture
-        .table
-        .begin_open(&fixture.id)
-        .await
-        .expect("claim")
-        .expect("nothing open");
-    let session = fixture.session(Behavior::default());
-    let sink = session.sink();
+    let gate = Arc::new(Semaphore::new(0));
 
-    let (closed, installed) = tokio::join!(fixture.table.close(&fixture.id), async {
-        tokio::task::yield_now().await;
-        ticket.install(session).await
-    });
+    let (connected, closed, ()) = tokio::join!(
+        fixture.connect(Behavior {
+            open_gate: Some(Arc::clone(&gate)),
+            ..Behavior::default()
+        }),
+        async {
+            tokio::task::yield_now().await;
+            fixture.table.close(&fixture.id).await
+        },
+        async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            gate.add_permits(1);
+        },
+    );
 
-    installed.expect("install");
+    connected.expect("connect");
     closed.expect("close");
-    assert!(sink.is_revoked());
+    assert!(!fixture.table.is_open(&fixture.id));
     assert_eq!(fixture.finishes(), 1);
 }
 
@@ -568,12 +617,11 @@ async fn retire_closes_everything_and_refuses_later_connects() {
     assert_eq!(fixture.finishes(), 1);
     assert!(fixture.transport_released());
     let error = fixture
-        .table
-        .begin_open(&fixture.id)
+        .connect(Behavior::default())
         .await
-        .err()
-        .expect("a retired table refuses connects");
+        .expect_err("a retired table refuses connects");
     assert!(matches!(error, DeviceError::ConnectionFailed { .. }));
+    assert_eq!(fixture.opens(), 1, "a refused connect starts no open");
     assert!(!fixture.table.is_open(&fixture.id));
 }
 
@@ -613,28 +661,173 @@ async fn retire_waits_for_a_close_already_in_flight() {
 #[tokio::test]
 async fn retire_waits_for_a_connect_in_flight_and_closes_what_it_opened() {
     let fixture = Fixture::new();
-    let ticket = fixture
-        .table
-        .begin_open(&fixture.id)
-        .await
-        .expect("claim")
-        .expect("nothing open");
-    let session = fixture.session(Behavior::default());
-    let sink = session.sink();
+    let gate = Arc::new(Semaphore::new(0));
 
-    let (retired, installed) = tokio::join!(fixture.table.retire(), async {
+    let (connected, retired, ()) = tokio::join!(
+        fixture.connect(Behavior {
+            open_gate: Some(Arc::clone(&gate)),
+            ..Behavior::default()
+        }),
+        async {
+            tokio::task::yield_now().await;
+            let retired = fixture.table.retire().await;
+            assert!(
+                fixture.transport_released(),
+                "retire must not return while an open still owns the transport"
+            );
+            retired
+        },
+        async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            assert!(!fixture.transport_released(), "the open is still in flight");
+            gate.add_permits(1);
+        },
+    );
+
+    retired.expect("retire");
+    let error = connected.expect_err("a retired table refuses the session");
+    assert!(matches!(error, DeviceError::ConnectionFailed { .. }));
+    assert!(!fixture.table.is_open(&fixture.id));
+    assert_eq!(fixture.finishes(), 1, "the refused session still cleans up");
+}
+
+#[tokio::test]
+async fn an_open_keeps_running_after_its_connect_gives_up() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(Semaphore::new(0));
+    fixture.connect_and_give_up(&gate).await;
+
+    assert!(
+        !fixture.transport_released(),
+        "the open still owns what it is setting up"
+    );
+
+    // Nobody can claim the device out from under the work in flight: this
+    // connect joins it instead of starting a second open.
+    let (joined, ()) = tokio::join!(fixture.connect(Behavior::default()), async {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(!fixture.transport_released(), "the open is still in flight");
-        ticket.install(session).await
+        gate.add_permits(1);
+    });
+
+    joined.expect("the second connect shares the open");
+    assert_eq!(fixture.opens(), 1);
+    assert!(fixture.table.is_open(&fixture.id));
+}
+
+#[tokio::test]
+async fn an_open_nobody_waits_for_ends_closed() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(Semaphore::new(0));
+    fixture.connect_and_give_up(&gate).await;
+
+    gate.add_permits(1);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert!(!fixture.table.is_open(&fixture.id));
+    assert_eq!(fixture.finishes(), 1, "it closes through normal cleanup");
+    assert!(fixture.transport_released());
+
+    fixture.open(Behavior::default()).await;
+    assert!(
+        fixture.table.is_open(&fixture.id),
+        "the device is free again"
+    );
+}
+
+#[tokio::test]
+async fn retire_waits_for_an_open_whose_connect_gave_up() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(Semaphore::new(0));
+    fixture.connect_and_give_up(&gate).await;
+
+    let (retired, ()) = tokio::join!(fixture.table.retire(), async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!fixture.transport_released(), "the open is still running");
+        gate.add_permits(1);
     });
 
     retired.expect("retire");
-    let error = installed.expect_err("a retired table refuses the session");
-    assert!(matches!(error, DeviceError::ConnectionFailed { .. }));
-    assert!(sink.is_revoked());
-    assert!(!fixture.table.is_open(&fixture.id));
-    assert_eq!(fixture.finishes(), 1, "the refused session still cleans up");
     assert!(fixture.transport_released());
+    assert_eq!(fixture.finishes(), 1);
+}
+
+#[tokio::test]
+async fn an_open_past_its_budget_is_dropped_and_gives_the_device_back() {
+    let fixture = Fixture::new();
+
+    let error = fixture
+        .connect(Behavior {
+            open_gate: Some(Arc::new(Semaphore::new(0))),
+            ..Behavior::default()
+        })
+        .await
+        .expect_err("the open never finishes");
+
+    assert!(matches!(error, DeviceError::Timeout { .. }));
+    assert!(fixture.transport_released());
+    fixture.open(Behavior::default()).await;
+    assert!(fixture.table.is_open(&fixture.id));
+}
+
+#[tokio::test]
+async fn a_panicking_open_gives_the_device_back() {
+    let fixture = Fixture::new();
+
+    let error = fixture
+        .table
+        .open(&fixture.id, || async { panic!("the open blew up") })
+        .await
+        .expect_err("the open never reported");
+
+    assert!(matches!(error, DeviceError::ProtocolError { .. }));
+    fixture.open(Behavior::default()).await;
+    assert!(fixture.table.is_open(&fixture.id));
+}
+
+#[tokio::test]
+async fn every_wait_on_a_wedged_close_is_bounded() {
+    let fixture = Fixture::new();
+    fixture
+        .open(Behavior {
+            release_gate: Some(Arc::new(Semaphore::new(0))),
+            ..Behavior::default()
+        })
+        .await;
+
+    let bound = Duration::from_secs(2);
+    let (first, second, connect) = tokio::join!(
+        tokio::time::timeout(bound, fixture.table.close(&fixture.id)),
+        async {
+            tokio::task::yield_now().await;
+            tokio::time::timeout(bound, fixture.table.close(&fixture.id)).await
+        },
+        async {
+            tokio::task::yield_now().await;
+            tokio::time::timeout(bound, fixture.connect(Behavior::default())).await
+        },
+    );
+
+    let moved = fixture.session(Behavior::default());
+    let moved = tokio::time::timeout(
+        bound,
+        fixture
+            .table
+            .open_unless(&fixture.id, |_| false, || async move { Ok(moved) }),
+    )
+    .await;
+
+    for waited in [first, second, connect, moved] {
+        let error = waited
+            .expect("the wait is bounded")
+            .expect_err("still closing");
+        assert!(matches!(error, DeviceError::Timeout { .. }));
+    }
+    let error = tokio::time::timeout(bound, fixture.table.retire())
+        .await
+        .expect("the wait is bounded")
+        .expect_err("still closing");
+    assert!(matches!(error, DeviceError::Timeout { .. }));
+    assert!(!fixture.transport_released(), "the close still owns it");
 }
 
 #[tokio::test]
@@ -657,9 +850,14 @@ async fn retire_reports_a_failed_cleanup() {
 async fn a_task_that_outlives_close_is_a_failure_and_holds_the_generation() {
     let fixture = Fixture::new();
     let mut session = fixture.session(Behavior::default());
+    let finished = Arc::new(AtomicBool::new(false));
     // Blocking code never reaches an await, so its abort cannot land.
-    session.spawn(async {
-        std::thread::sleep(Duration::from_millis(250));
+    session.spawn({
+        let finished = Arc::clone(&finished);
+        async move {
+            std::thread::sleep(Duration::from_millis(250));
+            finished.store(true, Ordering::SeqCst);
+        }
     });
     tokio::time::sleep(Duration::from_millis(10)).await;
     fixture.wire.engage();
@@ -671,16 +869,13 @@ async fn a_task_that_outlives_close_is_a_failure_and_holds_the_generation() {
         .await
         .expect_err("a task still running is not a clean close");
     assert!(matches!(error, DeviceError::Timeout { .. }));
-
-    // The generation stays accounted for until the task really ends.
-    let ticket = fixture
-        .table
-        .begin_open(&fixture.id)
-        .await
-        .expect("the device comes free once the task ends")
-        .expect("nothing open");
+    assert!(
+        finished.load(Ordering::SeqCst),
+        "close joins a late task before it lets the device go"
+    );
     assert!(fixture.transport_released());
-    drop(ticket);
+
+    fixture.open(Behavior::default()).await;
 }
 
 #[tokio::test]
@@ -705,15 +900,11 @@ async fn a_release_that_outlasts_close_keeps_the_device_closing() {
 
     let (reopened, ()) = tokio::join!(fixture.connect(Behavior::default()), async {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(
-            fixture.wire.opens.load(Ordering::SeqCst),
-            1,
-            "a reconnect waits for the transport"
-        );
+        assert_eq!(fixture.opens(), 1, "a reconnect waits for the transport");
         gate.add_permits(1);
     });
     reopened.expect("reconnect");
-    assert_eq!(fixture.wire.opens.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.opens(), 2);
 }
 
 #[tokio::test]
@@ -762,23 +953,6 @@ async fn dropped_session_releases_state_once_inflight_io_ends() {
 
     assert!(write.await.expect("write task").is_err());
     assert_eq!(Arc::strong_count(&transport), 1);
-}
-
-#[tokio::test]
-async fn a_dropped_ticket_gives_the_device_back() {
-    let fixture = Fixture::new();
-    let ticket = fixture
-        .table
-        .begin_open(&fixture.id)
-        .await
-        .expect("claim")
-        .expect("nothing open");
-    assert!(!fixture.table.is_open(&fixture.id));
-
-    drop(ticket);
-
-    fixture.open(Behavior::default()).await;
-    assert!(fixture.table.is_open(&fixture.id));
 }
 
 #[tokio::test]

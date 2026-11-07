@@ -139,59 +139,65 @@ impl DeviceBackend for AdalightBackend {
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let device = self.devices.current(id)?;
         let plan = Arc::clone(device.plan());
+        let keep = Arc::clone(&plan);
+        let id = *id;
 
         // When the config changed under a live session, the old port closes
         // first, since the open is exclusive.
-        let Some(ticket) = self
-            .sessions
-            .open_unless(id, |open| **open == *plan)
-            .await?
-        else {
-            return Ok(());
-        };
+        self.sessions
+            .open_unless(
+                &id,
+                |open| **open == *keep,
+                || {
+                    let devices = self.devices.clone();
+                    async move {
+                        // Closing an old session can take a while; check
+                        // again right before the open.
+                        devices.confirm(&id, &device)?;
 
-        // Closing an old session can take a while; check again right
-        // before the open.
-        self.devices.confirm(id, &device)?;
+                        let mut port = open_port(id, &plan).await?;
+                        if !plan.startup_delay.is_zero() {
+                            tokio::time::sleep(plan.startup_delay).await;
+                            log_greeting(id, &plan, &mut port).await;
+                        }
+                        // The config may have moved while the port opened and
+                        // the board booted; a session only ever goes live
+                        // under the config it opened.
+                        if let Err(error) = devices.confirm(&id, &device) {
+                            close_port(port).await;
+                            return Err(error);
+                        }
 
-        let mut port = open_port(*id, &plan).await?;
-        if !plan.startup_delay.is_zero() {
-            tokio::time::sleep(plan.startup_delay).await;
-            log_greeting(*id, &plan, &mut port).await;
-        }
-        // The config may have moved while the port opened and the board
-        // booted; a session only ever goes live under the config it opened.
-        if let Err(error) = self.devices.confirm(id, &device) {
-            close_port(port).await;
-            return Err(error);
-        }
+                        let line_max_fps = plan.line_max_fps();
+                        info!(
+                            device_id = %id,
+                            adalight_device = %plan.id,
+                            port = %plan.port,
+                            baud_rate = plan.baud_rate,
+                            protocol = plan.protocol().as_str(),
+                            leds = plan.led_count(),
+                            frame_bytes = plan.frame_bytes(),
+                            line_max_fps,
+                            "Connected serial LED controller"
+                        );
+                        if line_max_fps < RENDER_LOOP_MAX_FPS {
+                            warn!(
+                                device_id = %id,
+                                adalight_device = %plan.id,
+                                baud_rate = plan.baud_rate,
+                                frame_bytes = plan.frame_bytes(),
+                                line_max_fps,
+                                "serial line carries at most {line_max_fps} frames per second for \
+                                 this strip; faster frames coalesce to the newest one"
+                            );
+                        }
 
-        let line_max_fps = plan.line_max_fps();
-        info!(
-            device_id = %id,
-            adalight_device = %plan.id,
-            port = %plan.port,
-            baud_rate = plan.baud_rate,
-            protocol = plan.protocol().as_str(),
-            leds = plan.led_count(),
-            frame_bytes = plan.frame_bytes(),
-            line_max_fps,
-            "Connected serial LED controller"
-        );
-        if line_max_fps < RENDER_LOOP_MAX_FPS {
-            warn!(
-                device_id = %id,
-                adalight_device = %plan.id,
-                baud_rate = plan.baud_rate,
-                frame_bytes = plan.frame_bytes(),
-                line_max_fps,
-                "serial line carries at most {line_max_fps} frames per second for this strip; \
-                 faster frames coalesce to the newest one"
-            );
-        }
-
-        let session = AdalightSession::new(*id, Arc::clone(&plan), port);
-        ticket.install(Session::new(*id, plan, session)).await
+                        let session = AdalightSession::new(id, Arc::clone(&plan), port);
+                        Ok(Session::new(id, plan, session))
+                    }
+                },
+            )
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
@@ -484,6 +490,11 @@ impl AdalightSession {
 
 impl DeviceSession for AdalightSession {
     type Facts = Arc<AdalightDevicePlan>;
+
+    /// A serial open and a close of a port that never became a session both
+    /// run on blocking threads, and dropping the wait would detach them with
+    /// the exclusive lock.
+    const OPEN: Duration = Duration::MAX;
 
     const CLEANUP: Duration = DISCONNECT_BUDGET;
 

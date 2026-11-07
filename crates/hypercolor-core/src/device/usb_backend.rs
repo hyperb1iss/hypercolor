@@ -489,13 +489,12 @@ impl UsbDevice {
                 });
             }
         }
-        let Some(mut actor_task) = self.actor_task.take() else {
+        if self.actor_task.is_none() {
             if let Some(error) = self.last_async_error(device_id)? {
                 return Err(error);
             }
             return Ok(());
-        };
-        let _actor_abort = AbortTaskOnDrop(actor_task.abort_handle());
+        }
 
         let (response_tx, response_rx) = oneshot::channel();
         let command_sent = self
@@ -526,9 +525,24 @@ impl UsbDevice {
                     after: USB_ACTOR_SHUTDOWN_TIMEOUT,
                 });
             }
-            actor_task.abort();
+            if let Some(actor_task) = &self.actor_task {
+                actor_task.abort();
+            }
         }
 
+        if let Err(error) = shutdown_result {
+            self.store_async_error(error.clone(), device_id)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Wait for the actor to end, which is what lets go of the transport.
+    /// This runs however [`Self::shutdown`] went, even if close dropped it.
+    async fn join_actor(&mut self, device_id: DeviceId) -> std::result::Result<(), DeviceError> {
+        let Some(mut actor_task) = self.actor_task.take() else {
+            return self.last_async_error(device_id)?.map_or(Ok(()), Err);
+        };
         match tokio::time::timeout(USB_ACTOR_SHUTDOWN_TIMEOUT, &mut actor_task).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) if error.is_cancelled() => {}
@@ -555,16 +569,7 @@ impl UsbDevice {
             }
         }
 
-        if let Err(error) = shutdown_result {
-            self.store_async_error(error.clone(), device_id)?;
-            return Err(error);
-        }
-
-        if let Some(error) = self.last_async_error(device_id)? {
-            return Err(error);
-        }
-
-        Ok(())
+        self.last_async_error(device_id)?.map_or(Ok(()), Err)
     }
 
     fn last_async_error(
@@ -862,11 +867,11 @@ impl UsbProtocolConfigStore {
 
 impl UsbBackend {
     async fn configured_protocol(
-        &self,
+        protocol_configs: &UsbProtocolConfigStore,
         protocol_id: &str,
         device_id: DeviceId,
     ) -> Option<Box<dyn Protocol>> {
-        let config = self.protocol_configs.config(device_id).await?;
+        let config = protocol_configs.config(device_id).await?;
         (config.protocol_id() == protocol_id).then(|| config.build_protocol())
     }
 }
@@ -952,6 +957,9 @@ impl DeviceSession for UsbSession {
     /// Stopping the actor runs the protocol's shutdown sequence over USB.
     const CLEANUP: Duration = USB_ACTOR_SHUTDOWN_TIMEOUT.saturating_add(Duration::from_millis(100));
 
+    /// Joining the actor can take as long as stopping it.
+    const RELEASE: Duration = USB_ACTOR_SHUTDOWN_TIMEOUT.saturating_add(Duration::from_millis(100));
+
     async fn write_frame(
         &mut self,
         colors: &[[u8; 3]],
@@ -963,6 +971,10 @@ impl DeviceSession for UsbSession {
 
     async fn finish(&mut self) -> Result<(), DeviceError> {
         self.device.shutdown(self.device_id).await
+    }
+
+    async fn release(mut self) -> Result<(), DeviceError> {
+        self.device.join_actor(self.device_id).await
     }
 }
 
@@ -1013,13 +1025,13 @@ impl UsbBackend {
     }
 
     async fn build_protocol(
-        &self,
+        protocol_configs: &UsbProtocolConfigStore,
         pending: &PendingUsbDevice,
         device_id: DeviceId,
     ) -> Box<dyn Protocol> {
-        if let Some(protocol) = self
-            .configured_protocol(pending.descriptor.protocol.id, device_id)
-            .await
+        if let Some(protocol) =
+            Self::configured_protocol(protocol_configs, pending.descriptor.protocol.id, device_id)
+                .await
         {
             return protocol;
         }
@@ -1276,108 +1288,38 @@ impl UsbBackend {
         })?;
         Ok(Box::new(transport))
     }
-}
 
-fn format_error_chain(error: &anyhow::Error) -> String {
-    error
-        .chain()
-        .skip(1)
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" | caused_by: ")
-}
-
-fn lifecycle_policy_for_transport(transport: TransportType) -> DeviceLifecyclePolicy {
-    let TransportType::DriverUsb { binding } = transport else {
-        return DeviceLifecyclePolicy::default();
-    };
-    let mut policy = DeviceLifecyclePolicy::default();
-    if let Some(connect_timeout) = binding.lifecycle.connect_timeout {
-        policy = policy.with_connect_timeout(connect_timeout);
-    }
-    if binding.lifecycle.connect_execution == TransportConnectExecution::Background {
-        policy = policy.with_connect_execution(ConnectExecution::Background);
-    }
-    if !binding.lifecycle.retry_on_connect_timeout {
-        policy = policy.without_connect_timeout_retry();
+    /// The descriptor a discovery scan left for `id`.
+    fn pending_for_connect(&self, id: &DeviceId) -> Result<PendingUsbDevice, DeviceError> {
+        let pending_guard = self.pending.read().unwrap_or_else(PoisonError::into_inner);
+        let pending_ids = pending_guard
+            .keys()
+            .take(4)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        pending_guard.get(id).cloned().ok_or_else(|| {
+            debug!(
+                device_id = %id,
+                pending_cache_size = pending_guard.len(),
+                sample_ids = %pending_ids,
+                "USB connect refused a device without an adopted descriptor"
+            );
+            DeviceError::NotAdopted { device_id: *id }
+        })
     }
 
-    policy
-}
-
-#[async_trait::async_trait]
-impl DeviceBackend for UsbBackend {
-    fn info(&self) -> BackendInfo {
-        BackendInfo {
-            id: USB_OUTPUT_BACKEND_ID.to_owned(),
-            name: "USB HID (HAL)".to_owned(),
-            description: "Native USB devices via HAL protocol + transport".to_owned(),
-        }
-    }
-
-    fn supports_host_attachment_profiles(&self, _info: &DeviceInfo) -> bool {
-        true
-    }
-
-    fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
-        info.capabilities.supports_direct && info.total_led_count() > 0
-    }
-
-    fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
-        self.pending
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&info.id)
-            .map_or_else(DeviceLifecyclePolicy::default, |pending| {
-                lifecycle_policy_for_transport(pending.descriptor.transport)
-            })
-    }
-
-    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
-        let pending = pending_from_discovered(discovered).ok_or(DeviceError::NotAdopted {
-            device_id: discovered.info.id,
-        })?;
-        self.pending
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(discovered.info.id, pending);
-        Ok(())
-    }
-
+    /// Reach the device, run its init sequence, and start its actor.
     #[allow(
         clippy::too_many_lines,
-        reason = "USB connect owns discovery handoff, init, diagnostics, and actor startup"
+        reason = "a USB open owns discovery handoff, init, diagnostics, and actor startup"
     )]
-    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            self.sessions
-                .require(id)?
-                .transact(async |session| session.device.ensure_actor_ready(*id).await)
-                .await??;
-            debug!(device_id = %id, "USB device already connected; skipping duplicate connect");
-            return Ok(());
-        };
-
-        let pending = {
-            let pending_guard = self.pending.read().unwrap_or_else(PoisonError::into_inner);
-            let pending_ids = pending_guard
-                .keys()
-                .take(4)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            pending_guard.get(id).cloned().ok_or_else(|| {
-                debug!(
-                    device_id = %id,
-                    pending_cache_size = pending_guard.len(),
-                    sample_ids = %pending_ids,
-                    "USB connect refused a device without an adopted descriptor"
-                );
-                DeviceError::NotAdopted { device_id: *id }
-            })?
-        };
-
-        let result: Result<()> = async {
+    async fn open_session(
+        id: DeviceId,
+        pending: PendingUsbDevice,
+        input: Option<Arc<UsbDeviceInput>>,
+        protocol_configs: UsbProtocolConfigStore,
+    ) -> Result<Session<UsbSession>> {
         debug!(
             device_id = %id,
             vendor_id = format_args!("{:04X}", pending.vendor_id),
@@ -1403,8 +1345,8 @@ impl DeviceBackend for UsbBackend {
                 )
             })?;
 
-        let protocol: Arc<dyn Protocol> = Arc::from(self.build_protocol(&pending, *id).await);
-        let input = self.device_input_for(&pending, *id);
+        let protocol: Arc<dyn Protocol> =
+            Arc::from(Self::build_protocol(&protocol_configs, &pending, id).await);
         let transport_input = input
             .clone()
             .map(|input| input as Arc<dyn TransportInputSink>);
@@ -1476,7 +1418,7 @@ impl DeviceBackend for UsbBackend {
 
         let transport_name = transport.name();
         let resolved_info =
-            build_connected_device_info(*id, &pending.info_template, protocol.as_ref());
+            build_connected_device_info(id, &pending.info_template, protocol.as_ref());
         let segment_summary = resolved_info
             .segments
             .iter()
@@ -1517,7 +1459,7 @@ impl DeviceBackend for UsbBackend {
         }
 
         let actor_task = Self::spawn_device_actor(
-            *id,
+            id,
             pending.descriptor.name,
             protocol.clone(),
             transport,
@@ -1550,11 +1492,11 @@ impl DeviceBackend for UsbBackend {
             non_black_frame_diagnostics_emitted: false,
             input,
         };
-        let frame_sink = device.frame_sink(*id);
+        let frame_sink = device.frame_sink(id);
         let display_sink = device
             .info_template
             .display_surface()
-            .map(|_| device.display_sink(*id));
+            .map(|_| device.display_sink(id));
         let facts = UsbFacts {
             info_template: device.info_template.clone(),
             protocol: Arc::clone(&device.protocol),
@@ -1562,33 +1504,116 @@ impl DeviceBackend for UsbBackend {
             frame_sink,
             display_sink,
         };
-        ticket
-            .install(Session::new(
-                *id,
-                facts,
-                UsbSession {
-                    device_id: *id,
-                    device,
-                },
-            ))
-            .await?;
         // Input counts only once the device is fully connected, so a connect
         // that fails partway never shows up as an input source.
         if let Some(input) = connected_input {
             input.activate();
         }
+        Ok(Session::new(
+            id,
+            facts,
+            UsbSession {
+                device_id: id,
+                device,
+            },
+        ))
+    }
+}
 
-            Ok(())
+fn format_error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .skip(1)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" | caused_by: ")
+}
+
+fn lifecycle_policy_for_transport(transport: TransportType) -> DeviceLifecyclePolicy {
+    let TransportType::DriverUsb { binding } = transport else {
+        return DeviceLifecyclePolicy::default();
+    };
+    let mut policy = DeviceLifecyclePolicy::default();
+    if let Some(connect_timeout) = binding.lifecycle.connect_timeout {
+        policy = policy.with_connect_timeout(connect_timeout);
+    }
+    if binding.lifecycle.connect_execution == TransportConnectExecution::Background {
+        policy = policy.with_connect_execution(ConnectExecution::Background);
+    }
+    if !binding.lifecycle.retry_on_connect_timeout {
+        policy = policy.without_connect_timeout_retry();
+    }
+
+    policy
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for UsbBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: USB_OUTPUT_BACKEND_ID.to_owned(),
+            name: "USB HID (HAL)".to_owned(),
+            description: "Native USB devices via HAL protocol + transport".to_owned(),
         }
-        .await;
-        result.map_err(|error| {
-            map_hal_transport_error(
-                *id,
-                USB_OUTPUT_BACKEND_ID,
-                DeviceTransportOperation::Connect,
-                &error,
-            )
-        })
+    }
+
+    fn supports_host_attachment_profiles(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
+    fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
+        info.capabilities.supports_direct && info.total_led_count() > 0
+    }
+
+    fn lifecycle_policy(&self, info: &DeviceInfo) -> DeviceLifecyclePolicy {
+        self.pending
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&info.id)
+            .map_or_else(DeviceLifecyclePolicy::default, |pending| {
+                lifecycle_policy_for_transport(pending.descriptor.transport)
+            })
+    }
+
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let pending = pending_from_discovered(discovered).ok_or(DeviceError::NotAdopted {
+            device_id: discovered.info.id,
+        })?;
+        self.pending
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(discovered.info.id, pending);
+        Ok(())
+    }
+
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let pending = self.pending_for_connect(&id);
+                let input = pending
+                    .as_ref()
+                    .ok()
+                    .and_then(|pending| self.device_input_for(pending, id));
+                let protocol_configs = self.protocol_configs.clone();
+                async move {
+                    Self::open_session(id, pending?, input, protocol_configs)
+                        .await
+                        .map_err(|error| {
+                            map_hal_transport_error(
+                                id,
+                                USB_OUTPUT_BACKEND_ID,
+                                DeviceTransportOperation::Connect,
+                                &error,
+                            )
+                        })
+                }
+            })
+            .await?;
+        self.sessions
+            .require(&id)?
+            .transact(async |session| session.device.ensure_actor_ready(id).await)
+            .await?
     }
 
     async fn retire(&self) -> Result<(), DeviceError> {

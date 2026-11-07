@@ -65,16 +65,8 @@ pub struct PixelBackend {
     installation_id: InstallationId,
     /// Connected sessions.
     sessions: SessionTable<PixelSession>,
-    /// Shared IPv4 socket on an ephemeral port (E1.31 and DDP).
-    socket_v4: OnceCell<Arc<UdpSocket>>,
-    /// Shared IPv6 socket on an ephemeral port (E1.31 and DDP).
-    socket_v6: OnceCell<Arc<UdpSocket>>,
-    /// Art-Net socket bound to UDP 6454. Sessions own it; the backend only
-    /// keeps a weak handle, so the port is released when the last Art-Net
-    /// session ends and another application can take it.
-    artnet_socket: StdMutex<Weak<UdpSocket>>,
-    /// Whether the ephemeral-port fallback for Art-Net was already logged.
-    artnet_fallback_warned: AtomicBool,
+    /// Sockets every session of this backend shares.
+    sockets: Arc<PixelSockets>,
 }
 
 /// What a connect fixed about one session.
@@ -97,27 +89,22 @@ fn configured_plans(
         .collect())
 }
 
-impl PixelBackend {
-    /// Create a backend for this installation, authorized by `config`.
-    #[must_use]
-    pub fn new(config: Arc<dyn DriverConfigSource>, installation_id: InstallationId) -> Self {
-        Self {
-            devices: ConfiguredDevices::new(crate::DESCRIPTOR.id, config, configured_plans),
-            installation_id,
-            sessions: SessionTable::new(),
-            socket_v4: OnceCell::new(),
-            socket_v6: OnceCell::new(),
-            artnet_socket: StdMutex::default(),
-            artnet_fallback_warned: AtomicBool::new(false),
-        }
-    }
+/// Sockets every session of one backend shares.
+#[derive(Default)]
+struct PixelSockets {
+    /// Shared IPv4 socket on an ephemeral port (E1.31 and DDP).
+    socket_v4: OnceCell<Arc<UdpSocket>>,
+    /// Shared IPv6 socket on an ephemeral port (E1.31 and DDP).
+    socket_v6: OnceCell<Arc<UdpSocket>>,
+    /// Art-Net socket bound to UDP 6454. Sessions own it; the backend only
+    /// keeps a weak handle, so the port is released when the last Art-Net
+    /// session ends and another application can take it.
+    artnet_socket: StdMutex<Weak<UdpSocket>>,
+    /// Whether the ephemeral-port fallback for Art-Net was already logged.
+    artnet_fallback_warned: AtomicBool,
+}
 
-    /// Local address of the socket a connected device sends from.
-    #[must_use]
-    pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
-        self.sessions.facts(id).and_then(|facts| facts.local_addr)
-    }
-
+impl PixelSockets {
     async fn socket_for(&self, plan: &PixelDevicePlan) -> Result<Arc<UdpSocket>> {
         if plan.protocol == PixelProtocol::ArtNet {
             match self.artnet_source_socket() {
@@ -183,6 +170,25 @@ impl PixelBackend {
     }
 }
 
+impl PixelBackend {
+    /// Create a backend for this installation, authorized by `config`.
+    #[must_use]
+    pub fn new(config: Arc<dyn DriverConfigSource>, installation_id: InstallationId) -> Self {
+        Self {
+            devices: ConfiguredDevices::new(crate::DESCRIPTOR.id, config, configured_plans),
+            installation_id,
+            sessions: SessionTable::new(),
+            sockets: Arc::default(),
+        }
+    }
+
+    /// Local address of the socket a connected device sends from.
+    #[must_use]
+    pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
+        self.sessions.facts(id).and_then(|facts| facts.local_addr)
+    }
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for PixelBackend {
     fn info(&self) -> BackendInfo {
@@ -205,37 +211,46 @@ impl DeviceBackend for PixelBackend {
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let device = self.devices.current(id)?;
         let plan = Arc::clone(device.plan());
+        let keep = Arc::clone(&plan);
+        let id = *id;
         // A device that moved closes first, so its old stream ends properly.
-        let Some(ticket) = self
-            .sessions
-            .open_unless(id, |open| open.plan == plan)
-            .await?
-        else {
-            return Ok(());
-        };
-        let socket = self
-            .socket_for(&plan)
-            .await
-            .map_err(|error| DeviceError::connection(id, error))?;
-        // A session only ever goes live under the config it resolved.
-        self.devices.confirm(id, &device)?;
+        self.sessions
+            .open_unless(
+                &id,
+                |open| open.plan == keep,
+                || {
+                    let devices = self.devices.clone();
+                    let sockets = Arc::clone(&self.sockets);
+                    let installation_id = self.installation_id.clone();
+                    async move {
+                        let socket = sockets
+                            .socket_for(&plan)
+                            .await
+                            .map_err(|error| DeviceError::connection(id, error))?;
+                        // A session only ever goes live under the config it
+                        // resolved.
+                        devices.confirm(&id, &device)?;
 
-        info!(
-            device_id = %id,
-            pixel_device = %plan.id,
-            target = %plan.target,
-            protocol = plan.protocol.as_str(),
-            pixels = plan.total_pixels(),
-            universes = plan.universe_summary().unwrap_or_default(),
-            "Connected pixel controller"
-        );
-        let facts = PixelFacts {
-            plan: Arc::clone(&plan),
-            local_addr: socket.local_addr().ok(),
-        };
-        let session = PixelSession::new(*id, plan, socket, &self.installation_id)
-            .map_err(|error| DeviceError::connection(id, error))?;
-        ticket.install(Session::new(*id, facts, session)).await
+                        info!(
+                            device_id = %id,
+                            pixel_device = %plan.id,
+                            target = %plan.target,
+                            protocol = plan.protocol.as_str(),
+                            pixels = plan.total_pixels(),
+                            universes = plan.universe_summary().unwrap_or_default(),
+                            "Connected pixel controller"
+                        );
+                        let facts = PixelFacts {
+                            plan: Arc::clone(&plan),
+                            local_addr: socket.local_addr().ok(),
+                        };
+                        let session = PixelSession::new(id, plan, socket, &installation_id)
+                            .map_err(|error| DeviceError::connection(id, error))?;
+                        Ok(Session::new(id, facts, session))
+                    }
+                },
+            )
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

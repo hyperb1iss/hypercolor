@@ -827,26 +827,22 @@ async fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
-    let ticket = backend
+    let session = Session::new(
+        device_id,
+        UsbFacts {
+            info_template: info,
+            protocol,
+            target_fps: None,
+            frame_sink,
+            display_sink,
+        },
+        UsbSession { device_id, device },
+    );
+    backend
         .sessions
-        .begin_open(&device_id)
+        .open(&device_id, || async move { Ok(session) })
         .await
-        .expect("a fresh backend accepts sessions")
-        .expect("nothing is open yet");
-    ticket
-        .install(Session::new(
-            device_id,
-            UsbFacts {
-                info_template: info,
-                protocol,
-                target_fps: None,
-                frame_sink,
-                display_sink,
-            },
-            UsbSession { device_id, device },
-        ))
-        .await
-        .expect("install should succeed");
+        .expect("open should succeed");
     backend
 }
 
@@ -921,26 +917,22 @@ async fn backend_with_display_actor(
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
-    let ticket = backend
+    let session = Session::new(
+        device_id,
+        UsbFacts {
+            info_template: info,
+            protocol,
+            target_fps: None,
+            frame_sink,
+            display_sink,
+        },
+        UsbSession { device_id, device },
+    );
+    backend
         .sessions
-        .begin_open(&device_id)
+        .open(&device_id, || async move { Ok(session) })
         .await
-        .expect("a fresh backend accepts sessions")
-        .expect("nothing is open yet");
-    ticket
-        .install(Session::new(
-            device_id,
-            UsbFacts {
-                info_template: info,
-                protocol,
-                target_fps: None,
-                frame_sink,
-                display_sink,
-            },
-            UsbSession { device_id, device },
-        ))
-        .await
-        .expect("install should succeed");
+        .expect("open should succeed");
     backend
 }
 
@@ -1442,7 +1434,11 @@ async fn shutdown_response_loss_still_joins_a_failing_actor() {
         }
     });
     let mut device = usb_device_with_actor_task(device_id, command_tx, actor_task);
-    let mut shutdown_task = tokio::spawn(async move { (device.shutdown(device_id).await, device) });
+    let mut shutdown_task = tokio::spawn(async move {
+        let shutdown_result = device.shutdown(device_id).await;
+        let _ = device.join_actor(device_id).await;
+        (shutdown_result, device)
+    });
 
     timeout(Duration::from_secs(1), response_dropped.notified())
         .await

@@ -288,6 +288,22 @@ impl YeelightBackend {
         self
     }
 
+    fn opener(&self) -> YeelightOpener {
+        YeelightOpener {
+            config: self.config.clone(),
+            quota_backoff: self.quota_backoff,
+        }
+    }
+}
+
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct YeelightOpener {
+    config: YeelightConfig,
+    quota_backoff: Duration,
+}
+
+impl YeelightOpener {
     async fn open_session(
         &self,
         id: &DeviceId,
@@ -641,32 +657,36 @@ impl DeviceBackend for YeelightBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-        let route = self
-            .adopted
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        let session = self
-            .open_session(id, &route)
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let route = self
+                    .adopted
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .cloned();
+                let opener = self.opener();
+                async move {
+                    let route = route.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    let session = opener
+                        .open_session(&id, &route)
+                        .await
+                        .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
+                    let facts = session.facts();
+                    info!(
+                        device_id = %id,
+                        control = %facts.profile.reply.location,
+                        yeelight_id = %facts.profile.reply.id,
+                        model = ?facts.profile.reply.model,
+                        mode = facts.mode.as_str(),
+                        max_fps = facts.info.capabilities.max_fps,
+                        "Connected to Yeelight device"
+                    );
+                    Ok(session)
+                }
+            })
             .await
-            .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
-        let facts = session.facts();
-        ticket.install(session).await?;
-        info!(
-            device_id = %id,
-            control = %facts.profile.reply.location,
-            yeelight_id = %facts.profile.reply.id,
-            model = ?facts.profile.reply.model,
-            mode = facts.mode.as_str(),
-            max_fps = facts.info.capabilities.max_fps,
-            "Connected to Yeelight device"
-        );
-        Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {

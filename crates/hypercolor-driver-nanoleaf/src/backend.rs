@@ -55,7 +55,7 @@ pub struct NanoleafBackend {
     config: NanoleafConfig,
     credential_store: Arc<CredentialStore>,
     stream_port: u16,
-    discovered: StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>,
+    discovered: Arc<StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>>,
     sessions: SessionTable<NanoleafSession>,
 }
 
@@ -124,7 +124,7 @@ impl NanoleafBackend {
             config,
             credential_store,
             stream_port: DEFAULT_NANOLEAF_STREAM_PORT,
-            discovered: StdRwLock::new(HashMap::new()),
+            discovered: Arc::new(StdRwLock::new(HashMap::new())),
             sessions: SessionTable::new(),
         }
     }
@@ -140,88 +140,32 @@ impl NanoleafBackend {
         self.stream_port = stream_port;
         self
     }
-}
 
-#[async_trait::async_trait]
-impl DeviceBackend for NanoleafBackend {
-    fn info(&self) -> BackendInfo {
-        BackendInfo {
-            id: "nanoleaf".to_owned(),
-            name: "Nanoleaf".to_owned(),
-            description: "Nanoleaf panels via External Control streaming".to_owned(),
+    fn opener(&self) -> NanoleafOpener {
+        NanoleafOpener {
+            config: self.config.clone(),
+            credential_store: Arc::clone(&self.credential_store),
+            stream_port: self.stream_port,
+            discovered: Arc::clone(&self.discovered),
         }
     }
+}
 
-    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
-        let ip = discovered
-            .metadata
-            .get("ip")
-            .and_then(|value| value.parse::<IpAddr>().ok())
-            .ok_or(DeviceError::NotAdopted {
-                device_id: discovered.info.id,
-            })?;
-        let api_port = discovered
-            .metadata
-            .get("api_port")
-            .and_then(|value| value.parse::<u16>().ok())
-            .ok_or(DeviceError::NotAdopted {
-                device_id: discovered.info.id,
-            })?;
-        let device_key =
-            discovered
-                .metadata
-                .get("device_key")
-                .cloned()
-                .ok_or(DeviceError::NotAdopted {
-                    device_id: discovered.info.id,
-                })?;
-        self.discovered
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                discovered.info.id,
-                NanoleafDiscoveredDevice {
-                    device_key,
-                    ip,
-                    api_port,
-                    info: discovered.info.clone(),
-                    panel_ids: Vec::new(),
-                    connect_behavior: discovered.connect_behavior,
-                    metadata: discovered.metadata.clone(),
-                    claim: discovered.claim.clone(),
-                },
-            );
-        Ok(())
-    }
+/// What an open takes from the backend, since it runs on the session table's
+/// task and outlives the connect that started it.
+struct NanoleafOpener {
+    config: NanoleafConfig,
+    credential_store: Arc<CredentialStore>,
+    stream_port: u16,
+    discovered: Arc<StdRwLock<HashMap<DeviceId, NanoleafDiscoveredDevice>>>,
+}
 
-    async fn connected_device_info(
+impl NanoleafOpener {
+    async fn open_session(
         &self,
         id: &DeviceId,
-    ) -> std::result::Result<Option<DeviceInfo>, DeviceError> {
-        Ok(self.sessions.facts(id).map(|info| info.as_ref().clone()))
-    }
-
-    fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
-        true
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "connect performs credential lookup, metadata refresh, and stream bootstrap in one linear flow"
-    )]
-    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-
-        let discovered = self
-            .discovered
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-
+        discovered: NanoleafDiscoveredDevice,
+    ) -> std::result::Result<Session<NanoleafSession>, DeviceError> {
         let auth_token = load_auth_token(
             &self.credential_store,
             &discovered.device_key,
@@ -307,30 +251,108 @@ impl DeviceBackend for NanoleafBackend {
             );
 
         let led_count = usize::try_from(info.total_led_count()).unwrap_or(usize::MAX);
-        let panels = info.total_led_count();
-        ticket
-            .install(Session::new(
-                *id,
-                info,
-                NanoleafSession {
-                    device_id: *id,
-                    stream,
-                    led_count,
-                    transition_time: self.config.transition_time,
-                    brightness: u8::MAX,
-                    scaled_colors: Vec::new(),
-                    last_size_mismatch_warn_at: None,
-                },
-            ))
-            .await?;
-
         info!(
             device_id = %id,
             ip = %discovered.ip,
-            panels,
+            panels = info.total_led_count(),
             "Connected to Nanoleaf device"
         );
+        Ok(Session::new(
+            *id,
+            info,
+            NanoleafSession {
+                device_id: *id,
+                stream,
+                led_count,
+                transition_time: self.config.transition_time,
+                brightness: u8::MAX,
+                scaled_colors: Vec::new(),
+                last_size_mismatch_warn_at: None,
+            },
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for NanoleafBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "nanoleaf".to_owned(),
+            name: "Nanoleaf".to_owned(),
+            description: "Nanoleaf panels via External Control streaming".to_owned(),
+        }
+    }
+
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let ip = discovered
+            .metadata
+            .get("ip")
+            .and_then(|value| value.parse::<IpAddr>().ok())
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
+        let api_port = discovered
+            .metadata
+            .get("api_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
+        let device_key =
+            discovered
+                .metadata
+                .get("device_key")
+                .cloned()
+                .ok_or(DeviceError::NotAdopted {
+                    device_id: discovered.info.id,
+                })?;
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                discovered.info.id,
+                NanoleafDiscoveredDevice {
+                    device_key,
+                    ip,
+                    api_port,
+                    info: discovered.info.clone(),
+                    panel_ids: Vec::new(),
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata.clone(),
+                    claim: discovered.claim.clone(),
+                },
+            );
         Ok(())
+    }
+
+    async fn connected_device_info(
+        &self,
+        id: &DeviceId,
+    ) -> std::result::Result<Option<DeviceInfo>, DeviceError> {
+        Ok(self.sessions.facts(id).map(|info| info.as_ref().clone()))
+    }
+
+    fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
+        true
+    }
+
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let discovered = self
+                    .discovered
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(&id)
+                    .cloned();
+                let opener = self.opener();
+                async move {
+                    let discovered = discovered.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    opener.open_session(&id, discovered).await
+                }
+            })
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {

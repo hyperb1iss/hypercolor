@@ -499,49 +499,54 @@ impl DeviceBackend for OpenRgbBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(());
-        };
-        let route = self
-            .discovered_route(id)
-            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        if let Some(reason) = &route.disabled_reason
-            && !can_restore_zero_led_zones(&route, &self.config)
-        {
-            return Err(DeviceError::connection(id, reason));
-        }
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let route = self.discovered_route(&id);
+                let config = self.config.clone();
+                let runtime = Arc::clone(&self.runtime);
+                async move {
+                    let route = route.ok_or(DeviceError::NotAdopted { device_id: id })?;
+                    if let Some(reason) = &route.disabled_reason
+                        && !can_restore_zero_led_zones(&route, &config)
+                    {
+                        return Err(DeviceError::connection(id, reason));
+                    }
 
-        let pool = endpoint_pool();
-        let pin = pool.acquire(route.endpoint, &self.config).await;
-        let endpoint = Arc::clone(&pin.connection);
-        let connected =
-            connect_controller(&endpoint, &route, &self.config, Arc::clone(&self.runtime)).await;
-        let result = match connected {
-            Ok(controller) => {
-                let target_fps = controller.route.target_fps;
-                let controller = Arc::new(Mutex::new(controller));
-                endpoint.register_controller(*id, Arc::clone(&controller));
-                endpoint.ensure_task();
-                let session = OpenRgbSession::spawn(
-                    *id,
-                    Arc::clone(&endpoint),
-                    Arc::clone(&controller),
-                    target_fps,
-                );
-                let facts = OpenRgbFacts {
-                    controller,
-                    target_fps,
-                };
-                ticket.install(Session::new(*id, facts, session)).await
-            }
-            Err(error) => Err(map_openrgb_device_error(
-                *id,
-                &error,
-                OpenRgbDeviceOperation::Connect,
-            )),
-        };
-        pin.release().await;
-        result
+                    let pin = endpoint_pool().acquire(route.endpoint, &config).await;
+                    let endpoint = Arc::clone(&pin.connection);
+                    let connected = connect_controller(&endpoint, &route, &config, runtime).await;
+                    let session = match connected {
+                        Ok(controller) => {
+                            let target_fps = controller.route.target_fps;
+                            let controller = Arc::new(Mutex::new(controller));
+                            endpoint.register_controller(id, Arc::clone(&controller));
+                            endpoint.ensure_task();
+                            let session = OpenRgbSession::spawn(
+                                id,
+                                Arc::clone(&endpoint),
+                                Arc::clone(&controller),
+                                target_fps,
+                            );
+                            let facts = OpenRgbFacts {
+                                controller,
+                                target_fps,
+                            };
+                            Ok(Session::new(id, facts, session))
+                        }
+                        Err(error) => Err(map_openrgb_device_error(
+                            id,
+                            &error,
+                            OpenRgbDeviceOperation::Connect,
+                        )),
+                    };
+                    // The registered controller keeps the endpoint from here,
+                    // so the session's release is what ends it.
+                    pin.release().await;
+                    session
+                }
+            })
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
