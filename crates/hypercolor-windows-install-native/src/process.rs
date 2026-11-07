@@ -8,7 +8,8 @@ use std::io;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{
-    ERROR_INVALID_PARAMETER, FILETIME, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, FILETIME, HANDLE, WAIT_FAILED, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -226,7 +227,12 @@ pub fn processes_named(names: &[&str]) -> io::Result<Vec<RunningProcess>> {
         // SAFETY: As for `Process32FirstW` above.
         more = unsafe { Process32NextW(*snapshot, &raw mut entry) };
     }
-    Ok(found)
+    // Only this code ends the list. Any other failure means the list was not
+    // read, which must never pass for nothing running.
+    match more {
+        Err(error) if error.code() != ERROR_NO_MORE_FILES.to_hresult() => Err(os_error(&error)),
+        _ => Ok(found),
+    }
 }
 
 fn wait_milliseconds(timeout: Duration) -> u32 {
