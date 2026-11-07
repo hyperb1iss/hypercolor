@@ -4484,6 +4484,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "win32job",
+ "windows-registry 0.100.0",
  "windows-sys 0.61.2",
 ]
 
