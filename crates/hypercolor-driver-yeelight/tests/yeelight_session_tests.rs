@@ -19,12 +19,21 @@ struct YeelightRig {
     backend: YeelightBackend,
     id: DeviceId,
     seen: usize,
-    closes: usize,
 }
 
 impl YeelightRig {
     fn music_count(&self) -> usize {
         self.fake.music_lines().len()
+    }
+
+    /// Every `set_music` the device received: starts are true, stops false.
+    fn music_switches(&self) -> Vec<bool> {
+        self.fake
+            .control_lines()
+            .iter()
+            .filter(|line| line["method"] == "set_music")
+            .map(|line| line["params"][0] == 1)
+            .collect()
     }
 }
 
@@ -59,22 +68,33 @@ impl SessionRig for YeelightRig {
         self.seen = self.music_count();
     }
 
+    /// The peer saw every control and music connection reach EOF.
     async fn assert_transport_released(&mut self) {
-        // Each session holds one control and one music connection; the
-        // peer sees both reach EOF.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
+            let opened = self.fake.control_connections();
             let (control, music) = self.fake.closed_connections();
-            if control > self.closes && music > self.closes {
-                self.closes += 1;
+            if control == opened && music == opened {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "a closed session left a connection open ({control} control, {music} music)"
+                "a closed session left a connection open: {opened} opened, \
+                 {control} control and {music} music closed"
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    async fn teardowns(&mut self) -> usize {
+        self.music_switches()
+            .iter()
+            .filter(|started| !**started)
+            .count()
+    }
+
+    async fn engaged(&mut self) -> bool {
+        self.music_switches().last() == Some(&true)
     }
 }
 
@@ -100,7 +120,6 @@ async fn yeelight_sessions_keep_the_contract() -> TestResult {
         backend,
         id: discovered.info.id,
         seen: 0,
-        closes: 0,
     };
     assert_session_contract(&mut rig).await;
     Ok(())

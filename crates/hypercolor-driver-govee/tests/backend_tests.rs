@@ -8,6 +8,7 @@ use hypercolor_driver_api::{
 use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
+use hypercolor_driver_govee::lan::razer::encode_razer_mode_base64;
 use hypercolor_driver_govee::{
     GoveeConfig, GoveeLanDevice, build_cloud_discovered_device, build_device_info,
 };
@@ -300,6 +301,28 @@ struct GoveeRig {
     backend: GoveeBackend,
     id: DeviceId,
     receiver: UdpSocket,
+    /// Razer mode switches the device received: on is true, off false.
+    razer_modes: Vec<bool>,
+}
+
+impl GoveeRig {
+    /// Read what arrived, remembering the Razer mode switches among it.
+    fn drain(&mut self) -> usize {
+        let on = encode_razer_mode_base64(true);
+        let off = encode_razer_mode_base64(false);
+        let mut buf = [0_u8; 2048];
+        let mut count = 0;
+        while let Ok((len, _)) = self.receiver.try_recv_from(&mut buf) {
+            count += 1;
+            let payload = String::from_utf8_lossy(&buf[..len]);
+            if payload.contains(&on) {
+                self.razer_modes.push(true);
+            } else if payload.contains(&off) {
+                self.razer_modes.push(false);
+            }
+        }
+        count
+    }
 }
 
 #[async_trait::async_trait]
@@ -317,21 +340,49 @@ impl SessionRig for GoveeRig {
     }
 
     async fn saw_traffic(&mut self, window: Duration) -> bool {
-        let mut buf = [0_u8; 2048];
-        timeout(window, self.receiver.recv_from(&mut buf))
-            .await
-            .is_ok_and(|received| received.is_ok())
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            if self.drain() > 0 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        false
     }
 
     async fn discard_traffic(&mut self) {
-        let mut buf = [0_u8; 2048];
-        while self.receiver.try_recv_from(&mut buf).is_ok() {}
+        self.drain();
     }
 
     /// Every Govee session sends from the backend's one LAN socket, so
-    /// there is nothing private to release. Sharing is proven by
-    /// `closing_one_session_leaves_the_shared_socket_running`.
-    async fn assert_transport_released(&mut self) {}
+    /// there is nothing private to release, and sharing is proven by
+    /// `closing_one_session_leaves_the_shared_socket_running`. What a close
+    /// leaves is its goodbye datagram, which nothing acknowledges, so wait
+    /// for it to land before anything counts teardowns.
+    async fn assert_transport_released(&mut self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            self.drain();
+            if self.razer_modes.last() != Some(&true) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a closed session left the device in Razer mode"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn teardowns(&mut self) -> usize {
+        self.drain();
+        self.razer_modes.iter().filter(|on| !**on).count()
+    }
+
+    async fn engaged(&mut self) -> bool {
+        self.drain();
+        self.razer_modes.last() == Some(&true)
+    }
 }
 
 #[tokio::test]
@@ -340,7 +391,7 @@ async fn govee_sessions_keep_the_contract() {
         .await
         .expect("test UDP socket should bind");
     let target = receiver.local_addr().expect("test socket has local addr");
-    let device = test_device("H6163");
+    let device = test_device("H619A");
     let id = build_device_info(&device).id;
     let backend = GoveeBackend::new(GoveeConfig::default());
     adopt_lan_device(&backend, device, target);
@@ -349,6 +400,7 @@ async fn govee_sessions_keep_the_contract() {
         backend,
         id,
         receiver,
+        razer_modes: Vec::new(),
     };
     assert_session_contract(&mut rig).await;
 }

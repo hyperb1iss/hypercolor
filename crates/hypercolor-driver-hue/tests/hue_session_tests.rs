@@ -23,15 +23,23 @@ use webrtc_util::conn::Listener;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const CONFIG_ID: &str = "12345678-1234-1234-1234-123456789abc";
+const SLOW_TEARDOWN: Duration = Duration::from_millis(50);
 const CLIENT_KEY: [u8; 16] = [
     0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
 ];
 
 #[derive(Default)]
 struct Bridge {
-    stops: AtomicUsize,
+    streams_opened: AtomicUsize,
     streams_closed: AtomicUsize,
     actions: Mutex<Vec<String>>,
+}
+
+impl Bridge {
+    fn count(&self, action: &str) -> usize {
+        let actions = self.actions.lock().expect("actions lock");
+        actions.iter().filter(|entry| *entry == action).count()
+    }
 }
 
 struct HueRig {
@@ -39,11 +47,12 @@ struct HueRig {
     id: DeviceId,
     packets: mpsc::UnboundedReceiver<Vec<u8>>,
     bridge: Arc<Bridge>,
-    closes: usize,
 }
 
 #[async_trait]
 impl SessionRig for HueRig {
+    const TEARDOWN_ANSWERED: bool = true;
+
     fn backend(&self) -> &dyn DeviceBackend {
         &self.backend
     }
@@ -66,23 +75,34 @@ impl SessionRig for HueRig {
         while self.packets.try_recv().is_ok() {}
     }
 
-    /// The bridge saw the stream end and was told to leave entertainment
-    /// mode, the two things that free it for the next client.
+    /// The bridge saw every stream end and was told to leave entertainment
+    /// mode each time, the two things that free it for the next client.
     async fn assert_transport_released(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let stops = self.bridge.stops.load(Ordering::SeqCst);
+            let starts = self.bridge.count("start");
+            let stops = self.bridge.count("stop");
+            let opened = self.bridge.streams_opened.load(Ordering::SeqCst);
             let closed = self.bridge.streams_closed.load(Ordering::SeqCst);
-            if stops > self.closes && closed > self.closes {
-                self.closes += 1;
+            if starts == stops && opened == closed {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "a closed session left the bridge streaming ({stops} stops, {closed} closes)"
+                "a closed session left the bridge streaming: {starts} starts, {stops} stops, \
+                 {opened} streams opened, {closed} closed"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    async fn teardowns(&mut self) -> usize {
+        self.bridge.count("stop")
+    }
+
+    async fn engaged(&mut self) -> bool {
+        let actions = self.bridge.actions.lock().expect("actions lock");
+        actions.last().is_some_and(|action| action == "start")
     }
 }
 
@@ -93,6 +113,10 @@ async fn serve_http(listener: TcpListener, bridge: Arc<Bridge>) {
             let Ok(request) = read_http_request(&mut stream).await else {
                 return;
             };
+            // A slow stop lands after any session that raced ahead of it.
+            if request.contains(r#""action":"stop""#) {
+                tokio::time::sleep(SLOW_TEARDOWN).await;
+            }
             let _ = stream.write_all(&respond(&request, &bridge)).await;
         });
     }
@@ -113,7 +137,6 @@ fn respond(request: &str, bridge: &Bridge) -> Vec<u8> {
         ))
     } else if request.starts_with("PUT /clip/v2/resource/entertainment_configuration/") {
         let action = if request.contains(r#""action":"stop""#) {
-            bridge.stops.fetch_add(1, Ordering::SeqCst);
             "stop"
         } else {
             "start"
@@ -178,6 +201,7 @@ async fn serve_dtls(
             let dtls = DTLSConn::new(conn, config, false, None)
                 .await
                 .expect("handshake DTLS");
+            bridge.streams_opened.fetch_add(1, Ordering::SeqCst);
             let mut buffer = [0_u8; 256];
             while let Ok(len) = dtls.read(&mut buffer, None).await {
                 let _ = packets.send(buffer[..len].to_vec());
@@ -235,15 +259,8 @@ async fn hue_sessions_keep_the_contract() -> TestResult {
         id,
         packets: packet_rx,
         bridge: Arc::clone(&bridge),
-        closes: 0,
     };
     assert_session_contract(&mut rig).await;
-
-    assert_eq!(
-        *bridge.actions.lock().expect("actions lock"),
-        ["start", "stop", "start", "stop"],
-        "every session starts and stops the stream once"
-    );
     http.abort();
     dtls.abort();
     Ok(())

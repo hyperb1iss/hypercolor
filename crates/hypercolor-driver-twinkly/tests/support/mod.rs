@@ -84,6 +84,7 @@ struct State {
     discovery_requests: Vec<Vec<u8>>,
     failing_mode_posts: usize,
     last_rt_source: Option<SocketAddr>,
+    slow_mode_restore: bool,
 }
 
 /// A running fake device.
@@ -123,6 +124,7 @@ impl FakeTwinkly {
             discovery_requests: Vec::new(),
             failing_mode_posts: 0,
             last_rt_source: None,
+            slow_mode_restore: false,
         }));
 
         let http_state = Arc::clone(&state);
@@ -198,6 +200,11 @@ impl FakeTwinkly {
 
     pub fn datagrams(&self) -> Vec<Vec<u8>> {
         self.state.lock().expect("state lock").datagrams.clone()
+    }
+
+    /// Take a while to apply any mode switch other than real-time.
+    pub fn slow_down_mode_restores(&self) {
+        self.state.lock().expect("state lock").slow_mode_restore = true;
     }
 
     /// Address the newest real-time datagram came from.
@@ -314,6 +321,12 @@ async fn serve(mut stream: TcpStream, state: &Mutex<State>) -> std::io::Result<(
     }
     let body_end = (header_end + content_length).min(raw.len());
     let body = String::from_utf8_lossy(&raw[header_end..body_end]).to_string();
+
+    // A slow restore lands after any session that raced ahead of it.
+    let slow_restore = state.lock().expect("state lock").slow_mode_restore;
+    if slow_restore && path.ends_with("/led/mode") && method == "POST" && !body.contains("rt") {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     let (status, reply) = respond(state, &method, &path, token.as_deref(), &body);
     let response = format!(

@@ -29,6 +29,7 @@ use hypercolor_types::device::{
     SegmentInfo,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
@@ -971,12 +972,18 @@ fn negotiated_target_fps_uses_unreported_heuristics() {
 // ── WledBackend Lifecycle Tests ────────────────────────────────────────
 
 fn adopt_test_device(backend: &WledBackend, device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) {
+    backend
+        .adopt_device(&test_discovery(device_id, ip, info))
+        .expect("WLED backend should adopt test discovery metadata");
+}
+
+fn test_discovery(device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) -> DiscoveredDevice {
     let color_format = if info.rgbw {
         DeviceColorFormat::Rgbw
     } else {
         DeviceColorFormat::Rgb
     };
-    let discovered = DiscoveredDevice {
+    DiscoveredDevice {
         fingerprint: DeviceFingerprint::mint(
             hypercolor_types::device::FingerprintNamespace::Net,
             "wled",
@@ -1016,10 +1023,7 @@ fn adopt_test_device(backend: &WledBackend, device_id: DeviceId, ip: IpAddr, inf
             ("mac".to_owned(), info.mac),
         ]),
         claim: None,
-    };
-    backend
-        .adopt_device(&discovered)
-        .expect("WLED backend should adopt test discovery metadata");
+    }
 }
 
 #[tokio::test]
@@ -1196,14 +1200,70 @@ async fn backend_disconnect_sends_final_black_frame_after_output() {
     assert_eq!(&packet[10..22], &[0; 12]);
 }
 
+/// WLED's JSON API on loopback, recording each realtime state change.
+#[derive(Default)]
+struct FakeWledApi {
+    live_states: Mutex<Vec<bool>>,
+}
+
+async fn serve_json_api(listener: tokio::net::TcpListener, api: Arc<FakeWledApi>) {
+    while let Ok((mut stream, _)) = listener.accept().await {
+        let api = Arc::clone(&api);
+        tokio::spawn(async move {
+            let mut buffer = vec![0_u8; 4096];
+            let mut read = 0;
+            loop {
+                match stream.read(&mut buffer[read..]).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(count) => read += count,
+                }
+                let text = String::from_utf8_lossy(&buffer[..read]);
+                let Some((headers, body)) = text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if body.len() < length {
+                    continue;
+                }
+                if headers.starts_with("POST /json/state") {
+                    let state: serde_json::Value =
+                        serde_json::from_str(body).expect("realtime state is JSON");
+                    // A slow exit lands after any session that raced ahead.
+                    if state["live"] == false {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    api.live_states
+                        .lock()
+                        .expect("api lock")
+                        .push(state["live"].as_bool().expect("live is a bool"));
+                }
+                let response =
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
+            }
+        });
+    }
+}
+
 struct WledRig {
     backend: WledBackend,
     id: DeviceId,
     receiver: UdpSocket,
+    api: Arc<FakeWledApi>,
 }
 
 #[async_trait::async_trait]
 impl SessionRig for WledRig {
+    const TEARDOWN_ANSWERED: bool = true;
+
     fn backend(&self) -> &dyn DeviceBackend {
         &self.backend
     }
@@ -1228,10 +1288,28 @@ impl SessionRig for WledRig {
         while self.receiver.try_recv_from(&mut buffer).is_ok() {}
     }
 
-    /// Every WLED session sends from the backend's one socket, so there is
-    /// nothing private to release. Sharing is proven by
-    /// `closing_one_session_leaves_the_shared_socket_running`.
-    async fn assert_transport_released(&mut self) {}
+    /// The UDP socket is shared across the backend, so the device itself is
+    /// the proof: every session that entered realtime mode has left it.
+    /// `closing_one_session_leaves_the_shared_socket_running` proves sharing.
+    async fn assert_transport_released(&mut self) {
+        let states = self.api.live_states.lock().expect("api lock");
+        let entered = states.iter().filter(|live| **live).count();
+        assert_eq!(
+            entered,
+            states.len() - entered,
+            "every realtime entry must have its exit: {states:?}"
+        );
+    }
+
+    async fn teardowns(&mut self) -> usize {
+        let states = self.api.live_states.lock().expect("api lock");
+        states.iter().filter(|live| !**live).count()
+    }
+
+    async fn engaged(&mut self) -> bool {
+        let states = self.api.live_states.lock().expect("api lock");
+        states.last() == Some(&true)
+    }
 }
 
 #[tokio::test]
@@ -1240,22 +1318,33 @@ async fn wled_sessions_keep_the_contract() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new();
-    backend.set_realtime_http_enabled(false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback JSON API");
+    let api_port = listener.local_addr().expect("API address").port();
+    let api = Arc::new(FakeWledApi::default());
+    let server = tokio::spawn(serve_json_api(listener, Arc::clone(&api)));
+
+    let backend = WledBackend::new();
     let id = DeviceId::new();
-    adopt_test_device(
-        &backend,
+    let mut discovered = test_discovery(
         id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(4, false, 30, true),
     );
+    discovered
+        .metadata
+        .insert("api_port".to_owned(), api_port.to_string());
+    backend.adopt_device(&discovered).expect("adopt");
 
     let mut rig = WledRig {
         backend,
         id,
         receiver,
+        api,
     };
     assert_session_contract(&mut rig).await;
+    server.abort();
 }
 
 #[tokio::test]

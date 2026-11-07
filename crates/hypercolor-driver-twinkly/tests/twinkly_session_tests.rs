@@ -27,6 +27,8 @@ struct TwinklyRig {
 
 #[async_trait]
 impl SessionRig for TwinklyRig {
+    const TEARDOWN_ANSWERED: bool = true;
+
     fn backend(&self) -> &dyn DeviceBackend {
         &self.backend
     }
@@ -60,11 +62,30 @@ impl SessionRig for TwinklyRig {
         let source = self.fake.last_rt_source().expect("a datagram arrived");
         assert_udp_port_released(source.port()).await;
     }
+
+    /// Mode restores: a mode post that is not the switch to real-time.
+    async fn teardowns(&mut self) -> usize {
+        self.fake
+            .requests()
+            .iter()
+            .filter(|request| {
+                request.method == "POST"
+                    && request.path.ends_with("/led/mode")
+                    && !request.body.contains("rt")
+            })
+            .count()
+    }
+
+    async fn engaged(&mut self) -> bool {
+        self.fake.mode() == "rt"
+    }
 }
 
 #[tokio::test]
 async fn twinkly_sessions_keep_the_contract() -> TestResult {
     let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(4)).await?;
+    fake.set_mode("movie");
+    fake.slow_down_mode_restores();
     let profiles = TwinklyScanner::new(TwinklyScanOptions::new(
         vec![fake.endpoint()],
         Vec::new(),

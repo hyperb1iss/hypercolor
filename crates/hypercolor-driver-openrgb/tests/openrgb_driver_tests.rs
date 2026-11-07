@@ -3610,12 +3610,14 @@ async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
 #[derive(Default)]
 struct ContractServer {
     updates: AtomicUsize,
+    accepts: AtomicUsize,
     closes: AtomicUsize,
 }
 
 async fn run_contract_server(listener: TcpListener, state: Arc<ContractServer>) {
     let controller = controller_payload_v5("Board", "SER123", "hidraw0");
     while let Ok((mut stream, _)) = listener.accept().await {
+        state.accepts.fetch_add(1, Ordering::SeqCst);
         let state = Arc::clone(&state);
         let controller = controller.clone();
         tokio::spawn(async move {
@@ -3643,7 +3645,6 @@ struct OpenRgbRig {
     id: DeviceId,
     server: Arc<ContractServer>,
     seen: usize,
-    closes: usize,
 }
 
 #[async_trait]
@@ -3678,21 +3679,26 @@ impl SessionRig for OpenRgbRig {
     }
 
     /// The last session on an endpoint takes the pooled SDK connection with
-    /// it, so the server sees that connection close.
+    /// it, so the server sees every connection it accepted close.
     async fn assert_transport_released(&mut self) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
+            let accepts = self.server.accepts.load(Ordering::SeqCst);
             let closes = self.server.closes.load(Ordering::SeqCst);
-            if closes > self.closes {
-                self.closes = closes;
+            if closes == accepts {
                 return;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "a closed session left its SDK connection open"
+                "a closed session left an SDK connection open: {accepts} accepted, {closes} closed"
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    /// The controller leaves the endpoint by dropping the shared link.
+    async fn teardowns(&mut self) -> usize {
+        self.server.closes.load(Ordering::SeqCst)
     }
 }
 
@@ -3733,7 +3739,6 @@ async fn openrgb_sessions_keep_the_contract() {
         id,
         server: Arc::clone(&state),
         seen: 0,
-        closes: state.closes.load(Ordering::SeqCst),
     };
     assert_session_contract(&mut rig).await;
     server.abort();
