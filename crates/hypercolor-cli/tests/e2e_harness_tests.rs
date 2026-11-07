@@ -209,7 +209,7 @@ struct DaemonHarness {
 }
 
 struct TestPathsGuard {
-    dirs: IsolatedUserDirs,
+    dirs: Arc<IsolatedUserDirs>,
 }
 
 impl TestPathsGuard {

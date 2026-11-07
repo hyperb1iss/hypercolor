@@ -150,6 +150,9 @@ pub struct AppState {
     /// Lists the host's audio input devices for the settings API.
     pub(crate) audio_devices: crate::startup::EnumerateAudioDevices,
 
+    /// Keeps a fixture's user directories claimed for as long as this state.
+    _host_user_dirs: Option<Arc<hypercolor_core::config::paths::IsolatedUserDirs>>,
+
     /// Data directory backing state-owned stores and caches.
     pub data_dir: PathBuf,
 
@@ -711,6 +714,7 @@ impl AppState {
             device_metrics,
             config_manager,
             audio_devices: crate::startup::no_audio_devices(),
+            _host_user_dirs: None,
             data_dir,
             state_dir,
             extensions: ExtensionRegistry::default(),
@@ -817,6 +821,7 @@ impl AppState {
             device_metrics: Arc::clone(&daemon.device_metrics),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             audio_devices: daemon.audio_devices,
+            _host_user_dirs: daemon.host_user_dirs.clone(),
             data_dir,
             state_dir,
             extensions: daemon.extensions.clone(),

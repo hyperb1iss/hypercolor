@@ -319,6 +319,8 @@ pub struct DaemonState {
     pub(super) usb_hotplug: bool,
     pub(super) software_watch: bool,
     pub(crate) audio_devices: EnumerateAudioDevices,
+    /// Keeps a fixture's user directories claimed for as long as this state.
+    pub(crate) host_user_dirs: Option<Arc<hypercolor_core::config::paths::IsolatedUserDirs>>,
 
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,

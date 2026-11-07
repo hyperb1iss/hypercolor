@@ -1535,7 +1535,7 @@ mod tests {
     /// Relocates every user directory into one fixture root for the life
     /// of the guard.
     struct PathOverrides {
-        dirs: hypercolor_core::config::paths::IsolatedUserDirs,
+        dirs: Arc<hypercolor_core::config::paths::IsolatedUserDirs>,
     }
 
     impl PathOverrides {

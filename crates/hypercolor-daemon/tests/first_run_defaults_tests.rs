@@ -23,7 +23,7 @@ use hypercolor_types::scene::SceneId;
 ///
 /// The user-directory claim also serializes the bundled root override.
 struct Install {
-    dirs: IsolatedUserDirs,
+    dirs: Arc<IsolatedUserDirs>,
     root: tempfile::TempDir,
 }
 

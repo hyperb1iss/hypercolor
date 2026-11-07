@@ -6,7 +6,7 @@
 //! overrides on top.
 
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError, RwLock};
 
 use hypercolor_platform_fs::user_dirs;
 
@@ -19,8 +19,9 @@ static STATE_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| 
 static CACHE_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
 static RUNTIME_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> =
     LazyLock::new(|| RwLock::new(None));
-/// Serializes fixtures that claim the process-wide directory overrides.
-static USER_DIRS_CLAIM: Mutex<()> = Mutex::new(());
+/// Whether a fixture holds the process-wide directory overrides.
+static USER_DIRS_CLAIMED: Mutex<bool> = Mutex::new(false);
+static USER_DIRS_RELEASED: Condvar = Condvar::new();
 
 fn read_override(slot: &RwLock<Option<PathBuf>>) -> Option<PathBuf> {
     slot.read().unwrap_or_else(PoisonError::into_inner).clone()
@@ -187,13 +188,14 @@ impl UserDirPaths {
 /// A fixture's claim on every Hypercolor user directory.
 ///
 /// Points data, config, state, cache, and runtime resolution at fixture
-/// paths for as long as the claim lives, and clears the overrides when it
-/// drops. The overrides are process-wide, so claims serialize: a second
-/// claim in the same process waits for the first.
+/// paths until the last owner of the claim drops, then clears the overrides.
+/// The overrides are process-wide, so claims serialize: a second claim in
+/// the same process waits for the first to release. Whatever composes a
+/// daemon from a claim keeps a share of it, so the directories cannot fall
+/// back to the real user's while that daemon lives.
 #[doc(hidden)]
 pub struct IsolatedUserDirs {
     paths: UserDirPaths,
-    _claim: MutexGuard<'static, ()>,
 }
 
 impl IsolatedUserDirs {
@@ -202,25 +204,29 @@ impl IsolatedUserDirs {
     /// The directories themselves are created lazily by whatever writes
     /// them; `root` only needs to outlive the claim.
     #[must_use]
-    pub fn claim(root: &Path) -> Self {
+    pub fn claim(root: &Path) -> Arc<Self> {
         Self::claim_paths(UserDirPaths::under(root))
     }
 
     /// Claim the user directories at exactly `paths`.
     #[must_use]
-    pub fn claim_paths(paths: UserDirPaths) -> Self {
-        let claim = USER_DIRS_CLAIM
+    pub fn claim_paths(paths: UserDirPaths) -> Arc<Self> {
+        let mut claimed = USER_DIRS_CLAIMED
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        while *claimed {
+            claimed = USER_DIRS_RELEASED
+                .wait(claimed)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *claimed = true;
+        drop(claimed);
         write_override(&DATA_DIR_OVERRIDE, Some(paths.data.clone()));
         write_override(&CONFIG_DIR_OVERRIDE, Some(paths.config.clone()));
         write_override(&STATE_DIR_OVERRIDE, Some(paths.state.clone()));
         write_override(&CACHE_DIR_OVERRIDE, Some(paths.cache.clone()));
         write_override(&RUNTIME_DIR_OVERRIDE, Some(paths.runtime.clone()));
-        Self {
-            paths,
-            _claim: claim,
-        }
+        Arc::new(Self { paths })
     }
 
     /// The claimed directories.
@@ -241,6 +247,10 @@ impl Drop for IsolatedUserDirs {
         ] {
             write_override(slot, None);
         }
+        *USER_DIRS_CLAIMED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
+        USER_DIRS_RELEASED.notify_one();
     }
 }
 

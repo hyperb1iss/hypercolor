@@ -47,6 +47,7 @@ pub struct HostPorts {
     pub(super) usb_hotplug: bool,
     pub(super) audio_devices: EnumerateAudioDevices,
     pub(super) software_watch: bool,
+    pub(super) user_dirs: Option<Arc<IsolatedUserDirs>>,
 }
 
 impl HostPorts {
@@ -61,6 +62,7 @@ impl HostPorts {
             usb_hotplug: true,
             audio_devices: enumerate_audio_input_devices,
             software_watch: true,
+            user_dirs: None,
         }
     }
 
@@ -77,10 +79,11 @@ impl HostPorts {
     /// session or its processes, and no audio device is listed. Audio stays
     /// registered on a source with no device.
     ///
-    /// Taking the claim means these ports cannot exist unless every user
-    /// directory already resolves inside it.
+    /// The ports keep a share of the claim, and so does the daemon composed
+    /// from them, so every user directory stays inside it while either
+    /// lives.
     #[must_use]
-    pub fn isolated(_dirs: &IsolatedUserDirs) -> Self {
+    pub fn isolated(dirs: &Arc<IsolatedUserDirs>) -> Self {
         Self {
             build_drivers: network::build_offline_driver_module_registry,
             compose_inputs: compose_silent_inputs,
@@ -88,6 +91,7 @@ impl HostPorts {
             usb_hotplug: false,
             audio_devices: no_audio_devices(),
             software_watch: false,
+            user_dirs: Some(Arc::clone(dirs)),
         }
     }
 }

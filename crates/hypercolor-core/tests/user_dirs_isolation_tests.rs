@@ -2,6 +2,8 @@
 //!
 //! Every test here holds the process-wide claim, so they serialize.
 
+use std::sync::Arc;
+
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::config::paths::{self, IsolatedUserDirs, UserDirPaths};
 
@@ -18,6 +20,20 @@ fn claimed_user_dirs_resolve_inside_the_fixture() {
     assert_eq!(paths::runtime_dir().as_ref(), Some(&dirs.runtime));
     assert!(paths::servo_runtime_cache_dir().starts_with(&dirs.cache));
     assert_eq!(*dirs, UserDirPaths::under(root.path()));
+}
+
+#[test]
+fn every_share_of_a_claim_keeps_the_directories_claimed() {
+    fn assert_send_sync<T: Send + Sync>(_: &T) {}
+
+    let root = tempfile::tempdir().expect("fixture root");
+    let claim = IsolatedUserDirs::claim(root.path());
+    assert_send_sync(&claim);
+    let share = Arc::clone(&claim);
+
+    drop(claim);
+
+    assert_eq!(ConfigManager::data_dir(), share.paths().data);
 }
 
 #[test]

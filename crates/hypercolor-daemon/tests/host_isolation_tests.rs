@@ -72,7 +72,7 @@ fn counting_registry(scans: &Arc<AtomicUsize>) -> DriverModuleRegistry {
     registry
 }
 
-fn isolated_daemon(root: &std::path::Path, dirs: &IsolatedUserDirs) -> DaemonState {
+fn isolated_daemon(root: &std::path::Path, dirs: &Arc<IsolatedUserDirs>) -> DaemonState {
     let config = default_config();
     let manager = Arc::new(ConfigManager::from_config_unchecked(
         root.join("hypercolor.toml"),
@@ -134,6 +134,44 @@ async fn isolated_ports_compose_no_host_service() {
     let scanners = scan_every_enabled_driver(Arc::new(AppState::from_daemon_state(&daemon))).await;
     daemon.shutdown().await.expect("isolated daemon shuts down");
     assert_found_nothing(&scanners);
+}
+
+#[tokio::test]
+async fn composed_state_keeps_the_user_directories_claimed() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let dirs = IsolatedUserDirs::claim(root.path());
+    let data_dir = dirs.paths().data.clone();
+    let config = default_config();
+    let manager = Arc::new(ConfigManager::from_config_unchecked(
+        root.path().join("hypercolor.toml"),
+        config.clone(),
+    ));
+
+    let ports = HostPorts::isolated(&dirs);
+    drop(dirs);
+    assert_eq!(
+        ConfigManager::data_dir(),
+        data_dir,
+        "the ports hold a share"
+    );
+
+    let daemon = DaemonState::initialize(
+        hypercolor_core::config::BootConfig::from_config_unchecked(config),
+        manager,
+        ports,
+    )
+    .expect("isolated daemon initializes");
+    assert_eq!(
+        ConfigManager::data_dir(),
+        data_dir,
+        "the daemon holds a share"
+    );
+    drop(daemon);
+
+    // The last share released the claim, so this does not wait forever.
+    let next_root = tempfile::tempdir().expect("second fixture root");
+    let next = IsolatedUserDirs::claim(next_root.path());
+    assert_eq!(ConfigManager::data_dir(), next.paths().data);
 }
 
 #[tokio::test]

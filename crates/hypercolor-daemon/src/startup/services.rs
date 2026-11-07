@@ -225,6 +225,7 @@ impl DaemonState {
             usb_hotplug,
             audio_devices,
             software_watch,
+            user_dirs: host_user_dirs,
         } = host;
         let config: &HypercolorConfig = &boot;
         let data_dir = ConfigManager::data_dir();
@@ -1021,6 +1022,7 @@ impl DaemonState {
             usb_hotplug,
             software_watch,
             audio_devices,
+            host_user_dirs,
             start_time: Instant::now(),
             startup_progress: progress,
             server_identity,

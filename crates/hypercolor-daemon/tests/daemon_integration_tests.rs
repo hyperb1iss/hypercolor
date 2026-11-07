@@ -37,7 +37,7 @@ const MINIMAL_TOML: &str = "schema_version = 5\n";
 /// Field order matters: the claim clears its overrides before the
 /// directory it pointed at is removed.
 struct TestUserDirs {
-    dirs: IsolatedUserDirs,
+    dirs: Arc<IsolatedUserDirs>,
     _dir: tempfile::TempDir,
 }
 

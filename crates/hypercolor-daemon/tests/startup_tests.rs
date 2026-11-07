@@ -402,7 +402,7 @@ impl DeviceBackend for ShutdownCleanupBackend {
 /// Field order matters: the claim clears its overrides before the
 /// directory it pointed at is removed.
 struct TestDataDirGuard {
-    dirs: IsolatedUserDirs,
+    dirs: Arc<IsolatedUserDirs>,
     _dir: tempfile::TempDir,
     data_dir: PathBuf,
     state_dir: PathBuf,
