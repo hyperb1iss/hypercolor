@@ -3,16 +3,22 @@
 //! Units never move, and the coordinator switches `active.json` itself, so
 //! the layout holds only what names a unit from outside it:
 //!
-//! | Position | Broker `ImagePath` | Daemon rule | App rule  |
-//! | -------- | ------------------ | ----------- | --------- |
-//! | 0        | prior              | prior       | prior     |
-//! | 1        | candidate          | prior       | prior     |
-//! | 2        | candidate          | candidate   | prior     |
-//! | 3        | candidate          | candidate   | candidate |
+//! | Position | Update service | Broker `ImagePath` | Daemon rule | App rule  |
+//! | -------- | -------------- | ------------------ | ----------- | --------- |
+//! | 0        | proven slot    | prior              | prior       | prior     |
+//! | 1        | other slot     | prior              | prior       | prior     |
+//! | 2        | other slot     | candidate          | prior       | prior     |
+//! | 3        | other slot     | candidate          | candidate   | prior     |
+//! | 4        | other slot     | candidate          | candidate   | candidate |
 //!
 //! Each step changes one recorded value, so a step repeated after a crash
 //! is recognized as done. A compensation writes back the exact value the
 //! record retained, or removes a rule that did not exist.
+//!
+//! The bootstrap goes first because it is the step a release can simply
+//! refuse: a new one has to prove it loads before `ImagePath` moves, and
+//! that refusal should cost nothing. A release that ships the bootstrap the
+//! active slot already holds leaves the service alone.
 //!
 //! Positions never depend on whether the broker runs. Windows starts it at
 //! boot from whatever `ImagePath` names, and its failure actions restart it
@@ -20,24 +26,27 @@
 //! any moment. The switch stops the broker itself, and the runtime step
 //! that starts the release starts the broker first.
 
+use super::machine_layout::{BootstrapSlot, WINDOWS_BROKER_PROGRAM};
 use super::model::{
-    WINDOWS_BROKER_MEMBER, WindowsBrokerObservation, WindowsFirewallObservation,
-    WindowsFirewallRule, error, same_windows_path, service_program,
+    WindowsFirewallObservation, WindowsFirewallRule, WindowsLayoutObservation, error,
+    same_windows_path, service_program,
 };
 use super::record::WindowsRecord;
 use crate::{InstallPlatformError, PlatformCheckpoint};
 
 /// The layout operations of one transaction.
-pub(super) const LAYOUT_OPERATION_COUNT: u16 = 3;
+pub(super) const LAYOUT_OPERATION_COUNT: u16 = 4;
 
 /// The one effect that moves a transaction between two adjacent positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LayoutStep {
+    Bootstrap,
     Broker,
     Rule(WindowsFirewallRule),
 }
 
 const STEPS: [LayoutStep; LAYOUT_OPERATION_COUNT as usize] = [
+    LayoutStep::Bootstrap,
     LayoutStep::Broker,
     LayoutStep::Rule(WindowsFirewallRule::Daemon),
     LayoutStep::Rule(WindowsFirewallRule::App),
@@ -84,12 +93,24 @@ fn applied(step: LayoutStep, position: u16) -> bool {
 }
 
 impl WindowsRecord {
+    /// The slot the update service runs from at `position`, when this
+    /// transaction replaces its bootstrap.
+    pub(super) fn bootstrap_slot_at(&self, position: u16) -> Option<BootstrapSlot> {
+        self.bootstrap.map(|proven| {
+            if applied(LayoutStep::Bootstrap, position) {
+                proven.other()
+            } else {
+                proven
+            }
+        })
+    }
+
     /// The broker program this transaction registers at `position`, when a
     /// broker is registered at all.
     pub(super) fn broker_program_at(&self, position: u16) -> Option<String> {
         let baseline = self.broker.as_ref()?;
         Some(if applied(LayoutStep::Broker, position) {
-            self.candidate_path(WINDOWS_BROKER_MEMBER)
+            self.candidate_path(WINDOWS_BROKER_PROGRAM)
         } else {
             baseline.program.clone()
         })
@@ -117,14 +138,12 @@ impl WindowsRecord {
     /// gone now proves no position at all. Its stored rules outlive it, so
     /// treating it as matched would skip a compensation for good; the
     /// transaction rests until it answers again.
-    pub(super) fn layout_holds(
-        &self,
-        position: u16,
-        broker: Option<&WindowsBrokerObservation>,
-        firewall: Option<&WindowsFirewallObservation>,
-    ) -> bool {
+    pub(super) fn layout_holds(&self, position: u16, observed: &WindowsLayoutObservation) -> bool {
+        let bootstrap_holds = self
+            .bootstrap_slot_at(position)
+            .is_none_or(|expected| observed.bootstrap == Some(expected));
         let broker_holds = self.broker_program_at(position).is_none_or(|expected| {
-            broker.is_some_and(|broker| {
+            observed.broker.as_ref().is_some_and(|broker| {
                 service_program(&broker.image)
                     .is_some_and(|actual| same_windows_path(actual, &expected))
             })
@@ -133,7 +152,7 @@ impl WindowsRecord {
             let Some(baseline) = self.firewall.as_ref() else {
                 return true;
             };
-            let Some(firewall) = firewall else {
+            let Some(firewall) = observed.firewall.as_ref() else {
                 return false;
             };
             match (
@@ -145,7 +164,8 @@ impl WindowsRecord {
                 _ => false,
             }
         };
-        broker_holds
+        bootstrap_holds
+            && broker_holds
             && rule_holds(WindowsFirewallRule::Daemon)
             && rule_holds(WindowsFirewallRule::App)
     }
@@ -155,12 +175,15 @@ impl WindowsRecord {
 mod tests {
     use super::{LAYOUT_OPERATION_COUNT, LayoutStep, position_at, step};
     use crate::PlatformCheckpoint;
-    use crate::windows::WindowsFirewallRule;
     use crate::windows::model::{
-        WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsBrokerObservation,
-        WindowsFileIdentity, WindowsFirewallObservation, WindowsUnitBinding,
+        WindowsBrokerObservation, WindowsFileIdentity, WindowsFirewallObservation,
+        WindowsLayoutObservation, WindowsUnitBinding,
     };
     use crate::windows::record::{WindowsBrokerBaseline, WindowsRecord};
+    use crate::windows::{
+        BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_BROKER_PROGRAM, WINDOWS_DAEMON_PROGRAM,
+        WindowsFirewallRule,
+    };
 
     const COUNT: u16 = LAYOUT_OPERATION_COUNT;
     const ROOT: &str = r"C:\H\units";
@@ -172,14 +195,14 @@ mod tests {
     }
 
     fn broker_of(seed: char) -> String {
-        path(seed, WINDOWS_BROKER_MEMBER)
+        path(seed, WINDOWS_BROKER_PROGRAM)
     }
 
     /// The firewall when each rule allows the seeded unit's program.
     fn rules(daemon: char, app: char) -> WindowsFirewallObservation {
         WindowsFirewallObservation {
-            daemon: Some(path(daemon, WINDOWS_DAEMON_MEMBER)),
-            app: Some(path(app, WINDOWS_APP_MEMBER)),
+            daemon: Some(path(daemon, WINDOWS_DAEMON_PROGRAM)),
+            app: Some(path(app, WINDOWS_APP_PROGRAM)),
         }
     }
 
@@ -194,7 +217,8 @@ mod tests {
             version: "0.9.0".to_owned(),
             app: identity.clone(),
             daemon: identity.clone(),
-            broker: identity,
+            broker: identity.clone(),
+            bootstrap: identity,
         }
     }
 
@@ -204,6 +228,7 @@ mod tests {
             candidate: binding('b'),
             prior: Some(binding('a')),
             baseline: None,
+            bootstrap: Some(BootstrapSlot::A),
             broker: Some(WindowsBrokerBaseline {
                 program: broker_of('a'),
                 running: true,
@@ -212,30 +237,40 @@ mod tests {
         }
     }
 
-    fn broker(program: &str) -> WindowsBrokerObservation {
-        WindowsBrokerObservation {
-            image: format!("\"{program}\""),
-            running: false,
+    fn observed(
+        slot: BootstrapSlot,
+        broker: &str,
+        firewall: WindowsFirewallObservation,
+    ) -> WindowsLayoutObservation {
+        WindowsLayoutObservation {
+            bootstrap: Some(slot),
+            broker: Some(WindowsBrokerObservation {
+                image: format!("\"{broker}\""),
+                running: false,
+            }),
+            firewall: Some(firewall),
         }
     }
 
     /// Every position's exact observation, in order.
-    fn positions() -> [(WindowsBrokerObservation, WindowsFirewallObservation); 4] {
+    fn positions() -> [WindowsLayoutObservation; 5] {
+        let (proven, other) = (BootstrapSlot::A, BootstrapSlot::B);
         [
-            (broker(&broker_of('a')), rules('a', 'a')),
-            (broker(&broker_of('b')), rules('a', 'a')),
-            (broker(&broker_of('b')), rules('b', 'a')),
-            (broker(&broker_of('b')), rules('b', 'b')),
+            observed(proven, &broker_of('a'), rules('a', 'a')),
+            observed(other, &broker_of('a'), rules('a', 'a')),
+            observed(other, &broker_of('b'), rules('a', 'a')),
+            observed(other, &broker_of('b'), rules('b', 'a')),
+            observed(other, &broker_of('b'), rules('b', 'b')),
         ]
     }
 
     #[test]
     fn every_position_is_told_apart() {
         let record = record();
-        for (position, (broker, firewall)) in (0_u16..).zip(positions()) {
+        for (position, observation) in (0_u16..).zip(positions()) {
             for candidate in 0..=COUNT {
                 assert_eq!(
-                    record.layout_holds(candidate, Some(&broker), Some(&firewall)),
+                    record.layout_holds(candidate, &observation),
                     candidate == position,
                     "observation of {position} judged at {candidate}"
                 );
@@ -246,33 +281,47 @@ mod tests {
     #[test]
     fn whether_the_broker_runs_never_changes_the_position() {
         let record = record();
-        let (mut broker, firewall) = positions()[1].clone();
+        let mut observation = positions()[2].clone();
         for running in [false, true] {
-            broker.running = running;
-            assert!(record.layout_holds(1, Some(&broker), Some(&firewall)));
+            if let Some(broker) = &mut observation.broker {
+                broker.running = running;
+            }
+            assert!(record.layout_holds(2, &observation));
         }
     }
 
     #[test]
     fn a_broker_that_vanished_is_drift() {
         let record = record();
-        let (_, firewall) = positions()[0].clone();
-        assert!(!record.layout_holds(0, None, Some(&firewall)));
+        let mut observation = positions()[0].clone();
+        observation.broker = None;
+        assert!(!record.layout_holds(0, &observation));
+    }
+
+    #[test]
+    fn an_update_service_that_vanished_is_drift() {
+        let record = record();
+        let mut observation = positions()[0].clone();
+        observation.bootstrap = None;
+        assert!(!record.layout_holds(0, &observation));
     }
 
     #[test]
     fn a_broker_line_that_is_not_one_program_is_drift() {
         let record = record();
-        let (mut broker, firewall) = positions()[0].clone();
-        broker.image = format!("\"{}\" --anything", broker_of('a'));
-        assert!(!record.layout_holds(0, Some(&broker), Some(&firewall)));
+        let mut observation = positions()[0].clone();
+        if let Some(broker) = &mut observation.broker {
+            broker.image = format!("\"{}\" --anything", broker_of('a'));
+        }
+        assert!(!record.layout_holds(0, &observation));
     }
 
     #[test]
     fn a_firewall_that_stopped_proves_no_position() {
         let record = record();
-        for (position, (broker, _)) in (0_u16..).zip(positions()) {
-            assert!(!record.layout_holds(position, Some(&broker), None));
+        for (position, mut observation) in (0_u16..).zip(positions()) {
+            observation.firewall = None;
+            assert!(!record.layout_holds(position, &observation));
         }
     }
 
@@ -284,18 +333,27 @@ mod tests {
             ..rules('a', 'a')
         };
         record.firewall = Some(absent.clone());
-        let (broker, _) = positions()[0].clone();
-        assert!(record.layout_holds(0, Some(&broker), Some(&absent)));
-        assert!(!record.layout_holds(0, Some(&broker), Some(&rules('a', 'a'))));
+        let mut observation = positions()[0].clone();
+        observation.firewall = Some(absent);
+        assert!(record.layout_holds(0, &observation));
+        observation.firewall = Some(rules('a', 'a'));
+        assert!(!record.layout_holds(0, &observation));
     }
 
     #[test]
     fn what_was_never_managed_holds_everywhere() {
         let mut record = record();
+        record.bootstrap = None;
         record.broker = None;
         record.firewall = None;
+        let nothing = WindowsLayoutObservation {
+            bootstrap: None,
+            broker: None,
+            firewall: None,
+        };
         for position in 0..=COUNT {
-            assert!(record.layout_holds(position, None, None));
+            assert!(record.layout_holds(position, &nothing));
+            assert_eq!(record.bootstrap_slot_at(position), None);
             assert_eq!(record.broker_program_at(position), None);
         }
     }
@@ -318,10 +376,11 @@ mod tests {
     }
 
     #[test]
-    fn the_steps_run_broker_first() {
-        assert_eq!(step(0).expect("first"), LayoutStep::Broker);
+    fn the_bootstrap_goes_first_and_the_app_rule_last() {
+        assert_eq!(step(0).expect("first"), LayoutStep::Bootstrap);
+        assert_eq!(step(1).expect("second"), LayoutStep::Broker);
         assert_eq!(
-            step(2).expect("last"),
+            step(COUNT - 1).expect("last"),
             LayoutStep::Rule(WindowsFirewallRule::App)
         );
         assert!(step(COUNT).is_err());

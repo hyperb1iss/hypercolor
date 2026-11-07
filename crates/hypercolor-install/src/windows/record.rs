@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::machine_layout::BootstrapSlot;
 use super::model::{
     WindowsFirewallObservation, WindowsFirewallRule, WindowsRuntime, WindowsUnitBinding, error,
     member_path,
@@ -21,6 +22,9 @@ pub(super) struct WindowsRecord {
     pub(super) prior: Option<WindowsUnitBinding>,
     /// The app and daemon that ran when the transaction was prepared.
     pub(super) baseline: Option<WindowsRuntime>,
+    /// The slot the update service ran from, when the candidate ships a
+    /// different bootstrap; `None` leaves the service alone.
+    pub(super) bootstrap: Option<BootstrapSlot>,
     /// The broker as it was registered; `None` when it was not registered.
     pub(super) broker: Option<WindowsBrokerBaseline>,
     /// The firewall rules as they were; `None` when no firewall answered.

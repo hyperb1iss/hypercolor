@@ -17,14 +17,14 @@ use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess, WindowsEn
 use sha2::{Digest as _, Sha256};
 
 use super::error::ReleasePayloadError;
+use super::machine_layout::{
+    WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM, WINDOWS_DAEMON_PROGRAM,
+};
 use super::manifest::{
     MANIFEST_NAME, MAX_RELEASE_MANIFEST_BYTES, Member, PermissionClass, ValidatedManifest,
     fold_case, split_parent,
 };
-use super::model::{
-    WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsFileIdentity,
-    WindowsUnitBinding,
-};
+use super::model::{WindowsFileIdentity, WindowsUnitBinding};
 use super::store::{InstallLock, InstallStore};
 use crate::model::{UnitId, UnitRecord};
 
@@ -141,9 +141,10 @@ pub(super) fn bind_windows_unit(
     Ok(WindowsUnitBinding {
         unit: unit.id().clone(),
         version: manifest.version.clone(),
-        app: identity(WINDOWS_APP_MEMBER)?,
-        daemon: identity(WINDOWS_DAEMON_MEMBER)?,
-        broker: identity(WINDOWS_BROKER_MEMBER)?,
+        app: identity(WINDOWS_APP_PROGRAM)?,
+        daemon: identity(WINDOWS_DAEMON_PROGRAM)?,
+        broker: identity(WINDOWS_BROKER_PROGRAM)?,
+        bootstrap: identity(WINDOWS_BOOTSTRAP_PROGRAM)?,
     })
 }
 

@@ -25,13 +25,18 @@ use windows_service::service::{Service, ServiceAccess, ServiceInfo, ServiceState
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 use super::executor::WindowsInstallExecutor;
+use super::machine_layout::{
+    BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_DAEMON_PROGRAM, WindowsInstallLayout,
+};
 use super::model::{
-    WINDOWS_APP_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsBrokerObservation, WindowsFileIdentity,
-    WindowsFirewallObservation, WindowsFirewallRule, WindowsProcessId, WindowsProcessImage,
-    WindowsRunningProcess, WindowsRuntimeObservation, WindowsUnitBinding, error,
+    WindowsBrokerObservation, WindowsFileIdentity, WindowsFirewallObservation, WindowsFirewallRule,
+    WindowsProcessId, WindowsProcessImage, WindowsRunningProcess, WindowsRuntimeObservation,
+    WindowsUnitBinding, error,
 };
 use super::payload::bind_windows_unit;
+use super::release_selection::{ReleaseRecords as _, decode_active_pointer};
 use super::store::InstallStore;
+use super::update_service::{ScmUpdateService, install_bootstrap, restore_bootstrap};
 use crate::local_http::{MAX_HTTP_RESPONSE_BYTES, http_get};
 use crate::{InstallPlatformError, LocalHttpResponse, UnitId, UnitRecord};
 
@@ -102,6 +107,7 @@ fn native_ids(processes: &[WindowsProcessId]) -> Vec<ProcessId> {
 #[derive(Debug, Clone)]
 pub struct WindowsNativeExecutor {
     store: InstallStore,
+    layout: WindowsInstallLayout,
     broker_service: String,
     daemon_api: SocketAddr,
 }
@@ -112,6 +118,7 @@ impl WindowsNativeExecutor {
     #[must_use]
     pub fn new(store: InstallStore, daemon_api: SocketAddr) -> Self {
         Self {
+            layout: WindowsInstallLayout::at(store.root(), store.state_root()),
             store,
             broker_service: BROKER_SERVICE_NAME.to_owned(),
             daemon_api,
@@ -135,6 +142,19 @@ impl WindowsNativeExecutor {
             Err(source) if winapi_code(&source) == Some(ERROR_SERVICE_DOES_NOT_EXIST) => Ok(None),
             Err(source) => Err(service_error("open the SMBus broker service", &source)),
         }
+    }
+
+    fn open_update_service(&self) -> Result<Option<ScmUpdateService>, InstallPlatformError> {
+        match ScmUpdateService::open(&self.layout) {
+            Ok(service) => Ok(Some(service)),
+            Err(source) if source.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST) => Ok(None),
+            Err(source) => Err(io_error("open the update service", source)),
+        }
+    }
+
+    fn require_update_service(&self) -> Result<ScmUpdateService, InstallPlatformError> {
+        self.open_update_service()?
+            .ok_or_else(|| error("the update service is not registered"))
     }
 
     fn require_broker(&self, access: ServiceAccess) -> Result<Service, InstallPlatformError> {
@@ -271,13 +291,59 @@ fn hash_file(file: std::fs::File) -> io::Result<String> {
 
 impl WindowsInstallExecutor for WindowsNativeExecutor {
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError> {
-        self.store
-            .read_active_unit()
-            .map_err(|source| error(source.to_string()))
+        let mut records = self
+            .store
+            .release_records()
+            .map_err(|source| error(source.to_string()))?;
+        records
+            .read_pointer()
+            .map_err(|source| io_error("read the active pointer", source))?
+            .map(|bytes| decode_active_pointer(&bytes))
+            .transpose()
+            .map_err(error)
     }
 
     fn bind_unit(&mut self, unit: &UnitRecord) -> Result<WindowsUnitBinding, InstallPlatformError> {
         bind_windows_unit(unit).map_err(|source| error(source.to_string()))
+    }
+
+    fn observe_bootstrap(&mut self) -> Result<Option<BootstrapSlot>, InstallPlatformError> {
+        let Some(service) = self.open_update_service()? else {
+            return Ok(None);
+        };
+        service
+            .image_slot()
+            .map_err(|source| io_error("read the update service's image", source))?
+            .map(Some)
+            .ok_or_else(|| error("the update service's image names neither bootstrap slot"))
+    }
+
+    fn bootstrap_sha256(&mut self, slot: BootstrapSlot) -> Result<String, InstallPlatformError> {
+        let directory = WindowsDirectory::open(
+            &self.layout.bootstrap_directory(),
+            WindowsDirectoryAccess::Read,
+        )
+        .map_err(|source| io_error("open the bootstrap slots", source))?;
+        let file = directory
+            .open_file(OsStr::new(slot.file_name()))
+            .map_err(|source| io_error("open a bootstrap slot", source))?;
+        hash_file(file).map_err(|source| io_error("hash a bootstrap slot", source))
+    }
+
+    fn install_bootstrap(
+        &mut self,
+        proven: BootstrapSlot,
+        source: &str,
+    ) -> Result<(), InstallPlatformError> {
+        let mut service = self.require_update_service()?;
+        install_bootstrap(&mut service, proven, Path::new(source))
+            .map_err(|source| io_error("replace the update service's bootstrap", source))
+    }
+
+    fn restore_bootstrap(&mut self, proven: BootstrapSlot) -> Result<(), InstallPlatformError> {
+        let mut service = self.require_update_service()?;
+        restore_bootstrap(&mut service, proven)
+            .map_err(|source| io_error("restore the update service's bootstrap", source))
     }
 
     fn observe_broker(&mut self) -> Result<Option<WindowsBrokerObservation>, InstallPlatformError> {
@@ -373,7 +439,7 @@ impl WindowsInstallExecutor for WindowsNativeExecutor {
 
     fn observe_runtime(&mut self) -> Result<WindowsRuntimeObservation, InstallPlatformError> {
         let mut observation = WindowsRuntimeObservation::default();
-        for process in processes_named(&[WINDOWS_APP_MEMBER, WINDOWS_DAEMON_MEMBER])
+        for process in processes_named(&[WINDOWS_APP_PROGRAM, WINDOWS_DAEMON_PROGRAM])
             .map_err(|source| io_error("list the running processes", source))?
         {
             let name = process
@@ -381,7 +447,7 @@ impl WindowsInstallExecutor for WindowsNativeExecutor {
                 .rsplit('\\')
                 .next()
                 .unwrap_or(process.image.as_str());
-            if name.eq_ignore_ascii_case(WINDOWS_APP_MEMBER) {
+            if name.eq_ignore_ascii_case(WINDOWS_APP_PROGRAM) {
                 observation.apps.push(running_process(process));
             } else {
                 observation.daemons.push(running_process(process));

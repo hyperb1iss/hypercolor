@@ -26,6 +26,10 @@ use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 
 use super::error::ReleasePayloadError;
+use super::machine_layout::{
+    WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM, WINDOWS_CLI_PROGRAM,
+    WINDOWS_DAEMON_PROGRAM,
+};
 use super::manifest::{
     MANIFEST_NAME, PermissionClass, ValidatedManifest, WindowsVendor, fold_case,
 };
@@ -37,9 +41,9 @@ pub const WINDOWS_DURABLE_STORES_PATH: &str = "share/hypercolor/durable-stores.j
 const ENGINE_DURABLE_STORES: &str = "packaging/managed/durable-stores.json";
 /// Programs at the unit root, which every manifest lists.
 const ROOT_PROGRAMS: [&str; 3] = [
-    "hypercolor-app.exe",
-    "hypercolor-daemon.exe",
-    "hypercolor.exe",
+    WINDOWS_APP_PROGRAM,
+    WINDOWS_DAEMON_PROGRAM,
+    WINDOWS_CLI_PROGRAM,
 ];
 const COPY_BUFFER_BYTES: usize = 1024 * 1024;
 /// A DOS header is 64 bytes, and its last field locates the PE header.
@@ -105,11 +109,11 @@ pub(super) const LAYOUT: [Placement; 26] = [
     tree("ui", Source::Staged("ui")),
     tree("effects/bundled", Source::Staged("effects")),
     file(
-        "tools/hypercolor-smbus-service.exe",
+        WINDOWS_BROKER_PROGRAM,
         Source::Built("hypercolor-smbus-service.exe"),
     ),
     file(
-        "tools/hypercolor-update-bootstrap.exe",
+        WINDOWS_BOOTSTRAP_PROGRAM,
         Source::Built("hypercolor-update-bootstrap.exe"),
     ),
     file(

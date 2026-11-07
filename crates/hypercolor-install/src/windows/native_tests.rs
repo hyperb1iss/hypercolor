@@ -17,8 +17,9 @@ use super::model::same_windows_path;
 use super::native::wait_for_pipe;
 use super::store::InstallStore;
 use super::{
-    WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsInstallExecutor,
-    WindowsNativeExecutor, WindowsOwnershipPolicy, WindowsProcessId, stage_release_payload,
+    BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM,
+    WINDOWS_DAEMON_PROGRAM, WindowsInstallExecutor, WindowsNativeExecutor, WindowsOwnershipPolicy,
+    WindowsProcessId, stage_release_payload,
 };
 use crate::model::{UnitId, UnitRecord};
 
@@ -66,13 +67,15 @@ impl Fixture {
             fs::create_dir_all(source.join(directory)).expect("source directory");
         }
         let cli: &[u8] = b"cli";
+        let bootstrap: &[u8] = b"bootstrap";
         let ui: &[u8] = b"<html></html>";
         let effect: &[u8] = b"effect";
-        let files: [(&str, &str, &[u8]); 6] = [
-            (WINDOWS_APP_MEMBER, "program", &shell),
-            (WINDOWS_DAEMON_MEMBER, "program", &shell),
+        let files: [(&str, &str, &[u8]); 7] = [
+            (WINDOWS_APP_PROGRAM, "program", &shell),
+            (WINDOWS_DAEMON_PROGRAM, "program", &shell),
             ("hypercolor.exe", "program", cli),
-            (WINDOWS_BROKER_MEMBER, "program", &shell),
+            (WINDOWS_BROKER_PROGRAM, "program", &shell),
+            (WINDOWS_BOOTSTRAP_PROGRAM, "program", bootstrap),
             ("ui/index.html", "data", ui),
             ("effects/bundled/one.html", "data", effect),
         ];
@@ -169,6 +172,10 @@ fn a_unit_binds_to_its_manifest_and_its_files_on_the_volume() {
     assert_eq!(binding.app.sha256, digest);
     assert_eq!(binding.daemon.sha256, digest);
     assert_eq!(binding.broker.sha256, digest);
+    assert_eq!(
+        binding.bootstrap.sha256,
+        hex::encode(Sha256::digest(b"bootstrap"))
+    );
     assert_ne!(binding.app.file_id, binding.daemon.file_id);
     assert_ne!(binding.daemon.file_id, binding.broker.file_id);
 }
@@ -178,7 +185,7 @@ fn a_running_process_proves_which_file_it_runs() {
     let fixture = Fixture::new();
     let mut executor = fixture.executor(nowhere());
     let binding = executor.bind_unit(&fixture.unit).expect("bind");
-    let daemon = fixture.program(WINDOWS_DAEMON_MEMBER);
+    let daemon = fixture.program(WINDOWS_DAEMON_PROGRAM);
 
     let mut child = run(&daemon);
     let id = listed(&mut executor, &child);
@@ -197,7 +204,7 @@ fn a_running_process_proves_which_file_it_runs() {
     // The same bytes in another file hash alike and are still another file.
     let elsewhere = fixture.base.join("elsewhere");
     fs::create_dir_all(&elsewhere).expect("directory");
-    let copy = elsewhere.join(WINDOWS_DAEMON_MEMBER);
+    let copy = elsewhere.join(WINDOWS_DAEMON_PROGRAM);
     fs::write(&copy, &fixture.shell).expect("copy");
     let mut other = run(&copy);
     let other_id = listed(&mut executor, &other);
@@ -223,8 +230,8 @@ fn a_running_process_proves_which_file_it_runs() {
 fn process_handles_report_an_exit_as_it_happens() {
     let fixture = Fixture::new();
     let mut executor = fixture.executor(nowhere());
-    let mut app = run(&fixture.program(WINDOWS_APP_MEMBER));
-    let mut daemon = run(&fixture.program(WINDOWS_DAEMON_MEMBER));
+    let mut app = run(&fixture.program(WINDOWS_APP_PROGRAM));
+    let mut daemon = run(&fixture.program(WINDOWS_DAEMON_PROGRAM));
     let (app_id, daemon_id) = (listed(&mut executor, &app), listed(&mut executor, &daemon));
 
     let both = [app_id, daemon_id];
@@ -265,7 +272,7 @@ fn answer_health() -> SocketAddr {
 #[test]
 fn readiness_is_the_local_api_answering_while_the_app_lives() {
     let fixture = Fixture::new();
-    let mut app = run(&fixture.program(WINDOWS_APP_MEMBER));
+    let mut app = run(&fixture.program(WINDOWS_APP_PROGRAM));
 
     let mut ready = fixture.executor(answer_health());
     let app_id = listed(&mut ready, &app);
@@ -343,6 +350,24 @@ fn another_process_serving_the_pipe_proves_nothing() {
     let refused =
         wait_for_pipe(&name, std::process::id() + 1, SHORT).expect_err("not that process");
     assert!(refused.to_string().contains("does not serve"), "{refused}");
+}
+
+#[test]
+fn a_bootstrap_slot_hashes_as_the_file_it_holds() {
+    let fixture = Fixture::new();
+    let mut executor = fixture.executor(nowhere());
+    let slots = fixture.store.root().join("update");
+    fs::create_dir_all(&slots).expect("slots");
+    fs::write(slots.join(BootstrapSlot::B.file_name()), b"bootstrap").expect("slot");
+
+    assert_eq!(
+        executor.bootstrap_sha256(BootstrapSlot::B).expect("hash"),
+        hex::encode(Sha256::digest(b"bootstrap"))
+    );
+    assert!(executor.bootstrap_sha256(BootstrapSlot::A).is_err());
+    executor
+        .observe_bootstrap()
+        .expect("ask the service manager");
 }
 
 #[test]

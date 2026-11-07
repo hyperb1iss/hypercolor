@@ -2,11 +2,14 @@ use std::time::Duration;
 
 use super::executor::WindowsInstallExecutor;
 use super::layout::{self, LAYOUT_OPERATION_COUNT, LayoutStep, position_at};
+use super::machine_layout::{
+    WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM, WINDOWS_DAEMON_PROGRAM,
+};
 use super::model::{
-    WINDOWS_APP_ARGUMENTS, WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER,
-    WindowsAppStart, WindowsBrokerObservation, WindowsFileIdentity, WindowsFirewallObservation,
-    WindowsInstallConfig, WindowsProcessId, WindowsRunningProcess, WindowsRuntime,
-    WindowsRuntimeObservation, WindowsUnitBinding, error, same_windows_path, service_program,
+    WINDOWS_APP_ARGUMENTS, WindowsAppStart, WindowsBrokerObservation, WindowsFileIdentity,
+    WindowsInstallConfig, WindowsLayoutObservation, WindowsProcessId, WindowsRunningProcess,
+    WindowsRuntime, WindowsRuntimeObservation, WindowsUnitBinding, error, same_windows_path,
+    service_program,
 };
 use super::record::{WindowsBrokerBaseline, WindowsRecord, decode_receipt, encode_receipt};
 use super::session::WindowsSessionHost;
@@ -23,8 +26,7 @@ const TERMINATE_DEADLINE: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Inspection {
     active: Option<UnitId>,
-    broker: Option<WindowsBrokerObservation>,
-    firewall: Option<WindowsFirewallObservation>,
+    layout: WindowsLayoutObservation,
     runtime: WindowsRuntimeObservation,
 }
 
@@ -32,9 +34,9 @@ struct Inspection {
 /// app-supervised mode.
 ///
 /// A transaction names a new unit from outside the store: `active.json`,
-/// which the coordinator switches, then the broker's `ImagePath` and the
-/// firewall's program rules, which [`super::layout`] moves one recorded
-/// value at a time. The runtime is the app in the recorded user's session
+/// which the coordinator switches, then the update service's bootstrap,
+/// the broker's `ImagePath` and the firewall's program rules, which
+/// [`super::layout`] moves one recorded value at a time. The runtime is the app in the recorded user's session
 /// and the daemon it supervises.
 ///
 /// The executor owns every effect and observation on the machine, the
@@ -133,9 +135,16 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> WindowsInstallPlatform<E,
     fn inspect_exact(&mut self) -> Result<Inspection, InstallPlatformError> {
         Ok(Inspection {
             active: self.executor.active_unit()?,
+            layout: self.observe_layout()?,
+            runtime: self.executor.observe_runtime()?,
+        })
+    }
+
+    fn observe_layout(&mut self) -> Result<WindowsLayoutObservation, InstallPlatformError> {
+        Ok(WindowsLayoutObservation {
+            bootstrap: self.executor.observe_bootstrap()?,
             broker: self.executor.observe_broker()?,
             firewall: self.executor.observe_firewall()?,
-            runtime: self.executor.observe_runtime()?,
         })
     }
 
@@ -156,11 +165,11 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> WindowsInstallPlatform<E,
     }
 
     fn app_path(&self, unit: &UnitId) -> String {
-        self.config.member_path(unit, WINDOWS_APP_MEMBER)
+        self.config.member_path(unit, WINDOWS_APP_PROGRAM)
     }
 
     fn daemon_path(&self, unit: &UnitId) -> String {
-        self.config.member_path(unit, WINDOWS_DAEMON_MEMBER)
+        self.config.member_path(unit, WINDOWS_DAEMON_PROGRAM)
     }
 
     /// The running app and daemon, when exactly they run and from `unit`.
@@ -241,14 +250,6 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> WindowsInstallPlatform<E,
         }
     }
 
-    fn layout_holds(record: &WindowsRecord, position: u16, inspection: &Inspection) -> bool {
-        record.layout_holds(
-            position,
-            inspection.broker.as_ref(),
-            inspection.firewall.as_ref(),
-        )
-    }
-
     fn transitions(prior: &PlatformState, target: &PlatformState) -> PlatformTransitionStates {
         let prior_unloaded = PlatformState {
             loaded: false,
@@ -307,7 +308,7 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> WindowsInstallPlatform<E,
         if let Some(prior) = prior
             && !same_windows_path(
                 program,
-                &self.config.member_path(&prior.unit, WINDOWS_BROKER_MEMBER),
+                &self.config.member_path(&prior.unit, WINDOWS_BROKER_PROGRAM),
             )
         {
             return Err(error(
@@ -385,7 +386,7 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> WindowsInstallPlatform<E,
         let process = self.executor.start_broker()?;
         let path = self
             .config
-            .member_path(&binding.unit, WINDOWS_BROKER_MEMBER);
+            .member_path(&binding.unit, WINDOWS_BROKER_PROGRAM);
         self.prove_image(process, &path, &binding.broker)
     }
 
@@ -487,20 +488,32 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> InstallPlatform
                 error("the running app and daemon are not exactly the active unit's")
             })?)
         };
-        let broker = self.broker_baseline(inspection.broker.as_ref(), prior_binding.as_ref())?;
+        let broker =
+            self.broker_baseline(inspection.layout.broker.as_ref(), prior_binding.as_ref())?;
         if broker.as_ref().is_some_and(|broker| broker.running) && target.running_unit.is_none() {
             return Err(error(
                 "a transaction that starts no release has nothing to start the SMBus broker \
                  again",
             ));
         }
+        // Most releases ship the bootstrap the service already runs, and
+        // leaving it alone keeps a proven image in place.
+        let bootstrap = match inspection.layout.bootstrap {
+            Some(slot)
+                if self.executor.bootstrap_sha256(slot)? != candidate_binding.bootstrap.sha256 =>
+            {
+                Some(slot)
+            }
+            _ => None,
+        };
         let record = WindowsRecord {
             units_root: self.config.units_root.clone(),
             candidate: candidate_binding,
             prior: prior_binding,
             baseline,
+            bootstrap,
             broker,
-            firewall: inspection.firewall,
+            firewall: inspection.layout.firewall,
         };
         Ok(PreparedPlatformTransaction {
             record: record.encode()?,
@@ -526,7 +539,7 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> InstallPlatform
         let Some(position) = position_at(checkpoint, layout_operation_index) else {
             return Ok(false);
         };
-        Ok(Self::layout_holds(&record, position, inspection)
+        Ok(record.layout_holds(position, &inspection.layout)
             && self.runtime_matches(
                 checkpoint,
                 expected,
@@ -602,7 +615,7 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> InstallPlatform
             .and_then(|unit| self.runtime_of(&inspection.runtime, unit));
         if inspection.active != prior.active_unit
             || Self::state_from(&inspection) != prior.platform
-            || !Self::layout_holds(&record, 0, &inspection)
+            || !record.layout_holds(0, &inspection.layout)
             || running != record.baseline
         {
             return Err(error("the Windows installation drifted before unload"));
@@ -662,14 +675,23 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> InstallPlatform
             return Err(error("Windows layout effect names the wrong unit"));
         }
         let step = layout::step(operation_index)?;
-        let broker = self.executor.observe_broker()?;
-        let firewall = self.executor.observe_firewall()?;
-        if !record.layout_holds(from, broker.as_ref(), firewall.as_ref()) {
+        if !record.layout_holds(from, &self.observe_layout()?) {
             return Err(error(format!(
                 "the Windows layout drifted before step {operation_index}"
             )));
         }
         match step {
+            LayoutStep::Bootstrap => {
+                let proven = record
+                    .bootstrap
+                    .ok_or_else(|| error("no bootstrap is recorded for this step"))?;
+                if to > from {
+                    let source = record.candidate_path(WINDOWS_BOOTSTRAP_PROGRAM);
+                    self.executor.install_bootstrap(proven, &source)?;
+                } else {
+                    self.executor.restore_bootstrap(proven)?;
+                }
+            }
             LayoutStep::Broker => {
                 let program = record
                     .broker_program_at(to)
@@ -849,7 +871,7 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> InstallPlatform
             .as_ref()
             .ok_or_else(|| error("an exact Windows checkpoint needs an inspection"))?;
         Ok(position_at(checkpoint, layout_operation_index)
-            .is_some_and(|position| Self::layout_holds(&record, position, inspection)))
+            .is_some_and(|position| record.layout_holds(position, &inspection.layout)))
     }
 
     fn matches_untouched_prior(
@@ -864,7 +886,7 @@ impl<E: WindowsInstallExecutor, S: WindowsSessionHost> InstallPlatform
             .prior
             .as_ref()
             .and_then(|prior| self.runtime_of(&inspection.runtime, &prior.unit));
-        let untouched = Self::layout_holds(&record, 0, &inspection)
+        let untouched = record.layout_holds(0, &inspection.layout)
             && (!restarted || running.is_some_and(|running| record.baseline != Some(running)));
         self.last = Some(inspection);
         Ok(untouched)
