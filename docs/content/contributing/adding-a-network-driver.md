@@ -182,10 +182,13 @@ impl DeviceSession for AcmeSession {
         Ok(DeviceWriteOutcome::Sent)
     }
 
-    async fn finish(self) -> Result<(), DeviceError> {
-        // Say goodbye on the wire. Dropping self then releases the socket.
+    async fn finish(&mut self) -> Result<(), DeviceError> {
+        // Say goodbye on the wire, within DeviceSession::CLEANUP.
         Ok(())
     }
+
+    // release(self) gives the transport back. The default just drops the
+    // session; a transport whose close can block awaits that there.
 }
 
 #[async_trait::async_trait]
@@ -205,13 +208,13 @@ impl DeviceBackend for AcmeBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
-            return Ok(());
-        }
+        // Joins a connect in flight, waits out a close, refuses when retired.
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
+            return Ok(()); // Already open.
+        };
         // Open the UDP socket or handshake as required.
         let session = self.open_session(id).await?;
-        self.sessions.install(session).await
+        ticket.install(session).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
@@ -243,6 +246,13 @@ are revoked, admitted I/O has settled or been cancelled, `finish` ran, tasks sta
 an empty slot, so it rejects every frame and keeps no socket alive. A reconnect is a new
 session, and a retired backend closes everything and refuses new sessions. Do not add closed
 flags, `Drop` hooks, or your own sink for any of that.
+
+Each device has at most one generation Opening or Open at a time, and a closing generation
+stays in the table until its transport is gone. Concurrent connects share one open, a
+connect waits for a close to finish, and retirement waits for both, so one session's cleanup
+can never hit the next, even when device state outlives any one connection. A device whose
+target can move uses `open_unless` instead of `begin_open`, which closes a session that no
+longer matches before the ticket is issued.
 
 A socket every device of the backend sends from stays on the backend, with each session
 holding a reference, so closing one session leaves the others running. `Session::spawn`

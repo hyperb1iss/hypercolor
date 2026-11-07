@@ -152,6 +152,7 @@ graph TD
     DAPI & DS --> WZ[hypercolor-driver-wiz]
     DAPI & DS --> YL[hypercolor-driver-yeelight]
     ORS[hypercolor-openrgb-sdk] & DAPI & DS --> ORD[hypercolor-driver-openrgb]
+    DS --> CORE
     ORS & PER --> OH[hypercolor-openrgb-host]
     OH --> APP & CLI
     DAPI --> NET[hypercolor-network]
@@ -258,10 +259,11 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 - **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
   Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
-  Long-running I/O is dispatched internally. Network and serial drivers keep their
-  connections in `SessionTable` (`driver-support/src/session.rs`): disconnect revokes every
-  retained sink and releases the transport, and `retire` does that for a whole backend and
-  refuses new sessions. `hypercolor-driver-conformance` holds that contract as one shared test.
+  Long-running I/O is dispatched internally. Drivers keep their connections in `SessionTable`
+  (`driver-support/src/session.rs`): one generation per device at a time, disconnect revokes
+  every retained sink and releases the transport, and `retire` does that for a whole backend,
+  refuses new sessions, and waits for everything in flight. `hypercolor-driver-conformance`
+  holds that contract as one shared test.
 - **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer implemented by
   `ServoRenderer` and the CPU builtins in `core/src/effect/builtin/`. There is no native GPU
   shader renderer; wgpu drives the SparkleFlinger compositor instead.
