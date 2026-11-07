@@ -372,6 +372,14 @@ async fn isolated_ports_compose_no_session_monitor() {
             .expect("no watch to fail")
             .is_none()
     );
+    assert!((host.interaction_source)(&hypercolor_types::config::InputConfig::default()).is_none());
+    let audio = hypercolor_types::config::AudioConfig::default();
+    let spec = (host.audio_input)(&audio);
+    assert_eq!(spec.name, format!("AudioInput({})", audio.device));
+    assert_eq!(
+        spec.pipeline.source,
+        hypercolor_types::audio::AudioSourceType::None
+    );
 }
 
 #[test]

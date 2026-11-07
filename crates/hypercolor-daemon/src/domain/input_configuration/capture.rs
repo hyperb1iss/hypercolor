@@ -82,15 +82,14 @@ pub(crate) async fn apply_capture_config_transaction(
         )
     };
     let (mut replacement, persistence) = if plan.enabled() {
-        let (mut source, persistence) =
-            crate::startup::services::prepare_platform_screen_capture_source(
-                &capture,
-                Arc::clone(manager),
-                expected_config,
-                admission_coordinator,
-                capacity_plan.total_capacity(),
-            )
-            .map_err(CaptureConfigTransactionError::Prepare)?;
+        let (mut source, persistence) = (state.capabilities.screen_source)(
+            &capture,
+            Arc::clone(manager),
+            expected_config,
+            admission_coordinator,
+            capacity_plan.total_capacity(),
+        )
+        .map_err(CaptureConfigTransactionError::Prepare)?;
         source.set_source_graph_generation(plan.replacement_source_graph_generation());
         source
             .set_screen_capture_demand(plan.capture_demand())

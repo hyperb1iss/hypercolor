@@ -7,16 +7,22 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::config::paths::IsolatedUserDirs;
 use hypercolor_core::device::usb_hotplug::UsbHotplugTask;
 use hypercolor_core::device::{UnclaimedDeviceStore, UsbHotplugMonitor, UsbProtocolConfigStore};
-use hypercolor_core::input::InputManager;
-use hypercolor_core::input::screen::ScreenMonitor;
+use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
+use hypercolor_core::input::screen::{ScreenByteAdmissionCoordinator, ScreenMonitor};
+use hypercolor_core::input::{InputManager, InteractionSource, ScreenSource};
 use hypercolor_core::session::SessionMonitor;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::api::system::AudioDeviceInfo;
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
+use hypercolor_types::config::{AudioConfig, CaptureConfig, HypercolorConfig, InputConfig};
 use hypercolor_types::host_software::{HardwareBrokerReport, HostInventory, HostSoftwareSnapshot};
 
-use super::services::{ScreenCapacityPlan, compose_native_inputs, compose_silent_inputs};
+use super::services::{
+    CaptureConfigPersistenceGate, ScreenCapacityPlan, build_interaction_source,
+    compose_native_inputs, compose_silent_inputs, prepare_platform_screen_capture_source,
+    prepare_silent_screen_source,
+};
 use crate::api::system::enumerate_audio_input_devices;
 use crate::network;
 
@@ -30,8 +36,25 @@ pub(super) type BuildDrivers = fn(
 pub(super) type ComposeInputs =
     fn(&HypercolorConfig, &Arc<ConfigManager>, &InputManager, ScreenCapacityPlan) -> Result<()>;
 
-/// What a running daemon keeps reaching for on its host: the readings it
-/// takes on request.
+/// Builds the screen source a capture configuration asks for, at boot or
+/// when a live change replaces it.
+pub(crate) type PrepareScreenSource =
+    fn(
+        &CaptureConfig,
+        Arc<ConfigManager>,
+        &Arc<HypercolorConfig>,
+        ScreenByteAdmissionCoordinator,
+        ScreenAdmissionCapacity,
+    ) -> Result<(Box<dyn ScreenSource>, CaptureConfigPersistenceGate)>;
+
+/// The audio input an audio configuration resolves to.
+pub(crate) struct AudioInputSpec {
+    pub(crate) name: String,
+    pub(crate) pipeline: AudioPipelineConfig,
+}
+
+/// What a running daemon keeps reaching for on its host: readings it takes
+/// on request, and the factories a live configuration change rebuilds from.
 #[derive(Clone, Copy)]
 pub(crate) struct HostCapabilities {
     pub(crate) running_software: fn() -> HostInventory,
@@ -39,6 +62,9 @@ pub(crate) struct HostCapabilities {
     pub(crate) audio_devices: fn() -> Result<Vec<AudioDeviceInfo>>,
     pub(crate) capture_monitors: fn() -> Vec<ScreenMonitor>,
     pub(crate) usb_hotplug: fn(&UsbHotplugMonitor) -> Result<Option<UsbHotplugTask>>,
+    pub(crate) audio_input: fn(&AudioConfig) -> AudioInputSpec,
+    pub(crate) screen_source: PrepareScreenSource,
+    pub(crate) interaction_source: fn(&InputConfig) -> Option<Box<dyn InteractionSource>>,
 }
 
 impl HostCapabilities {
@@ -49,16 +75,36 @@ impl HostCapabilities {
         audio_devices: enumerate_audio_input_devices,
         capture_monitors: hypercolor_core::input::screen::available_monitors,
         usb_hotplug: |monitor| monitor.start().map(Some),
+        audio_input: native_audio_input,
+        screen_source: prepare_platform_screen_capture_source,
+        interaction_source: build_interaction_source,
     };
 
-    /// A host with nothing on it: every reading is empty.
+    /// A host with nothing on it: every reading is empty, and every factory
+    /// builds a source that stays silent.
     pub(crate) const ISOLATED: Self = Self {
         running_software: || HostInventory::Listed(HostSoftwareSnapshot::default()),
         hardware_broker: || None,
         audio_devices: || Ok(Vec::new()),
         capture_monitors: Vec::new,
         usb_hotplug: |_| Ok(None),
+        audio_input: silent_audio_input,
+        screen_source: prepare_silent_screen_source,
+        interaction_source: |_| None,
     };
+}
+
+fn native_audio_input(audio: &AudioConfig) -> AudioInputSpec {
+    AudioInputSpec {
+        name: format!("AudioInput({})", audio.device),
+        pipeline: AudioPipelineConfig::from(audio),
+    }
+}
+
+fn silent_audio_input(audio: &AudioConfig) -> AudioInputSpec {
+    let mut spec = native_audio_input(audio);
+    spec.pipeline.source = AudioSourceType::None;
+    spec
 }
 
 /// The daemon's ports onto its host, chosen once at the composition root.

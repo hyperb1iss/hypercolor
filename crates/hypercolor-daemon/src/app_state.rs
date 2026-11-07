@@ -336,6 +336,17 @@ impl AppStateBuilder {
         self
     }
 
+    /// Replace the isolated host this state would otherwise compose with.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn with_capabilities(
+        mut self,
+        capabilities: crate::startup::HostCapabilities,
+    ) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> AppState {
         AppState::from_builder(self)

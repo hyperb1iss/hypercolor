@@ -52,8 +52,8 @@ use hypercolor_core::input::screen::implementer::{
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
-    InputManager, InteractionSource, ManagedSourceRole, ScreenSource, SensorSource,
-    SourceStatusHandle, SourceStatusRegistry,
+    InputData, InputManager, InteractionSource, ManagedSource, ManagedSourceRole, ScreenSource,
+    ScreenSourceRole, SensorSource, SourceRoleBinding, SourceStatusHandle, SourceStatusRegistry,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -61,12 +61,11 @@ use hypercolor_driver_api::InstallationId;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::api::system::DaemonStartupPhase;
-use hypercolor_types::audio::AudioPipelineConfig;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
-use super::host::{ComposeInputs, HostPorts};
+use super::host::{ComposeInputs, HostCapabilities, HostPorts};
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
@@ -1059,12 +1058,56 @@ pub(super) fn compose_silent_inputs(
     _capacity_plan: ScreenCapacityPlan,
 ) -> Result<()> {
     if config.audio.enabled {
-        let mut audio_pipeline_config = AudioPipelineConfig::from(&config.audio);
-        audio_pipeline_config.source = hypercolor_types::audio::AudioSourceType::None;
-        let audio_input = AudioInput::new(&audio_pipeline_config).with_name("AudioInput(none)");
+        let spec = (HostCapabilities::ISOLATED.audio_input)(&config.audio);
+        let audio_input = AudioInput::new(&spec.pipeline).with_name(spec.name);
         input_manager.add_source(ManagedSourceRole::audio(Box::new(audio_input)))?;
     }
     Ok(())
+}
+
+/// A screen source that holds the role and captures nothing.
+struct SilentScreenSource {
+    running: bool,
+}
+
+impl ManagedSource for SilentScreenSource {
+    fn name(&self) -> &'static str {
+        "ScreenCapture(none)"
+    }
+
+    fn start(&mut self) -> Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for SilentScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for SilentScreenSource {}
+
+pub(super) fn prepare_silent_screen_source(
+    _capture: &hypercolor_types::config::CaptureConfig,
+    config_manager: Arc<ConfigManager>,
+    expected: &Arc<HypercolorConfig>,
+    _admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
+    _capacity: ScreenAdmissionCapacity,
+) -> Result<(Box<dyn ScreenSource>, CaptureConfigPersistenceGate)> {
+    let persistence = CaptureConfigPersistenceGate::new(config_manager, expected, false)?;
+    Ok((Box::new(SilentScreenSource { running: false }), persistence))
 }
 
 /// Register the host's own sensor, media, network, audio, input, and
@@ -1091,9 +1134,8 @@ pub(super) fn compose_native_inputs(
     )))?;
 
     if config.audio.enabled {
-        let audio_pipeline_config = AudioPipelineConfig::from(&config.audio);
-        let audio_input = AudioInput::new(&audio_pipeline_config)
-            .with_name(format!("AudioInput({})", config.audio.device));
+        let spec = (HostCapabilities::NATIVE.audio_input)(&config.audio);
+        let audio_input = AudioInput::new(&spec.pipeline).with_name(spec.name);
         input_manager.add_source(ManagedSourceRole::audio(Box::new(audio_input)))?;
     }
 

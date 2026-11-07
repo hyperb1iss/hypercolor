@@ -81,8 +81,8 @@ pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
-pub(crate) use host::HostCapabilities;
 pub use host::HostPorts;
+pub(crate) use host::{AudioInputSpec, HostCapabilities};
 pub use progress::StartupProgress;
 pub(crate) use progress::startup_step;
 pub use signals::{

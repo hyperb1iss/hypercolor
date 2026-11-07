@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hypercolor_core::config::ConfigManager;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::screen::ScreenCaptureDemand;
 use hypercolor_core::input::{
@@ -20,6 +19,7 @@ use super::live::{
 };
 use super::{ConfigApplyQuery, put_config_key};
 use crate::app_state::AppState;
+use crate::startup::HostCapabilities;
 
 struct TestScreenSource {
     running: bool,
@@ -550,26 +550,30 @@ async fn capture_transaction_conflict_preserves_publication_capacity() {
     assert_eq!(manager.get().capture.publication_memory_bytes, None);
 }
 
-#[cfg(target_os = "windows")]
 #[tokio::test]
-async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
-    let config_path = std::env::temp_dir().join(format!(
-        "hypercolor-capture-config-{}-{}.toml",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should follow Unix epoch")
-            .as_nanos()
-    ));
+async fn failed_capture_preparation_preserves_old_graph_and_config() {
+    let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
     let manager = Arc::new(
         ConfigManager::new(config_path.clone()).expect("test config manager should initialize"),
     );
     let state = AppState::builder()
         .with_config_manager(Arc::clone(&manager))
+        .with_capabilities(HostCapabilities {
+            screen_source: |_, _, _, _, _| anyhow::bail!("capture source does not exist"),
+            ..HostCapabilities::ISOLATED
+        })
         .build();
     let state = Arc::new(state);
     {
         let input_manager = state.input_manager();
+        input_manager
+            .set_screen_capacity_plan(
+                ScreenAdmissionCapacity::new(40_000, 40_000),
+                ScreenAdmissionCapacity::new(30_000, 40_000),
+                ScreenAdmissionCapacity::new(20_000, 40_000),
+            )
+            .expect("empty manager should accept test capacity");
         let mut old = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
         old.start().expect("old test source should start");
         input_manager
@@ -584,15 +588,20 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
     let reserved_before = admission_coordinator.snapshot().reserved_bytes();
     let expected = Arc::clone(&manager.get());
     let mut capture = expected.capture.clone();
-    capture.source = "monitor:hypercolor-test-source-that-does-not-exist".to_owned();
+    capture.enabled = true;
+    capture.capture_fps += 1;
 
     let result = apply_capture_config_transaction(&state, &expected, capture).await;
 
-    assert!(matches!(
-        result,
-        Err(CaptureConfigTransactionError::Prepare(_))
-    ));
-    assert_eq!(manager.get().capture.source, "auto");
+    assert!(
+        matches!(
+            &result,
+            Err(CaptureConfigTransactionError::Prepare(error))
+                if error.to_string().contains("capture source does not exist")
+        ),
+        "the failure must come from the source factory: {result:?}"
+    );
+    assert_eq!(manager.get().capture, expected.capture);
     let input_manager = state.input_manager();
     assert_eq!(input_manager.source_graph_generation(), graph_generation);
     assert!(input_manager.has_screen_source());
@@ -607,6 +616,41 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
         reserved_before
     );
     assert!(!config_path.exists());
+}
+
+#[tokio::test]
+async fn an_isolated_capture_change_installs_a_silent_source() {
+    let tempdir = tempfile::tempdir().expect("temporary config directory should build");
+    let manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+            .expect("test config manager should initialize"),
+    );
+    manager.modify(|config| config.capture.enabled = false);
+    let state = Arc::new(
+        AppState::builder()
+            .with_config_manager(Arc::clone(&manager))
+            .build(),
+    );
+    state
+        .input_manager()
+        .set_screen_capacity_plan(
+            ScreenAdmissionCapacity::new(40_000, 40_000),
+            ScreenAdmissionCapacity::new(30_000, 40_000),
+            ScreenAdmissionCapacity::new(20_000, 40_000),
+        )
+        .expect("empty manager should accept test capacity");
+    let expected = Arc::clone(&manager.get());
+    let mut capture = expected.capture.clone();
+    capture.enabled = true;
+
+    apply_capture_config_transaction(&state, &expected, capture)
+        .await
+        .expect("a live capture change should apply");
+
+    assert_eq!(
+        state.input_manager().source_names(),
+        ["ScreenCapture(none)"]
+    );
 }
 
 #[tokio::test]

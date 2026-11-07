@@ -126,8 +126,11 @@ async fn isolated_ports_compose_no_host_service() {
     let mut daemon = Box::new(isolated_daemon(root.path(), &dirs));
 
     // No sensor broker, media bus, network counters, native input, or
-    // screen portal; the audio role stays, on a source with no device.
-    assert_eq!(daemon.input_manager().source_names(), ["AudioInput(none)"]);
+    // screen portal. The audio role stays, on a source with no device.
+    assert_eq!(
+        daemon.input_manager().source_names(),
+        ["AudioInput(default)"]
+    );
     // The default config keeps background discovery on, so starting also
     // runs the startup scan and worker against the offline drivers.
     daemon.start().await.expect("isolated daemon starts");
