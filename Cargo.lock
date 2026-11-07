@@ -4781,6 +4781,7 @@ dependencies = [
  "async-trait",
  "hypercolor-color",
  "hypercolor-driver-api",
+ "hypercolor-driver-conformance",
  "hypercolor-driver-support",
  "hypercolor-types",
  "if-addrs",

@@ -25,3 +25,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+
+[dev-dependencies]
+hypercolor-driver-conformance = { workspace = true }
