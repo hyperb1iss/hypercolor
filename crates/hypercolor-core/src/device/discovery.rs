@@ -31,10 +31,13 @@ pub struct DiscoveryReport {
     /// Previously known devices that reappeared.
     pub reappeared_devices: Vec<DeviceId>,
 
-    /// Previously known devices missing from this scan. Empty unless every
-    /// scanner finished with complete coverage: a device absent from a
-    /// partial scan may simply not have been seen.
+    /// Previously known devices missing from this scan. Empty when any gap
+    /// covers a whole target: a device absent from such a scan may simply
+    /// not have been seen.
     pub vanished_devices: Vec<DeviceId>,
+
+    /// Tracked devices a gap names, which stay out of `vanished_devices`.
+    pub held_devices: Vec<DeviceId>,
 
     /// Per-scanner timing and outcome diagnostics.
     pub scanner_reports: Vec<ScannerScanReport>,
@@ -70,6 +73,13 @@ impl ScannerScanReport {
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.error.is_none() && self.gaps.is_empty()
+    }
+
+    /// Whether this scanner can speak to absence: it ran, and every gap
+    /// names the one device it holds.
+    #[must_use]
+    pub fn covers_target(&self) -> bool {
+        self.error.is_none() && self.gaps.iter().all(|gap| gap.device().is_some())
     }
 }
 
@@ -107,7 +117,8 @@ struct DiscoverySource {
 /// # Absence
 ///
 /// Every observation applies, whatever the scan's coverage says. A device is
-/// reported vanished only when every scanner finished with complete coverage.
+/// reported vanished only when no gap covers a whole target and no gap names
+/// that device.
 pub struct DiscoveryOrchestrator {
     sources: Vec<DiscoverySource>,
 
@@ -213,6 +224,7 @@ impl DiscoveryOrchestrator {
             let mut new_devices = Vec::new();
             let mut reappeared_devices = Vec::new();
             let mut seen_ids = HashSet::new();
+            let mut held_ids = HashSet::new();
 
             while let Some(task) = scan_tasks.join_next().await {
                 match task {
@@ -224,6 +236,10 @@ impl DiscoveryOrchestrator {
                             } = batch;
                             let discovered = observations.len();
                             let gaps = coverage.gaps().to_vec();
+                            for fingerprint in gaps.iter().filter_map(CoverageGap::device) {
+                                let held = self.registry.find_by_fingerprint(fingerprint);
+                                held_ids.extend(held.await);
+                            }
                             info!(
                                 scanner = %scanner_name,
                                 count = discovered,
@@ -312,18 +328,20 @@ impl DiscoveryOrchestrator {
             }
             scanner_reports.sort_by_key(|(index, _)| *index);
 
-            let complete = scanner_reports
+            let covered = scanner_reports
                 .iter()
-                .all(|(_, report)| report.is_complete());
-            let mut vanished_devices = if complete {
+                .all(|(_, report)| report.covers_target());
+            let mut vanished_devices = if covered {
                 known_ids_before
                     .into_iter()
-                    .filter(|id| !seen_ids.contains(id))
+                    .filter(|id| !seen_ids.contains(id) && !held_ids.contains(id))
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
             };
             vanished_devices.sort_by_key(DeviceId::as_uuid);
+            let mut held_devices = held_ids.into_iter().collect::<Vec<_>>();
+            held_devices.sort_by_key(DeviceId::as_uuid);
 
             let total_known = self.registry.len().await;
             let scan_duration = scan_start.elapsed();
@@ -341,6 +359,7 @@ impl DiscoveryOrchestrator {
                 new_devices,
                 reappeared_devices,
                 vanished_devices,
+                held_devices,
                 scanner_reports: scanner_reports
                     .into_iter()
                     .map(|(_, report)| report)

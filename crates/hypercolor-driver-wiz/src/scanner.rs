@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -60,6 +59,8 @@ pub struct WizScanOptions {
     pub unicast_targets: Vec<SocketAddr>,
     /// Discovery registration targets. Empty disables broadcast entirely.
     pub broadcast_targets: Vec<SocketAddr>,
+    /// Fingerprints the host tracks devices under, by address.
+    pub tracked: HashMap<IpAddr, DeviceFingerprint>,
     /// Overall scan budget from the host.
     pub timeout: Duration,
     /// Per-request retry policy for probes.
@@ -231,7 +232,7 @@ impl WizScanner {
     ///
     /// A configured or remembered address that fails its probe is simply
     /// gone. One that answered the registration is alive, so its failed
-    /// probe leaves a coverage gap.
+    /// probe holds the device tracked there, or the target when none is.
     ///
     /// # Errors
     ///
@@ -276,9 +277,9 @@ impl WizScanner {
             deadline: started + self.options.timeout.max(window.saturating_add(round)),
             in_flight: MAX_CONCURRENT_PROBES,
         };
-        let answered = Arc::new(answered);
         let mut outcome = probe_candidates(targets, budget, |addr: SocketAddr| {
-            let answered = Arc::clone(&answered);
+            let answered = answered.contains(&addr);
+            let tracked = self.options.tracked.get(&addr.ip()).cloned();
             async move {
                 match probe_device(addr, policy).await {
                     Ok(profile) if !profile.class.is_light() => {
@@ -286,7 +287,7 @@ impl WizScanner {
                         Ok(Probed::Nothing)
                     }
                     Ok(profile) => Ok(Probed::Described(profile)),
-                    Err(error) if answered.contains(&addr) => Err(error),
+                    Err(error) if answered => Probed::failed(tracked, error),
                     Err(error) => {
                         debug!(%addr, error = %error, "WiZ device probe failed");
                         Ok(Probed::Nothing)

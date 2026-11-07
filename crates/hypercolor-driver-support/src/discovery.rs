@@ -237,16 +237,52 @@ pub enum Probed<T> {
     Described(T),
     /// A tracked device answered but could not be described.
     Present(DeviceFingerprint),
+    /// A tracked device could not be verified, which holds that device alone.
+    Unverified {
+        /// The device that stays held.
+        fingerprint: DeviceFingerprint,
+        /// Failure detail.
+        reason: String,
+    },
     /// Nothing to report: not a device this driver drives, or a known
     /// target that never answered.
     Nothing,
 }
 
+impl<T> Probed<T> {
+    /// A known target that did not answer. It holds the device tracked
+    /// there, and with none tracked there is nothing for it to hold.
+    #[must_use]
+    pub fn silent(tracked: Option<DeviceFingerprint>, reason: impl Display) -> Self {
+        tracked.map_or(Self::Nothing, |fingerprint| Self::Unverified {
+            fingerprint,
+            reason: reason.to_string(),
+        })
+    }
+
+    /// A candidate that answered discovery and then failed its probe. It
+    /// holds the tracked device it names. One that names none stays an
+    /// error, because it could be any tracked device.
+    ///
+    /// # Errors
+    ///
+    /// Returns `error` when `tracked` is `None`.
+    pub fn failed<E: Display>(tracked: Option<DeviceFingerprint>, error: E) -> Result<Self, E> {
+        match tracked {
+            Some(fingerprint) => Ok(Self::Unverified {
+                fingerprint,
+                reason: format!("{error:#}"),
+            }),
+            None => Err(error),
+        }
+    }
+}
+
 /// Probe `candidates` in order, at most `budget.in_flight` at a time, until
 /// `budget.deadline`.
 ///
-/// A probe that returns `Err` may have found a device the scan could not
-/// describe, so it leaves a gap. Put tracked and configured targets first:
+/// A probe that returns `Err` may have found a device the scan cannot name,
+/// so it leaves a gap across the target. Put tracked and configured targets first:
 /// the deadline falls on whatever is left, and nothing starts once it has
 /// passed. Every probe still running at the deadline has been cancelled and
 /// joined by the time this returns.
@@ -292,6 +328,18 @@ where
             None => return outcome,
             Some(Ok((_, Ok(Probed::Described(found))))) => outcome.found.push(found),
             Some(Ok((_, Ok(Probed::Present(fingerprint))))) => outcome.present.push(fingerprint),
+            Some(Ok((
+                _,
+                Ok(Probed::Unverified {
+                    fingerprint,
+                    reason,
+                }),
+            ))) => {
+                outcome.gaps.push(CoverageGap::DeviceUnverified {
+                    fingerprint,
+                    reason,
+                });
+            }
             Some(Ok((_, Ok(Probed::Nothing)))) => {}
             Some(Ok((candidate, Err(error)))) => outcome.gaps.push(CoverageGap::ProbeFailed {
                 candidate,

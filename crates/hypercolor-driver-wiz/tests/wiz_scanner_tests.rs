@@ -2,6 +2,7 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use hypercolor_driver_support::discovery::CandidateAdmission;
@@ -26,6 +27,7 @@ fn options(
     WizScanOptions {
         unicast_targets: unicast,
         broadcast_targets: broadcast,
+        tracked: HashMap::new(),
         timeout: Duration::from_millis(800),
         request_policy: policy(),
     }

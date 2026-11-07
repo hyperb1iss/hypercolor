@@ -242,11 +242,12 @@ A scan returns observations plus coverage, and the host treats them differently:
   (take it from `DriverTrackedDevice`) that answered but could not be described. It renews the
   device without touching its routes, capabilities, or metadata, so never rebuild a record from
   tracked or cached fields to keep a device alive.
-- **Coverage decides retirement.** The host infers that a tracked device left only from
-  `DiscoveryCoverage::Complete`. Report a `CoverageGap` for anything that could hide a device:
-  a failed send, a receive failure, a cancelled probe, a truncated admission, or a discovery
-  source that could not run. An intended collection window ending is complete, and so is a
-  known target that never answered.
+- **Coverage decides retirement.** A `CoverageGap` is anything that could hide a device, and it
+  has one of two scopes. `CoverageGap::DeviceUnverified` names one tracked device: the host holds
+  that device as if seen and the rest of the target can still retire. Every other gap (a failed
+  send, a receive failure, a cancelled probe, a truncated admission, a discovery source that
+  could not run) covers the whole target, so nothing retires. An intended collection window
+  ending is complete, and so is a known target that never answered.
 - **Errors mean nothing ran.** Return `Err` only when discovery could not start at all. One
   failed source must not throw away what the others found.
 

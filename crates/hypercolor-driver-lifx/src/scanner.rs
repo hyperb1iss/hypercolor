@@ -145,9 +145,10 @@ impl LifxScanner {
     /// A light that answers but fails its probe has not proven where it is:
     /// a StateService reply is unverified, and anyone on the LAN can send
     /// one that names a tracked serial. Only a reply from the light's last
-    /// verified endpoint counts as presence. Any other reply is an unknown
-    /// that keeps the scan partial, so it can neither prove a dead light
-    /// present nor have a live one retired.
+    /// verified endpoint counts as presence. A reply from anywhere else holds
+    /// the light it names, and one naming no tracked light keeps the scan
+    /// partial, so none of them can prove a dead light present or have a live
+    /// one retired.
     ///
     /// # Errors
     ///
@@ -169,12 +170,7 @@ impl LifxScanner {
             in_flight: self.options.max_concurrent_probes,
         };
         let mut outcome = probe_candidates(replies, budget, |reply: ServiceReply| {
-            let verified = self
-                .options
-                .tracked
-                .get(&reply.serial)
-                .filter(|route| route.addr == reply.addr)
-                .map(|route| route.fingerprint.clone());
+            let tracked = self.options.tracked.get(&reply.serial).cloned();
             async move {
                 match probe_at(reply.addr, reply.serial, policy).await {
                     Ok(Some(profile)) => Ok(Probed::Described(profile)),
@@ -182,9 +178,11 @@ impl LifxScanner {
                         debug!(serial = %reply.serial, addr = %reply.addr, "LIFX device is not a light");
                         Ok(Probed::Nothing)
                     }
-                    Err(error) => match verified {
-                        Some(fingerprint) => Ok(Probed::Present(fingerprint)),
-                        None => Err(error),
+                    Err(error) => match tracked {
+                        Some(route) if route.addr == reply.addr => {
+                            Ok(Probed::Present(route.fingerprint))
+                        }
+                        tracked => Probed::failed(tracked.map(|route| route.fingerprint), error),
                     },
                 }
             }

@@ -2346,6 +2346,66 @@ async fn one_partial_source_keeps_a_whole_batch_from_inferring_absence() {
     assert!(report.vanished_devices.is_empty());
 }
 
+fn unverified(fingerprint: &DeviceFingerprint) -> CoverageGap {
+    CoverageGap::DeviceUnverified {
+        fingerprint: fingerprint.clone(),
+        reason: "did not answer".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn a_device_gap_holds_that_device_and_lets_its_siblings_vanish() {
+    let registry = DeviceRegistry::new();
+    let (held, fingerprint) = tracked_device(&registry, "held").await;
+    let (gone, _) = tracked_device(&registry, "gone").await;
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_batch(
+        &mut orchestrator,
+        DiscoveryBatch::new(Vec::new(), vec![unverified(&fingerprint)]),
+    );
+
+    let report = orchestrator.full_scan().await;
+
+    assert_eq!(report.vanished_devices, vec![gone]);
+    assert_eq!(report.held_devices, vec![held]);
+    assert!(!report.scanner_reports[0].is_complete());
+    assert!(report.scanner_reports[0].covers_target());
+}
+
+#[tokio::test]
+async fn a_target_wide_gap_still_holds_everything_beside_a_device_gap() {
+    let registry = DeviceRegistry::new();
+    let (held, fingerprint) = tracked_device(&registry, "held").await;
+    tracked_device(&registry, "unverified").await;
+    let mut gaps = lost_packets();
+    gaps.push(unverified(&fingerprint));
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_batch(&mut orchestrator, DiscoveryBatch::new(Vec::new(), gaps));
+
+    let report = orchestrator.full_scan().await;
+
+    assert!(report.vanished_devices.is_empty());
+    assert_eq!(report.held_devices, vec![held]);
+    assert!(!report.scanner_reports[0].covers_target());
+}
+
+#[tokio::test]
+async fn a_gap_naming_an_untracked_device_holds_nothing() {
+    let registry = DeviceRegistry::new();
+    let (gone, _) = tracked_device(&registry, "gone").await;
+    let stranger = DeviceFingerprint::from_persisted("net:coverage:stranger".to_owned());
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_batch(
+        &mut orchestrator,
+        DiscoveryBatch::new(Vec::new(), vec![unverified(&stranger)]),
+    );
+
+    let report = orchestrator.full_scan().await;
+
+    assert_eq!(report.vanished_devices, vec![gone]);
+    assert!(report.held_devices.is_empty());
+}
+
 #[tokio::test]
 async fn presence_renews_a_device_without_rewriting_it() {
     let registry = DeviceRegistry::new();

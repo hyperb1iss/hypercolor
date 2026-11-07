@@ -2664,6 +2664,36 @@ async fn a_partial_empty_scan_retires_nothing() {
 }
 
 #[tokio::test]
+async fn a_device_gap_holds_only_that_device_and_its_siblings_still_retire() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&temp_dir, &[&driver]);
+    let dead = lane_device(&LANE_QUICK_DRIVER, "dead");
+    let dead_fingerprint = dead.fingerprint.clone();
+    let held = track_connected(&runtime, &dead).await;
+    let departed = track_connected(&runtime, &lane_device(&LANE_QUICK_DRIVER, "departed")).await;
+    driver.report_gaps(vec![CoverageGap::DeviceUnverified {
+        fingerprint: dead_fingerprint,
+        reason: "did not answer".to_owned(),
+    }]);
+
+    let result = scan_lane_target(&runtime, &LANE_QUICK_DRIVER).await;
+
+    assert_eq!(result.vanished_devices, vec![departed.to_string()]);
+    assert_eq!(
+        runtime.lifecycle_manager.lock().await.state(held),
+        Some(DeviceState::Connected),
+        "the device nobody could verify stays held"
+    );
+    assert_ne!(
+        runtime.lifecycle_manager.lock().await.state(departed),
+        Some(DeviceState::Connected)
+    );
+    assert_eq!(result.scanners[0].status, "partial");
+    assert_eq!(result.scanners[0].gaps.len(), 1);
+}
+
+#[tokio::test]
 async fn a_partial_scan_still_applies_what_it_saw() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let driver = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);

@@ -1,6 +1,7 @@
 //! Bounds on untrusted LAN input: registration replies, probe fanout, and
 //! the signing key's debug output (Spec 93 §3.1 and §5).
 
+use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::net::IpAddr;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -16,6 +17,7 @@ use hypercolor_driver_wiz::scanner::{
     MAX_CONCURRENT_PROBES, collect_registrations, registration_mac,
 };
 use hypercolor_driver_wiz::{RequestPolicy, WizScanOptions, WizScanner};
+use hypercolor_types::device::DeviceFingerprint;
 use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
 
@@ -206,6 +208,7 @@ async fn probes_run_with_bounded_concurrency() -> TestResult {
     let profiles = WizScanner::new(WizScanOptions {
         unicast_targets: targets,
         broadcast_targets: Vec::new(),
+        tracked: HashMap::new(),
         timeout: Duration::from_millis(2_000),
         request_policy: RequestPolicy {
             reply_timeout: Duration::from_millis(200),
@@ -232,11 +235,37 @@ async fn probes_run_with_bounded_concurrency() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_tracked_bulb_that_registers_and_goes_quiet_holds_only_itself() -> TestResult {
+    let (bulb, task) = responder(Ipv4Addr::LOCALHOST, registration("a8bb50000001", true)).await?;
+    let fingerprint = DeviceFingerprint::from_persisted("net:wiz:a8:bb:50:00:00:01".to_owned());
+    let outcome = WizScanner::new(WizScanOptions {
+        unicast_targets: Vec::new(),
+        broadcast_targets: vec![bulb],
+        tracked: HashMap::from([(bulb.ip(), fingerprint.clone())]),
+        timeout: Duration::from_millis(600),
+        request_policy: RequestPolicy {
+            reply_timeout: Duration::from_millis(100),
+            attempts: 1,
+        },
+    })
+    .scan()
+    .await?;
+    task.abort();
+    assert!(outcome.found.is_empty());
+    let [gap] = outcome.gaps.as_slice() else {
+        panic!("expected one gap, got {:?}", outcome.gaps);
+    };
+    assert_eq!(gap.device(), Some(&fingerprint));
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_bulb_that_registers_and_then_goes_quiet_leaves_a_gap() -> TestResult {
     let (bulb, task) = responder(Ipv4Addr::LOCALHOST, registration("a8bb50000001", true)).await?;
     let outcome = WizScanner::new(WizScanOptions {
         unicast_targets: Vec::new(),
         broadcast_targets: vec![bulb],
+        tracked: HashMap::new(),
         timeout: Duration::from_millis(600),
         request_policy: RequestPolicy {
             reply_timeout: Duration::from_millis(100),
@@ -275,6 +304,7 @@ async fn extreme_retry_policies_do_not_overflow() -> TestResult {
     let profiles = WizScanner::new(WizScanOptions {
         unicast_targets: Vec::new(),
         broadcast_targets: Vec::new(),
+        tracked: HashMap::new(),
         timeout: Duration::from_millis(100),
         request_policy: RequestPolicy {
             reply_timeout: Duration::MAX,

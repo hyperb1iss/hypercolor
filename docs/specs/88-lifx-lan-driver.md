@@ -994,7 +994,8 @@ light reports a gap instead of failing. A scan reports a gap when:
   some were never probed;
 - a probe did not finish before the scan deadline;
 - a light answered GetService but failed its probe, unless that counts as
-  presence (below).
+  presence (below). A failed probe that names a tracked serial holds only
+  that light; one that names no tracked light covers the whole target.
 
 An address family with no targets is skipped and is not a gap. The scan is
 an error only when no family that had targets could start. The collection
@@ -1006,9 +1007,9 @@ is, because a StateService reply is unverified: anyone on the LAN can send
 one naming a tracked serial. Only a reply from the light's last verified
 endpoint (the route its tracked metadata holds) counts as presence, and the
 scan then renews the light without touching its tracked info or route. A
-reply from any other endpoint is a gap, so it can neither prove a dead light
-present nor redirect where the backend connects, and a light that really
-moved stays tracked until a scan probes it successfully.
+reply from any other endpoint holds that one light, so it can neither prove
+a dead light present nor redirect where the backend connects, and a light
+that really moved stays tracked until a scan probes it successfully.
 
 Metadata published per device: `ip`, `port`, `serial`, `vendor_id`,
 `product_id`, `firmware`, `device_class`, `zones`, and `tiles` for matrices.

@@ -2,6 +2,7 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use hypercolor_driver_twinkly::scanner::{
 use hypercolor_driver_twinkly::{
     LedProfile, RtProtocol, TwinklyEndpoint, TwinklyScanOptions, TwinklyScanner,
 };
-use hypercolor_types::device::DeviceTopologyHint;
+use hypercolor_types::device::{DeviceFingerprint, DeviceTopologyHint};
 use support::{FakeSpec, FakeTwinkly, TestResult};
 
 fn unicast(endpoints: Vec<TwinklyEndpoint>) -> TwinklyScanOptions {
@@ -126,6 +127,32 @@ async fn unreachable_endpoints_are_skipped() -> TestResult {
         "a remembered endpoint that never answers is gone: {:?}",
         outcome.gaps
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_tracked_device_that_answers_but_fails_its_probe_holds_only_itself() -> TestResult {
+    let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(10)).await?;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = closed.local_addr()?.port();
+    drop(closed);
+    let fingerprint = DeviceFingerprint::from_persisted("net:twinkly:lamp".to_owned());
+    let outcome = TwinklyScanner::new(TwinklyScanOptions {
+        http_port: port,
+        tracked: HashMap::from([(IpAddr::V4(Ipv4Addr::LOCALHOST), fingerprint.clone())]),
+        ..TwinklyScanOptions::new(
+            Vec::new(),
+            vec![fake.discovery_addr()],
+            Duration::from_millis(600),
+        )
+    })
+    .scan()
+    .await?;
+    assert!(outcome.found.is_empty());
+    let [gap] = outcome.gaps.as_slice() else {
+        panic!("expected one gap, got {:?}", outcome.gaps);
+    };
+    assert_eq!(gap.device(), Some(&fingerprint));
     Ok(())
 }
 

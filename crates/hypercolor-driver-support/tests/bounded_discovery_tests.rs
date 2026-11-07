@@ -177,6 +177,42 @@ async fn probing_reports_results_and_gaps_apart() {
 }
 
 #[tokio::test]
+async fn a_device_scoped_probe_failure_names_the_device_it_holds() {
+    let tracked = DeviceFingerprint::from_persisted("net:fixture:tracked".to_owned());
+    let held = tracked.clone();
+    let batch = probe_candidates(
+        [0, 1, 2],
+        budget(Duration::from_secs(5), 3),
+        move |candidate: u32| {
+            let held = held.clone();
+            async move {
+                match candidate {
+                    0 => Ok::<Probed<u32>, &str>(Probed::silent(Some(held), "silent")),
+                    1 => Ok(Probed::silent(None, "silent")),
+                    _ => Probed::failed(None, "unreadable"),
+                }
+            }
+        },
+    )
+    .await;
+
+    assert_eq!(
+        batch
+            .gaps
+            .iter()
+            .filter_map(CoverageGap::device)
+            .collect::<Vec<_>>(),
+        [&tracked],
+        "a silent tracked target holds itself, and an untracked one holds nothing"
+    );
+    assert_eq!(
+        batch.gaps.len(),
+        2,
+        "a failure that names no device stays a gap across the target"
+    );
+}
+
+#[tokio::test]
 async fn probing_never_exceeds_its_concurrency() {
     let active = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));

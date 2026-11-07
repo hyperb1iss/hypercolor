@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::Instant;
@@ -292,9 +292,10 @@ impl NanoleafScanner {
 /// Probe one device.
 ///
 /// A paired device nothing advertised that does not answer has not been
-/// seen, and a device the host tracks that answers but cannot be read keeps
-/// what the host verified. An unpaired device has nothing to probe, so it
-/// stays visible as a deferred record that pairing can act on.
+/// seen, so it holds the device tracked at its address and leaves its
+/// siblings free to retire. A device the host tracks that answers but cannot
+/// be read keeps what the host verified. An unpaired device has nothing to
+/// probe, so it stays visible as a deferred record that pairing can act on.
 async fn build_discovered_device(
     candidate: NanoleafCandidate,
     tracked: Option<DeviceFingerprint>,
@@ -347,7 +348,9 @@ async fn build_discovered_device(
                 }
             }
             // The request error names its URL, and the URL holds the token.
-            Err(_) if !advertised => bail!("Nanoleaf device did not answer"),
+            Err(_) if !advertised => {
+                return Ok(Probed::silent(tracked, "device did not answer"));
+            }
             Err(error) => {
                 warn!(
                     ip = %candidate.ip,

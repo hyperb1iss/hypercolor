@@ -27,7 +27,9 @@ use hypercolor_driver_api::{
     DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
     DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
 };
-use hypercolor_driver_support::network::{network_port_from_metadata, validate_ip};
+use hypercolor_driver_support::network::{
+    network_port_from_metadata, tracked_fingerprints_by_ip, validate_ip,
+};
 use hypercolor_driver_support::{control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::control::{ControlValue, IpText};
@@ -149,6 +151,7 @@ impl DiscoveryCapability for WizDriverModule {
             } else {
                 Vec::new()
             },
+            tracked: tracked_fingerprints_by_ip(&tracked_devices),
             timeout: request.timeout,
             request_policy: RequestPolicy::default(),
         });

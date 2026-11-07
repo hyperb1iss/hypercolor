@@ -27,7 +27,7 @@ use hypercolor_driver_api::{
     DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
     DriverTrackedDevice, OutputBinding, TrackedDeviceCtx, ValidatedControlChanges,
 };
-use hypercolor_driver_support::network::validate_ip;
+use hypercolor_driver_support::network::{tracked_fingerprints_by_ip, validate_ip};
 use hypercolor_driver_support::{control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::control::{ControlValue, IpText};
@@ -144,15 +144,18 @@ impl DiscoveryCapability for TwinklyDriverModule {
     ) -> std::result::Result<DiscoveryBatch, DriverError> {
         let config = config.parse_settings::<TwinklyConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
-        let scanner = TwinklyScanner::new(TwinklyScanOptions::new(
-            resolve_twinkly_probe_targets(&config, &tracked_devices),
-            if config.broadcast_discovery {
-                broadcast_targets()
-            } else {
-                Vec::new()
-            },
-            request.timeout,
-        ));
+        let scanner = TwinklyScanner::new(TwinklyScanOptions {
+            tracked: tracked_fingerprints_by_ip(&tracked_devices),
+            ..TwinklyScanOptions::new(
+                resolve_twinkly_probe_targets(&config, &tracked_devices),
+                if config.broadcast_discovery {
+                    broadcast_targets()
+                } else {
+                    Vec::new()
+                },
+                request.timeout,
+            )
+        });
         let outcome = scanner.scan().await.map_err(DriverError::discovery)?;
         Ok(outcome.into_batch(|profile| discovered_device(&profile, config.max_fps)))
     }

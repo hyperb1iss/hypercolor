@@ -286,10 +286,11 @@ fn merge_advertised(candidates: &mut HashMap<IpAddr, HueCandidate>, bridge: HueK
 
 /// Probe one bridge.
 ///
-/// A bridge nothing advertised that does not answer has not been seen, and
-/// a bridge the host tracks that answers but cannot be read keeps what the
-/// host verified: lights or entertainment areas that merely failed to load
-/// must not look like a bridge that has none.
+/// A bridge nothing advertised that does not answer has not been seen, so it
+/// holds the device tracked at its address and leaves its siblings free to
+/// retire. A bridge the host tracks that answers but cannot be read keeps
+/// what the host verified: lights or entertainment areas that merely failed
+/// to load must not look like a bridge that has none.
 async fn build_discovered_bridge(
     candidate: HueCandidate,
     tracked: Option<DeviceFingerprint>,
@@ -306,7 +307,7 @@ async fn build_discovered_bridge(
     {
         Ok(identity) => Some(identity),
         Err(_) if advertised => None,
-        Err(error) => return Err(error),
+        Err(error) => return Ok(Probed::silent(tracked, format!("{error:#}"))),
     };
     let bridge_id = identity
         .as_ref()

@@ -49,7 +49,7 @@ curl -s -X POST http://localhost:9420/api/v1/devices/discover \
   -d '{"targets": ["wled"], "timeout_ms": 15000, "wait": true}'
 ```
 
-The response includes a `scanners` array with each scanner's duration, discovered count, status, and any error message. A `partial` status means the scan may have missed devices, and its `gaps` list says why (a failed send, a device that answered but could not be read, more replies than one scan admits). Hypercolor applies what a partial scan found and keeps the driver's other devices connected, because a device missing from such a scan may simply not have been seen.
+The response includes a `scanners` array with each scanner's duration, discovered count, status, and any error message. A `partial` status means the scan may have missed devices, and its `gaps` list says why (a failed send, a device that answered but could not be read, more replies than one scan admits). Hypercolor applies what a partial scan found. A gap that names one device keeps only that device, and any other gap keeps all of the driver's devices connected, because a device missing from such a scan may simply not have been seen.
 
 ## Common causes
 

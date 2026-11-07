@@ -146,7 +146,9 @@ the admission cap.
 
 A configured or tracked address that fails its probe has left, so it does not
 affect coverage. A device that registered and then fails its probe is alive,
-so it leaves a coverage gap and the host retires nothing that scan. Rejecting
+so it holds the device tracked at that address. With none tracked there it
+could be any device, so it leaves a gap across the target and the host retires
+nothing that scan. Rejecting
 every registration send leaves a gap too; one failed interface is tolerated,
 since known devices are probed directly.
 

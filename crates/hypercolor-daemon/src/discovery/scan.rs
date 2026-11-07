@@ -316,8 +316,9 @@ struct TargetScanOutcome {
     /// The target's observation epoch this scan left behind, or `None` when
     /// its scanner failed and nothing was observed.
     observation: Option<u64>,
-    /// Whether the scan covered the whole target, so absence means something.
-    complete: bool,
+    /// Whether every gap names its device, so absence means something for
+    /// the rest of the target.
+    covered: bool,
     found: Vec<DeviceRef>,
     new_devices: Vec<DeviceRef>,
     reappeared_devices: Vec<DeviceRef>,
@@ -448,7 +449,7 @@ async fn run_discovery_scan(
             };
         }
 
-        let every_target_complete = outcomes.iter().all(|(_, outcome)| outcome.complete);
+        let every_target_covered = outcomes.iter().all(|(_, outcome)| outcome.covered);
         let mut found = Vec::new();
         let mut new_devices = Vec::new();
         let mut reappeared_devices = Vec::new();
@@ -508,7 +509,7 @@ async fn run_discovery_scan(
         // target, so a newer lane scan may have seen that target since. Only
         // devices whose observation is still the newest take part.
         let current_ids = still_current_observations(&runtime, &observed_by, &seen_ids);
-        let bindings_migrated = if complete_sweep && every_target_complete {
+        let bindings_migrated = if complete_sweep && every_target_covered {
             match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
                 &runtime.device_registry,
                 &runtime.lifecycle_manager,
@@ -599,8 +600,8 @@ async fn known_devices_before_shutdown(runtime: &DiscoveryRuntime) -> usize {
 }
 
 /// Scan one target while holding its lane: discover, apply what it found,
-/// then, when the scan covered the whole target, retire the target's devices
-/// it no longer reports.
+/// then, unless a gap covers the whole target, retire the target's devices it
+/// no longer reports.
 ///
 /// Returns `None` for a target with no discovery driver behind it.
 #[allow(clippy::too_many_lines)]
@@ -695,37 +696,41 @@ async fn scan_target(
             new_devices,
             reappeared_devices,
         } = incremental.lock().await.clone();
+        // A device a gap holds counts as seen, so one unverified device costs
+        // nothing beyond its own retirement.
         let seen_ids: HashSet<DeviceId> = report
             .new_devices
             .iter()
             .chain(report.reappeared_devices.iter())
+            .chain(report.held_devices.iter())
             .copied()
             .collect();
         let failed = report
             .scanner_reports
             .iter()
             .any(|scanner| scanner.error.is_some());
-        let complete = report
+        let covered = report
             .scanner_reports
             .iter()
-            .all(ScannerScanReport::is_complete);
-        let vanished_devices = if complete {
+            .all(ScannerScanReport::covers_target);
+        let incomplete = report
+            .scanner_reports
+            .iter()
+            .filter(|scanner| !scanner.is_complete());
+        for scanner in incomplete {
+            warn!(
+                target = target.as_str(),
+                scanner = %scanner.scanner,
+                gaps = scanner.gaps.len(),
+                first_gap = scanner.gaps.first().map(tracing::field::display),
+                error = scanner.error.as_deref(),
+                retiring = covered,
+                "discovery of this target was incomplete; preserving what it could not verify"
+            );
+        }
+        let vanished_devices = if covered {
             retire_target_departures(runtime, target, &report.vanished_devices, &seen_ids).await
         } else {
-            let incomplete = report
-                .scanner_reports
-                .iter()
-                .filter(|scanner| !scanner.is_complete());
-            for scanner in incomplete {
-                warn!(
-                    target = target.as_str(),
-                    scanner = %scanner.scanner,
-                    gaps = scanner.gaps.len(),
-                    first_gap = scanner.gaps.first().map(tracing::field::display),
-                    error = scanner.error.as_deref(),
-                    "discovery of this target was incomplete; preserving its device mappings"
-                );
-            }
             Vec::new()
         };
         let observation = (!failed).then(|| {
@@ -737,7 +742,7 @@ async fn scan_target(
         Some(TargetScanOutcome {
             target: target.clone(),
             observation,
-            complete,
+            covered,
             found,
             new_devices,
             reappeared_devices,

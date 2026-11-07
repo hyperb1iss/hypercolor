@@ -41,11 +41,21 @@ pub enum CoverageGap {
         /// Failure detail.
         reason: String,
     },
-    /// A candidate answered discovery but could not be described.
+    /// A candidate answered discovery but could not be described, and it
+    /// names no tracked device, so it could be any of them.
     #[error("probe of {candidate} failed: {reason}")]
     ProbeFailed {
         /// The candidate the probe targeted.
         candidate: String,
+        /// Failure detail.
+        reason: String,
+    },
+    /// A tracked device could not be verified. The host holds this device
+    /// as if seen, and the rest of the target can still retire.
+    #[error("{fingerprint} could not be verified: {reason}")]
+    DeviceUnverified {
+        /// The device that stays held.
+        fingerprint: DeviceFingerprint,
         /// Failure detail.
         reason: String,
     },
@@ -72,6 +82,16 @@ pub enum CoverageGap {
 }
 
 impl CoverageGap {
+    /// The one device this gap holds, or `None` when it covers the whole
+    /// driver target.
+    #[must_use]
+    pub const fn device(&self) -> Option<&DeviceFingerprint> {
+        match self {
+            Self::DeviceUnverified { fingerprint, .. } => Some(fingerprint),
+            _ => None,
+        }
+    }
+
     /// The gap a failed datagram receive leaves, if any.
     ///
     /// Windows surfaces an ICMP port-unreachable from an earlier send as a
@@ -94,8 +114,9 @@ pub enum DiscoveryCoverage {
     /// A device this scan did not report is gone. An intended collection
     /// window ending is complete, and so is a target that never answered.
     Complete,
-    /// The scan may have missed devices, so nothing can be inferred from a
-    /// device's absence.
+    /// The scan may have missed devices. A gap that names a device holds
+    /// only that device; any other gap holds the whole target, so nothing
+    /// can be inferred from a device's absence.
     Partial(Vec<CoverageGap>),
 }
 
@@ -158,9 +179,10 @@ pub trait DiscoveryCapability: Send + Sync {
     /// Discover reachable devices for this driver.
     ///
     /// The host applies every observation, and infers that a tracked device
-    /// left only from [`DiscoveryCoverage::Complete`]. Report a gap for
-    /// anything that could hide a device; a driver never needs to invent a
-    /// record, or fail a scan, to keep the host from retiring one.
+    /// left when no gap covers the target. Report a gap for anything that
+    /// could hide a device, naming the device when the scan knows which one;
+    /// a driver never needs to invent a record, or fail a scan, to keep the
+    /// host from retiring one.
     ///
     /// # Errors
     ///

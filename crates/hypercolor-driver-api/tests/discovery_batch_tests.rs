@@ -69,6 +69,23 @@ fn a_failing_socket_leaves_a_gap_but_a_peer_saying_nothing_listens_does_not() {
 }
 
 #[test]
+fn only_a_device_gap_names_the_device_it_holds() {
+    let fingerprint = DeviceFingerprint::from_persisted("net:fixture:lamp".to_owned());
+    let held = CoverageGap::DeviceUnverified {
+        fingerprint: fingerprint.clone(),
+        reason: "did not answer".to_owned(),
+    };
+
+    assert_eq!(held.device(), Some(&fingerprint));
+    assert_eq!(send_gap().device(), None);
+    assert_eq!(CoverageGap::AdmissionFull { refused: 1 }.device(), None);
+    assert_eq!(
+        held.to_string(),
+        "net:fixture:lamp could not be verified: did not answer"
+    );
+}
+
+#[test]
 fn gaps_read_as_sentences() {
     assert_eq!(send_gap().to_string(), "send to 192.0.2.1:9 failed");
     assert_eq!(

@@ -208,11 +208,42 @@ async fn an_untracked_bridge_that_cannot_be_read_stays_visible_and_deferred() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn a_known_bridge_that_never_answers_is_a_gap_not_a_record() -> TestResult {
+fn closed_port() -> TestResult<u16> {
     let closed = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let api_port = closed.local_addr()?.port();
-    drop(closed);
+    Ok(closed.local_addr()?.port())
+}
+
+#[tokio::test]
+async fn a_tracked_bridge_that_never_answers_holds_only_itself() -> TestResult {
+    let api_port = closed_port()?;
+    let ip: IpAddr = "127.0.0.1".parse()?;
+    let tempdir = tempfile::tempdir()?;
+    let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
+    let fingerprint = DeviceFingerprint::from_persisted("net:hue:dead-bridge".to_owned());
+
+    let outcome = HueScanner::with_options(
+        vec![known_bridge(ip, api_port)],
+        store,
+        Duration::from_secs(1),
+        false,
+        None,
+    )
+    .with_tracked(HashMap::from([(ip, fingerprint.clone())]))
+    .scan_bridges()
+    .await?;
+
+    assert!(outcome.found.is_empty(), "no record is rebuilt for it");
+    assert!(outcome.present.is_empty(), "silence is not presence");
+    let [gap] = outcome.gaps.as_slice() else {
+        panic!("expected one gap, got {:?}", outcome.gaps);
+    };
+    assert_eq!(gap.device(), Some(&fingerprint));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_configured_bridge_nobody_tracks_that_never_answers_holds_nothing() -> TestResult {
+    let api_port = closed_port()?;
     let tempdir = tempfile::tempdir()?;
     let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
 
@@ -229,8 +260,8 @@ async fn a_known_bridge_that_never_answers_is_a_gap_not_a_record() -> TestResult
     assert!(outcome.found.is_empty());
     assert!(outcome.present.is_empty());
     assert!(
-        matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
-        "{:?}",
+        outcome.gaps.is_empty(),
+        "a dead address with no device behind it must not hold the driver: {:?}",
         outcome.gaps
     );
     Ok(())

@@ -373,15 +373,16 @@ async fn a_tracked_light_failing_its_probe_at_its_verified_route_stays_present()
 }
 
 #[tokio::test]
-async fn a_failed_probe_anywhere_else_is_a_gap_and_proves_nothing() -> TestResult {
+async fn a_failed_probe_anywhere_else_holds_that_light_and_proves_nothing() -> TestResult {
     let fake = half_silent_fleet().await?;
     let moved = SocketAddr::new(fake.addr().ip(), fake.addr().port().wrapping_add(1));
+    let fingerprint = fingerprint_for_serial(serial(2));
     let outcome = LifxScanner::new(LifxScanOptions {
         tracked: HashMap::from([(
             serial(2),
             TrackedRoute {
                 addr: moved,
-                fingerprint: fingerprint_for_serial(serial(2)),
+                fingerprint: fingerprint.clone(),
             },
         )]),
         ..options(vec![fake.addr()])
@@ -393,16 +394,19 @@ async fn a_failed_probe_anywhere_else_is_a_gap_and_proves_nothing() -> TestResul
         outcome.present.is_empty(),
         "an unverified endpoint neither keeps the light present nor moves it"
     );
-    assert!(
-        matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
-        "{:?}",
-        outcome.gaps
+    let [gap] = outcome.gaps.as_slice() else {
+        panic!("expected one gap, got {:?}", outcome.gaps);
+    };
+    assert_eq!(
+        gap.device(),
+        Some(&fingerprint),
+        "only the light it names is held"
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn an_unknown_light_failing_its_probe_is_a_gap() -> TestResult {
+async fn an_unknown_light_failing_its_probe_is_a_gap_across_the_target() -> TestResult {
     let fake = half_silent_fleet().await?;
     let outcome = LifxScanner::new(options(vec![fake.addr()])).scan().await?;
     assert_eq!(outcome.found.len(), 1);
@@ -412,6 +416,7 @@ async fn an_unknown_light_failing_its_probe_is_a_gap() -> TestResult {
         "{:?}",
         outcome.gaps
     );
+    assert_eq!(outcome.gaps[0].device(), None);
     Ok(())
 }
 

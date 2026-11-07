@@ -10,7 +10,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -73,6 +72,8 @@ pub struct TwinklyScanOptions {
     pub endpoints: Vec<TwinklyEndpoint>,
     /// Discovery datagram targets. Empty disables broadcast entirely.
     pub broadcast_targets: Vec<SocketAddr>,
+    /// Fingerprints the host tracks devices under, by address.
+    pub tracked: HashMap<IpAddr, DeviceFingerprint>,
     /// Overall scan budget from the host.
     pub timeout: Duration,
     /// REST port assumed for devices found by the discovery datagram.
@@ -84,7 +85,7 @@ pub struct TwinklyScanOptions {
 impl TwinklyScanOptions {
     /// Options on the standard ports.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         endpoints: Vec<TwinklyEndpoint>,
         broadcast_targets: Vec<SocketAddr>,
         timeout: Duration,
@@ -92,6 +93,7 @@ impl TwinklyScanOptions {
         Self {
             endpoints,
             broadcast_targets,
+            tracked: HashMap::new(),
             timeout,
             http_port: HTTP_PORT,
             rt_port: RT_PORT,
@@ -305,7 +307,8 @@ impl TwinklyScanner {
     ///
     /// A configured or remembered endpoint that fails its probe is simply
     /// gone. One that answered the discovery datagram is alive, so its
-    /// failed probe leaves a coverage gap.
+    /// failed probe holds the device tracked there, or the target when none
+    /// is.
     ///
     /// # Errors
     ///
@@ -356,13 +359,13 @@ impl TwinklyScanner {
             deadline: started + self.options.timeout.max(window + request_timeout * 2),
             in_flight: MAX_CONCURRENT_PROBES,
         };
-        let answered = Arc::new(answered);
         let mut outcome = probe_candidates(endpoints, budget, |endpoint: TwinklyEndpoint| {
-            let answered = Arc::clone(&answered);
+            let answered = answered.contains(&endpoint.ip);
+            let tracked = self.options.tracked.get(&endpoint.ip).cloned();
             async move {
                 match probe_endpoint(endpoint, request_timeout).await {
                     Ok(profile) => Ok(Probed::Described(profile)),
-                    Err(error) if answered.contains(&endpoint.ip) => Err(error),
+                    Err(error) if answered => Probed::failed(tracked, error),
                     Err(error) => {
                         debug!(%endpoint, error = %format!("{error:#}"), "Twinkly device probe failed");
                         Ok(Probed::Nothing)

@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_driver_api::{CoverageGap, DiscoveryConnectBehavior};
+use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_nanoleaf::{NanoleafDiscoveredDevice, NanoleafKnownDevice, NanoleafScanner};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_driver_support::discovery::ScanOutcome;
@@ -116,25 +116,53 @@ async fn an_untracked_controller_that_cannot_be_read_stays_visible_and_deferred(
     Ok(())
 }
 
-#[tokio::test]
-async fn a_paired_controller_that_never_answers_is_a_gap_not_a_record() -> TestResult {
+fn closed_port() -> TestResult<u16> {
     let closed = std::net::TcpListener::bind((LOOPBACK, 0))?;
-    let port = closed.local_addr()?.port();
-    drop(closed);
+    Ok(closed.local_addr()?.port())
+}
+
+#[tokio::test]
+async fn a_tracked_controller_that_never_answers_holds_only_itself() -> TestResult {
+    let tempdir = tempfile::tempdir()?;
+    let fingerprint = DeviceFingerprint::from_persisted("net:nanoleaf:dead".to_owned());
+
+    let outcome = scan(
+        known(closed_port()?)?,
+        paired_store(&tempdir).await?,
+        HashMap::from([(LOOPBACK.parse()?, fingerprint.clone())]),
+    )
+    .await?;
+
+    assert!(outcome.found.is_empty(), "no record is rebuilt for it");
+    assert!(outcome.present.is_empty(), "silence is not presence");
+    let [gap] = outcome.gaps.as_slice() else {
+        panic!("expected one gap, got {:?}", outcome.gaps);
+    };
+    assert_eq!(gap.device(), Some(&fingerprint));
+    assert!(
+        !gap.to_string().contains("token"),
+        "gaps reach the REST API, so they must not carry the auth token"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_paired_controller_nobody_tracks_that_never_answers_holds_nothing() -> TestResult {
     let tempdir = tempfile::tempdir()?;
 
-    let outcome = scan(known(port)?, paired_store(&tempdir).await?, HashMap::new()).await?;
+    let outcome = scan(
+        known(closed_port()?)?,
+        paired_store(&tempdir).await?,
+        HashMap::new(),
+    )
+    .await?;
 
     assert!(outcome.found.is_empty());
     assert!(outcome.present.is_empty());
     assert!(
-        matches!(outcome.gaps.as_slice(), [CoverageGap::ProbeFailed { .. }]),
-        "{:?}",
+        outcome.gaps.is_empty(),
+        "a dead address with no device behind it must not hold the driver: {:?}",
         outcome.gaps
-    );
-    assert!(
-        !format!("{:?}", outcome.gaps).contains("token"),
-        "gaps reach the REST API, so they must not carry the auth token"
     );
     Ok(())
 }

@@ -3,6 +3,7 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,6 +32,7 @@ async fn discover(fake: &FakeWiz) -> TestResult<DiscoveredDevice> {
     let profiles = WizScanner::new(WizScanOptions {
         unicast_targets: vec![fake.addr()],
         broadcast_targets: Vec::new(),
+        tracked: HashMap::new(),
         timeout: Duration::from_millis(800),
         request_policy: policy(),
     })
