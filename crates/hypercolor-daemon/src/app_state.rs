@@ -146,6 +146,9 @@ pub struct AppState {
     /// Configuration manager for config API endpoints.
     pub(crate) config_manager: Option<Arc<ConfigManager>>,
 
+    /// Lists the host's audio input devices for the settings API.
+    pub(crate) audio_devices: crate::startup::EnumerateAudioDevices,
+
     /// Data directory backing state-owned stores and caches.
     pub data_dir: PathBuf,
 
@@ -545,10 +548,23 @@ impl AppState {
         let software_conflicts =
             SoftwareConflictStore::new().with_event_bus(Arc::clone(&event_bus));
         let bridge_output_locks = BridgeOutputLocks::default();
+        // Without an injected registry the built-in drivers compose offline,
+        // and the blocksd bridge resolves a socket inside this state's data
+        // directory rather than the session's.
         let driver_registry = driver_registry.unwrap_or_else(|| {
+            let mut offline_config = config.clone();
+            offline_config.discovery.blocks_scan = false;
+            offline_config.discovery.blocks_socket_path = Some(
+                data_dir
+                    .join("run")
+                    .join("blocksd")
+                    .join("blocksd.sock")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
             Arc::new(
-                network::build_builtin_driver_module_registry(
-                    &config,
+                network::build_offline_driver_module_registry(
+                    &offline_config,
                     Arc::clone(&credential_store),
                     usb_protocol_configs.clone(),
                     unclaimed_devices.clone(),
@@ -689,6 +705,7 @@ impl AppState {
             render_acceleration: crate::startup::cpu_compositor_acceleration_resolution(),
             device_metrics,
             config_manager,
+            audio_devices: crate::startup::no_audio_devices(),
             data_dir,
             state_dir,
             extensions: ExtensionRegistry::default(),
@@ -794,6 +811,7 @@ impl AppState {
             render_acceleration: daemon.render_acceleration.clone(),
             device_metrics: Arc::clone(&daemon.device_metrics),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
+            audio_devices: daemon.audio_devices,
             data_dir,
             state_dir,
             extensions: daemon.extensions.clone(),

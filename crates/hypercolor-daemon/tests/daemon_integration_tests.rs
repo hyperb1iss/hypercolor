@@ -4,15 +4,19 @@
 //! config loading, and graceful shutdown. Uses real subsystems (no mocks).
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use hypercolor_core::config::paths::IsolatedUserDirs;
 use hypercolor_core::config::{BootConfig, ConfigManager};
-use hypercolor_core::input::{ManagedSourceRole, SensorSource};
+use hypercolor_core::input::{
+    DataSource, DataSourceKind, DataSourceRole, InputData, ManagedSource, ManagedSourceRole,
+    SourceRoleBinding,
+};
 use hypercolor_daemon::extensions::DaemonLifecycleExtension;
-use hypercolor_daemon::startup::{DaemonState, config_sources, default_config};
+use hypercolor_daemon::startup::{DaemonState, HostPorts, config_sources, default_config};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
     CURRENT_SCHEMA_VERSION, HypercolorConfig, RenderAccelerationMode, ServoGpuImportMode,
@@ -22,75 +26,32 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::scene::SceneId;
+use hypercolor_types::sensor::SystemSnapshot;
 use tempfile::NamedTempFile;
-use tokio::sync::Mutex;
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
 
-static PATH_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-struct TestConfigDirGuard {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
+/// A tempdir claimed as every user directory a test daemon touches.
+///
+/// Field order matters: the claim clears its overrides before the
+/// directory it pointed at is removed.
+struct TestUserDirs {
+    dirs: IsolatedUserDirs,
     _dir: tempfile::TempDir,
-    #[allow(dead_code)]
-    config_dir: PathBuf,
 }
 
-impl TestConfigDirGuard {
-    async fn new() -> Self {
-        let lock = PATH_OVERRIDE_LOCK.lock().await;
+impl TestUserDirs {
+    fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir should be created");
-        let config_dir = dir.path().join("config");
-        ConfigManager::set_config_dir_override(Some(config_dir.clone()));
         Self {
-            _lock: lock,
+            dirs: IsolatedUserDirs::claim(dir.path()),
             _dir: dir,
-            config_dir,
         }
     }
-}
 
-impl Drop for TestConfigDirGuard {
-    fn drop(&mut self) {
-        ConfigManager::set_config_dir_override(None);
-    }
-}
-
-struct TestDataDirGuard {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
-    _dir: tempfile::TempDir,
-    #[allow(dead_code)]
-    data_dir: PathBuf,
-    _config_dir: PathBuf,
-    _state_dir: PathBuf,
-}
-
-impl TestDataDirGuard {
-    async fn new() -> Self {
-        let lock = PATH_OVERRIDE_LOCK.lock().await;
-        let dir = tempfile::tempdir().expect("tempdir should be created");
-        let data_dir = dir.path().join("data");
-        let config_dir = dir.path().join("config");
-        let state_dir = dir.path().join("state");
-        ConfigManager::set_data_dir_override(Some(data_dir.clone()));
-        ConfigManager::set_config_dir_override(Some(config_dir.clone()));
-        ConfigManager::set_state_dir_override(Some(state_dir.clone()));
-        Self {
-            _lock: lock,
-            _dir: dir,
-            data_dir,
-            _config_dir: config_dir,
-            _state_dir: state_dir,
-        }
-    }
-}
-
-impl Drop for TestDataDirGuard {
-    fn drop(&mut self) {
-        ConfigManager::set_data_dir_override(None);
-        ConfigManager::set_config_dir_override(None);
-        ConfigManager::set_state_dir_override(None);
+    fn host(&self) -> HostPorts {
+        HostPorts::isolated(&self.dirs)
     }
 }
 
@@ -121,10 +82,57 @@ fn temp_config_file() -> NamedTempFile {
     f
 }
 
+/// A sensor source that reports a fixed snapshot instead of probing the
+/// host's sensors (or, on Windows, its PawnIO broker).
+struct FixedSensorSource {
+    snapshot: Arc<SystemSnapshot>,
+    running: bool,
+}
+
+impl ManagedSource for FixedSensorSource {
+    fn name(&self) -> &'static str {
+        "fixed-sensors"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(if self.running {
+            InputData::Sensors(Arc::clone(&self.snapshot))
+        } else {
+            InputData::None
+        })
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for FixedSensorSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for FixedSensorSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Sensors
+    }
+}
+
 fn install_test_input_source(state: &DaemonState) {
     state
         .input_manager()
-        .add_source(ManagedSourceRole::data(Box::new(SensorSource::new())))
+        .add_source(ManagedSourceRole::data(Box::new(FixedSensorSource {
+            snapshot: Arc::new(SystemSnapshot::default()),
+            running: false,
+        })))
         .expect("sensor source should register");
 }
 
@@ -191,12 +199,13 @@ fn daemon_state_is_send_and_sync() {
 
 #[tokio::test]
 async fn daemon_lifecycle_initialize_start_shutdown() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
     install_test_input_source(&state);
@@ -242,12 +251,13 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
 
 #[tokio::test]
 async fn daemon_shutdown_publishes_events() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
     install_test_input_source(&state);
@@ -299,12 +309,13 @@ async fn daemon_shutdown_publishes_events() {
 
 #[tokio::test]
 async fn daemon_double_shutdown_is_safe() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
     install_test_input_source(&state);
@@ -319,7 +330,7 @@ async fn daemon_double_shutdown_is_safe() {
 
 #[tokio::test]
 async fn daemon_start_rolls_back_partial_startup() {
-    let _data_guard = TestDataDirGuard::new().await;
+    let data_guard = TestUserDirs::new();
     let mut config = default_config();
     config.audio.enabled = false;
     config.capture.enabled = false;
@@ -335,6 +346,7 @@ async fn daemon_start_rolls_back_partial_startup() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        data_guard.host(),
     )
     .expect("initialization should succeed");
     install_test_input_source(&state);
@@ -357,13 +369,14 @@ async fn daemon_start_rolls_back_partial_startup() {
 
 #[tokio::test]
 async fn removed_runtime_effect_fields_are_rejected_on_startup() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let mut config = default_config();
     config.daemon.start_scene = "last".to_owned();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
     install_test_input_source(&state);
@@ -415,7 +428,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
 
 #[tokio::test]
 async fn config_loading_defaults_have_correct_schema() {
-    let _guard = TestConfigDirGuard::new().await;
+    let _guard = TestUserDirs::new();
     let config = ConfigManager::load_with_sources(config_sources(None, None, None))
         .expect("should load defaults")
         .boot;
@@ -431,7 +444,7 @@ async fn config_loading_defaults_have_correct_schema() {
 
 #[tokio::test]
 async fn config_loading_all_sub_configs_have_defaults() {
-    let _guard = TestConfigDirGuard::new().await;
+    let _guard = TestUserDirs::new();
     let config = ConfigManager::load_with_sources(config_sources(None, None, None))
         .expect("should load defaults")
         .boot;
@@ -503,12 +516,13 @@ wasm_plugins = true
 
 #[tokio::test]
 async fn api_state_device_list_starts_empty_and_grows() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -541,12 +555,13 @@ async fn api_state_device_list_starts_empty_and_grows() {
 
 #[tokio::test]
 async fn api_state_default_scene_starts_with_default_zone() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -560,12 +575,13 @@ async fn api_state_default_scene_starts_with_default_zone() {
 
 #[tokio::test]
 async fn daemon_scene_service_returns_owned_snapshots() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -581,7 +597,7 @@ async fn daemon_scene_service_returns_owned_snapshots() {
 
 #[tokio::test]
 async fn api_state_config_snapshot_matches_init_config() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let mut config = default_config();
     config.daemon.target_fps = 45;
 
@@ -594,6 +610,7 @@ async fn api_state_config_snapshot_matches_init_config() {
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialize");
 
@@ -608,12 +625,13 @@ async fn api_state_config_snapshot_matches_init_config() {
 
 #[tokio::test]
 async fn api_state_event_bus_subscriber_works() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialize");
 
@@ -641,7 +659,7 @@ async fn api_state_event_bus_subscriber_works() {
 
 #[tokio::test]
 async fn daemon_render_loop_uses_configured_fps() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestUserDirs::new();
     let mut config = default_config();
     config.daemon.target_fps = 30;
 
@@ -656,6 +674,7 @@ async fn daemon_render_loop_uses_configured_fps() {
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialize");
 

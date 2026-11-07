@@ -40,7 +40,7 @@ docker-test image="hypercolor:local":
     node scripts/tests/docker-smoke.mjs "{{ image }}"
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check platform-cfg-budget-check test-hermeticity-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
 
 # Verify target isolation and Cargo argument normalization on Linux, and
@@ -85,6 +85,16 @@ api-doc-route-check:
 # Keep production macOS capture native-only while retaining fixture oracles
 macos-gpu-only-check:
     ./scripts/check-macos-gpu-only.sh
+
+# Hold core and daemon to their cfg(target_os) budget (Design 72)
+platform-cfg-budget-check:
+    ./scripts/tests/platform-cfg-budget-tests.sh
+    ./scripts/check-platform-cfg-budget.sh
+
+# Fail when test code builds an mDNS daemon that is not scoped to loopback
+test-hermeticity-check:
+    ./scripts/tests/test-hermeticity-tests.sh
+    ./scripts/check-test-hermeticity.sh
 
 # Fail when a vendored [patch.crates-io] crate no longer resolves to vendor/
 vendored-patches-check:

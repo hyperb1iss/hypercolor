@@ -571,6 +571,8 @@ fn init_with_canvas_size_returns_before_servo_session_create_completes() {
     install_running_shared_worker(worker);
 
     let temp_dir = tempfile::tempdir().expect("temporary directory");
+    // Loading a page writes a runtime copy to the cache, so claim it.
+    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
     let source_path = temp_dir.path().join("effect.html");
     std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
         .expect("write source html");
@@ -616,6 +618,8 @@ fn render_into_uses_placeholder_while_servo_load_is_pending() {
     install_running_shared_worker(worker);
 
     let temp_dir = tempfile::tempdir().expect("temporary directory");
+    // Loading a page writes a runtime copy to the cache, so claim it.
+    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
     let source_path = temp_dir.path().join("effect.html");
     std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
         .expect("write source html");
@@ -670,6 +674,8 @@ fn init_with_canvas_size_reuses_previous_canvas_while_new_effect_loads() {
     install_running_shared_worker(worker);
 
     let temp_dir = tempfile::tempdir().expect("temporary directory");
+    // Loading a page writes a runtime copy to the cache, so claim it.
+    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
     let source_path = temp_dir.path().join("effect.html");
     std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
         .expect("write source html");
@@ -718,6 +724,8 @@ fn renderer_warms_from_load_start_until_the_new_page_renders_its_first_frame() {
     install_running_shared_worker(worker);
 
     let temp_dir = tempfile::tempdir().expect("temporary directory");
+    // Loading a page writes a runtime copy to the cache, so claim it.
+    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
     let source_path = temp_dir.path().join("effect.html");
     std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
         .expect("write source html");
@@ -929,6 +937,8 @@ fn init_with_canvas_size_loads_servo_page_at_target_resolution() {
     install_running_shared_worker(worker);
 
     let temp_dir = tempfile::tempdir().expect("temporary directory");
+    // Loading a page writes a runtime copy to the cache, so claim it.
+    let _dirs = crate::config::paths::IsolatedUserDirs::claim(temp_dir.path());
     let source_path = temp_dir.path().join("effect.html");
     std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
         .expect("write source html");

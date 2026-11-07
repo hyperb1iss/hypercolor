@@ -11,4 +11,4 @@ pub mod network;
 pub mod pairing;
 
 pub use credentials::CredentialStore;
-pub use mdns::{MdnsBrowser, MdnsService};
+pub use mdns::{MdnsBrowser, MdnsScope, MdnsService};

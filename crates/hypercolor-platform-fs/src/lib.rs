@@ -64,6 +64,36 @@ pub fn durable_replace(source: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
+/// Flush a directory's entries to stable storage.
+///
+/// Call it after creating, renaming, or removing an entry so the change
+/// survives a crash. Unix syncs the directory handle; Windows opens the
+/// directory with write access and flushes it.
+///
+/// # Errors
+///
+/// Returns the platform filesystem error when the directory cannot be
+/// opened or flushed, and [`io::ErrorKind::Unsupported`] on platforms
+/// with no directory durability barrier.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(path).and_then(|directory| directory.sync_all())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        WindowsDirectory::open(path, WindowsDirectoryAccess::Write)
+            .and_then(|directory| directory.sync())
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = path;
+        Err(unsupported("directory sync"))
+    }
+}
+
 /// Create a new secret file, write all `contents`, and sync the file.
 ///
 /// The destination must not already exist. Unix files are created with mode

@@ -30,7 +30,7 @@ mod audio;
 mod metrics;
 
 use crate::domain::input_status::{input_status_snapshot_with_privacy, macos_daemon_ownership};
-pub(crate) use audio::capture_input_available;
+pub(crate) use audio::{capture_input_available, enumerate_audio_input_devices};
 pub use audio::{list_audio_devices, should_offer_named_audio_device};
 use metrics::{
     effect_health_status, latest_frame_status, paced_fps, preview_runtime_status,

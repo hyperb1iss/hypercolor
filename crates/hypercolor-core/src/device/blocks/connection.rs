@@ -214,13 +214,15 @@ pub fn socket_exists(path: &Path) -> bool {
     path.exists()
 }
 
-/// Default blocksd socket path from environment.
+/// Default blocksd socket path under the session's runtime directory.
+///
+/// Resolves through [`crate::config::paths::runtime_dir`], so a fixture
+/// that claims its user directories never sees the host's blocksd.
 pub fn default_socket_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime_dir).join("blocksd/blocksd.sock")
-    } else {
-        PathBuf::from("/tmp/blocksd/blocksd.sock")
-    }
+    crate::config::paths::runtime_dir().map_or_else(
+        || PathBuf::from("/tmp/blocksd/blocksd.sock"),
+        |runtime_dir| runtime_dir.join("blocksd/blocksd.sock"),
+    )
 }
 
 #[derive(Deserialize)]

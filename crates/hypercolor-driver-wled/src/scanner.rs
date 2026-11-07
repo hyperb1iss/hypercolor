@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
-use hypercolor_driver_support::MdnsBrowser;
+use hypercolor_driver_support::{MdnsBrowser, MdnsScope};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,
@@ -140,8 +140,8 @@ pub struct WledScanner {
     scan_timeout: Duration,
     /// Explicit IPs to probe over HTTP before or alongside mDNS.
     known_targets: Vec<WledKnownTarget>,
-    /// Whether to browse mDNS in addition to known-IP probing.
-    mdns_enabled: bool,
+    /// Interfaces to browse mDNS on, beside known-IP probing, if any.
+    mdns: Option<MdnsScope>,
 }
 
 impl WledScanner {
@@ -151,7 +151,7 @@ impl WledScanner {
         Self {
             scan_timeout: DEFAULT_SCAN_TIMEOUT,
             known_targets: Vec::new(),
-            mdns_enabled: true,
+            mdns: Some(MdnsScope::Network),
         }
     }
 
@@ -161,7 +161,7 @@ impl WledScanner {
         Self {
             scan_timeout: timeout,
             known_targets: Vec::new(),
-            mdns_enabled: true,
+            mdns: Some(MdnsScope::Network),
         }
     }
 
@@ -169,25 +169,29 @@ impl WledScanner {
     #[must_use]
     pub fn with_known_targets(
         known_targets: Vec<WledKnownTarget>,
-        mdns_enabled: bool,
+        mdns: Option<MdnsScope>,
         timeout: Duration,
     ) -> Self {
         Self {
             scan_timeout: timeout,
             known_targets,
-            mdns_enabled,
+            mdns,
         }
     }
 
     /// Create a scanner that probes known IPs and optionally browses mDNS.
     #[must_use]
-    pub fn with_known_ips(known_ips: Vec<IpAddr>, mdns_enabled: bool, timeout: Duration) -> Self {
+    pub fn with_known_ips(
+        known_ips: Vec<IpAddr>,
+        mdns: Option<MdnsScope>,
+        timeout: Duration,
+    ) -> Self {
         Self::with_known_targets(
             known_ips
                 .into_iter()
                 .map(WledKnownTarget::from_ip)
                 .collect(),
-            mdns_enabled,
+            mdns,
             timeout,
         )
     }
@@ -348,11 +352,11 @@ impl WledScanner {
     }
 
     async fn collect_mdns_candidates(&self) -> Result<HashMap<IpAddr, Option<String>>> {
-        if !self.mdns_enabled {
+        let Some(scope) = self.mdns else {
             return Ok(HashMap::new());
-        }
+        };
 
-        let browser = MdnsBrowser::new()?;
+        let browser = MdnsBrowser::with_scope(scope)?;
         let services = browser
             .browse(WLED_SERVICE_TYPE, self.scan_timeout)
             .await

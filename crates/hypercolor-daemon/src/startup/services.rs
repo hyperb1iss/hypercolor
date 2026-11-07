@@ -65,6 +65,7 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
+use super::host::{ComposeInputs, HostPorts};
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
@@ -139,8 +140,12 @@ fn open_persisted_library_store_with_effect_id_migrations(
 }
 
 impl DaemonState {
-    pub fn initialize(boot: BootConfig, config_manager: Arc<ConfigManager>) -> Result<Self> {
-        Self::initialize_with_launcher(boot, config_manager, None, None)
+    pub fn initialize(
+        boot: BootConfig,
+        config_manager: Arc<ConfigManager>,
+        host: HostPorts,
+    ) -> Result<Self> {
+        Self::initialize_with_launcher(boot, config_manager, None, None, host)
     }
 
     /// Initialize with the launcher facts the process host resolved: the
@@ -151,12 +156,14 @@ impl DaemonState {
         config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
         initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
+        host: HostPorts,
     ) -> Result<Self> {
         Self::initialize_with_progress(
             boot,
             config_manager,
             macos_owner_snapshot,
             initial_service_status,
+            host,
             StartupProgress::default(),
         )
     }
@@ -168,6 +175,7 @@ impl DaemonState {
         config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
         initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
+        host: HostPorts,
         progress: StartupProgress,
     ) -> Result<Self> {
         Self::initialize_inner(
@@ -175,6 +183,7 @@ impl DaemonState {
             config_manager,
             macos_owner_snapshot,
             initial_service_status,
+            host,
             progress,
         )
     }
@@ -205,8 +214,17 @@ impl DaemonState {
         config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
         initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
+        host: HostPorts,
         progress: StartupProgress,
     ) -> Result<Self> {
+        let HostPorts {
+            build_drivers,
+            compose_inputs,
+            session_monitors,
+            usb_hotplug,
+            audio_devices,
+            software_watch,
+        } = host;
         let config: &HypercolorConfig = &boot;
         let data_dir = ConfigManager::data_dir();
         let state_dir = ConfigManager::state_dir();
@@ -547,7 +565,8 @@ impl DaemonState {
                 }
                 (Some(_), None) => None,
             };
-        let (built_input_manager, browser_input) = build_input_manager(config, &config_manager)?;
+        let (built_input_manager, browser_input) =
+            build_input_manager(config, &config_manager, compose_inputs)?;
         if let Some(publication) = macos_owner_publication {
             super::macos_owner_watch::publish_owner_snapshot(
                 &ownership_slots,
@@ -786,7 +805,7 @@ impl DaemonState {
             SoftwareConflictStore::new().with_event_bus(Arc::clone(&event_bus));
         let bridge_output_locks = BridgeOutputLocks::default();
         let driver_registry = Arc::new(
-            network::build_builtin_driver_module_registry(
+            build_drivers(
                 config,
                 Arc::clone(&credential_store),
                 usb_protocol_configs.clone(),
@@ -997,7 +1016,10 @@ impl DaemonState {
             software_conflict_task: None,
             input_status_event_publisher: None,
             session_controller: None,
-            session_monitors: None,
+            session_monitors,
+            usb_hotplug,
+            software_watch,
+            audio_devices,
             start_time: Instant::now(),
             startup_progress: progress,
             server_identity,
@@ -1009,6 +1031,7 @@ impl DaemonState {
 pub(crate) fn build_input_manager(
     config: &HypercolorConfig,
     config_manager: &Arc<ConfigManager>,
+    compose_inputs: ComposeInputs,
 ) -> Result<(InputManager, hypercolor_core::input::BrowserInputHandle)> {
     let input_manager = InputManager::new();
     let capacity_plan = screen_capacity_plan(&config.capture)?;
@@ -1017,6 +1040,40 @@ pub(crate) fn build_input_manager(
         capacity_plan.total_capacity(),
         capacity_plan.total_capacity(),
     )?;
+    // Browser-preview injection is an always-live child registry rather than
+    // a manager-owned host source. Each WebSocket preview owns its child slot.
+    let browser_input = hypercolor_core::input::BrowserInputHandle::new();
+    compose_inputs(config, config_manager, &input_manager, capacity_plan)?;
+    config_manager.mark_capture_runtime_applied(&config.capture);
+
+    Ok((input_manager, browser_input))
+}
+
+/// Register an audio input with no device, so audio-reactive paths run on
+/// silence, and no other source: nothing here reads the host.
+pub(super) fn compose_silent_inputs(
+    config: &HypercolorConfig,
+    _config_manager: &Arc<ConfigManager>,
+    input_manager: &InputManager,
+    _capacity_plan: ScreenCapacityPlan,
+) -> Result<()> {
+    if config.audio.enabled {
+        let mut audio_pipeline_config = AudioPipelineConfig::from(&config.audio);
+        audio_pipeline_config.source = hypercolor_types::audio::AudioSourceType::None;
+        let audio_input = AudioInput::new(&audio_pipeline_config).with_name("AudioInput(none)");
+        input_manager.add_source(ManagedSourceRole::audio(Box::new(audio_input)))?;
+    }
+    Ok(())
+}
+
+/// Register the host's own sensor, media, network, audio, input, and
+/// screen sources.
+pub(super) fn compose_native_inputs(
+    config: &HypercolorConfig,
+    config_manager: &Arc<ConfigManager>,
+    input_manager: &InputManager,
+    capacity_plan: ScreenCapacityPlan,
+) -> Result<()> {
     input_manager.add_source(ManagedSourceRole::data(Box::new(SensorSource::new())))?;
     // Host input capture is consent-gated and platform-native: evdev on Linux,
     // Raw Input on Windows. Capture stays closed until an interactive effect
@@ -1025,9 +1082,6 @@ pub(crate) fn build_input_manager(
     if let Some(source) = build_interaction_source(&config.input) {
         input_manager.add_source(ManagedSourceRole::interaction(source))?;
     }
-    // Browser-preview injection is an always-live child registry rather than
-    // a manager-owned host source. Each WebSocket preview owns its child slot.
-    let browser_input = hypercolor_core::input::BrowserInputHandle::new();
     input_manager.add_source(ManagedSourceRole::data(Box::new(
         hypercolor_core::input::MediaSource::new(),
     )))?;
@@ -1053,9 +1107,8 @@ pub(crate) fn build_input_manager(
             )?,
         ))?;
     }
-    config_manager.mark_capture_runtime_applied(&config.capture);
 
-    Ok((input_manager, browser_input))
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

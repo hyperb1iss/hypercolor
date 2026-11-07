@@ -10,6 +10,55 @@ use tracing::debug;
 
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(250);
 
+/// Which network interfaces an mDNS daemon may query and announce on.
+///
+/// `mdns-sd` 0.21 offers no interface selection at construction: it joins
+/// its multicast group on every interface when the daemon thread starts,
+/// before any scope command lands, so a loopback daemon still emits those
+/// IGMP and MLD membership reports. Every query, response, and
+/// announcement after that stays on loopback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MdnsScope {
+    /// Every IPv4 interface on the host, which is what discovery needs.
+    #[default]
+    Network,
+    /// Only the IPv4 loopback interface, so traffic never leaves the host.
+    Loopback,
+}
+
+impl MdnsScope {
+    /// Restrict `daemon` to this scope.
+    ///
+    /// Apply it before the first browse or register call. The daemon
+    /// processes commands in order, so later calls see the restricted set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon has already shut down.
+    pub fn restrict(self, daemon: &ServiceDaemon) -> Result<()> {
+        match self {
+            // Network backends currently expect routable IPv4 addresses for
+            // their follow-up HTTP/UDP traffic. Disabling IPv6 browsing also
+            // avoids the noisy utun multicast send failures seen on macOS
+            // VPN/tunnel interfaces.
+            Self::Network => {
+                if let Err(error) = daemon.disable_interface(IfKind::IPv6) {
+                    debug!(error = %error, "failed to disable IPv6 mDNS interfaces");
+                }
+            }
+            Self::Loopback => {
+                daemon
+                    .disable_interface(IfKind::All)
+                    .context("failed to drop non-loopback mDNS interfaces")?;
+                daemon
+                    .enable_interface(IfKind::LoopbackV4)
+                    .context("failed to enable the IPv4 loopback mDNS interface")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Shared mDNS browser with the resolution behavior Hypercolor expects.
 pub struct MdnsBrowser {
     daemon: ServiceDaemon,
@@ -25,20 +74,26 @@ pub struct MdnsService {
 }
 
 impl MdnsBrowser {
-    /// Create a new mDNS browser.
+    /// Create a new mDNS browser over every IPv4 interface.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying `mdns-sd` daemon cannot start.
     pub fn new() -> Result<Self> {
+        Self::with_scope(MdnsScope::Network)
+    }
+
+    /// Create a new mDNS browser limited to `scope`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `mdns-sd` daemon cannot start or
+    /// cannot be restricted to `scope`.
+    pub fn with_scope(scope: MdnsScope) -> Result<Self> {
         let daemon = ServiceDaemon::new().context("failed to create mDNS daemon")?;
-        // Network backends currently expect routable IPv4 addresses for their
-        // follow-up HTTP/UDP traffic. Disabling IPv6 browsing also avoids the
-        // noisy utun multicast send failures seen on macOS VPN/tunnel interfaces.
-        if let Err(error) = daemon.disable_interface(IfKind::IPv6) {
-            debug!(error = %error, "failed to disable IPv6 mDNS interfaces");
-        }
-        Ok(Self { daemon })
+        let browser = Self { daemon };
+        scope.restrict(&browser.daemon)?;
+        Ok(browser)
     }
 
     /// Browse for one service type until `timeout` expires.

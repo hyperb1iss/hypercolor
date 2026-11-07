@@ -2,8 +2,6 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-#[cfg(unix)]
-use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -95,28 +93,13 @@ pub(super) fn nested_directory(root: &Path, relative: &Path) -> Result<PathBuf, 
 }
 
 pub(super) fn sync_directory(path: &Path) -> Result<(), DomainError> {
-    #[cfg(unix)]
-    {
-        File::open(path)
-            .and_then(|directory| directory.sync_all())
-            .map_err(io)
-    }
-    #[cfg(target_os = "windows")]
-    {
-        hypercolor_platform_fs::WindowsDirectory::open(
-            path,
-            hypercolor_platform_fs::WindowsDirectoryAccess::Write,
-        )
-        .and_then(|directory| directory.sync())
-        .map_err(io)
-    }
-    #[cfg(not(any(unix, target_os = "windows")))]
-    {
-        let _ = path;
-        Err(DomainError::validation(
-            "durable effect directories are unsupported",
-        ))
-    }
+    hypercolor_platform_fs::sync_directory(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::Unsupported {
+            DomainError::validation("durable effect directories are unsupported")
+        } else {
+            io(error)
+        }
+    })
 }
 
 pub(super) fn verify(path: &Path, descriptor: &PortableBlob) -> Result<bool, DomainError> {

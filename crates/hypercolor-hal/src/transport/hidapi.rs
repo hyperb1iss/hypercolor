@@ -826,17 +826,23 @@ pub fn enumerate_usb_hid_collections() -> Result<Vec<HidCollectionInfo>, Transpo
         .map(|device| HidCollectionInfo {
             vendor_id: device.vendor_id(),
             product_id: device.product_id(),
-            serial: device
-                .serial_number()
-                .map(|serial| serial.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
-                .filter(|serial| !serial.is_empty())
-                .map(ToOwned::to_owned),
+            serial: normalize_hid_serial(device.serial_number()),
             usb_path: hidapi_usb_path(device.path()),
             interface_number: u8::try_from(device.interface_number()).ok(),
             usage_page: device.usage_page(),
             usage: device.usage(),
         })
         .collect())
+}
+
+/// A HID serial as enumeration reports it: trimmed of the whitespace and
+/// NUL padding some firmware leaves in the descriptor, and absent when
+/// nothing remains.
+#[must_use]
+pub fn normalize_hid_serial(raw: Option<&str>) -> Option<String> {
+    raw.map(|serial| serial.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
+        .filter(|serial| !serial.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg(target_os = "linux")]

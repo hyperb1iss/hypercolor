@@ -354,6 +354,16 @@ jobs:
       - name: Check macOS GPU-only architecture
         run: ./scripts/check-macos-gpu-only.sh
 
+      - name: Hold the platform cfg(target_os) budget
+        run: |
+          ./scripts/tests/platform-cfg-budget-tests.sh
+          ./scripts/check-platform-cfg-budget.sh
+
+      - name: Keep test mDNS on loopback
+        run: |
+          ./scripts/tests/test-hermeticity-tests.sh
+          ./scripts/check-test-hermeticity.sh
+
       - name: Refuse new raw HTML sinks
         run: ./scripts/check-ui-html-sinks.sh
 

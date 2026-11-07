@@ -181,12 +181,18 @@ and produce neutral vocabulary (`hypercolor-types`, `hypercolor-gpu-frame`)
 rather than mirroring it. `cfg(target_os)` is allowed only inside platform
 crates and at composition roots (`daemon/src/{process.rs,session.rs,
 startup/services.rs,render_thread/gpu_device.rs,render_thread/sparkleflinger/
-gpu/{runtime.rs,native_screen.rs},api/config/live/capture.rs,api/system/audio.rs}`
-plus `core/src/input/{media.rs,audio/mod.rs}` until their seams land).
-`rg -l 'cfg\(target_os' crates/hypercolor-core/src crates/hypercolor-daemon/src
-| rg -v '/tests?(\.rs|/)'` must stay at or under ten files (the unfiltered
-command also matches two test modules, so it returns twelve). Nothing enforces
-this budget today, so the number above is the only guard. Never add a
+gpu/{runtime.rs,native_screen.rs},domain/input_configuration/capture.rs,
+api/system/audio.rs}` plus `core/src/input/{media.rs,audio/mod.rs}` until their
+seams land). That list is the goal, not the current state: the old `rg -l
+'cfg\(target_os'` count missed every `all`/`any`/`not` and multi-line predicate.
+`just platform-cfg-budget-check` (`scripts/check-platform-cfg-budget.sh`) counts
+every non-test file in core and the daemon whose cfg predicate (attribute,
+`cfg!`, or `cfg_attr`) names `target_os`, `target_family`, `unix`, or `windows`,
+skipping comments, strings, test files, and `cfg(test)` items. The true count
+was 34 files on 2026-11-05 (23 of them name `target_os`), and the budget sits at
+that count so it can only ratchet down: when a seam lands and the count falls,
+lower the budget in the script. The check runs inside `just verify` and the Rust
+Check / Shared CI job, and lists the files when the count grows. Never add a
 `Macos*`/`Windows*`/`Linux*` type, variant, or field to shared code; carry
 per-platform facts as data (`Option`, unit variants, opaque diagnostics
 envelopes). See `docs/design/72-cross-platform-boundary-review.md`.
@@ -399,6 +405,22 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   it helps." No lowering baselines for the fuck of it. Preserve the intended ceiling and fix
   root causes with profiling, rendering changes, build/profile choices, adaptive policy that
   keeps the full baseline under headroom, or explicit user controls.
+- **Tests never reach the host, by construction.** What a daemon touches on its machine is
+  one value chosen at the composition root: `DaemonState::initialize` requires
+  `HostPorts`. Production passes `HostPorts::native()`. Tests pass
+  `HostPorts::isolated(&claim)`, which needs a live
+  `hypercolor_core::config::paths::IsolatedUserDirs`, so forgetting either does not
+  compile. Isolated ports compose offline drivers (full contract, no-op discovery), a
+  silent audio source, no other input source, no session monitor, no USB hotplug watch,
+  no software conflict watch, and no audio device listing. `AppState::new()` and
+  `AppStateBuilder` without an injected registry use the same offline drivers and list
+  no audio devices. New host reach belongs in `HostPorts`, never in a branch below
+  it. Tests pass `Some(MdnsScope::Loopback)` or `None` to WLED scanners, restrict mDNS
+  daemons with `MdnsScope::Loopback`, turn mDNS off on other scanners, and feed fixtures
+  through seams such as `HidUsageIndex::from_enumeration` and
+  `SmBusScanner::with_dev_root`. `just test-hermeticity-check` fails test code that
+  picks the native ports or a host-reaching construction, in test files and inline
+  `cfg(test)` items.
 
 ## Agent Coordination
 

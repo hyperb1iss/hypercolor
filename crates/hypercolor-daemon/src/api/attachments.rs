@@ -1,6 +1,6 @@
 //! Attachment template catalog endpoints.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -8,7 +8,6 @@ use axum::response::{IntoResponse, Response};
 use tokio::sync::RwLockWriteGuard;
 
 use hypercolor_core::attachment::{ComponentRegistry, TemplateFilter};
-use hypercolor_core::config::ConfigManager;
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::{
     ComponentCategory, ComponentOrigin, ComponentTemplate, ComponentTemplateManifest,
@@ -79,7 +78,7 @@ pub async fn create_template(
         .into_response();
     }
 
-    if let Err(error) = register_and_persist_template(&mut registry, &template) {
+    if let Err(error) = register_and_persist_template(&mut registry, &template, &state.data_dir) {
         return error.into_response();
     }
     drop(registry);
@@ -156,6 +155,7 @@ fn template_detail(template: &ComponentTemplate) -> TemplateDetail {
 fn register_and_persist_template(
     registry: &mut RwLockWriteGuard<'_, ComponentRegistry>,
     template: &ComponentTemplate,
+    data_dir: &Path,
 ) -> Result<(), DomainError> {
     if let Err(error) = registry.register(template.clone()) {
         return Err(DomainError::validation(error.to_string()));
@@ -168,7 +168,7 @@ fn register_and_persist_template(
     let payload = toml::to_string_pretty(&manifest).map_err(|error| {
         DomainError::Internal(anyhow::anyhow!("failed to serialize template: {error}"))
     })?;
-    let output_path = user_template_path(&template.id);
+    let output_path = user_template_path(data_dir, &template.id);
     if let Some(parent) = output_path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
@@ -185,10 +185,8 @@ fn register_and_persist_template(
     Ok(())
 }
 
-fn user_templates_root() -> PathBuf {
-    ConfigManager::data_dir().join("attachments")
-}
-
-fn user_template_path(id: &str) -> PathBuf {
-    user_templates_root().join(format!("{id}.toml"))
+/// User templates live beside the attachment templates this state loaded,
+/// so a fixture's writes stay in the fixture's data directory.
+fn user_template_path(data_dir: &Path, id: &str) -> PathBuf {
+    data_dir.join("attachments").join(format!("{id}.toml"))
 }

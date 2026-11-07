@@ -5,12 +5,12 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::extract::State;
 use axum::{Router, body::to_bytes, routing::get};
+use hypercolor_core::config::paths::IsolatedUserDirs;
 use hypercolor_core::config::{BootConfig, ConfigManager};
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
@@ -28,7 +28,7 @@ use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
 #[cfg(unix)]
 use hypercolor_daemon::startup::install_signal_handlers_with_parent_claim;
 use hypercolor_daemon::startup::{
-    DaemonState, ParentLifetime, collect_unmapped_driver_layout_targets,
+    DaemonState, HostPorts, ParentLifetime, collect_unmapped_driver_layout_targets,
     collect_unmapped_prefixed_layout_targets, config_sources, default_config,
     install_signal_handlers, parse_config_toml,
 };
@@ -55,7 +55,6 @@ use hypercolor_types::spatial::{
 };
 use serde_json::Value;
 use tempfile::NamedTempFile;
-use tokio::sync::Mutex;
 
 type Result<T> = std::result::Result<T, DeviceError>;
 
@@ -270,9 +269,6 @@ async fn assert_effect_identity_everywhere(
     assert_eq!(library.list_favorites().await[0].effect_id, expected_id);
 }
 
-static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
 fn write_layout_store_fixture(
     path: &Path,
     layouts: &std::collections::HashMap<String, SpatialLayout>,
@@ -393,27 +389,33 @@ impl DeviceBackend for ShutdownCleanupBackend {
     }
 }
 
+/// Every user directory a test daemon touches, claimed inside a tempdir.
+///
+/// Field order matters: the claim clears its overrides before the
+/// directory it pointed at is removed.
 struct TestDataDirGuard {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
+    dirs: IsolatedUserDirs,
     _dir: tempfile::TempDir,
     data_dir: PathBuf,
     state_dir: PathBuf,
 }
 
 impl TestDataDirGuard {
-    async fn new() -> Self {
-        let lock = DATA_DIR_LOCK.lock().await;
+    fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir should be created");
-        let data_dir = dir.path().join("data");
-        let state_dir = dir.path().join("state");
-        ConfigManager::set_data_dir_override(Some(data_dir.clone()));
-        ConfigManager::set_state_dir_override(Some(state_dir.clone()));
+        let dirs = IsolatedUserDirs::claim(dir.path());
+        let data_dir = dirs.paths().data.clone();
+        let state_dir = dirs.paths().state.clone();
         Self {
-            _lock: lock,
+            dirs,
             _dir: dir,
             data_dir,
             state_dir,
         }
+    }
+
+    fn host(&self) -> HostPorts {
+        HostPorts::isolated(&self.dirs)
     }
 
     fn layouts_path(&self) -> PathBuf {
@@ -437,40 +439,9 @@ impl TestDataDirGuard {
     }
 }
 
-impl Drop for TestDataDirGuard {
-    fn drop(&mut self) {
-        ConfigManager::set_data_dir_override(None);
-        ConfigManager::set_state_dir_override(None);
-    }
-}
-
-struct TestConfigDirGuard {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
-    _dir: tempfile::TempDir,
-}
-
-impl TestConfigDirGuard {
-    async fn new() -> Self {
-        let lock = CONFIG_DIR_LOCK.lock().await;
-        let dir = tempfile::tempdir().expect("tempdir should be created");
-        let config_dir = dir.path().join("config");
-        ConfigManager::set_config_dir_override(Some(config_dir));
-        Self {
-            _lock: lock,
-            _dir: dir,
-        }
-    }
-}
-
-impl Drop for TestConfigDirGuard {
-    fn drop(&mut self) {
-        ConfigManager::set_config_dir_override(None);
-    }
-}
-
 #[tokio::test]
 async fn daemon_initialization_relocates_machine_state_out_of_data() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     std::fs::create_dir_all(&guard.data_dir).expect("legacy data directory should be created");
 
     let legacy_documents = [
@@ -516,6 +487,7 @@ async fn daemon_initialization_relocates_machine_state_out_of_data() {
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("state migration should succeed");
 
@@ -623,7 +595,7 @@ fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
 
 #[tokio::test]
 async fn load_config_falls_back_to_defaults_when_no_file() {
-    let _guard = TestConfigDirGuard::new().await;
+    let _guard = TestDataDirGuard::new();
 
     // When no explicit path is provided and no file exists at the default
     // location, the pipeline succeeds with defaults.
@@ -666,7 +638,7 @@ listen_address = "0.0.0.0"
 #[cfg(not(feature = "wgpu"))]
 #[tokio::test]
 async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_feature() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let temp = temp_config_file();
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
@@ -674,6 +646,7 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     let Err(error) = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     ) else {
         panic!("gpu render acceleration should fail explicitly without wgpu support");
     };
@@ -683,7 +656,7 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
 
 #[tokio::test]
 async fn initialize_rejects_a_corrupt_scene_store_without_overwriting_it() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     std::fs::create_dir_all(&guard.data_dir).expect("test data directory should exist");
     let corrupt = "{ definitely not scene json";
     std::fs::write(guard.scenes_path(), corrupt).expect("corrupt scene store should write");
@@ -693,6 +666,7 @@ async fn initialize_rejects_a_corrupt_scene_store_without_overwriting_it() {
     let Err(error) = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     ) else {
         panic!("corrupt scene persistence must prevent startup");
     };
@@ -712,7 +686,7 @@ async fn initialize_rejects_a_corrupt_scene_store_without_overwriting_it() {
 #[cfg(not(feature = "wgpu"))]
 #[tokio::test]
 async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_feature() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let temp = temp_config_file();
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Auto;
@@ -720,6 +694,7 @@ async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_featu
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("auto render acceleration should initialize with CPU fallback");
     state
@@ -752,7 +727,7 @@ async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_featu
 #[cfg(feature = "wgpu")]
 #[tokio::test]
 async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enabled() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let temp = temp_config_file();
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
@@ -760,6 +735,7 @@ async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enable
     match DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     ) {
         Ok(daemon) => drop(daemon),
         Err(error) => {
@@ -1469,12 +1445,13 @@ async fn api_shutdown_timeout_forces_stuck_connections_to_close() {
 
 #[tokio::test]
 async fn app_state_projection_preserves_composed_authority_identity() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut daemon = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("daemon state should initialize");
     daemon.start().await.expect("daemon state should start");
@@ -1492,7 +1469,7 @@ async fn app_state_projection_preserves_composed_authority_identity() {
 
 #[tokio::test]
 async fn startup_migrates_registered_builtin_ports_across_every_durable_store() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let seeded = seed_effect_identity_stores(&guard, "breathing").await;
     let mut config = default_config();
     config.effect_engine.extra_effect_dirs = vec![seeded.effect_root.clone()];
@@ -1501,6 +1478,7 @@ async fn startup_migrates_registered_builtin_ports_across_every_durable_store() 
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("daemon should migrate the registered builtin port");
     let canonical_id = registry_effect_id(&state, "breathing").await;
@@ -1512,7 +1490,7 @@ async fn startup_migrates_registered_builtin_ports_across_every_durable_store() 
 #[cfg(not(feature = "servo"))]
 #[tokio::test]
 async fn startup_rejects_screen_cast_port_migration_without_servo() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let seeded = seed_effect_identity_stores(&guard, "screen_cast").await;
     let mut config = default_config();
     config.effect_engine.extra_effect_dirs = vec![seeded.effect_root.clone()];
@@ -1521,6 +1499,7 @@ async fn startup_rejects_screen_cast_port_migration_without_servo() {
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("daemon should skip an unavailable HTML screen cast port");
     let native_id = registry_effect_id(&state, "screen_cast").await;
@@ -1538,24 +1517,26 @@ async fn startup_rejects_screen_cast_port_migration_without_servo() {
 
 #[tokio::test]
 async fn daemon_state_initializes_with_default_config() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     );
     assert!(state.is_ok(), "initialization should succeed with defaults");
 }
 
 #[tokio::test]
 async fn daemon_state_start_and_shutdown() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1586,12 +1567,13 @@ async fn daemon_state_start_and_shutdown() {
 
 #[tokio::test]
 async fn daemon_shutdown_disconnects_renderable_devices() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1644,12 +1626,13 @@ async fn daemon_shutdown_disconnects_renderable_devices() {
 
 #[tokio::test]
 async fn daemon_state_device_registry_starts_empty() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1661,12 +1644,13 @@ async fn daemon_state_device_registry_starts_empty() {
 
 #[tokio::test]
 async fn daemon_state_default_scene_starts_with_default_zone() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1683,12 +1667,13 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
 
 #[tokio::test]
 async fn daemon_state_scene_manager_starts_with_default_scene() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1706,7 +1691,7 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
 
 #[tokio::test]
 async fn named_scenes_persist_across_restart() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let named_scene = hypercolor_core::scene::make_scene("Movie Night");
     let named_scene_id = named_scene.id;
     write_scene_store(&guard.scenes_path(), [named_scene]);
@@ -1716,6 +1701,7 @@ async fn named_scenes_persist_across_restart() {
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1730,7 +1716,7 @@ async fn named_scenes_persist_across_restart() {
 
 #[tokio::test]
 async fn daemon_state_config_accessor_returns_loaded_config() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let mut config = default_config();
     config.daemon.target_fps = 45;
     let temp = temp_config_file();
@@ -1744,6 +1730,7 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1805,12 +1792,13 @@ async fn mismatched_parent_claim_disarms_the_watch() {
 
 #[tokio::test]
 async fn shutdown_is_idempotent() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1829,7 +1817,7 @@ async fn shutdown_is_idempotent() {
 
 #[tokio::test]
 async fn a_stale_runtime_snapshot_never_blocks_startup() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     // A snapshot written before `driver_runtime_cache` was retired. The
     // snapshot denies unknown fields, so this one no longer parses; the
     // daemon must log it and start fresh rather than refuse to boot.
@@ -1860,6 +1848,7 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("a stale snapshot must not block initialization");
 
@@ -1876,7 +1865,7 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
 
 #[tokio::test]
 async fn daemon_start_restores_persisted_active_layout_from_disk() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let mut layouts = std::collections::HashMap::new();
     let restored_layout = SpatialLayout {
         id: "layout_restored".into(),
@@ -1911,6 +1900,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1930,7 +1920,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
 
 #[tokio::test]
 async fn daemon_start_discards_legacy_runtime_brightness_and_restores_pause() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let runtime_path = guard.runtime_state_path();
     std::fs::create_dir_all(
         runtime_path
@@ -1957,6 +1947,7 @@ async fn daemon_start_discards_legacy_runtime_brightness_and_restores_pause() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -1979,7 +1970,7 @@ async fn daemon_start_discards_legacy_runtime_brightness_and_restores_pause() {
 
 #[tokio::test]
 async fn daemon_initialize_inserts_missing_default_layout_into_store() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let mut layouts = std::collections::HashMap::new();
     let custom_layout = SpatialLayout {
         id: "layout_custom".into(),
@@ -2001,6 +1992,7 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
     let state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -2020,12 +2012,13 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
 
 #[tokio::test]
 async fn runtime_state_and_driver_inventory_persist_independently() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -2132,12 +2125,13 @@ async fn shutdown_leaves_the_patched_state_on_disk_with_a_write_in_flight() {
     use hypercolor_daemon::persistence::AtomicFileWriter;
     use hypercolor_types::control::ControlValue;
 
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
     state.start().await.expect("start should succeed");
@@ -2219,7 +2213,7 @@ async fn shutdown_leaves_the_patched_state_on_disk_with_a_write_in_flight() {
 
 #[tokio::test]
 async fn daemon_start_restores_named_active_scene_and_default_zones() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let named_scene = hypercolor_core::scene::make_scene("Focus");
     let named_scene_id = named_scene.id;
     write_scene_store(&guard.scenes_path(), [named_scene]);
@@ -2267,6 +2261,7 @@ async fn daemon_start_restores_named_active_scene_and_default_zones() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -2285,8 +2280,7 @@ async fn daemon_start_restores_named_active_scene_and_default_zones() {
 
 #[tokio::test]
 async fn startup_preserves_snapshot_scene_primary_layout() {
-    let _config_guard = TestConfigDirGuard::new().await;
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let captured = SpatialLayout {
         id: "default".into(),
         name: "Captured desk".into(),
@@ -2332,6 +2326,7 @@ async fn startup_preserves_snapshot_scene_primary_layout() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialize snapshot setup");
     state.start().await.expect("start snapshot setup");
@@ -2360,7 +2355,7 @@ async fn startup_preserves_snapshot_scene_primary_layout() {
 
 #[tokio::test]
 async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let selected_layout = SpatialLayout {
         id: "startup_evening".into(),
         name: "Startup Evening".into(),
@@ -2388,6 +2383,7 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -2409,7 +2405,7 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
 
 #[tokio::test]
 async fn daemon_start_activates_configured_scene_id() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let named_scene = hypercolor_core::scene::make_scene("Focus");
     let named_scene_id = named_scene.id;
     write_scene_store(&guard.scenes_path(), [named_scene]);
@@ -2420,6 +2416,7 @@ async fn daemon_start_activates_configured_scene_id() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -2435,8 +2432,7 @@ async fn daemon_start_activates_configured_scene_id() {
 
 #[tokio::test]
 async fn default_scene_contents_restore_on_restart() {
-    let _config_guard = TestConfigDirGuard::new().await;
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let mut config = default_config();
     for driver in config.drivers.values_mut() {
         driver.enabled = false;
@@ -2446,6 +2442,7 @@ async fn default_scene_contents_restore_on_restart() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
     let effect_id = {
@@ -2559,8 +2556,7 @@ async fn named_startup_preserves_inactive_default_scene_across_restart() {
     use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
     use hypercolor_types::portable_setup::SetupBindings;
 
-    let _config_guard = TestConfigDirGuard::new().await;
-    let data = TestDataDirGuard::new().await;
+    let data = TestDataDirGuard::new();
     let named = hypercolor_core::scene::make_scene("Studio");
     let selected = named.id;
     write_scene_store(&data.scenes_path(), [named]);
@@ -2577,8 +2573,9 @@ async fn named_startup_preserves_inactive_default_scene_across_restart() {
     config.input.enabled = false;
     let temp = temp_config_file();
     let manager = config_manager_for(&config, temp.path());
-    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
-        .expect("first initialization");
+    let mut first =
+        DaemonState::initialize(boot_config(&config), Arc::clone(&manager), data.host())
+            .expect("first initialization");
     let mut saved = first
         .scene_manager
         .snapshot()
@@ -2661,7 +2658,7 @@ async fn named_startup_preserves_inactive_default_scene_across_restart() {
     assert_eq!(default.description, saved.description);
     assert_eq!(default.metadata, saved.metadata);
 
-    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
+    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager, data.host())
         .expect("restart initialization");
     restarted.start().await.expect("restart");
     let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
@@ -2680,8 +2677,7 @@ async fn fresh_portable_setup_is_identical_after_graceful_restart() {
     use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
     use hypercolor_types::portable_setup::SetupBindings;
 
-    let _config_guard = TestConfigDirGuard::new().await;
-    let _data_guard = TestDataDirGuard::new().await;
+    let data_guard = TestDataDirGuard::new();
     let mut config = default_config();
     for driver in config.drivers.values_mut() {
         driver.enabled = false;
@@ -2699,8 +2695,12 @@ async fn fresh_portable_setup_is_identical_after_graceful_restart() {
         setup_id: uuid::Uuid::now_v7(),
         name: "Fresh setup".into(),
     };
-    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
-        .expect("first initialization");
+    let mut first = DaemonState::initialize(
+        boot_config(&config),
+        Arc::clone(&manager),
+        data_guard.host(),
+    )
+    .expect("first initialization");
     first.start().await.expect("first startup");
     let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&first)))
         .expect("first service");
@@ -2711,8 +2711,9 @@ async fn fresh_portable_setup_is_identical_after_graceful_restart() {
     first.shutdown().await.expect("graceful shutdown");
     drop(service);
     drop(first);
-    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
-        .expect("restart initialization");
+    let mut restarted =
+        DaemonState::initialize(boot_config(&manager.get()), manager, data_guard.host())
+            .expect("restart initialization");
     restarted.start().await.expect("restart");
     let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&restarted)))
         .expect("restarted service");
@@ -2727,8 +2728,7 @@ async fn fresh_portable_setup_is_identical_after_graceful_restart() {
 
 #[tokio::test]
 async fn explicitly_inactive_runtime_selection_survives_restart() {
-    let _config_guard = TestConfigDirGuard::new().await;
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let mut config = default_config();
     for driver in config.drivers.values_mut() {
         driver.enabled = false;
@@ -2747,6 +2747,7 @@ async fn explicitly_inactive_runtime_selection_survives_restart() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialize isolated runtime");
     state.start().await.expect("start isolated runtime");
@@ -2797,8 +2798,7 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
     };
     use hypercolor_types::portable_setup::SetupBindings;
 
-    let _config_guard = TestConfigDirGuard::new().await;
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let mut config = default_config();
     for driver in config.drivers.values_mut() {
         driver.enabled = false;
@@ -2813,8 +2813,9 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
     // Atomic replacement on Windows requires the fixture handle to be closed.
     let temp = temp_config_file().into_temp_path();
     let manager = config_manager_for(&config, &temp);
-    let mut daemon = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
-        .expect("initial daemon");
+    let mut daemon =
+        DaemonState::initialize(boot_config(&config), Arc::clone(&manager), guard.host())
+            .expect("initial daemon");
     daemon.start().await.expect("initial start");
     let service = PortableSetupService::new(Arc::new(AppState::from_daemon_state(&daemon)))
         .expect("public setup service");
@@ -2879,8 +2880,12 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
         .expect("retained write converges");
     drop(service);
     drop(daemon);
-    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), Arc::clone(&manager))
-        .expect("restart initialization");
+    let mut restarted = DaemonState::initialize(
+        boot_config(&manager.get()),
+        Arc::clone(&manager),
+        guard.host(),
+    )
+    .expect("restart initialization");
     use futures_util::FutureExt as _;
     let recovery = std::panic::AssertUnwindSafe(async {
         tokio::time::timeout(Duration::from_secs(10), restarted.start())
@@ -2923,7 +2928,7 @@ async fn public_startup_recovers_interrupted_setup_without_private_extensions() 
 
 #[tokio::test]
 async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
-    let guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     runtime_state::save(
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
@@ -2941,6 +2946,7 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
     state.start().await.expect("start should succeed");
@@ -3051,12 +3057,13 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
 
 #[tokio::test]
 async fn event_bus_receives_startup_event() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("initialization should succeed");
 
@@ -3259,7 +3266,7 @@ fn test_zone(id: &str, device_id: &str) -> Output {
 
 #[tokio::test]
 async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
-    let _guard = TestDataDirGuard::new().await;
+    let guard = TestDataDirGuard::new();
     let mut config = default_config();
     config.effect_engine.effect_error_fallback = EffectErrorFallbackPolicy::ClearZones;
     let temp = temp_config_file();
@@ -3271,6 +3278,7 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
     let mut state = DaemonState::initialize(
         boot_config(&config),
         config_manager_for(&config, temp.path()),
+        guard.host(),
     )
     .expect("daemon state should initialize");
     state.start().await.expect("start should succeed");
@@ -3390,8 +3398,7 @@ async fn unavailable_offline_default_face_survives_real_restart() {
     use hypercolor_daemon::domain::portable_setup::{PortableSetupService, SetupIdentity};
     use hypercolor_types::portable_setup::SetupBindings;
 
-    let _config_guard = TestConfigDirGuard::new().await;
-    let _data_guard = TestDataDirGuard::new().await;
+    let data_guard = TestDataDirGuard::new();
     let mut config = default_config();
     for driver in config.drivers.values_mut() {
         driver.enabled = false;
@@ -3410,8 +3417,12 @@ async fn unavailable_offline_default_face_survives_real_restart() {
         setup_id: uuid::Uuid::now_v7(),
         name: "Fresh setup".into(),
     };
-    let mut first = DaemonState::initialize(boot_config(&config), Arc::clone(&manager))
-        .expect("first initialization");
+    let mut first = DaemonState::initialize(
+        boot_config(&config),
+        Arc::clone(&manager),
+        data_guard.host(),
+    )
+    .expect("first initialization");
     use futures_util::FutureExt as _;
     let restored = std::panic::AssertUnwindSafe(async {
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -3484,8 +3495,9 @@ async fn unavailable_offline_default_face_survives_real_restart() {
     };
     shutdown.expect("graceful shutdown");
     drop(first);
-    let mut restarted = DaemonState::initialize(boot_config(&manager.get()), manager)
-        .expect("restart initialization");
+    let mut restarted =
+        DaemonState::initialize(boot_config(&manager.get()), manager, data_guard.host())
+            .expect("restart initialization");
     let recovered = std::panic::AssertUnwindSafe(async {
         tokio::time::timeout(Duration::from_secs(10), async {
             restarted.start().await.expect("restart");

@@ -15,6 +15,7 @@ use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
     DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior,
 };
+use hypercolor_driver_support::MdnsScope;
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,
@@ -1718,7 +1719,12 @@ async fn scanner_shutdown_drains_mdns_status_receiver() {
         .expect("mDNS test log store should not be poisoned")
         .clear();
 
-    let mut scanner = WledScanner::with_known_ips(Vec::new(), true, Duration::from_millis(50));
+    // Loopback keeps the browse off the developer's LAN.
+    let mut scanner = WledScanner::with_known_ips(
+        Vec::new(),
+        Some(MdnsScope::Loopback),
+        Duration::from_millis(50),
+    );
     scanner
         .scan()
         .await
@@ -1739,7 +1745,7 @@ async fn scanner_shutdown_drains_mdns_status_receiver() {
 #[tokio::test]
 async fn scanner_skips_stale_known_ip_without_enrichment() {
     let ip: IpAddr = "192.0.2.1".parse().expect("valid documentation IP");
-    let mut scanner = WledScanner::with_known_ips(vec![ip], false, Duration::from_millis(50));
+    let mut scanner = WledScanner::with_known_ips(vec![ip], None, Duration::from_millis(50));
 
     let discovered = scanner.scan().await.expect("scan should complete");
     assert!(
@@ -1751,7 +1757,12 @@ async fn scanner_skips_stale_known_ip_without_enrichment() {
 #[tokio::test(flavor = "current_thread")]
 async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
     let _guard = mdns_test_guard().await;
+    // Publisher and scanner both stay on loopback, so the fake WLED
+    // announcement and the browse never reach the developer's LAN.
     let mdns = ServiceDaemon::new().expect("mDNS daemon should start");
+    MdnsScope::Loopback
+        .restrict(&mdns)
+        .expect("publisher should restrict to loopback");
     let service_info = ServiceInfo::new(
         "_wled._tcp.local.",
         "hypercolor-placeholder-test",
@@ -1768,7 +1779,11 @@ async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
         .expect("placeholder service should register");
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let mut scanner = WledScanner::with_known_ips(Vec::new(), true, Duration::from_secs(2));
+    let mut scanner = WledScanner::with_known_ips(
+        Vec::new(),
+        Some(MdnsScope::Loopback),
+        Duration::from_secs(2),
+    );
     let discovered = scanner.scan().await.expect("scan should complete");
 
     let placeholder = discovered
@@ -1786,9 +1801,15 @@ async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
         DiscoveryConnectBehavior::Deferred
     );
     assert_eq!(placeholder.info.capabilities.led_count, 0);
+    let ip: IpAddr = placeholder
+        .metadata
+        .get("ip")
+        .expect("placeholder discovery should still include the resolved address")
+        .parse()
+        .expect("placeholder address should parse");
     assert!(
-        placeholder.metadata.contains_key("ip"),
-        "placeholder discovery should still include the resolved address"
+        ip.is_loopback(),
+        "a loopback-scoped scan should only resolve loopback addresses, got {ip}"
     );
 
     let unregister = mdns

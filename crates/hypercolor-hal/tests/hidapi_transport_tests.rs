@@ -3,7 +3,7 @@ use hypercolor_hal::transport::TransportError;
 use hypercolor_hal::transport::hidapi::{
     HidCollectionInfo, check_output_write_for_testing, decode_feature_report_packet_for_testing,
     encode_feature_report_request_buffer_for_testing, encode_hidapi_packet_for_testing,
-    enumerate_usb_hid_collections,
+    normalize_hid_serial,
 };
 
 fn consumer_collection_at(usb_path: Option<&str>) -> HidCollectionInfo {
@@ -36,23 +36,17 @@ fn a_collection_without_a_resolved_path_matches_no_device() {
     assert!(!consumer_collection_at(None).is_at_usb_path("1-2.3"));
 }
 
-/// Hardware-dependent by nature: a CI host usually exposes no HID devices,
-/// and a sandbox may refuse the HID stack outright. What the function owns
-/// is the shape of what it reports, so that is what this checks.
+/// Enumeration reports serials through this normalization; testing it on
+/// fixture strings keeps the test off the host's HID stack.
 #[test]
-fn enumeration_reports_trimmed_serials_when_the_hid_stack_answers() {
-    let Ok(collections) = enumerate_usb_hid_collections() else {
-        return;
-    };
-    for collection in &collections {
-        assert!(
-            collection
-                .serial
-                .as_deref()
-                .is_none_or(|serial| !serial.is_empty() && serial.trim() == serial),
-            "serials arrive trimmed and never blank: {collection:?}"
-        );
-    }
+fn enumeration_reports_trimmed_serials_and_never_blank_ones() {
+    assert_eq!(
+        normalize_hid_serial(Some("  A1B2\0\0")).as_deref(),
+        Some("A1B2")
+    );
+    assert_eq!(normalize_hid_serial(Some("\0 \t")), None);
+    assert_eq!(normalize_hid_serial(Some("")), None);
+    assert_eq!(normalize_hid_serial(None), None);
 }
 
 #[test]

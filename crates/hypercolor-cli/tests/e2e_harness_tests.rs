@@ -13,17 +13,18 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use hypercolor_core::config::paths::{IsolatedUserDirs, UserDirPaths};
 use hypercolor_core::config::{BootConfig, ConfigManager};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
-use hypercolor_daemon::startup::{DaemonState, default_config};
+use hypercolor_daemon::startup::{DaemonState, HostPorts, default_config};
 use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::oneshot;
 
 const HEALTH_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -34,7 +35,6 @@ const SANDBOXED_RUN_TIMEOUT: Duration = Duration::from_mins(2);
 const LIFECYCLE_TEST: &str = "cli_e2e_status_and_effect_lifecycle_round_trip";
 /// Names the sandbox root to the re-executed copy of this binary.
 const SANDBOX_ENV: &str = "HYPERCOLOR_CLI_E2E_SANDBOX";
-static PATH_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Directory roots of one sandboxed run.
 struct Sandbox {
@@ -209,40 +209,30 @@ struct DaemonHarness {
 }
 
 struct TestPathsGuard {
-    _lock: tokio::sync::MutexGuard<'static, ()>,
-    config_dir: PathBuf,
+    dirs: IsolatedUserDirs,
 }
 
 impl TestPathsGuard {
-    async fn new(sandbox: &Sandbox) -> Result<Self> {
-        let lock = PATH_OVERRIDE_LOCK.lock().await;
-        let config_dir = sandbox.config_home().join("hypercolor");
-        ConfigManager::set_config_dir_override(Some(config_dir.clone()));
-        ConfigManager::set_data_dir_override(Some(sandbox.data_home().join("hypercolor")));
-        ConfigManager::set_state_dir_override(Some(sandbox.state_home().join("hypercolor")));
+    fn new(sandbox: &Sandbox) -> Result<Self> {
+        let dirs = IsolatedUserDirs::claim_paths(UserDirPaths {
+            data: sandbox.data_home().join("hypercolor"),
+            config: sandbox.config_home().join("hypercolor"),
+            state: sandbox.state_home().join("hypercolor"),
+            cache: sandbox.cache_home().join("hypercolor"),
+            runtime: sandbox.runtime_dir(),
+        });
         assert_confined(sandbox)?;
-        Ok(Self {
-            _lock: lock,
-            config_dir,
-        })
+        Ok(Self { dirs })
     }
 
     fn config_path(&self) -> PathBuf {
-        self.config_dir.join("hypercolor-e2e.toml")
-    }
-}
-
-impl Drop for TestPathsGuard {
-    fn drop(&mut self) {
-        ConfigManager::set_state_dir_override(None);
-        ConfigManager::set_config_dir_override(None);
-        ConfigManager::set_data_dir_override(None);
+        self.dirs.paths().config.join("hypercolor-e2e.toml")
     }
 }
 
 impl DaemonHarness {
     async fn start(sandbox: &Sandbox) -> Result<Self> {
-        let paths = TestPathsGuard::new(sandbox).await?;
+        let paths = TestPathsGuard::new(sandbox)?;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .context("failed to bind test listener")?;
@@ -274,6 +264,7 @@ impl DaemonHarness {
         let mut daemon_state = DaemonState::initialize(
             BootConfig::from_config_unchecked(config.clone()),
             config_manager,
+            HostPorts::isolated(&paths.dirs),
         )
         .context("failed to initialize daemon state")?;
         daemon_state

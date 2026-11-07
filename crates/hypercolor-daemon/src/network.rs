@@ -4,15 +4,17 @@ mod host;
 mod reconcile;
 
 use std::collections::BTreeSet;
-#[cfg(not(feature = "builtin-drivers"))]
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use hypercolor_core::device::BackendManager;
-#[cfg(not(feature = "builtin-drivers"))]
-use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
-use hypercolor_driver_api::{DriverConfigView, DriverHost};
-#[cfg(not(feature = "builtin-drivers"))]
+use async_trait::async_trait;
+use hypercolor_core::device::{BackendManager, UnclaimedDeviceStore, UsbProtocolConfigStore};
+use hypercolor_driver_api::{
+    DiscoveredDevice, DiscoveryCapability, DiscoveryRequest, DriverConfigProvider,
+    DriverConfigView, DriverControlProvider, DriverDescriptor, DriverError, DriverHost,
+    DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeCacheProvider,
+    OutputBinding, PairingCapability,
+};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -42,6 +44,109 @@ pub fn build_builtin_driver_module_registry(
 
 #[cfg(not(feature = "builtin-drivers"))]
 pub fn normalize_builtin_driver_config_entries(_config: &mut HypercolorConfig) {}
+
+/// The built-in drivers with no reach onto the host.
+///
+/// # Errors
+///
+/// Returns an error if the built-in registry cannot be assembled.
+pub fn build_offline_driver_module_registry(
+    config: &HypercolorConfig,
+    credential_store: Arc<CredentialStore>,
+    usb_protocol_configs: UsbProtocolConfigStore,
+    unclaimed_devices: UnclaimedDeviceStore,
+) -> Result<DriverModuleRegistry> {
+    offline_driver_module_registry(&build_builtin_driver_module_registry(
+        config,
+        credential_store,
+        usb_protocol_configs,
+        unclaimed_devices,
+    )?)
+}
+
+/// The same drivers, with every discovery capability answering "nothing".
+///
+/// Each driver keeps its descriptor, targets, config, controls, and output
+/// binding, so the daemon composes and serves it unchanged. Its scanner
+/// simply never runs, which keeps USB, SMBus, IPC sockets, and the LAN
+/// out of reach.
+///
+/// # Errors
+///
+/// Returns an error if a driver cannot be registered again.
+pub fn offline_driver_module_registry(
+    drivers: &DriverModuleRegistry,
+) -> Result<DriverModuleRegistry> {
+    let mut offline = DriverModuleRegistry::new();
+    for driver_id in drivers.ids() {
+        if let Some(inner) = drivers.get(&driver_id) {
+            offline.register(OfflineDriver { inner })?;
+        }
+    }
+    Ok(offline)
+}
+
+struct OfflineDriver {
+    inner: Arc<dyn DriverModule>,
+}
+
+impl DriverModule for OfflineDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn module_descriptor(&self) -> DriverModuleDescriptor {
+        self.inner.module_descriptor()
+    }
+
+    fn config(&self) -> Option<&dyn DriverConfigProvider> {
+        self.inner.config()
+    }
+
+    fn output(&self) -> OutputBinding<'_> {
+        self.inner.output()
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        self.inner
+            .discovery()
+            .map(|_| &NoDiscovery as &dyn DiscoveryCapability)
+    }
+
+    fn pairing(&self) -> Option<&dyn PairingCapability> {
+        self.inner.pairing()
+    }
+
+    fn controls(&self) -> Option<&dyn DriverControlProvider> {
+        self.inner.controls()
+    }
+
+    fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
+        self.inner.protocol_catalog()
+    }
+
+    fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
+        self.inner.presentation()
+    }
+
+    fn runtime_cache(&self) -> Option<&dyn DriverRuntimeCacheProvider> {
+        self.inner.runtime_cache()
+    }
+}
+
+struct NoDiscovery;
+
+#[async_trait]
+impl DiscoveryCapability for NoDiscovery {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        _request: &DiscoveryRequest,
+        _config: DriverConfigView<'_>,
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        Ok(Vec::new())
+    }
+}
 
 /// Whether a driver is enabled by the active config.
 #[must_use]

@@ -824,9 +824,19 @@ fn make_runtime_with_registry_and_layout(
     };
     let scene_manager = SceneService::in_memory(scene_manager_inner, Arc::clone(&event_bus));
     let unclaimed_devices = hypercolor_core::device::UnclaimedDeviceStore::default();
+    // The built-in fallback stays offline, so these tests never run its
+    // scanners against the host; a registry a test brings is its own.
     let driver_registry = Arc::new(driver_registry.unwrap_or_else(|| {
-        network::build_builtin_driver_module_registry(
-            &HypercolorConfig::default(),
+        let mut config = HypercolorConfig::default();
+        config.discovery.blocks_scan = false;
+        config.discovery.blocks_socket_path = Some(
+            runtime_state_path
+                .with_file_name("blocksd.sock")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        network::build_offline_driver_module_registry(
+            &config,
             Arc::clone(&credential_store),
             usb_protocol_configs.clone(),
             unclaimed_devices.clone(),

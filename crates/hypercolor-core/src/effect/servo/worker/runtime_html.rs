@@ -286,6 +286,8 @@ mod tests {
     #[test]
     fn prepare_runtime_html_source_injects_capture_and_host_flags_before_script() {
         let temp = tempfile::tempdir().expect("tempdir should create");
+        // The runtime copy lands in the cache, so the fixture claims it.
+        let dirs = crate::config::paths::IsolatedUserDirs::claim(temp.path());
         let html_path = temp.path().join("effect.html");
         std::fs::write(
             &html_path,
@@ -298,6 +300,7 @@ mod tests {
             .expect("runtime html should build");
         let runtime_path = prepared.path;
 
+        assert!(runtime_path.starts_with(&dirs.paths().cache));
         assert_ne!(runtime_path, html_path);
         assert_eq!(
             prepared.cleanup_path.as_deref(),
@@ -319,6 +322,8 @@ mod tests {
     #[test]
     fn prepare_runtime_html_source_injects_display_descriptor_before_script() {
         let temp = tempfile::tempdir().expect("tempdir should create");
+        // The runtime copy lands in the cache, so the fixture claims it.
+        let dirs = crate::config::paths::IsolatedUserDirs::claim(temp.path());
         let html_path = temp.path().join("face.html");
         std::fs::write(
             &html_path,
@@ -340,6 +345,7 @@ mod tests {
                 .expect("runtime html should build")
                 .path;
 
+        assert!(runtime_path.starts_with(&dirs.paths().cache));
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
         assert!(runtime_html.contains("window.hypercolor = window.hypercolor || {}"));
@@ -358,6 +364,8 @@ mod tests {
     #[test]
     fn prepare_runtime_html_source_omits_descriptor_when_absent() {
         let temp = tempfile::tempdir().expect("tempdir should create");
+        // The runtime copy lands in the cache, so the fixture claims it.
+        let dirs = crate::config::paths::IsolatedUserDirs::claim(temp.path());
         let html_path = temp.path().join("effect.html");
         std::fs::write(&html_path, "<html><head></head><body></body></html>")
             .expect("html write should work");
@@ -367,6 +375,7 @@ mod tests {
             .expect("runtime html should build")
             .path;
 
+        assert!(runtime_path.starts_with(&dirs.paths().cache));
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
         assert!(!runtime_html.contains("window.hypercolor.display"));
