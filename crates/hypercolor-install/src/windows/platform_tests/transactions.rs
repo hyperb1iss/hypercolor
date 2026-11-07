@@ -4,12 +4,14 @@
 use std::sync::{Arc, Mutex};
 
 use super::fakes::{
-    Boundaries, Broker, CANDIDATE_VERSION, Crash, FakeExecutor, FakeSession, Fixture,
-    PRIOR_VERSION, SharedBoundaries, SharedWorld, UNITS_ROOT, World, lock, member_path, survive,
+    Bootstrap, Boundaries, Broker, CANDIDATE_VERSION, Crash, FakeExecutor, FakeSession, Fixture,
+    PRIOR_VERSION, SharedBoundaries, SharedWorld, UNITS_ROOT, World, identity_of, lock,
+    member_path, survive,
 };
 use crate::windows::{
-    WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsFirewallObservation,
-    WindowsFirewallRule, WindowsInstallConfig, WindowsInstallPlatform, WindowsRunningProcess,
+    BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM,
+    WINDOWS_DAEMON_PROGRAM, WindowsFirewallObservation, WindowsFirewallRule, WindowsInstallConfig,
+    WindowsInstallPlatform, WindowsRunningProcess,
 };
 use crate::{
     InstallAction, InstallCoordinator, InstallCoordinatorError, InstallDisposition,
@@ -20,6 +22,13 @@ use crate::{
 type Platform = WindowsInstallPlatform<FakeExecutor, FakeSession>;
 
 const CONVERGENCE_RUNS: usize = 16;
+/// The slot the update service runs from when a transaction begins.
+const PROVEN: BootstrapSlot = BootstrapSlot::A;
+
+/// The digest of the bootstrap `unit` ships.
+fn bootstrap_of(unit: &UnitId) -> String {
+    identity_of(&member_path(unit, WINDOWS_BOOTSTRAP_PROGRAM)).sha256
+}
 
 struct Harness {
     fixture: Fixture,
@@ -35,13 +44,20 @@ impl Harness {
         let prior = fixture.prior.id().clone();
         let mut world = World {
             store_root: fixture.store.root().to_path_buf(),
+            bootstrap: Some(Bootstrap {
+                image: PROVEN,
+                fallback: PROVEN.other(),
+                slot_a: bootstrap_of(&prior),
+                slot_b: bootstrap_of(&prior),
+            }),
+            broken_bootstrap: None,
             broker: Some(Broker {
-                image: format!("\"{}\"", member_path(&prior, WINDOWS_BROKER_MEMBER)),
+                image: format!("\"{}\"", member_path(&prior, WINDOWS_BROKER_PROGRAM)),
                 process: None,
             }),
             firewall: Some(WindowsFirewallObservation {
-                daemon: Some(member_path(&prior, WINDOWS_DAEMON_MEMBER)),
-                app: Some(member_path(&prior, WINDOWS_APP_MEMBER)),
+                daemon: Some(member_path(&prior, WINDOWS_DAEMON_PROGRAM)),
+                app: Some(member_path(&prior, WINDOWS_APP_PROGRAM)),
             }),
             apps: Vec::new(),
             daemons: Vec::new(),
@@ -185,16 +201,34 @@ impl Harness {
 
     fn assert_names(&self, unit: &UnitId) {
         let world = lock(&self.world);
+        if let Some(bootstrap) = &world.bootstrap {
+            let image = if *unit == self.candidate() {
+                PROVEN.other()
+            } else {
+                PROVEN
+            };
+            assert_eq!(bootstrap.image, image, "the update service's image");
+            assert_eq!(
+                bootstrap.held(bootstrap.fallback),
+                bootstrap_of(&self.prior()),
+                "the failure action names a proven bootstrap"
+            );
+            assert_eq!(
+                bootstrap.held(PROVEN),
+                bootstrap_of(&self.prior()),
+                "the proven slot is never written"
+            );
+        }
         assert_eq!(
             world.broker.as_ref().map(|broker| broker.image.clone()),
-            Some(format!("\"{}\"", member_path(unit, WINDOWS_BROKER_MEMBER))),
+            Some(format!("\"{}\"", member_path(unit, WINDOWS_BROKER_PROGRAM))),
             "broker image"
         );
         assert_eq!(
             world.firewall,
             Some(WindowsFirewallObservation {
-                daemon: Some(member_path(unit, WINDOWS_DAEMON_MEMBER)),
-                app: Some(member_path(unit, WINDOWS_APP_MEMBER)),
+                daemon: Some(member_path(unit, WINDOWS_DAEMON_PROGRAM)),
+                app: Some(member_path(unit, WINDOWS_APP_PROGRAM)),
             }),
             "firewall rules"
         );
@@ -208,10 +242,13 @@ impl Harness {
                 .map(|process| process.image.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(images(&world.apps), [member_path(unit, WINDOWS_APP_MEMBER)]);
+        assert_eq!(
+            images(&world.apps),
+            [member_path(unit, WINDOWS_APP_PROGRAM)]
+        );
         assert_eq!(
             images(&world.daemons),
-            [member_path(unit, WINDOWS_DAEMON_MEMBER)]
+            [member_path(unit, WINDOWS_DAEMON_PROGRAM)]
         );
     }
 
@@ -274,7 +311,15 @@ fn an_update_moves_every_name_and_runs_the_candidate() {
     drop(world);
     let journal = harness.journal();
     assert!(journal.forced_stops.is_empty());
-    assert_eq!(journal.layout_operation_count, 3);
+    assert_eq!(journal.layout_operation_count, 4);
+    assert_eq!(
+        lock(&harness.world)
+            .bootstrap
+            .as_ref()
+            .map(|bootstrap| bootstrap.held(PROVEN.other()).to_owned()),
+        Some(bootstrap_of(&harness.candidate())),
+        "the other slot holds the candidate's bootstrap"
+    );
     assert_eq!(harness.effects("terminate:before"), 0);
 }
 
@@ -288,7 +333,10 @@ fn an_update_stops_the_broker_only_after_the_daemon_and_starts_it_before_the_app
             .position(|entry| entry == label)
             .unwrap_or_else(|| panic!("{label} never ran"))
     };
-    assert!(at("quit:after") < at("broker-stop:before"));
+    assert!(at("quit:after") < at("bootstrap-fallback:before"));
+    assert!(at("bootstrap-fallback:after") < at("bootstrap-write:before"));
+    assert!(at("bootstrap-write:after") < at("bootstrap-image:before"));
+    assert!(at("bootstrap-image:after") < at("broker-stop:before"));
     assert!(at("broker-switch:after") < at("broker-start:before"));
     assert!(at("broker-start:after") < at("start:before"));
 }
@@ -606,7 +654,58 @@ fn a_candidate_that_fails_its_proof_rolls_every_name_back() {
     assert_eq!(restored.process_id, world.daemons[0].id.pid);
     assert_eq!(
         restored.executable_sha256,
-        super::fakes::identity_of(&member_path(&harness.prior(), WINDOWS_DAEMON_MEMBER)).sha256
+        identity_of(&member_path(&harness.prior(), WINDOWS_DAEMON_PROGRAM)).sha256
+    );
+}
+
+#[test]
+fn a_bootstrap_that_will_not_load_costs_nothing_but_the_update() {
+    let harness = Harness::new();
+    let broken = bootstrap_of(&harness.candidate());
+    harness.with_world(|world| world.broken_bootstrap = Some(broken));
+
+    let outcome = harness.outcome();
+
+    let InstallOutcome::RolledBack { failure, .. } = &outcome else {
+        panic!("a bootstrap that does not load must not commit");
+    };
+    assert!(failure.contains("did not load"), "{failure}");
+    harness.assert_restored();
+    assert_eq!(
+        harness.effects("bootstrap-image:before"),
+        0,
+        "ImagePath never moved"
+    );
+    assert_eq!(
+        harness.effects("broker-stop:before"),
+        0,
+        "the broker was never stopped"
+    );
+}
+
+#[test]
+fn a_release_with_the_same_bootstrap_leaves_the_service_alone() {
+    let harness = Harness::new();
+    let same = bootstrap_of(&harness.candidate());
+    harness.with_world(|world| {
+        if let Some(bootstrap) = &mut world.bootstrap {
+            bootstrap.slot_a.clone_from(&same);
+        }
+    });
+
+    let outcome = harness.outcome();
+
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    harness.assert_runs(&harness.candidate());
+    assert_eq!(harness.effects("bootstrap-fallback:before"), 0);
+    assert_eq!(harness.effects("bootstrap-write:before"), 0);
+    assert_eq!(harness.effects("bootstrap-image:before"), 0);
+    assert_eq!(
+        lock(&harness.world)
+            .bootstrap
+            .as_ref()
+            .map(|bootstrap| bootstrap.image),
+        Some(PROVEN)
     );
 }
 
@@ -624,7 +723,7 @@ fn a_daemon_that_never_gets_ready_rolls_back() {
 #[test]
 fn a_candidate_broker_that_will_not_start_rolls_back() {
     let harness = Harness::new();
-    let broker = member_path(&harness.candidate(), WINDOWS_BROKER_MEMBER);
+    let broker = member_path(&harness.candidate(), WINDOWS_BROKER_PROGRAM);
     harness.with_world(|world| world.failing_broker = Some(broker));
 
     let outcome = harness.outcome();
@@ -641,7 +740,7 @@ fn a_candidate_broker_that_will_not_start_rolls_back() {
 #[test]
 fn a_broker_running_the_wrong_file_fails_the_proof() {
     let harness = Harness::new();
-    let broker = member_path(&harness.candidate(), WINDOWS_BROKER_MEMBER);
+    let broker = member_path(&harness.candidate(), WINDOWS_BROKER_PROGRAM);
     harness.with_world(|world| world.swapped_image = Some(broker));
     let outcome = harness.outcome();
     assert!(is_rolled_back(&outcome), "{outcome:?}");
@@ -651,7 +750,7 @@ fn a_broker_running_the_wrong_file_fails_the_proof() {
 #[test]
 fn a_daemon_whose_image_is_not_the_unit_s_fails_the_proof() {
     let harness = Harness::new();
-    let daemon = member_path(&harness.candidate(), WINDOWS_DAEMON_MEMBER);
+    let daemon = member_path(&harness.candidate(), WINDOWS_DAEMON_PROGRAM);
     harness.with_world(|world| world.swapped_image = Some(daemon));
 
     let outcome = harness.outcome();
@@ -671,7 +770,7 @@ fn a_daemon_whose_image_is_not_the_unit_s_fails_the_proof() {
 #[test]
 fn a_broker_that_reports_another_path_fails_the_proof() {
     let harness = Harness::new();
-    let broker = member_path(&harness.candidate(), WINDOWS_BROKER_MEMBER);
+    let broker = member_path(&harness.candidate(), WINDOWS_BROKER_PROGRAM);
     harness.with_world(|world| {
         world.relocated_image = Some((broker, r"C:\elsewhere\broker.exe".to_owned()));
     });
@@ -926,6 +1025,7 @@ fn a_broker_that_was_stopped_stays_stopped() {
 fn what_a_machine_does_not_have_is_left_alone() {
     let harness = Harness::new();
     harness.with_world(|world| {
+        world.bootstrap = None;
         world.broker = None;
         world.firewall = None;
     });
@@ -934,6 +1034,7 @@ fn what_a_machine_does_not_have_is_left_alone() {
 
     assert!(matches!(outcome, InstallOutcome::Committed { .. }));
     harness.assert_runs(&harness.candidate());
+    assert_eq!(harness.effects("bootstrap-write:before"), 0);
     assert_eq!(harness.effects("broker-stop:before"), 0);
     assert_eq!(harness.effects("firewall:before"), 0);
 }
@@ -956,7 +1057,7 @@ fn a_missing_rule_is_created_and_removed_again_on_rollback() {
     assert_eq!(firewall.app, None, "the rule that did not exist is gone");
     assert_eq!(
         firewall.daemon,
-        Some(member_path(&harness.prior(), WINDOWS_DAEMON_MEMBER))
+        Some(member_path(&harness.prior(), WINDOWS_DAEMON_PROGRAM))
     );
 }
 
@@ -981,6 +1082,7 @@ fn a_first_install_creates_the_rules_and_a_rollback_removes_them() {
     harness.with_world(|world| {
         world.apps.clear();
         world.daemons.clear();
+        world.bootstrap = None;
         world.broker = None;
         world.firewall = Some(WindowsFirewallObservation {
             daemon: None,
@@ -997,7 +1099,7 @@ fn a_first_install_creates_the_rules_and_a_rollback_removes_them() {
     let firewall = lock(&harness.world).firewall.clone().expect("firewall");
     assert_eq!(
         firewall.daemon,
-        Some(member_path(&harness.candidate(), WINDOWS_DAEMON_MEMBER))
+        Some(member_path(&harness.candidate(), WINDOWS_DAEMON_PROGRAM))
     );
 
     let harness = Harness::new();
@@ -1005,6 +1107,7 @@ fn a_first_install_creates_the_rules_and_a_rollback_removes_them() {
     harness.with_world(|world| {
         world.apps.clear();
         world.daemons.clear();
+        world.bootstrap = None;
         world.broker = None;
         world.firewall = Some(WindowsFirewallObservation {
             daemon: None,

@@ -3,7 +3,8 @@
 
 use std::cell::RefCell;
 use std::fs;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -11,10 +12,12 @@ use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
 use sha2::{Digest as _, Sha256};
 
 use crate::windows::{
-    WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER, WindowsAppStart,
-    WindowsBrokerObservation, WindowsFileIdentity, WindowsFirewallObservation, WindowsFirewallRule,
-    WindowsInstallConfig, WindowsInstallExecutor, WindowsProcessId, WindowsProcessImage,
-    WindowsRunningProcess, WindowsRuntimeObservation, WindowsSessionHost, WindowsUnitBinding,
+    BootstrapSlot, UpdateServiceConfig, WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM,
+    WINDOWS_BROKER_PROGRAM, WINDOWS_DAEMON_PROGRAM, WindowsAppStart, WindowsBrokerObservation,
+    WindowsFileIdentity, WindowsFirewallObservation, WindowsFirewallRule, WindowsInstallConfig,
+    WindowsInstallExecutor, WindowsProcessId, WindowsProcessImage, WindowsRunningProcess,
+    WindowsRuntimeObservation, WindowsSessionHost, WindowsUnitBinding, install_bootstrap,
+    restore_bootstrap,
 };
 use crate::{
     InstallLock, InstallPlatformError, InstallStore, LocalHttpResponse, UnitId, UnitRecord,
@@ -82,6 +85,24 @@ pub(super) fn identity_of(path: &str) -> WindowsFileIdentity {
     }
 }
 
+/// The update service's registration and its two bootstrap slots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Bootstrap {
+    pub(super) image: BootstrapSlot,
+    pub(super) fallback: BootstrapSlot,
+    pub(super) slot_a: String,
+    pub(super) slot_b: String,
+}
+
+impl Bootstrap {
+    pub(super) fn held(&self, slot: BootstrapSlot) -> &str {
+        match slot {
+            BootstrapSlot::A => &self.slot_a,
+            BootstrapSlot::B => &self.slot_b,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Broker {
     /// The registered command line, quoted the way the service control
@@ -94,6 +115,9 @@ pub(super) struct Broker {
 #[derive(Debug)]
 pub(super) struct World {
     pub(super) store_root: PathBuf,
+    pub(super) bootstrap: Option<Bootstrap>,
+    /// A bootstrap with this digest does not load.
+    pub(super) broken_bootstrap: Option<String>,
     pub(super) broker: Option<Broker>,
     pub(super) firewall: Option<WindowsFirewallObservation>,
     pub(super) apps: Vec<WindowsRunningProcess>,
@@ -149,8 +173,8 @@ impl World {
 
     /// Start `unit`'s app and its daemon, the way a sign-in does.
     pub(super) fn launch(&mut self, unit: &UnitId) {
-        let app = self.spawn(member_path(unit, WINDOWS_APP_MEMBER));
-        let daemon = self.spawn(member_path(unit, WINDOWS_DAEMON_MEMBER));
+        let app = self.spawn(member_path(unit, WINDOWS_APP_PROGRAM));
+        let daemon = self.spawn(member_path(unit, WINDOWS_DAEMON_PROGRAM));
         self.apps.push(app);
         self.daemons.push(daemon);
     }
@@ -231,6 +255,67 @@ pub(super) struct FakeExecutor {
     pub(super) boundaries: SharedBoundaries,
 }
 
+/// The update service's registration, driven by the real replacement order
+/// with a crash boundary at each durable step.
+struct FakeUpdateService<'a> {
+    world: &'a SharedWorld,
+    boundaries: &'a SharedBoundaries,
+}
+
+impl FakeUpdateService<'_> {
+    fn change(&mut self, label: &str, change: impl FnOnce(&mut Bootstrap)) -> io::Result<()> {
+        boundary(self.boundaries, &format!("{label}:before"));
+        {
+            let mut world = lock(self.world);
+            let bootstrap = world
+                .bootstrap
+                .as_mut()
+                .ok_or_else(|| io::Error::other("no update service registered"))?;
+            change(bootstrap);
+        }
+        boundary(self.boundaries, &format!("{label}:after"));
+        Ok(())
+    }
+}
+
+impl UpdateServiceConfig for FakeUpdateService<'_> {
+    fn set_image(&mut self, slot: BootstrapSlot) -> io::Result<()> {
+        self.change("bootstrap-image", |bootstrap| bootstrap.image = slot)
+    }
+
+    fn set_fallback(&mut self, slot: BootstrapSlot) -> io::Result<()> {
+        self.change("bootstrap-fallback", |bootstrap| bootstrap.fallback = slot)
+    }
+
+    fn write_slot(&mut self, slot: BootstrapSlot, source: &Path) -> io::Result<()> {
+        let digest = identity_of(source.to_str().expect("UTF-8 source")).sha256;
+        self.change("bootstrap-write", |bootstrap| match slot {
+            BootstrapSlot::A => bootstrap.slot_a = digest,
+            BootstrapSlot::B => bootstrap.slot_b = digest,
+        })
+    }
+
+    fn probe_slot(&mut self, slot: BootstrapSlot) -> io::Result<()> {
+        let world = lock(self.world);
+        let held = world
+            .bootstrap
+            .as_ref()
+            .map(|bootstrap| bootstrap.held(slot));
+        if held.is_some() && held == world.broken_bootstrap.as_deref() {
+            return Err(io::Error::other("the bootstrap did not load"));
+        }
+        Ok(())
+    }
+
+    fn start(&mut self) -> io::Result<()> {
+        panic!("a transaction never starts the update service");
+    }
+}
+
+fn service_failure(source: &io::Error) -> InstallPlatformError {
+    InstallPlatformError::new(source.to_string())
+}
+
 impl WindowsInstallExecutor for FakeExecutor {
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError> {
         let link = lock(&self.world).store_root.join("active");
@@ -255,10 +340,47 @@ impl WindowsInstallExecutor for FakeExecutor {
         Ok(WindowsUnitBinding {
             unit: unit.id().clone(),
             version: version.to_owned(),
-            app: identity(WINDOWS_APP_MEMBER),
-            daemon: identity(WINDOWS_DAEMON_MEMBER),
-            broker: identity(WINDOWS_BROKER_MEMBER),
+            app: identity(WINDOWS_APP_PROGRAM),
+            daemon: identity(WINDOWS_DAEMON_PROGRAM),
+            broker: identity(WINDOWS_BROKER_PROGRAM),
+            bootstrap: identity(WINDOWS_BOOTSTRAP_PROGRAM),
         })
+    }
+
+    fn observe_bootstrap(&mut self) -> Result<Option<BootstrapSlot>, InstallPlatformError> {
+        Ok(lock(&self.world)
+            .bootstrap
+            .as_ref()
+            .map(|bootstrap| bootstrap.image))
+    }
+
+    fn bootstrap_sha256(&mut self, slot: BootstrapSlot) -> Result<String, InstallPlatformError> {
+        lock(&self.world)
+            .bootstrap
+            .as_ref()
+            .map(|bootstrap| bootstrap.held(slot).to_owned())
+            .ok_or_else(|| fail("no update service registered"))
+    }
+
+    fn install_bootstrap(
+        &mut self,
+        proven: BootstrapSlot,
+        source: &str,
+    ) -> Result<(), InstallPlatformError> {
+        let mut service = FakeUpdateService {
+            world: &self.world,
+            boundaries: &self.boundaries,
+        };
+        install_bootstrap(&mut service, proven, Path::new(source))
+            .map_err(|source| service_failure(&source))
+    }
+
+    fn restore_bootstrap(&mut self, proven: BootstrapSlot) -> Result<(), InstallPlatformError> {
+        let mut service = FakeUpdateService {
+            world: &self.world,
+            boundaries: &self.boundaries,
+        };
+        restore_bootstrap(&mut service, proven).map_err(|source| service_failure(&source))
     }
 
     fn observe_broker(&mut self) -> Result<Option<WindowsBrokerObservation>, InstallPlatformError> {

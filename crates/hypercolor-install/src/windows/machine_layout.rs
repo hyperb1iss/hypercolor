@@ -16,15 +16,25 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 /// The desktop app, at the root of every unit.
 pub const WINDOWS_APP_PROGRAM: &str = "hypercolor-app.exe";
+/// The daemon, at the root of every unit.
+pub const WINDOWS_DAEMON_PROGRAM: &str = "hypercolor-daemon.exe";
+/// The SMBus broker, as a unit member path.
+pub const WINDOWS_BROKER_PROGRAM: &str = "tools/hypercolor-smbus-service.exe";
+/// The recovery bootstrap a unit carries for the installation's slots, as a
+/// unit member path.
+pub const WINDOWS_BOOTSTRAP_PROGRAM: &str = "tools/hypercolor-update-bootstrap.exe";
 /// The CLI, at the root of every unit. Its `update activator` command is
 /// the activator.
 pub const WINDOWS_CLI_PROGRAM: &str = "hypercolor.exe";
 const BOOTSTRAP_DIRECTORY: &str = "update";
 
 /// One of the two fixed places a recovery bootstrap lives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BootstrapSlot {
     A,
     B,
@@ -80,6 +90,16 @@ impl WindowsInstallLayout {
         Self {
             release_root: release_root.to_path_buf(),
             state_root: program_data.join("Hypercolor").join("update"),
+        }
+    }
+
+    /// The installation at exactly these two roots.
+    #[cfg(windows)]
+    #[must_use]
+    pub(super) fn at(release_root: &Path, state_root: &Path) -> Self {
+        Self {
+            release_root: release_root.to_path_buf(),
+            state_root: state_root.to_path_buf(),
         }
     }
 

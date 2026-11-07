@@ -46,7 +46,8 @@ pub use error::ReleasePayloadError;
 pub use executor::WindowsInstallExecutor;
 pub use installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation, WindowsRuntimeMode};
 pub use machine_layout::{
-    BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_CLI_PROGRAM, WindowsInstallLayout,
+    BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_BOOTSTRAP_PROGRAM, WINDOWS_BROKER_PROGRAM,
+    WINDOWS_CLI_PROGRAM, WINDOWS_DAEMON_PROGRAM, WindowsInstallLayout,
 };
 pub use manifest::{
     MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
@@ -54,15 +55,14 @@ pub use manifest::{
     WindowsVendor,
 };
 pub use model::{
-    WINDOWS_APP_ARGUMENTS, WINDOWS_APP_MEMBER, WINDOWS_BROKER_MEMBER, WINDOWS_DAEMON_MEMBER,
-    WINDOWS_PROBATION_WINDOW, WINDOWS_RUNTIME_DEADLINE, WindowsAppStart, WindowsBrokerObservation,
-    WindowsFileIdentity, WindowsFirewallObservation, WindowsFirewallRule, WindowsInstallConfig,
-    WindowsProcessId, WindowsProcessImage, WindowsRunningProcess, WindowsRuntime,
-    WindowsRuntimeObservation, WindowsUnitBinding,
+    WINDOWS_APP_ARGUMENTS, WINDOWS_PROBATION_WINDOW, WINDOWS_RUNTIME_DEADLINE, WindowsAppStart,
+    WindowsBrokerObservation, WindowsFileIdentity, WindowsFirewallObservation, WindowsFirewallRule,
+    WindowsInstallConfig, WindowsLayoutObservation, WindowsProcessId, WindowsProcessImage,
+    WindowsRunningProcess, WindowsRuntime, WindowsRuntimeObservation, WindowsUnitBinding,
 };
 pub use platform::WindowsInstallPlatform;
-pub use session::WindowsSessionHost;
 pub use release_selection::{ReleaseRecords, ReleaseSelectionError, select_release};
+pub use session::WindowsSessionHost;
 pub use unit::{
     WINDOWS_DURABLE_STORES_PATH, WindowsUnit, WindowsUnitError, WindowsUnitSources,
     produce_windows_unit,

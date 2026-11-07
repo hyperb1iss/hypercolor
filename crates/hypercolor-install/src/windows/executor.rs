@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::machine_layout::BootstrapSlot;
 use super::model::{
     WindowsBrokerObservation, WindowsFirewallObservation, WindowsFirewallRule, WindowsProcessId,
     WindowsProcessImage, WindowsRuntimeObservation, WindowsUnitBinding,
@@ -23,6 +24,40 @@ pub trait WindowsInstallExecutor {
     /// # Errors
     /// Returns an error for a unit that is not an exact Windows unit.
     fn bind_unit(&mut self, unit: &UnitRecord) -> Result<WindowsUnitBinding, InstallPlatformError>;
+
+    /// The slot the update service's `ImagePath` names, or `None` when the
+    /// service is not registered.
+    ///
+    /// # Errors
+    /// Returns an error when the service control manager cannot be asked,
+    /// or the image names neither slot.
+    fn observe_bootstrap(&mut self) -> Result<Option<BootstrapSlot>, InstallPlatformError>;
+
+    /// SHA-256 of the bootstrap in `slot`, as lowercase hex.
+    ///
+    /// # Errors
+    /// Returns an error when the slot cannot be read.
+    fn bootstrap_sha256(&mut self, slot: BootstrapSlot) -> Result<String, InstallPlatformError>;
+
+    /// Replace the bootstrap through
+    /// [`install_bootstrap`](crate::windows::install_bootstrap), which keeps
+    /// `proven` as the failure action's slot and moves `ImagePath` only to
+    /// an image that proved it loads.
+    ///
+    /// # Errors
+    /// Returns the first step that failed, which leaves `ImagePath` alone.
+    fn install_bootstrap(
+        &mut self,
+        proven: BootstrapSlot,
+        source: &str,
+    ) -> Result<(), InstallPlatformError>;
+
+    /// Take the service back to `proven` through
+    /// [`restore_bootstrap`](crate::windows::restore_bootstrap).
+    ///
+    /// # Errors
+    /// Returns the service manager's refusal.
+    fn restore_bootstrap(&mut self, proven: BootstrapSlot) -> Result<(), InstallPlatformError>;
 
     /// The SMBus broker's registration and state, or `None` when no broker
     /// is registered.

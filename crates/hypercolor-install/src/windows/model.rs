@@ -9,15 +9,10 @@ use std::time::Duration;
 use hypercolor_platform_fs::windows_file_name_is_valid;
 use serde::{Deserialize, Serialize};
 
+use super::machine_layout::{BootstrapSlot, WINDOWS_APP_PROGRAM, WINDOWS_DAEMON_PROGRAM};
 use super::manifest::fold_case;
 use crate::{InstallPlatformError, UnitId};
 
-/// The app, at the unit root.
-pub const WINDOWS_APP_MEMBER: &str = "hypercolor-app.exe";
-/// The daemon, at the unit root.
-pub const WINDOWS_DAEMON_MEMBER: &str = "hypercolor-daemon.exe";
-/// The SMBus broker, as a unit member path.
-pub const WINDOWS_BROKER_MEMBER: &str = "tools/hypercolor-smbus-service.exe";
 /// The arguments the app starts with when an update starts it.
 pub const WINDOWS_APP_ARGUMENTS: [&str; 1] = ["--minimized"];
 /// How long a proven candidate must keep running before it commits.
@@ -160,6 +155,7 @@ pub struct WindowsUnitBinding {
     pub app: WindowsFileIdentity,
     pub daemon: WindowsFileIdentity,
     pub broker: WindowsFileIdentity,
+    pub bootstrap: WindowsFileIdentity,
 }
 
 impl WindowsUnitBinding {
@@ -171,7 +167,8 @@ impl WindowsUnitBinding {
         }
         self.app.validate()?;
         self.daemon.validate()?;
-        self.broker.validate()
+        self.broker.validate()?;
+        self.bootstrap.validate()
     }
 }
 
@@ -273,8 +270,8 @@ impl WindowsFirewallRule {
     #[must_use]
     pub const fn member(self) -> &'static str {
         match self {
-            Self::Daemon => WINDOWS_DAEMON_MEMBER,
-            Self::App => WINDOWS_APP_MEMBER,
+            Self::Daemon => WINDOWS_DAEMON_PROGRAM,
+            Self::App => WINDOWS_APP_PROGRAM,
         }
     }
 }
@@ -295,6 +292,18 @@ impl WindowsFirewallObservation {
             WindowsFirewallRule::App => self.app.as_deref(),
         }
     }
+}
+
+/// What names a unit from outside it, as the machine holds it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsLayoutObservation {
+    /// The slot the update service's `ImagePath` names; `None` when the
+    /// service is not registered.
+    pub bootstrap: Option<BootstrapSlot>,
+    /// `None` when no broker is registered.
+    pub broker: Option<WindowsBrokerObservation>,
+    /// `None` when the firewall service does not run.
+    pub firewall: Option<WindowsFirewallObservation>,
 }
 
 /// How a request to start the app ended.
