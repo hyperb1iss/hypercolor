@@ -194,7 +194,7 @@ function New-FixtureTree {
 }
 
 try {
-    $vendor = 'signed|Microsoft Corporation|Valid|ts'
+    $vendor = 'signed|Microsoft Windows Software Compatibility Publisher|Valid|ts'
     $pawnIo = 'signed|namazso.eu|NotTrusted|ts'
     $pawnIoHash = [Convert]::ToHexString(
         [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($pawnIo)))
@@ -269,11 +269,11 @@ try {
     Test-Verify 'a payload file the rebundle changed' $case $unsigned 'ui\index.html differs between'
     $case = $payload.Clone(); $case["$unit\ui\extra.js"] = 'x'
     Test-Verify 'a file only the signed installer ships' $case $unsigned 'ui\extra.js is in the signed installer but not the unsigned one'
-    $case = $payload.Clone(); $case["$unit\vcruntime140.dll"] = 'signed|Microsoft Corporation|HashMismatch|ts'
+    $case = $payload.Clone(); $case["$unit\vcruntime140.dll"] = 'signed|Microsoft Windows Software Compatibility Publisher|HashMismatch|ts'
     Test-Verify 'a VC++ runtime whose hash no longer matches' $case $unsigned "vcruntime140.dll is a VC++ runtime but carries a HashMismatch signature"
     $case = $payload.Clone(); $case["$unit\msvcp140.dll"] = 'signed|Unexpected Publisher|Valid|ts'
     Test-Verify 'a VC++ runtime from an unexpected publisher' $case $unsigned "msvcp140.dll is a VC++ runtime but carries a Valid signature from 'Unexpected Publisher'"
-    $case = $payload.Clone(); $case["$unit\tools\vcruntime140.dll"] = 'signed|Microsoft Corporation|Valid|ts|another build'
+    $case = $payload.Clone(); $case["$unit\tools\vcruntime140.dll"] = 'signed|Microsoft Windows Software Compatibility Publisher|Valid|ts|another build'
     Test-Verify 'a substituted but validly signed VC++ runtime' $case $unsigned 'tools\vcruntime140.dll differs between'
     $case = $payload.Clone(); $case["$unit\tools\pawnio\PawnIO_setup.exe"] = 'signed|namazso.eu|Valid|ts|another build'
     Test-Verify 'a substituted PawnIO setup' $case $unsigned 'tools\pawnio\PawnIO_setup.exe differs between'
