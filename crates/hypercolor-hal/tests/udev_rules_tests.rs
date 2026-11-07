@@ -1,3 +1,7 @@
+//! udev only exists on Linux, and descriptors pick platform transports, so
+//! these rules are only meaningful against the Linux build of the catalog.
+#![cfg(target_os = "linux")]
+
 #[path = "support/udev_model.rs"]
 mod udev_model;
 
