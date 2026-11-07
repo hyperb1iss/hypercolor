@@ -284,6 +284,51 @@ async fn a_bulb_that_registers_and_then_goes_quiet_leaves_a_gap() -> TestResult 
     Ok(())
 }
 
+fn rejected_broadcast(unicast_targets: Vec<SocketAddr>) -> WizScanner {
+    WizScanner::new(WizScanOptions {
+        unicast_targets,
+        // Sending to port 0 is rejected locally, so this never leaves the host.
+        broadcast_targets: vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 0))],
+        tracked: HashMap::new(),
+        timeout: Duration::from_millis(300),
+        request_policy: RequestPolicy {
+            reply_timeout: Duration::from_millis(50),
+            attempts: 1,
+        },
+    })
+}
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
+async fn a_scan_that_got_no_request_out_is_an_error() {
+    let error = rejected_broadcast(Vec::new())
+        .scan()
+        .await
+        .expect_err("a scan that asked nobody could not start");
+    assert!(error.to_string().contains("left this host"), "{error}");
+}
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
+async fn a_failed_broadcast_is_a_gap_when_known_addresses_can_still_be_asked() -> TestResult {
+    let silent = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let outcome = rejected_broadcast(vec![silent.local_addr()?])
+        .scan()
+        .await?;
+    assert!(
+        matches!(outcome.gaps.as_slice(), [CoverageGap::SourceFailed { .. }]),
+        "{:?}",
+        outcome.gaps
+    );
+    Ok(())
+}
+
 #[test]
 fn debug_output_redacts_the_signing_key() {
     let config = WizConfig {

@@ -983,8 +983,8 @@ applies, and the host retires a tracked light only after a scan with
 complete coverage that did not report it, so a scan that could have missed a
 light reports a gap instead of failing. A scan reports a gap when:
 
-- an address family that had targets could not bind its socket or enable
-  broadcast, while the other family ran;
+- an address family that had targets could not bind its socket, enable
+  broadcast, or get any request out, while the other family ran;
 - any unicast GetService was rejected (configured and tracked lights are
   asked by unicast, so that light was never asked);
 - every broadcast GetService was rejected (one failed interface is
@@ -998,7 +998,8 @@ light reports a gap instead of failing. A scan reports a gap when:
   that light; one that names no tracked light covers the whole target.
 
 An address family with no targets is skipped and is not a gap. The scan is
-an error only when no family that had targets could start. The collection
+an error only when no family that had targets could start or get a request
+out. The collection
 window ending is complete: a tracked light that stayed silent through it has
 left.
 

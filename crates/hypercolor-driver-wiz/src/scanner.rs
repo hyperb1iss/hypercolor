@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::time::{Instant, timeout_at};
 use tracing::debug;
 
@@ -236,7 +236,8 @@ impl WizScanner {
     ///
     /// # Errors
     ///
-    /// Returns an error when the discovery socket cannot be bound.
+    /// Returns an error when the broadcast cannot run and no known address
+    /// gives the scan anything else to look at.
     pub async fn scan(&self) -> Result<ScanOutcome<WizDeviceProfile>> {
         let started = Instant::now();
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
@@ -254,15 +255,23 @@ impl WizScanner {
                 MAX_DISCOVERY_CANDIDATES,
                 targets.iter().map(|addr| KnownTarget::Address(addr.ip())),
             );
-            let registrations =
-                collect_registrations(&self.options.broadcast_targets, window, admission).await?;
-            gaps = registrations.gaps;
-            let known: HashSet<SocketAddr> = targets.iter().copied().collect();
-            for addr in registrations.found {
-                answered.insert(addr);
-                if !known.contains(&addr) {
-                    targets.push(addr);
+            match collect_registrations(&self.options.broadcast_targets, window, admission).await {
+                Ok(registrations) => {
+                    gaps = registrations.gaps;
+                    let known: HashSet<SocketAddr> = targets.iter().copied().collect();
+                    for addr in registrations.found {
+                        answered.insert(addr);
+                        if !known.contains(&addr) {
+                            targets.push(addr);
+                        }
+                    }
                 }
+                // Known lights can still be probed, so only this leg is lost.
+                Err(error) if !targets.is_empty() => gaps.push(CoverageGap::SourceFailed {
+                    source_name: "WiZ registration broadcast".to_owned(),
+                    reason: format!("{error:#}"),
+                }),
+                Err(error) => return Err(error),
             }
         }
 
@@ -315,7 +324,8 @@ impl WizScanner {
 ///
 /// # Errors
 ///
-/// Returns an error when the socket cannot be bound or configured.
+/// Returns an error when the socket cannot be bound or configured, or no
+/// request left this host.
 pub async fn collect_registrations(
     targets: &[SocketAddr],
     window: Duration,
@@ -327,22 +337,19 @@ pub async fn collect_registrations(
     socket
         .set_broadcast(true)
         .context("failed to enable broadcast on the WiZ discovery socket")?;
-    let targets: Vec<&SocketAddr> = targets.iter().filter(|target| target.is_ipv4()).collect();
-    let mut failed_sends = Vec::new();
-    for target in &targets {
-        if let Err(error) = socket.send_to(DISCOVERY_REQUEST.as_bytes(), target).await {
-            debug!(%target, %error, "WiZ discovery send failed");
-            failed_sends.push(CoverageGap::SendFailed {
-                target: target.to_string(),
-            });
+    // One failed interface is tolerated: known lights are probed directly.
+    let mut sent = false;
+    for target in targets.iter().filter(|target| target.is_ipv4()) {
+        match socket.send_to(DISCOVERY_REQUEST.as_bytes(), target).await {
+            Ok(_) => sent = true,
+            Err(error) => debug!(%target, %error, "WiZ discovery send failed"),
         }
     }
-    let mut gaps = Vec::new();
-    // One failed interface is tolerated: known lights are probed directly.
-    if failed_sends.len() == targets.len() {
-        gaps.append(&mut failed_sends);
+    if !sent {
+        bail!("no WiZ discovery request left this host");
     }
 
+    let mut gaps = Vec::new();
     let deadline = Instant::now() + window;
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_LEN];
     let mut macs = HashSet::new();
@@ -351,7 +358,10 @@ pub async fn collect_registrations(
             Err(_) => break,
             Ok(Err(error)) => {
                 debug!(%error, "WiZ discovery receive failed");
-                gaps.extend(CoverageGap::from_receive_error(&error));
+                let Some(gap) = CoverageGap::from_receive_error(&error) else {
+                    continue;
+                };
+                gaps.push(gap);
                 break;
             }
             Ok(Ok((len, source))) => match registration_mac(&buffer[..len]) {

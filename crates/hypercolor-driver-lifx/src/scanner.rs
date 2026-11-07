@@ -152,9 +152,9 @@ impl LifxScanner {
     ///
     /// # Errors
     ///
-    /// Returns an error when no discovery pass with targets could start. An
-    /// address family with no targets is simply skipped, and everything
-    /// short of that is reported as a coverage gap.
+    /// Returns an error when no discovery pass with targets could start, or
+    /// none got a request out. An address family with no targets is simply
+    /// skipped, and everything short of that is a coverage gap.
     pub async fn scan(&self) -> Result<ScanOutcome<LifxDeviceProfile>> {
         let started = Instant::now();
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
@@ -277,11 +277,14 @@ async fn discovery_pass(
             .enable_broadcast()
             .with_context(|| format!("failed to enable broadcast on the LIFX {family} socket"))?;
     }
-    client
+    let round = client
         .discover(targets, window, admission)
         .await
-        .with_context(|| format!("LIFX {family} discovery failed"))
-        .map(Some)
+        .with_context(|| format!("LIFX {family} discovery failed"))?;
+    if round.sends_failed == round.sends_attempted {
+        bail!("no LIFX {family} GetService left this host");
+    }
+    Ok(Some(round))
 }
 
 /// What a discovery round could have missed.

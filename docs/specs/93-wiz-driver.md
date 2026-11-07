@@ -148,9 +148,9 @@ A configured or tracked address that fails its probe has left, so it does not
 affect coverage. A device that registered and then fails its probe is alive,
 so it holds the device tracked at that address. With none tracked there it
 could be any device, so it leaves a gap across the target and the host retires
-nothing that scan. Rejecting
-every registration send leaves a gap too; one failed interface is tolerated,
-since known devices are probed directly.
+nothing that scan. Rejecting every registration send is a scan error when there
+is nothing else to ask, and a gap across the target otherwise; one failed
+interface is tolerated, since known devices are probed directly.
 
 ---
 

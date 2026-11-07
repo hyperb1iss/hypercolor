@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use hypercolor_driver_api::{DeviceBackend, DeviceWriteOutcome, DiscoveredDevice};
 use hypercolor_driver_yeelight::backend::representative_color;
 use hypercolor_driver_yeelight::config::YeelightConfig;
-use hypercolor_driver_yeelight::scanner::{fingerprint_for_id, route_from_metadata};
+use hypercolor_driver_yeelight::scanner::{fingerprint_for_id, route_from_metadata, search};
 use hypercolor_driver_yeelight::{
     YeelightBackend, YeelightScanOptions, YeelightScanner, discovered_device,
 };
@@ -490,6 +490,20 @@ async fn replies_naming_another_address_are_ignored() -> TestResult {
     .found;
     assert!(profiles.is_empty());
     Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
+async fn a_search_that_got_no_request_out_is_an_error() {
+    // Sending to port 0 is rejected locally, so this never leaves the host.
+    let rejected = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let error = search(&[rejected], Duration::from_millis(100))
+        .await
+        .expect_err("a search that asked nobody could not start");
+    assert!(error.to_string().contains("left this host"), "{error}");
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
 use tracing::debug;
@@ -164,7 +164,8 @@ impl YeelightScanner {
     ///
     /// # Errors
     ///
-    /// Returns an error when the search socket cannot be bound.
+    /// Returns an error when the search socket cannot be bound or no search
+    /// left this host.
     pub async fn scan(&self) -> Result<ScanOutcome<YeelightDeviceProfile>> {
         let mut targets: Vec<SocketAddr> = self
             .options
@@ -219,7 +220,8 @@ pub async fn search(
 ///
 /// # Errors
 ///
-/// Returns an error when the socket cannot be bound.
+/// Returns an error when the socket cannot be bound or no search left this
+/// host.
 pub async fn search_until(
     targets: &[SocketAddr],
     window: Duration,
@@ -264,7 +266,10 @@ pub async fn search_until(
             Err(_) => {}
             Ok(Err(error)) => {
                 debug!(%error, "Yeelight search receive failed");
-                gaps.extend(CoverageGap::from_receive_error(&error));
+                let Some(gap) = CoverageGap::from_receive_error(&error) else {
+                    continue;
+                };
+                gaps.push(gap);
                 break;
             }
             Ok(Ok((len, source))) => match decode_search_reply(&buffer[..len]) {
@@ -281,6 +286,9 @@ pub async fn search_until(
                 Err(error) => debug!(%source, %error, "ignoring non-Yeelight search reply"),
             },
         }
+    }
+    if unreached.len() == targets.len() {
+        bail!("no Yeelight search left this host");
     }
     gaps.extend(unreached.iter().map(|target| CoverageGap::SendFailed {
         target: target.to_string(),

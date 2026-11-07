@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_driver_support::discovery::{
     Admission, CandidateAdmission, KnownTarget, ScanOutcome,
@@ -115,26 +115,37 @@ impl GoveeLanScanner {
     ///
     /// # Errors
     ///
-    /// Returns an error when the scan socket cannot be bound.
+    /// Returns an error when the scan socket cannot be bound or no request
+    /// left this host.
     pub async fn scan(&mut self) -> Result<ScanOutcome<DiscoveredDevice>> {
         let socket = bind_scan_socket().await?;
         let scan = encode_command(&LanCommand::Scan)?;
         let mut gaps = Vec::new();
-        if let Err(error) = socket.send_to(&scan, MULTICAST_ADDR).await {
-            debug!(error = %error, "failed to send Govee multicast scan");
-            gaps.push(CoverageGap::SendFailed {
-                target: MULTICAST_ADDR.to_owned(),
-            });
+        let mut sent = false;
+        match socket.send_to(&scan, MULTICAST_ADDR).await {
+            Ok(_) => sent = true,
+            Err(error) => {
+                debug!(error = %error, "failed to send Govee multicast scan");
+                gaps.push(CoverageGap::SendFailed {
+                    target: MULTICAST_ADDR.to_owned(),
+                });
+            }
         }
 
         for known in &self.known_devices {
             let target = SocketAddr::new(known.ip, DEVICE_PORT);
-            if let Err(error) = socket.send_to(&scan, target).await {
-                debug!(ip = %known.ip, error = %error, "failed to send Govee known-IP scan");
-                gaps.push(CoverageGap::SendFailed {
-                    target: target.to_string(),
-                });
+            match socket.send_to(&scan, target).await {
+                Ok(_) => sent = true,
+                Err(error) => {
+                    debug!(ip = %known.ip, error = %error, "failed to send Govee known-IP scan");
+                    gaps.push(CoverageGap::SendFailed {
+                        target: target.to_string(),
+                    });
+                }
             }
+        }
+        if !sent {
+            bail!("no Govee scan request left this host");
         }
 
         let deadline = Instant::now() + self.timeout;
@@ -146,7 +157,10 @@ impl GoveeLanScanner {
                 Err(_) => break,
                 Ok(Err(error)) => {
                     debug!(error = %error, "Govee scan receive failed");
-                    gaps.extend(CoverageGap::from_receive_error(&error));
+                    let Some(gap) = CoverageGap::from_receive_error(&error) else {
+                        continue;
+                    };
+                    gaps.push(gap);
                     break;
                 }
                 Ok(Ok(received)) => received,

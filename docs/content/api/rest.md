@@ -585,8 +585,9 @@ effective output state and disabled reason.
 Runs a discovery scan across every backend and returns the newly found devices.
 
 Each entry in `scanners` has a `status` of `ok`, `partial`, or `error`. A
-`partial` scanner may have missed devices and lists why in `gaps`: what it did
-see still applies, and nothing of its devices is reported vanished.
+`partial` scanner may have missed devices and lists why in `gaps`. What it did
+see still applies. A gap that names one device holds only that device, and any
+other gap keeps all of that scanner's devices from being reported vanished.
 
 **Request body** (`application/json`, optional): [`DiscoverRequest`](@/api/rest-schemas.md#DiscoverRequest).
 

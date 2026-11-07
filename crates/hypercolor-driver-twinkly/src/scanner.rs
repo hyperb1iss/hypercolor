@@ -12,7 +12,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout_at};
 use tracing::debug;
@@ -312,7 +312,8 @@ impl TwinklyScanner {
     ///
     /// # Errors
     ///
-    /// Returns an error when the discovery socket cannot be bound.
+    /// Returns an error when the broadcast cannot run and no known endpoint
+    /// gives the scan anything else to look at.
     pub async fn scan(&self) -> Result<ScanOutcome<TwinklyDeviceProfile>> {
         let started = Instant::now();
         let window = (self.options.timeout / 2).clamp(MIN_COLLECTION_WINDOW, MAX_COLLECTION_WINDOW);
@@ -334,22 +335,31 @@ impl TwinklyScanner {
                     .iter()
                     .map(|endpoint| KnownTarget::Address(endpoint.ip)),
             );
-            let replies =
-                collect_discovery_replies(&self.options.broadcast_targets, window, admission)
-                    .await?;
-            gaps = replies.gaps;
-            let known: HashSet<SocketAddr> =
-                endpoints.iter().map(TwinklyEndpoint::http_addr).collect();
-            for ip in replies.found {
-                answered.insert(ip);
-                let endpoint = TwinklyEndpoint {
-                    ip,
-                    http_port: self.options.http_port,
-                    rt_port: self.options.rt_port,
-                };
-                if !known.contains(&endpoint.http_addr()) {
-                    endpoints.push(endpoint);
+            match collect_discovery_replies(&self.options.broadcast_targets, window, admission)
+                .await
+            {
+                Ok(replies) => {
+                    gaps = replies.gaps;
+                    let known: HashSet<SocketAddr> =
+                        endpoints.iter().map(TwinklyEndpoint::http_addr).collect();
+                    for ip in replies.found {
+                        answered.insert(ip);
+                        let endpoint = TwinklyEndpoint {
+                            ip,
+                            http_port: self.options.http_port,
+                            rt_port: self.options.rt_port,
+                        };
+                        if !known.contains(&endpoint.http_addr()) {
+                            endpoints.push(endpoint);
+                        }
+                    }
                 }
+                // Known devices can still be probed, so only this leg is lost.
+                Err(error) if !endpoints.is_empty() => gaps.push(CoverageGap::SourceFailed {
+                    source_name: "Twinkly discovery broadcast".to_owned(),
+                    reason: format!("{error:#}"),
+                }),
+                Err(error) => return Err(error),
             }
         }
 
@@ -389,7 +399,8 @@ impl TwinklyScanner {
 ///
 /// # Errors
 ///
-/// Returns an error when the socket cannot be bound or configured.
+/// Returns an error when the socket cannot be bound or configured, or no
+/// datagram left this host.
 pub async fn collect_discovery_replies(
     targets: &[SocketAddr],
     window: Duration,
@@ -401,22 +412,19 @@ pub async fn collect_discovery_replies(
     socket
         .set_broadcast(true)
         .context("failed to enable broadcast on the Twinkly discovery socket")?;
-    let targets: Vec<&SocketAddr> = targets.iter().filter(|target| target.is_ipv4()).collect();
-    let mut failed_sends = Vec::new();
-    for target in &targets {
-        if let Err(error) = socket.send_to(&DISCOVERY_REQUEST, target).await {
-            debug!(%target, %error, "Twinkly discovery send failed");
-            failed_sends.push(CoverageGap::SendFailed {
-                target: target.to_string(),
-            });
+    // One failed interface is tolerated: known devices are probed directly.
+    let mut sent = false;
+    for target in targets.iter().filter(|target| target.is_ipv4()) {
+        match socket.send_to(&DISCOVERY_REQUEST, target).await {
+            Ok(_) => sent = true,
+            Err(error) => debug!(%target, %error, "Twinkly discovery send failed"),
         }
     }
-    let mut gaps = Vec::new();
-    // One failed interface is tolerated: known devices are probed directly.
-    if failed_sends.len() == targets.len() {
-        gaps.append(&mut failed_sends);
+    if !sent {
+        bail!("no Twinkly discovery datagram left this host");
     }
 
+    let mut gaps = Vec::new();
     let deadline = Instant::now() + window;
     let mut buffer = vec![0_u8; RECEIVE_BUFFER_LEN];
     loop {
@@ -424,7 +432,10 @@ pub async fn collect_discovery_replies(
             Err(_) => break,
             Ok(Err(error)) => {
                 debug!(%error, "Twinkly discovery receive failed");
-                gaps.extend(CoverageGap::from_receive_error(&error));
+                let Some(gap) = CoverageGap::from_receive_error(&error) else {
+                    continue;
+                };
+                gaps.push(gap);
                 break;
             }
             Ok(Ok((len, source))) => match decode_discovery_reply(&buffer[..len]) {

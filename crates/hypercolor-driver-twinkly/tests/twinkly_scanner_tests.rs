@@ -181,6 +181,45 @@ async fn a_device_that_answers_discovery_but_fails_its_probe_leaves_a_gap() -> T
     Ok(())
 }
 
+fn rejected_broadcast(endpoints: Vec<TwinklyEndpoint>) -> TwinklyScanner {
+    // Sending to port 0 is rejected locally, so this never leaves the host.
+    TwinklyScanner::new(TwinklyScanOptions::new(
+        endpoints,
+        vec![SocketAddr::from((Ipv4Addr::LOCALHOST, 0))],
+        Duration::from_millis(300),
+    ))
+}
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
+async fn a_scan_that_got_no_request_out_is_an_error() {
+    let error = rejected_broadcast(Vec::new())
+        .scan()
+        .await
+        .expect_err("a scan that asked nobody could not start");
+    assert!(error.to_string().contains("left this host"), "{error}");
+}
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
+async fn a_failed_broadcast_is_a_gap_when_known_endpoints_can_still_be_asked() -> TestResult {
+    let fake = FakeTwinkly::spawn(FakeSpec::gen2_rgb(10)).await?;
+    let outcome = rejected_broadcast(vec![fake.endpoint()]).scan().await?;
+    assert_eq!(outcome.found.len(), 1, "the known device still applies");
+    assert!(
+        matches!(outcome.gaps.as_slice(), [CoverageGap::SourceFailed { .. }]),
+        "{:?}",
+        outcome.gaps
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn rgbw_generation_one_device_profiles_correctly() -> TestResult {
     let spec = FakeSpec {

@@ -4,7 +4,7 @@
 mod support;
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -317,14 +317,33 @@ async fn one_failed_unicast_send_leaves_the_scan_partial_and_keeps_its_finds() -
     windows,
     ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
 )]
-async fn a_scan_that_cannot_reach_the_network_is_partial_not_empty() -> TestResult {
+async fn a_scan_that_got_no_request_out_is_an_error() -> TestResult {
     // Sending to port 0 is rejected locally, so this never leaves the host.
     let unreachable = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let outcome = LifxScanner::new(options(vec![unreachable])).scan().await?;
-    assert!(outcome.found.is_empty());
+    let error = LifxScanner::new(options(vec![unreachable]))
+        .scan()
+        .await
+        .expect_err("a scan that asked nobody could not start");
+    assert!(error.to_string().contains("left this host"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows accepts a UDP send to port 0, so it cannot fail locally"
+)]
+async fn a_family_that_got_no_request_out_is_a_gap_beside_one_that_did() -> TestResult {
+    let fake = FakeLifx::spawn(vec![FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb)]).await?;
+    let rejected = SocketAddr::from((Ipv6Addr::LOCALHOST, 0));
+    let outcome = LifxScanner::new(options(vec![fake.addr(), rejected]))
+        .scan()
+        .await?;
+    assert_eq!(outcome.found.len(), 1, "the other family's light applies");
     assert!(
-        !outcome.gaps.is_empty(),
-        "a scan whose only send failed must not look complete"
+        matches!(outcome.gaps.as_slice(), [CoverageGap::SourceFailed { .. }]),
+        "{:?}",
+        outcome.gaps
     );
     Ok(())
 }
