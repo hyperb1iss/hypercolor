@@ -260,10 +260,11 @@ Rule of thumb: events are broadcast, data streams are watch.
 - **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
   Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
   Long-running I/O is dispatched internally. Drivers keep their connections in `SessionTable`
-  (`driver-support/src/session.rs`): one generation per device at a time, disconnect revokes
-  every retained sink and releases the transport, and `retire` does that for a whole backend,
-  refuses new sessions, and waits for everything in flight. `hypercolor-driver-conformance`
-  holds that contract as one shared test.
+  (`driver-support/src/session.rs`): one generation per device at a time, opens run on tasks
+  the table owns so a cancelled connect leaves no native work behind, disconnect revokes every
+  retained sink and releases the transport, and `retire` does that for a whole backend, refuses
+  new sessions, and waits for everything in flight. `hypercolor-driver-conformance` holds that
+  contract as one shared test.
 - **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer implemented by
   `ServoRenderer` and the CPU builtins in `core/src/effect/builtin/`. There is no native GPU
   shader renderer; wgpu drives the SparkleFlinger compositor instead.

@@ -208,13 +208,16 @@ impl DeviceBackend for AcmeBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        // Joins a connect in flight, waits out a close, refuses when retired.
-        let Some(ticket) = self.sessions.begin_open(id).await? else {
-            return Ok(()); // Already open.
-        };
-        // Open the UDP socket or handshake as required.
-        let session = self.open_session(id).await?;
-        ticket.install(session).await
+        // Runs only when this connect starts an open. The future runs on a
+        // task the table owns, so it takes what it needs from `self` up front.
+        let id = *id;
+        self.sessions
+            .open(&id, || {
+                let opener = self.opener();
+                // Open the UDP socket or handshake as required.
+                async move { opener.open_session(id).await }
+            })
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
@@ -248,11 +251,16 @@ session, and a retired backend closes everything and refuses new sessions. Do no
 flags, `Drop` hooks, or your own sink for any of that.
 
 Each device has at most one generation Opening or Open at a time, and a closing generation
-stays in the table until its transport is gone. Concurrent connects share one open, a
-connect waits for a close to finish, and retirement waits for both, so one session's cleanup
-can never hit the next, even when device state outlives any one connection. A device whose
-target can move uses `open_unless` instead of `begin_open`, which closes a session that no
-longer matches before the ticket is issued.
+stays in the table until its transport is gone. Concurrent connects share one open and one
+result, a connect waits for a close to finish, and retirement waits for both, so one
+session's cleanup can never hit the next, even when device state outlives any one connection.
+A device whose target can move uses `open_unless` instead of `open`, which closes a session
+that no longer matches before the new open starts.
+
+The table owns every open, so a connect that times out only stops waiting. The open keeps
+going under `DeviceSession::OPEN`, and if nobody is waiting when it finishes, the session
+closes through normal cleanup. An open that awaits blocking native work sets `OPEN` to
+`Duration::MAX`, because dropping that wait would detach the work.
 
 A socket every device of the backend sends from stays on the backend, with each session
 holding a reference, so closing one session leaves the others running. `Session::spawn`
