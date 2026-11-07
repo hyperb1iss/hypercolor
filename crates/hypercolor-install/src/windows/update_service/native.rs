@@ -6,11 +6,13 @@ use std::io;
 use std::os::windows::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess};
 use windows_service::service::{
     Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceErrorControl,
-    ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceType,
+    ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState,
+    ServiceType,
 };
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
@@ -23,8 +25,18 @@ use crate::windows::store::replace_durably;
 use crate::windows::update_pipe::UPDATE_SERVICE_NAME;
 
 const SERVICE_DISPLAY_NAME: &str = "Hypercolor Update";
+/// `ERROR_SERVICE_DOES_NOT_EXIST`.
+const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
 /// `ERROR_SERVICE_ALREADY_RUNNING`.
 const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
+/// `ERROR_SERVICE_EXISTS`.
+const ERROR_SERVICE_EXISTS: i32 = 1073;
+/// `ERROR_SERVICE_NOT_ACTIVE`.
+const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
+/// How long a run gets to end when an installer removes the service. Its
+/// own stop ends the activator without waiting for it.
+const STOP_DEADLINE: Duration = Duration::from_secs(30);
+const STOP_PAUSE: Duration = Duration::from_millis(200);
 /// `CREATE_NO_WINDOW`: a service has no console to borrow.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -66,6 +78,10 @@ impl ScmUpdateService {
     /// descriptor says so, which `update_service_sddl` spells and the
     /// `--register-service` bootstrap command applies through [`Self::service`].
     ///
+    /// One call spans several changes, so a service that already exists is
+    /// set up again the same way: a repeated run finishes a registration
+    /// that was cut short.
+    ///
     /// # Errors
     ///
     /// Returns the service manager's error for any step.
@@ -91,9 +107,18 @@ impl ScmUpdateService {
             account_name: None,
             account_password: None,
         };
-        let service = manager
-            .create_service(&info, SERVICE_RIGHTS | ServiceAccess::WRITE_DAC)
-            .map_err(service_error)?;
+        let rights = SERVICE_RIGHTS | ServiceAccess::WRITE_DAC;
+        let service = match manager.create_service(&info, rights) {
+            Ok(service) => service,
+            Err(windows_service::Error::Winapi(error))
+                if error.raw_os_error() == Some(ERROR_SERVICE_EXISTS) =>
+            {
+                manager
+                    .open_service(UPDATE_SERVICE_NAME, rights)
+                    .map_err(service_error)?
+            }
+            Err(error) => return Err(service_error(error)),
+        };
         service
             .set_delayed_auto_start(true)
             .map_err(service_error)?;
@@ -104,8 +129,49 @@ impl ScmUpdateService {
             service,
             layout: layout.clone(),
         };
+        registered.set_image(image)?;
         registered.set_fallback(fallback)?;
         Ok(registered)
+    }
+
+    /// Stop the registered service and delete it. A service that is not
+    /// registered is already gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service manager's error, or a timeout when it does not
+    /// stop.
+    pub fn remove() -> io::Result<()> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(service_error)?;
+        let rights = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
+        let service = match manager.open_service(UPDATE_SERVICE_NAME, rights) {
+            Ok(service) => service,
+            Err(windows_service::Error::Winapi(error))
+                if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(service_error(error)),
+        };
+        match service.stop() {
+            Ok(_) => {}
+            Err(windows_service::Error::Winapi(error))
+                if error.raw_os_error() == Some(ERROR_SERVICE_NOT_ACTIVE) => {}
+            Err(error) => return Err(service_error(error)),
+        }
+        let deadline = Instant::now() + STOP_DEADLINE;
+        while service.query_status().map_err(service_error)?.current_state != ServiceState::Stopped
+        {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("{UPDATE_SERVICE_NAME} did not stop"),
+                ));
+            }
+            std::thread::sleep(STOP_PAUSE);
+        }
+        service.delete().map_err(service_error)
     }
 
     /// The service handle, for a host that sets what this safe surface does
@@ -177,21 +243,7 @@ impl UpdateServiceConfig for ScmUpdateService {
     }
 
     fn probe_slot(&mut self, slot: BootstrapSlot) -> io::Result<()> {
-        let status = Command::new(self.layout.slot_image(slot))
-            .arg(PROBE_FLAG)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "the bootstrap in {} exited with {status}",
-                slot.file_name()
-            )))
-        }
+        run_slot(&self.layout, slot, PROBE_FLAG)
     }
 
     fn start(&mut self) -> io::Result<()> {
@@ -204,6 +256,30 @@ impl UpdateServiceConfig for ScmUpdateService {
             }
             Err(error) => Err(service_error(error)),
         }
+    }
+}
+
+/// Run the bootstrap in `slot` with `flag` and require a clean exit. That
+/// proves the image loads, which the service manager never would.
+///
+/// # Errors
+///
+/// Returns an error when it does not start or does not exit zero.
+pub fn run_slot(layout: &WindowsInstallLayout, slot: BootstrapSlot, flag: &str) -> io::Result<()> {
+    let status = Command::new(layout.slot_image(slot))
+        .arg(flag)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "the bootstrap in {} exited with {status} for {flag}",
+            slot.file_name()
+        )))
     }
 }
 
