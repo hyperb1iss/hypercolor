@@ -28,12 +28,17 @@ use hypercolor_types::device::{
     SegmentInfo,
 };
 use tempfile::tempdir;
+use tokio::sync::Semaphore;
 
 struct ScriptedTransport {
     send_receive_results: StdMutex<Vec<Result<Vec<u8>, TransportError>>>,
     send_results: StdMutex<Vec<Result<(), TransportError>>>,
     sent_packets: Arc<StdMutex<Vec<Vec<u8>>>>,
     close_count: Arc<AtomicUsize>,
+    /// Stands in for the native handle: its count falls when this drops.
+    native_handle: Option<Arc<()>>,
+    /// Holds `send_receive` back, so a test can keep an open in flight.
+    gate: Option<Arc<Semaphore>>,
 }
 
 impl ScriptedTransport {
@@ -48,7 +53,19 @@ impl ScriptedTransport {
             send_results: StdMutex::new(send_results),
             sent_packets,
             close_count,
+            native_handle: None,
+            gate: None,
         }
+    }
+
+    fn holding(mut self, native_handle: &Arc<()>) -> Self {
+        self.native_handle = Some(Arc::clone(native_handle));
+        self
+    }
+
+    fn gated(mut self, gate: &Arc<Semaphore>) -> Self {
+        self.gate = Some(Arc::clone(gate));
+        self
     }
 }
 
@@ -86,6 +103,9 @@ impl Transport for ScriptedTransport {
         data: &[u8],
         _timeout: Duration,
     ) -> Result<Vec<u8>, TransportError> {
+        if let Some(gate) = &self.gate {
+            let _permit = gate.acquire().await.expect("gate stays open");
+        }
         self.sent_packets
             .lock()
             .expect("sent packet lock should not be poisoned")
@@ -553,6 +573,96 @@ async fn smbus_backend_preserves_transport_timeout_without_private_retry() {
         1,
         "disconnect should close the original transport"
     );
+}
+
+#[tokio::test]
+async fn retirement_empties_the_native_handle_out_of_retained_sinks() {
+    let device_id = DeviceId::new();
+    let native_handle = Arc::new(());
+    let backend = SmBusBackend::with_transport_factory({
+        let native_handle = Arc::clone(&native_handle);
+        move |_bus_path, _address, _bus_arbiter| {
+            Ok(Box::new(
+                ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    Vec::new(),
+                    Arc::default(),
+                    Arc::default(),
+                )
+                .holding(&native_handle),
+            ))
+        }
+    });
+    backend
+        .adopt_device(&discovered_smbus_device(device_id))
+        .expect("adopt");
+    backend.connect(&device_id).await.expect("connect");
+    let sink = backend.frame_sink(&device_id).expect("sink");
+    assert_eq!(Arc::strong_count(&native_handle), 3, "factory and session");
+
+    backend.retire().await.expect("retire");
+
+    assert_eq!(
+        Arc::strong_count(&native_handle),
+        2,
+        "only the factory's own copy is left"
+    );
+    assert!(sink.is_closed());
+    backend
+        .connect(&device_id)
+        .await
+        .expect_err("a retired backend refuses connects");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retirement_waits_for_an_open_in_flight_and_closes_it() {
+    let device_id = DeviceId::new();
+    let gate = Arc::new(Semaphore::new(0));
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let backend = Arc::new(SmBusBackend::with_transport_factory({
+        let gate = Arc::clone(&gate);
+        let close_count = Arc::clone(&close_count);
+        move |_bus_path, _address, _bus_arbiter| {
+            Ok(Box::new(
+                ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    Vec::new(),
+                    Arc::default(),
+                    Arc::clone(&close_count),
+                )
+                .gated(&gate),
+            ))
+        }
+    }));
+    backend
+        .adopt_device(&discovered_smbus_device(device_id))
+        .expect("adopt");
+
+    let connect = tokio::spawn({
+        let backend = Arc::clone(&backend);
+        async move { backend.connect(&device_id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let retire = tokio::spawn({
+        let backend = Arc::clone(&backend);
+        async move { backend.retire().await }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!retire.is_finished(), "the open still holds the transport");
+
+    gate.add_permits(8);
+
+    retire.await.expect("retire task").expect("retire");
+    assert_eq!(
+        close_count.load(Ordering::SeqCst),
+        1,
+        "the transport closed before retirement returned"
+    );
+    connect
+        .await
+        .expect("connect task")
+        .expect_err("the open lost to retirement");
+    assert!(backend.frame_sink(&device_id).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

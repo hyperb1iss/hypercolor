@@ -4523,6 +4523,7 @@ dependencies = [
  "gstreamer-video",
  "hypercolor-color",
  "hypercolor-driver-api",
+ "hypercolor-driver-support",
  "hypercolor-gpu-frame",
  "hypercolor-hal",
  "hypercolor-linux-gpu-interop",

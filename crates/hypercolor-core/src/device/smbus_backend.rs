@@ -3,22 +3,20 @@
 use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use hypercolor_driver_api::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
-    DiscoveredDevice,
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceFrameSink,
+    DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice,
 };
+use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
 use hypercolor_hal::smbus_registry::build_smbus_protocol;
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusTransport};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID};
-use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
 use super::transport_error::{DeviceTransportOperation, map_hal_transport_error};
@@ -35,33 +33,140 @@ struct PendingSmBusDevice {
     info_template: DeviceInfo,
 }
 
-struct ConnectedSmBusDevice {
+/// What a connect fixed about one device.
+struct SmBusFacts {
     info_template: DeviceInfo,
     target_fps: Option<u32>,
-    io: Arc<Mutex<SmBusDeviceIo>>,
-    connected: AtomicBool,
 }
 
-struct SmBusDeviceIo {
+/// One open device on the bus.
+struct SmBusSession {
+    device_id: DeviceId,
     protocol: Box<dyn Protocol>,
     transport: Box<dyn Transport>,
     frame_commands: Vec<ProtocolCommand>,
 }
 
+impl SmBusSession {
+    async fn write(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<FrameWrite, DeviceError> {
+        self.protocol
+            .encode_frame_into(colors, &mut self.frame_commands);
+        if self.frame_commands.is_empty() {
+            return Ok(FrameWrite::Unchanged);
+        }
+        let payload_bytes = self
+            .protocol
+            .written_frame_bytes()
+            .unwrap_or_else(|| colors.len().saturating_mul(3));
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
+        }
+        let result = run_commands(
+            self.protocol.as_ref(),
+            self.transport.as_ref(),
+            self.frame_commands.as_slice(),
+        )
+        .await;
+        self.protocol.frame_write_finished(result.is_ok());
+        result
+            .map(|()| FrameWrite::Written { payload_bytes })
+            .map_err(|error| {
+                map_hal_transport_error(
+                    self.device_id,
+                    SMBUS_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    &error,
+                )
+            })
+    }
+}
+
+impl DeviceSession for SmBusSession {
+    type Facts = SmBusFacts;
+
+    /// A shutdown sequence retries on a busy bus.
+    const CLEANUP: Duration = Duration::from_secs(2);
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        self.write(colors, delivery)
+            .await
+            .map(|_| DeviceWriteOutcome::Sent)
+    }
+
+    async fn deliver_frame(
+        &mut self,
+        delivery: FrameDelivery,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> DeviceDeliveryAck {
+        let started_at = Instant::now();
+        let mut payload_bytes = 0;
+        let result =
+            self.write(colors.as_slice(), Some(&delivery))
+                .await
+                .map(|write| match write {
+                    FrameWrite::Unchanged => DeviceWriteOutcome::SuppressedDuplicate,
+                    FrameWrite::Written {
+                        payload_bytes: bytes,
+                    } => {
+                        payload_bytes = bytes;
+                        DeviceWriteOutcome::Sent
+                    }
+                });
+        DeviceDeliveryAck::from_write_result(
+            delivery.id(),
+            payload_bytes,
+            started_at.elapsed(),
+            result,
+        )
+    }
+
+    async fn finish(&mut self) -> Result<(), DeviceError> {
+        let shutdown_sequence = self.protocol.shutdown_sequence();
+        if let Err(error) = run_commands(
+            self.protocol.as_ref(),
+            self.transport.as_ref(),
+            shutdown_sequence.as_slice(),
+        )
+        .await
+        {
+            warn!(device_id = %self.device_id, error = %error, "SMBus shutdown sequence failed");
+        }
+        Ok(())
+    }
+
+    /// The native handle goes with the session, whatever else holds a sink.
+    async fn release(self) -> Result<(), DeviceError> {
+        self.transport
+            .close()
+            .await
+            .map_err(map_transport_error)
+            .map_err(|error| {
+                map_hal_transport_error(
+                    self.device_id,
+                    SMBUS_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Connect,
+                    &error,
+                )
+            })
+    }
+}
+
 type SmBusTransportFactory =
     Arc<dyn Fn(&str, u16, SmBusBusArbiter) -> Result<Box<dyn Transport>> + Send + Sync>;
-
-struct SmBusDeviceFrameSink {
-    device_id: DeviceId,
-    device: Arc<ConnectedSmBusDevice>,
-}
 
 /// Core `SMBus` backend for HAL-managed ENE controllers.
 pub struct SmBusBackend {
     pending: StdRwLock<HashMap<DeviceId, PendingSmBusDevice>>,
-    connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedSmBusDevice>>>,
+    sessions: SessionTable<SmBusSession>,
     transport_factory: SmBusTransportFactory,
-    retired: AtomicBool,
 }
 
 impl SmBusBackend {
@@ -89,9 +194,8 @@ impl SmBusBackend {
     {
         Self {
             pending: StdRwLock::new(HashMap::new()),
-            connected: StdRwLock::new(HashMap::new()),
+            sessions: SessionTable::new(),
             transport_factory: Arc::new(transport_factory),
-            retired: AtomicBool::new(false),
         }
     }
 }
@@ -100,55 +204,9 @@ impl Default for SmBusBackend {
     fn default() -> Self {
         Self {
             pending: StdRwLock::new(HashMap::new()),
-            connected: StdRwLock::new(HashMap::new()),
+            sessions: SessionTable::new(),
             transport_factory: Self::default_transport_factory(),
-            retired: AtomicBool::new(false),
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for SmBusDeviceFrameSink {
-    fn is_closed(&self) -> bool {
-        !self.device.connected.load(Ordering::Acquire)
-    }
-
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        write_connected_device(
-            self.device_id,
-            self.device.as_ref(),
-            colors.as_slice(),
-            None,
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let started_at = Instant::now();
-        let mut payload_bytes = 0;
-        let result = write_connected_device(
-            self.device_id,
-            self.device.as_ref(),
-            colors.as_slice(),
-            Some((id, observer.as_ref())),
-        )
-        .await
-        .map(|write| match write {
-            FrameWrite::Unchanged => DeviceWriteOutcome::SuppressedDuplicate,
-            FrameWrite::Written {
-                payload_bytes: bytes,
-            } => {
-                payload_bytes = bytes;
-                DeviceWriteOutcome::Sent
-            }
-        });
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -178,18 +236,10 @@ impl DeviceBackend for SmBusBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        if self.retired.load(Ordering::SeqCst) {
-            return Err(DeviceError::connection(id, "the SMBus backend was retired"));
-        }
-        if self
-            .connected
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(id)
-        {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             debug!(device_id = %id, "SMBus device already connected; skipping duplicate connect");
             return Ok(());
-        }
+        };
 
         let pending = {
             let pending_guard = self.pending.read().unwrap_or_else(PoisonError::into_inner);
@@ -207,7 +257,7 @@ impl DeviceBackend for SmBusBackend {
         );
 
         let bus_arbiter = SmBusBusArbiter::for_bus(&pending.bus_path);
-        let device = connect_pending_device(&pending, &self.transport_factory, bus_arbiter)
+        let session = connect_pending_device(*id, &pending, &self.transport_factory, bus_arbiter)
             .await
             .map_err(|error| {
                 map_hal_transport_error(
@@ -217,131 +267,48 @@ impl DeviceBackend for SmBusBackend {
                     &error,
                 )
             })?;
-        self.connected
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(device));
-
-        // A retire that ran during this open missed the new session.
-        if self.retired.load(Ordering::SeqCst) {
-            let _ = self.disconnect(id).await;
-            return Err(DeviceError::connection(id, "the SMBus backend was retired"));
-        }
-        Ok(())
+        ticket.install(session).await
     }
 
     async fn retire(&self) -> Result<(), DeviceError> {
-        self.retired.store(true, Ordering::SeqCst);
-        let open: Vec<DeviceId> = self
-            .connected
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .copied()
-            .collect();
-        let mut result = Ok(());
-        for id in open {
-            let closed = self.disconnect(&id).await;
-            if result.is_ok() {
-                result = closed;
-            }
-        }
-        result
+        self.sessions.retire().await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let device = self
-            .connected
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-        let Some(device) = device else {
-            return Ok(());
-        };
-
-        device.connected.store(false, Ordering::Release);
-        let io = device.io.lock().await;
-        let shutdown_sequence = io.protocol.shutdown_sequence();
-        if let Err(error) = run_commands(
-            io.protocol.as_ref(),
-            io.transport.as_ref(),
-            shutdown_sequence.as_slice(),
-        )
-        .await
-        {
-            warn!(device_id = %id, error = %error, "SMBus shutdown sequence failed");
+        match self.sessions.close(id).await {
+            Err(DeviceError::Disconnected { .. }) => Ok(()),
+            closed => closed,
         }
-
-        io.transport
-            .close()
-            .await
-            .map_err(map_transport_error)
-            .map_err(|error| {
-                map_hal_transport_error(
-                    *id,
-                    SMBUS_OUTPUT_BACKEND_ID,
-                    DeviceTransportOperation::Connect,
-                    &error,
-                )
-            })
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        let device = self
-            .connected
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-        write_connected_device(*id, device.as_ref(), colors, None)
-            .await
-            .map(|_| ())
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     async fn connected_device_info(
         &self,
         id: &DeviceId,
     ) -> Result<Option<DeviceInfo>, DeviceError> {
-        let device = self
-            .connected
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
+        let (Some(facts), Some(sink)) = (self.sessions.facts(id), self.sessions.sink(id)) else {
             return Ok(None);
         };
-        let io = device.io.lock().await;
+        let Ok(session) = sink.admit().await else {
+            return Ok(None);
+        };
 
         Ok(Some(build_connected_device_info(
             *id,
-            &device.info_template,
-            io.protocol.as_ref(),
+            &facts.info_template,
+            session.protocol.as_ref(),
         )))
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.connected
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .and_then(|device| device.target_fps)
+        self.sessions.facts(id).and_then(|facts| facts.target_fps)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.connected
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .map(|device| {
-                Arc::new(SmBusDeviceFrameSink {
-                    device_id: *id,
-                    device: Arc::clone(device),
-                }) as Arc<dyn DeviceFrameSink>
-            })
+        self.sessions.frame_sink(id)
     }
 }
 
@@ -358,10 +325,11 @@ fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingSmBus
 }
 
 async fn connect_pending_device(
+    device_id: DeviceId,
     pending: &PendingSmBusDevice,
     transport_factory: &SmBusTransportFactory,
     bus_arbiter: SmBusBusArbiter,
-) -> Result<ConnectedSmBusDevice> {
+) -> Result<Session<SmBusSession>> {
     let transport = transport_factory(&pending.bus_path, pending.address, bus_arbiter.clone())?;
     let protocol = build_smbus_protocol(&pending.protocol_id).with_context(|| {
         format!(
@@ -379,16 +347,19 @@ async fn connect_pending_device(
     .await?;
 
     let target_fps = fps_from_frame_interval(protocol.frame_interval());
-    Ok(ConnectedSmBusDevice {
-        info_template: pending.info_template.clone(),
-        target_fps,
-        io: Arc::new(Mutex::new(SmBusDeviceIo {
+    Ok(Session::new(
+        device_id,
+        SmBusFacts {
+            info_template: pending.info_template.clone(),
+            target_fps,
+        },
+        SmBusSession {
+            device_id,
             protocol,
             transport,
             frame_commands: Vec::new(),
-        })),
-        connected: AtomicBool::new(true),
-    })
+        },
+    ))
 }
 
 /// What one frame write put on the bus.
@@ -401,57 +372,6 @@ enum FrameWrite {
         /// Pixel bytes the commands carried.
         payload_bytes: usize,
     },
-}
-
-async fn write_connected_device(
-    device_id: DeviceId,
-    device: &ConnectedSmBusDevice,
-    colors: &[[u8; 3]],
-    delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-) -> Result<FrameWrite, DeviceError> {
-    if !device.connected.load(Ordering::Acquire) {
-        return Err(DeviceError::Disconnected {
-            device: device_id.to_string(),
-        });
-    }
-    let mut io = device.io.lock().await;
-    if !device.connected.load(Ordering::Acquire) {
-        return Err(DeviceError::Disconnected {
-            device: device_id.to_string(),
-        });
-    }
-    let SmBusDeviceIo {
-        protocol,
-        transport,
-        frame_commands,
-    } = &mut *io;
-    protocol.encode_frame_into(colors, frame_commands);
-    if frame_commands.is_empty() {
-        return Ok(FrameWrite::Unchanged);
-    }
-    let payload_bytes = protocol
-        .written_frame_bytes()
-        .unwrap_or_else(|| colors.len().saturating_mul(3));
-    if let Some((id, observer)) = delivery {
-        observer.transport_started(id);
-    }
-    let result = run_commands(
-        protocol.as_ref(),
-        transport.as_ref(),
-        frame_commands.as_slice(),
-    )
-    .await;
-    protocol.frame_write_finished(result.is_ok());
-    result
-        .map(|()| FrameWrite::Written { payload_bytes })
-        .map_err(|error| {
-            map_hal_transport_error(
-                device_id,
-                SMBUS_OUTPUT_BACKEND_ID,
-                DeviceTransportOperation::Write,
-                &error,
-            )
-        })
 }
 
 async fn run_init_sequence(

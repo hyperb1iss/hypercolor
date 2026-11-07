@@ -755,7 +755,8 @@ async fn stored_actor_disconnect_survives_duplicate_connect_and_output_paths() {
         DeviceError::Disconnected {
             device: device_id.to_string(),
         },
-    );
+    )
+    .await;
     let expected = DeviceError::Disconnected {
         device: device_id.to_string(),
     };
@@ -793,7 +794,7 @@ async fn stored_actor_disconnect_survives_duplicate_connect_and_output_paths() {
     );
 }
 
-fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> UsbBackend {
+async fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> UsbBackend {
     let backend = UsbBackend::new();
     let mut info = temporary_control_test_device(true, 1);
     info.id = device_id;
@@ -826,25 +827,51 @@ fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> U
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
-    backend
-        .connected
-        .write()
-        .expect("connected device map should remain available")
-        .insert(
+    let ticket = backend
+        .sessions
+        .begin_open(&device_id)
+        .await
+        .expect("a fresh backend accepts sessions")
+        .expect("nothing is open yet");
+    ticket
+        .install(Session::new(
             device_id,
-            Arc::new(ConnectedUsbDevice {
-                device: tokio::sync::Mutex::new(device),
+            UsbFacts {
                 info_template: info,
                 protocol,
                 target_fps: None,
                 frame_sink,
                 display_sink,
-            }),
-        );
+            },
+            UsbSession { device_id, device },
+        ))
+        .await
+        .expect("install should succeed");
     backend
 }
 
-fn backend_with_display_actor(
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retirement_closes_the_session_and_refuses_later_connects() {
+    let device_id = DeviceId::new();
+    let backend =
+        backend_with_display_actor(device_id, Arc::new(RecordingTransport::default())).await;
+    let sink = backend.frame_sink(&device_id).expect("connected sink");
+
+    backend.retire().await.expect("retire");
+
+    assert!(sink.is_closed());
+    assert!(backend.frame_sink(&device_id).is_none());
+    assert!(matches!(
+        backend.write_colors(&device_id, &[[1, 2, 3]]).await,
+        Err(DeviceError::Disconnected { .. })
+    ));
+    backend
+        .connect(&device_id)
+        .await
+        .expect_err("a retired backend refuses connects");
+}
+
+async fn backend_with_display_actor(
     device_id: DeviceId,
     transport: Arc<RecordingTransport>,
 ) -> Arc<UsbBackend> {
@@ -894,21 +921,26 @@ fn backend_with_display_actor(
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
-    backend
-        .connected
-        .write()
-        .expect("connected device map should remain available")
-        .insert(
+    let ticket = backend
+        .sessions
+        .begin_open(&device_id)
+        .await
+        .expect("a fresh backend accepts sessions")
+        .expect("nothing is open yet");
+    ticket
+        .install(Session::new(
             device_id,
-            Arc::new(ConnectedUsbDevice {
-                device: tokio::sync::Mutex::new(device),
+            UsbFacts {
                 info_template: info,
                 protocol,
                 target_fps: None,
                 frame_sink,
                 display_sink,
-            }),
-        );
+            },
+            UsbSession { device_id, device },
+        ))
+        .await
+        .expect("install should succeed");
     backend
 }
 
@@ -918,8 +950,8 @@ async fn coordinator_generation_gate_survives_cancelled_usb_display_waiter() {
     let old_transport =
         Arc::new(RecordingTransport::default().with_bulk_send_delay(Duration::from_millis(200)));
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -992,8 +1024,8 @@ async fn replacement_retains_old_usb_actor_through_terminal_delivery() {
     let old_transport =
         Arc::new(RecordingTransport::default().with_bulk_send_delay(Duration::from_millis(200)));
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1058,8 +1090,8 @@ async fn cancelled_replaced_usb_failure_reaches_original_lifecycle_fence() {
             .with_failed_transfer_delay(Duration::from_millis(200)),
     );
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1148,7 +1180,7 @@ async fn repeated_replacement_does_not_accumulate_cancelled_display_transactions
     let old_transport = Arc::new(
         RecordingTransport::default().with_bulk_send_release(Arc::clone(&release_old_transport)),
     );
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1174,7 +1206,7 @@ async fn repeated_replacement_does_not_accumulate_cancelled_display_transactions
 
     for payload_byte in 0xD2..=0xDD {
         let transport = Arc::new(RecordingTransport::default());
-        let backend = backend_with_display_actor(device_id, transport);
+        let backend = backend_with_display_actor(device_id, transport).await;
         manager.register_backend(backend);
         let lane = manager
             .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
@@ -1225,8 +1257,8 @@ async fn actor_panic_terminates_cancelled_retired_display_delivery() {
             .with_panicked_transfer_type(TransferType::Bulk),
     );
     let new_transport = Arc::new(RecordingTransport::default());
-    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
-    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport)).await;
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(old_backend);
     let old_lane = manager
@@ -1302,7 +1334,7 @@ async fn hung_display_transport_has_bounded_actor_shutdown() {
     let transport = Arc::new(
         RecordingTransport::default().with_bulk_send_release(Arc::clone(&transport_release)),
     );
-    let backend = backend_with_display_actor(device_id, Arc::clone(&transport));
+    let backend = backend_with_display_actor(device_id, Arc::clone(&transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(backend.clone());
     let lane = manager
@@ -1442,7 +1474,7 @@ async fn usb_display_transport_failure_keeps_its_queue_generation() {
     let device_id = DeviceId::new();
     let transport =
         Arc::new(RecordingTransport::default().with_failed_transfer_type(TransferType::Bulk));
-    let backend = backend_with_display_actor(device_id, transport);
+    let backend = backend_with_display_actor(device_id, transport).await;
     let mut manager = BackendManager::new();
     manager.register_backend(backend.clone());
     let lane = manager
@@ -1483,7 +1515,7 @@ async fn cancelled_usb_display_waiter_keeps_terminal_failure_generation() {
             .with_failed_transfer_type(TransferType::Bulk)
             .with_failed_transfer_delay(Duration::from_millis(200)),
     );
-    let backend = backend_with_display_actor(device_id, Arc::clone(&transport));
+    let backend = backend_with_display_actor(device_id, Arc::clone(&transport)).await;
     let mut manager = BackendManager::new();
     manager.register_backend(backend.clone());
     let lane = manager

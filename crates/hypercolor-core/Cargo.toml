@@ -65,6 +65,7 @@ hypercolor-pipewire-interop = { workspace = true }
 hypercolor-linux-input = { workspace = true }
 hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
+hypercolor-driver-support = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-platform-fs = { workspace = true }
 hypercolor-persistence = { workspace = true }
