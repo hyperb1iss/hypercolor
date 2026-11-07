@@ -416,21 +416,24 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   root causes with profiling, rendering changes, build/profile choices, adaptive policy that
   keeps the full baseline under headroom, or explicit user controls.
 - **Tests never reach the host, by construction.** What a daemon touches on its machine is
-  one value chosen at the composition root: `DaemonState::initialize` requires
-  `HostPorts`. Production passes `HostPorts::native()`. Tests pass
-  `HostPorts::isolated(&claim)`, which needs a live
-  `hypercolor_core::config::paths::IsolatedUserDirs`, so forgetting either does not
-  compile. Isolated ports compose offline drivers (full contract, no-op discovery), a
-  silent audio source, no other input source, no session monitor, no USB hotplug watch,
-  no software conflict watch, and no audio device listing. `AppState::new()` and
-  `AppStateBuilder` without an injected registry use the same offline drivers and list
-  no audio devices. New host reach belongs in `HostPorts`, never in a branch below
-  it. Tests pass `Some(MdnsScope::Loopback)` or `None` to WLED scanners, restrict mDNS
-  daemons with `MdnsScope::Loopback`, turn mDNS off on other scanners, and feed fixtures
-  through seams such as `HidUsageIndex::from_enumeration` and
-  `SmBusScanner::with_dev_root`. `just test-hermeticity-check` fails test code that
-  picks the native ports or a host-reaching construction, in test files and inline
-  `cfg(test)` items.
+  one value chosen at the composition root: `DaemonState::initialize`, `daemon::run`,
+  `daemon::run_with_extensions`, and `daemon::prepare` all require `HostPorts`. Production
+  passes `HostPorts::native()`. Tests pass `HostPorts::isolated(&claim)`, which takes a
+  share of a live `hypercolor_core::config::paths::IsolatedUserDirs`, and the daemon keeps
+  that share, so forgetting either does not compile and the directories stay claimed
+  while the daemon lives. Isolated ports compose offline drivers (full contract, no-op
+  discovery), a silent audio source, no other input source, and no session monitor. They
+  also carry `HostCapabilities::ISOLATED`: every reading a daemon takes on request
+  (running software, hardware broker, audio devices, capture monitors, USB hotplug) comes
+  back empty, and every factory a live configuration change rebuilds from yields a silent
+  source. `AppState::new()` and `AppStateBuilder` without an injected registry compose
+  the same way. New host reach belongs in `HostPorts` or `HostCapabilities`, never in a
+  direct call below them. Tests pass `Some(MdnsScope::Loopback)` or `None` to WLED
+  scanners, restrict each mDNS daemon with `MdnsScope::Loopback` before anything else
+  touches it, turn mDNS off on other scanners, and feed fixtures through seams such as
+  `HidUsageIndex::from_enumeration` and `SmBusScanner::with_dev_root`.
+  `just test-hermeticity-check` fails test code that picks the native ports or a
+  host-reaching construction, in test files and inline `cfg(test)` items.
 
 ## Agent Coordination
 
