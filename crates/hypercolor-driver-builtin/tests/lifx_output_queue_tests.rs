@@ -254,3 +254,50 @@ async fn worst_case_streams_finish_frames_within_the_budget() -> TestResult {
     assert_budget_respected(&runs, started, BURST, INTERVAL);
     Ok(())
 }
+
+/// Every frame the render loop offers lands in exactly one bucket, whichever
+/// way a replacement goes: a frame the sender abandons counts as dropped and
+/// never as sent, and one it finishes counts as sent and never as dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_frame_lands_in_one_bucket_across_won_and_refused_replacements() -> TestResult {
+    let (_fake, mut manager) = legacy_strip().await?;
+    let layout = layout();
+    let settled = |manager: &BackendManager, offered: u64| {
+        let stats = manager.device_output_statistics();
+        stats[0].frames_sent + stats[0].frames_dropped >= offered
+    };
+
+    // A cheap frame replaces the worst-case tail: the first frame is dropped
+    // and the second is sent.
+    manager.write_frame(&frame(alternating(RED, BLUE)), &layout);
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    manager.write_frame(&frame(vec![GREEN; ZONES]), &layout);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !settled(&manager, 2) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+
+    // An equally costly frame is refused, so it waits and both are sent.
+    manager.write_frame(&frame(alternating(RED, BLUE)), &layout);
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    manager.write_frame(&frame(alternating(BLUE, RED)), &layout);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !settled(&manager, 4) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].frames_received, 4);
+    assert_eq!(
+        stats[0].frames_sent, 3,
+        "the replacement and the refused pair"
+    );
+    assert_eq!(stats[0].frames_dropped, 1, "only the abandoned tail");
+    assert_eq!(stats[0].coalesced_backend_overrun, 1);
+    assert_eq!(stats[0].coalesced_target_cadence, 0);
+    Ok(())
+}

@@ -1703,7 +1703,12 @@ impl OutputQueue {
                     ))
                     .await;
                 let send_completed = Instant::now();
-                active_sequence_for_task.store(0, Ordering::Release);
+                // A pending frame is still with its lane, and its receipt says
+                // what became of it, so a newer frame must not count it as
+                // coalesced here. The next submission overwrites this.
+                if matches!(submission, Submission::Settled(_)) {
+                    active_sequence_for_task.store(0, Ordering::Release);
+                }
                 phase_for_task.store(WORKER_PHASE_IDLE, Ordering::Release);
 
                 // A pending frame reports to the metrics when it settles. It
