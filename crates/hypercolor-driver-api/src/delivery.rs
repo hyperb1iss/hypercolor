@@ -85,9 +85,10 @@ pub enum PeerDisposition {
 /// Where a failed attempt stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoStage {
-    /// Before any transport I/O.
+    /// Before any transport I/O. Nothing of the frame reached the device.
     Admission,
-    /// During transport I/O.
+    /// During transport I/O. The outcome is unconfirmed: some or all of the
+    /// frame may have reached the device.
     Transport,
 }
 
@@ -412,7 +413,10 @@ impl Transmission {
 }
 
 impl Drop for Transmission {
-    /// A transmission nobody settled was cancelled mid-write.
+    /// A transmission nobody settled was cancelled mid-write. Blocking I/O
+    /// behind the write can outlive that and still finish, so this says what
+    /// every [`IoStage::Transport`] failure says: the outcome is unconfirmed,
+    /// not that the frame failed to land.
     fn drop(&mut self) {
         if let Some(tracked) = self.tracked.take() {
             let error = tracked.disconnected();
