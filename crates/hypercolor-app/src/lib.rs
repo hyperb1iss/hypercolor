@@ -12,6 +12,7 @@ pub fn daemon_base_url() -> String {
     std::env::var(DAEMON_URL_ENV).unwrap_or_else(|_| DEFAULT_DAEMON_URL.to_string())
 }
 
+pub mod autostart;
 pub mod cli;
 pub mod daemon_client;
 pub mod diagnostics;

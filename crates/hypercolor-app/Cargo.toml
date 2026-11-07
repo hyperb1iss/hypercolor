@@ -57,6 +57,7 @@ tauri-build = { version = "2", features = [] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 win32job = "2.0.3"
+windows-registry = "0.100.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
