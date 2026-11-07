@@ -29,7 +29,7 @@ use super::machine_layout::BootstrapSlot;
 mod native;
 
 #[cfg(windows)]
-pub use native::ScmUpdateService;
+pub use native::{ScmUpdateService, run_slot};
 
 /// The flag the final failure action runs the retained slot with.
 pub const RECOVER_FALLBACK_FLAG: &str = "--recover-fallback";

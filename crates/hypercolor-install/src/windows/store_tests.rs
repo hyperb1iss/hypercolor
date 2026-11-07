@@ -8,7 +8,7 @@ use crate::model::{
     InstallJournalV1, InstallTargetPolicy, InstallTransactionId, PlatformState,
     PlatformTransactionRecord, PlatformTransitionStates, UnitId,
 };
-use crate::windows::WindowsOwnershipPolicy;
+use crate::windows::{WindowsInstallation, WindowsOwnershipPolicy};
 
 const JOURNAL_LIMIT: usize = 64 * 1024;
 
@@ -191,6 +191,68 @@ fn the_journal_round_trips_and_stays_bounded() {
         tight.write_journal(&journal(&unit('c')), &lock),
         Err(InstallStoreError::JournalTooLarge { .. })
     ));
+}
+
+#[test]
+fn an_installation_reads_back_as_it_was_recorded() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let lock = store.acquire_lock().expect("lock");
+    assert_eq!(store.installation(&lock).expect("read"), None);
+
+    let user = WindowsSid::current_user().expect("user").to_string_form();
+    let installation = WindowsInstallation::new(&user).expect("record");
+    store
+        .record_installation(&installation, &lock)
+        .expect("write");
+
+    assert_eq!(
+        store.installation(&lock).expect("read"),
+        Some(installation.clone())
+    );
+    assert_eq!(
+        store
+            .release_records()
+            .expect("records")
+            .installation()
+            .expect("read"),
+        installation
+    );
+}
+
+#[test]
+fn the_bootstrap_directory_comes_and_goes_under_the_lock() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let lock = store.acquire_lock().expect("lock");
+
+    store.bootstrap_directory(&lock).expect("create");
+    store.bootstrap_directory(&lock).expect("open again");
+    assert!(fixture.release.join("update").is_dir());
+
+    store.remove_bootstrap_directory(&lock).expect("remove");
+    store
+        .remove_bootstrap_directory(&lock)
+        .expect("already gone");
+    assert!(!fixture.release.join("update").exists());
+}
+
+#[test]
+fn the_coordinator_directory_appears_once_and_stays() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let lock = store.acquire_lock().expect("lock");
+    let user = WindowsSid::current_user().expect("user").to_string_form();
+
+    store
+        .prepare_coordinator_directory(&lock, &user)
+        .expect("create");
+    fs::write(fixture.state.join("coordinator").join("record"), "kept").expect("a record");
+    store
+        .prepare_coordinator_directory(&lock, &user)
+        .expect("find it again");
+
+    assert!(fixture.state.join("coordinator").join("record").is_file());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! The installer's record of one installation, `installation.json`.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// The record's file in the state root.
@@ -8,7 +8,7 @@ pub const WINDOWS_INSTALLATION_FILE: &str = "installation.json";
 const INSTALLATION_SCHEMA_VERSION: u32 = 1;
 
 /// Who runs Hypercolor's runtime on this installation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowsRuntimeMode {
     /// The app runs in the recorded user's session and supervises the
@@ -17,7 +17,7 @@ pub enum WindowsRuntimeMode {
 }
 
 /// What the installer recorded.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsInstallation {
     schema_version: u32,
@@ -29,6 +29,32 @@ pub struct WindowsInstallation {
 }
 
 impl WindowsInstallation {
+    /// A new installation for `user_sid`, in app-supervised mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason `user_sid` is not the textual form of a SID.
+    pub fn new(user_sid: &str) -> Result<Self, String> {
+        if !is_sid_text(user_sid) {
+            return Err(format!("{user_sid:?} is not a SID"));
+        }
+        Ok(Self {
+            schema_version: INSTALLATION_SCHEMA_VERSION,
+            installation_id: Uuid::new_v4(),
+            user_sid: user_sid.to_owned(),
+            runtime_mode: WindowsRuntimeMode::AppSupervised,
+        })
+    }
+
+    /// The record's bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the encoder's error.
+    pub fn encode(&self) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(self)
+    }
+
     /// Decode the record.
     ///
     /// # Errors
@@ -107,7 +133,24 @@ mod tests {
             "S-1-5--1",
         ] {
             WindowsInstallation::decode(&record(user_sid)).expect_err(user_sid);
+            WindowsInstallation::new(user_sid).expect_err(user_sid);
         }
+    }
+
+    #[test]
+    fn a_new_record_reads_back_exactly() {
+        let installation = WindowsInstallation::new(SID).expect("record");
+        let bytes = installation.encode().expect("encode");
+
+        assert_eq!(WindowsInstallation::decode(&bytes), Ok(installation));
+    }
+
+    #[test]
+    fn every_installation_gets_its_own_identity() {
+        let first = WindowsInstallation::new(SID).expect("record");
+        let second = WindowsInstallation::new(SID).expect("record");
+
+        assert_ne!(first.installation_id, second.installation_id);
     }
 
     #[test]
