@@ -74,10 +74,13 @@ Windows only, via `[target.'cfg(target_os = "windows")'.dependencies]`).
   refuse links and any component a standard user could change, creating
   what is missing owned by Administrators with a protected DACL.
   `--prepare-log-directory` does only that, for the elevated hardware setup
-  to keep its transcript there, and `--remove-log-directory` removes the
-  directory under the same checks, for the uninstaller.
+  to keep its transcript there, and `--remove-machine-directory` removes
+  `%ProgramData%\Hypercolor` under the same checks, for the uninstaller.
 - `machine_log_directory() -> Option<PathBuf>` — that directory, where the
   broker and the hardware setup keep their logs.
+- `prepare_machine_update_directory() -> io::Result<PathBuf>` — the same
+  judged open for `%ProgramData%\Hypercolor\update`, where the installer
+  keeps the release records.
 - `broker_service_status() -> PawnIoResult<BrokerServiceStatus>` — what the
   Service Control Manager reports for `HypercolorSmBus` (state, Win32 and
   service-specific exit codes, start type, executable, log path) plus a
