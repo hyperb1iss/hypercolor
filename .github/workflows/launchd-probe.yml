@@ -1,0 +1,22 @@
+name: launchd probe
+on:
+  push:
+    branches: [nova/launchd-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash .github/probe/probe.sh 2>&1 | tee probe.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: probe-${{ matrix.os }}
+          path: probe.log
