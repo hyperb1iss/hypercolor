@@ -251,12 +251,10 @@ impl DaemonState {
             Arc::clone(&self.device_metrics),
             Arc::clone(&self.backend_manager),
         ));
-        self.software_conflict_task = self.software_watch.then(|| {
-            crate::software_conflicts::spawn_watch(
-                self.discovery_runtime().software_conflicts,
-                &self.event_bus,
-            )
-        });
+        self.software_conflict_task = Some(crate::software_conflicts::spawn_watch(
+            self.discovery_runtime().software_conflicts,
+            &self.event_bus,
+        ));
 
         // Publish a startup event so subscribers know the daemon is alive.
         let device_count = self.device_registry.len().await;
@@ -1141,27 +1139,27 @@ impl DaemonState {
         let scan_interval =
             std::time::Duration::from_secs(config.discovery.scan_interval_secs.max(1));
         let driver_registry = Arc::clone(&self.driver_registry);
-        let usb_hotplug = self.usb_hotplug;
+        let start_usb_hotplug = self.capabilities.usb_hotplug;
 
         self.discovery_task = Some(tokio::spawn(async move {
             let hotplug_monitor = UsbHotplugMonitor::new(256)
                 .with_unclaimed_store(worker.discovery.unclaimed_devices.clone());
             let mut hotplug_rx = hotplug_monitor.subscribe();
-            let mut hotplug_task = usb_hotplug.then(|| hotplug_monitor.start()).and_then(
-                |started| match started {
-                    Ok(task) => {
+            let mut hotplug_task = match start_usb_hotplug(&hotplug_monitor) {
+                Ok(task) => {
+                    if task.is_some() {
                         info!("USB hotplug watcher started");
-                        Some(task)
                     }
-                    Err(error) => {
-                        warn!(
-                            error = %error,
-                            "USB hotplug watcher failed to start; falling back to periodic scans"
-                        );
-                        None
-                    }
-                },
-            );
+                    task
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        "USB hotplug watcher failed to start; falling back to periodic scans"
+                    );
+                    None
+                }
+            };
 
             worker
                 .run_scan_if_idle(

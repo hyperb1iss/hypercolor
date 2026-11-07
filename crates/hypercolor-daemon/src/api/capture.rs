@@ -359,12 +359,13 @@ pub(crate) async fn set_capture_source(
 /// portal on Linux); the UI uses emptiness to decide between a monitor
 /// dropdown and the portal picker button.
 pub(crate) async fn list_capture_monitors(
+    State(state): State<Arc<AppState>>,
     ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     if let Some(response) = protected_control_rejection(auth_context) {
         return response;
     }
-    let monitors: Vec<CaptureMonitor> = hypercolor_core::input::screen::available_monitors()
+    let monitors: Vec<CaptureMonitor> = (state.capabilities.capture_monitors)()
         .into_iter()
         .map(|monitor| CaptureMonitor {
             value: format!("monitor:{}", monitor.id),

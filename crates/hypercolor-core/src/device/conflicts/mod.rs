@@ -335,6 +335,7 @@ pub struct SoftwareConflictStore {
     catalog: &'static SoftwareCatalog,
     event_bus: Option<Arc<HypercolorBus>>,
     scan_requests: Arc<Notify>,
+    inventory: fn() -> HostInventory,
 }
 
 impl Default for SoftwareConflictStore {
@@ -367,7 +368,22 @@ impl SoftwareConflictStore {
             catalog,
             event_bus: None,
             scan_requests: Arc::default(),
+            inventory: || HostInventory::Unsupported,
         }
+    }
+
+    /// Read running software from `inventory` on every scan. A store without
+    /// one reports the platform as unsupported and reads nothing.
+    #[must_use]
+    pub fn with_inventory(mut self, inventory: fn() -> HostInventory) -> Self {
+        self.inventory = inventory;
+        self
+    }
+
+    /// Where this store reads running software from.
+    #[must_use]
+    pub const fn inventory(&self) -> fn() -> HostInventory {
+        self.inventory
     }
 
     /// Publish [`HypercolorEvent::SoftwareConflictsChanged`] on `bus`

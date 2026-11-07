@@ -15,6 +15,7 @@ use hypercolor_types::api::diagnose::{
 };
 use hypercolor_types::api::system::{InputStatus, SoftwareConflictsStatus};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
+use hypercolor_types::host_software::HardwareBrokerReport;
 
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
@@ -55,7 +56,7 @@ const DEFAULT_SAFE_CHECKS: [&str; 8] = [
 /// the check instead of leaving stale mailboxes behind.
 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
 #[derive(Clone)]
-struct MacosScreenParityCapability {
+pub(crate) struct MacosScreenParityCapability {
     handle: Arc<arc_swap::ArcSwapOption<crate::render_thread::ScreenParityDiagnosticHandle>>,
     input: InputManager,
     spatial: SpatialService,
@@ -63,11 +64,11 @@ struct MacosScreenParityCapability {
 
 #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
 #[derive(Clone)]
-struct MacosScreenParityCapability;
+pub(crate) struct MacosScreenParityCapability;
 
 impl MacosScreenParityCapability {
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-    fn new(input: InputManager, spatial: SpatialService) -> Self {
+    pub(crate) fn new(input: InputManager, spatial: SpatialService) -> Self {
         Self {
             handle: Arc::new(arc_swap::ArcSwapOption::empty()),
             input,
@@ -76,7 +77,7 @@ impl MacosScreenParityCapability {
     }
 
     #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
-    fn new(_input: InputManager, _spatial: SpatialService) -> Self {
+    pub(crate) fn new(_input: InputManager, _spatial: SpatialService) -> Self {
         Self
     }
 
@@ -178,6 +179,7 @@ struct DiagnosticsAuthorities {
     display: DisplayContext,
     device_metrics: DeviceMetricsSnapshotStore,
     parity: MacosScreenParityCapability,
+    hardware_broker: fn() -> Option<HardwareBrokerReport>,
 }
 
 /// Daemon health authority shared by every diagnostics transport.
@@ -197,8 +199,8 @@ impl DiagnosticsContext {
         devices: DeviceContext,
         display: DisplayContext,
         device_metrics: DeviceMetricsSnapshotStore,
-        input: InputManager,
-        spatial: SpatialService,
+        parity: MacosScreenParityCapability,
+        hardware_broker: fn() -> Option<HardwareBrokerReport>,
     ) -> Self {
         Self {
             authorities: Arc::new(DiagnosticsAuthorities {
@@ -207,7 +209,8 @@ impl DiagnosticsContext {
                 devices,
                 display,
                 device_metrics,
-                parity: MacosScreenParityCapability::new(input, spatial),
+                parity,
+                hardware_broker,
             }),
         }
     }
@@ -238,7 +241,12 @@ impl DiagnosticsContext {
                 "render" => checks.extend(render_checks(&inputs)),
                 "devices" => {
                     checks.extend(device_checks(&inputs, &snapshot));
-                    checks.extend(super::hardware_broker_diagnostics::smbus_broker_check().await);
+                    checks.extend(
+                        super::hardware_broker_diagnostics::smbus_broker_check(
+                            self.authorities.hardware_broker,
+                        )
+                        .await,
+                    );
                 }
                 "conflicts" => checks.push(self.conflicts_check().await),
                 "config" => checks.extend(config_checks(&inputs)),

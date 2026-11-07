@@ -222,9 +222,7 @@ impl DaemonState {
             build_drivers,
             compose_inputs,
             session_monitors,
-            usb_hotplug,
-            audio_devices,
-            software_watch,
+            capabilities,
             user_dirs: host_user_dirs,
         } = host;
         let config: &HypercolorConfig = &boot;
@@ -803,8 +801,9 @@ impl DaemonState {
         };
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let unclaimed_devices = UnclaimedDeviceStore::new().with_event_bus(Arc::clone(&event_bus));
-        let software_conflicts =
-            SoftwareConflictStore::new().with_event_bus(Arc::clone(&event_bus));
+        let software_conflicts = SoftwareConflictStore::new()
+            .with_event_bus(Arc::clone(&event_bus))
+            .with_inventory(capabilities.running_software);
         let bridge_output_locks = BridgeOutputLocks::default();
         let driver_registry = Arc::new(
             build_drivers(
@@ -865,6 +864,7 @@ impl DaemonState {
                 render_supervision: crate::render_thread::RenderSupervision::for_state_dir(
                     &state_dir,
                 ),
+                hardware_broker: capabilities.hardware_broker,
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -1019,9 +1019,7 @@ impl DaemonState {
             input_status_event_publisher: None,
             session_controller: None,
             session_monitors,
-            usb_hotplug,
-            software_watch,
-            audio_devices,
+            capabilities,
             host_user_dirs,
             start_time: Instant::now(),
             startup_progress: progress,
@@ -1741,6 +1739,7 @@ pub(crate) struct DomainAssemblyResources {
     pub device_metrics: DeviceMetricsSnapshotStore,
     pub input_manager: InputManager,
     pub render_supervision: crate::render_thread::RenderSupervision,
+    pub hardware_broker: fn() -> Option<hypercolor_types::host_software::HardwareBrokerReport>,
 }
 
 /// The assembled domain graph and the driver host it was wired around.
@@ -1782,6 +1781,7 @@ pub(crate) fn assemble_domains(
         device_metrics,
         input_manager,
         render_supervision,
+        hardware_broker,
     } = resources;
 
     let runtime_projection = RuntimeSessionProjection::new(
@@ -1845,6 +1845,7 @@ pub(crate) fn assemble_domains(
             display_frames,
             device_metrics,
             input_manager,
+            hardware_broker,
         },
     );
 

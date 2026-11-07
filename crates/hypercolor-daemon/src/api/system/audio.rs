@@ -17,7 +17,7 @@ use crate::app_state::AppState;
 /// `GET /api/v1/system/audio-devices` — Enumerate audio input devices.
 pub async fn list_audio_devices(State(state): State<Arc<AppState>>) -> Response {
     let current = current_audio_device_id(&state);
-    let devices = audio_device_options(&current, state.audio_devices);
+    let devices = audio_device_options(&current, state.capabilities.audio_devices);
 
     envelope::ok(AudioDevicesResponse { devices, current })
 }
@@ -38,7 +38,7 @@ fn current_audio_device_id(state: &AppState) -> String {
 
 fn audio_device_options(
     current: &str,
-    enumerate: crate::startup::EnumerateAudioDevices,
+    enumerate: fn() -> anyhow::Result<Vec<AudioDeviceInfo>>,
 ) -> Vec<AudioDeviceInfo> {
     let mut devices = vec![
         default_audio_device(),

@@ -81,8 +81,8 @@ pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
+pub(crate) use host::HostCapabilities;
 pub use host::HostPorts;
-pub(crate) use host::{EnumerateAudioDevices, no_audio_devices};
 pub use progress::StartupProgress;
 pub(crate) use progress::startup_step;
 pub use signals::{
@@ -316,9 +316,7 @@ pub struct DaemonState {
 
     /// Explicit platform monitors supplied by the process host.
     pub(super) session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
-    pub(super) usb_hotplug: bool,
-    pub(super) software_watch: bool,
-    pub(crate) audio_devices: EnumerateAudioDevices,
+    pub(crate) capabilities: HostCapabilities,
     /// Keeps a fixture's user directories claimed for as long as this state.
     pub(crate) host_user_dirs: Option<Arc<hypercolor_core::config::paths::IsolatedUserDirs>>,
 

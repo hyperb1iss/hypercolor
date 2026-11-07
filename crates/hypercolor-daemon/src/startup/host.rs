@@ -5,13 +5,16 @@ use std::sync::Arc;
 use anyhow::Result;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::config::paths::IsolatedUserDirs;
-use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
+use hypercolor_core::device::usb_hotplug::UsbHotplugTask;
+use hypercolor_core::device::{UnclaimedDeviceStore, UsbHotplugMonitor, UsbProtocolConfigStore};
 use hypercolor_core::input::InputManager;
+use hypercolor_core::input::screen::ScreenMonitor;
 use hypercolor_core::session::SessionMonitor;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::api::system::AudioDeviceInfo;
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::host_software::{HardwareBrokerReport, HostInventory, HostSoftwareSnapshot};
 
 use super::services::{ScreenCapacityPlan, compose_native_inputs, compose_silent_inputs};
 use crate::api::system::enumerate_audio_input_devices;
@@ -27,26 +30,48 @@ pub(super) type BuildDrivers = fn(
 pub(super) type ComposeInputs =
     fn(&HypercolorConfig, &Arc<ConfigManager>, &InputManager, ScreenCapacityPlan) -> Result<()>;
 
-pub(crate) type EnumerateAudioDevices = fn() -> Result<Vec<AudioDeviceInfo>>;
+/// What a running daemon keeps reaching for on its host: the readings it
+/// takes on request.
+#[derive(Clone, Copy)]
+pub(crate) struct HostCapabilities {
+    pub(crate) running_software: fn() -> HostInventory,
+    pub(crate) hardware_broker: fn() -> Option<HardwareBrokerReport>,
+    pub(crate) audio_devices: fn() -> Result<Vec<AudioDeviceInfo>>,
+    pub(crate) capture_monitors: fn() -> Vec<ScreenMonitor>,
+    pub(crate) usb_hotplug: fn(&UsbHotplugMonitor) -> Result<Option<UsbHotplugTask>>,
+}
 
-/// An audio port with nothing behind it.
-pub(crate) const fn no_audio_devices() -> EnumerateAudioDevices {
-    || Ok(Vec::new())
+impl HostCapabilities {
+    /// The machine the daemon runs on.
+    pub(crate) const NATIVE: Self = Self {
+        running_software: crate::session::host_inventory,
+        hardware_broker: crate::session::hardware_broker_report,
+        audio_devices: enumerate_audio_input_devices,
+        capture_monitors: hypercolor_core::input::screen::available_monitors,
+        usb_hotplug: |monitor| monitor.start().map(Some),
+    };
+
+    /// A host with nothing on it: every reading is empty.
+    pub(crate) const ISOLATED: Self = Self {
+        running_software: || HostInventory::Listed(HostSoftwareSnapshot::default()),
+        hardware_broker: || None,
+        audio_devices: || Ok(Vec::new()),
+        capture_monitors: Vec::new,
+        usb_hotplug: |_| Ok(None),
+    };
 }
 
 /// The daemon's ports onto its host, chosen once at the composition root.
 ///
-/// Discovery transports, input sources, session monitors, and audio device
-/// listing all reach outside the process. Initialization takes them as one
+/// Discovery transports, input sources, session monitors, and every host
+/// reading all reach outside the process. Initialization takes them as one
 /// required value, so nothing below the composition root decides what the
 /// daemon may touch.
 pub struct HostPorts {
     pub(super) build_drivers: BuildDrivers,
     pub(super) compose_inputs: ComposeInputs,
     pub(super) session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
-    pub(super) usb_hotplug: bool,
-    pub(super) audio_devices: EnumerateAudioDevices,
-    pub(super) software_watch: bool,
+    pub(super) capabilities: HostCapabilities,
     pub(super) user_dirs: Option<Arc<IsolatedUserDirs>>,
 }
 
@@ -59,9 +84,7 @@ impl HostPorts {
             build_drivers: network::build_builtin_driver_module_registry,
             compose_inputs: compose_native_inputs,
             session_monitors: None,
-            usb_hotplug: true,
-            audio_devices: enumerate_audio_input_devices,
-            software_watch: true,
+            capabilities: HostCapabilities::NATIVE,
             user_dirs: None,
         }
     }
@@ -76,7 +99,7 @@ impl HostPorts {
 
     /// A daemon that touches nothing outside `dirs`: drivers compose but
     /// never scan, no input source reads the host, no monitor watches the
-    /// session or its processes, and no audio device is listed. Audio stays
+    /// session, and every host reading comes back empty. Audio stays
     /// registered on a source with no device.
     ///
     /// The ports keep a share of the claim, and so does the daemon composed
@@ -88,9 +111,7 @@ impl HostPorts {
             build_drivers: network::build_offline_driver_module_registry,
             compose_inputs: compose_silent_inputs,
             session_monitors: Some(Vec::new()),
-            usb_hotplug: false,
-            audio_devices: no_audio_devices(),
-            software_watch: false,
+            capabilities: HostCapabilities::ISOLATED,
             user_dirs: Some(Arc::clone(dirs)),
         }
     }

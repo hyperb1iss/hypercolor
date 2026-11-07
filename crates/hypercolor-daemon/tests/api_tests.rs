@@ -14034,9 +14034,8 @@ async fn software_conflicts_report_the_latest_scan() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["scanned"], true, "a scan request scans");
     assert_eq!(
-        json["data"]["supported"],
-        cfg!(any(target_os = "linux", target_os = "windows")),
-        "Linux and Windows list running software"
+        json["data"]["supported"], true,
+        "an isolated host lists its running software, and it is empty"
     );
 }
 

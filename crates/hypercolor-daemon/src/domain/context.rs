@@ -17,6 +17,7 @@ use hypercolor_core::input::{SourceStatusRegistry, SourceStatusRegistrySnapshot}
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
+use hypercolor_types::host_software::HardwareBrokerReport;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
@@ -28,7 +29,7 @@ use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
 use crate::domain::device_binding::MigrationPersistence;
-use crate::domain::diagnostics::DiagnosticsContext;
+use crate::domain::diagnostics::{DiagnosticsContext, MacosScreenParityCapability};
 use crate::domain::display::DisplayContext;
 use crate::domain::effect::{EffectContext, EffectIdentityResources};
 use crate::domain::layout::{LayoutContext, LayoutRuntime};
@@ -82,6 +83,7 @@ pub(crate) struct DomainContextResources {
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
     pub device_metrics: DeviceMetricsSnapshotStore,
     pub input_manager: hypercolor_core::input::InputManager,
+    pub hardware_broker: fn() -> Option<HardwareBrokerReport>,
 }
 
 impl DomainContexts {
@@ -130,8 +132,8 @@ impl DomainContexts {
             devices.clone(),
             display.clone(),
             resources.device_metrics,
-            resources.input_manager,
-            resources.spatial,
+            MacosScreenParityCapability::new(resources.input_manager, resources.spatial),
+            resources.hardware_broker,
         );
         Self {
             portable_setup: super::portable_setup::PortableSetupAuthority::default(),

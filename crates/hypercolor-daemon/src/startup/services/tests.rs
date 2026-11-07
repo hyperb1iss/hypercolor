@@ -357,8 +357,21 @@ async fn isolated_ports_compose_no_session_monitor() {
             .as_ref()
             .is_some_and(std::vec::Vec::is_empty)
     );
-    assert!(!state.usb_hotplug);
-    assert!(!state.software_watch);
+    let host = state.capabilities;
+    assert!((host.hardware_broker)().is_none());
+    assert!((host.capture_monitors)().is_empty());
+    assert!((host.audio_devices)().expect("listing succeeds").is_empty());
+    assert!(matches!(
+        (host.running_software)(),
+        hypercolor_types::host_software::HostInventory::Listed(snapshot)
+            if snapshot == hypercolor_types::host_software::HostSoftwareSnapshot::default()
+    ));
+    let monitor = hypercolor_core::device::UsbHotplugMonitor::new(1);
+    assert!(
+        (host.usb_hotplug)(&monitor)
+            .expect("no watch to fail")
+            .is_none()
+    );
 }
 
 #[test]

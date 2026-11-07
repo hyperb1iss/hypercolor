@@ -147,8 +147,8 @@ pub struct AppState {
     /// Configuration manager for config API endpoints.
     pub(crate) config_manager: Option<Arc<ConfigManager>>,
 
-    /// Lists the host's audio input devices for the settings API.
-    pub(crate) audio_devices: crate::startup::EnumerateAudioDevices,
+    /// Host readings and source factories this state was composed with.
+    pub(crate) capabilities: crate::startup::HostCapabilities,
 
     /// Keeps a fixture's user directories claimed for as long as this state.
     _host_user_dirs: Option<Arc<hypercolor_core::config::paths::IsolatedUserDirs>>,
@@ -278,6 +278,7 @@ pub struct AppStateBuilder {
     runtime_state_path: Option<PathBuf>,
     library: Option<AppStateLibrary>,
     input_manager: Option<InputManager>,
+    capabilities: crate::startup::HostCapabilities,
     temporary_directory: Option<tempfile::TempDir>,
 }
 
@@ -292,6 +293,7 @@ impl AppStateBuilder {
             runtime_state_path: None,
             library: None,
             input_manager: None,
+            capabilities: crate::startup::HostCapabilities::ISOLATED,
             temporary_directory: None,
         }
     }
@@ -394,6 +396,7 @@ impl AppState {
             runtime_state_path,
             library,
             input_manager,
+            capabilities,
         } = builder;
 
         let config = config_manager
@@ -552,8 +555,9 @@ impl AppState {
                 .expect("default app state should open driver inventory"),
         );
         let unclaimed_devices = UnclaimedDeviceStore::new().with_event_bus(Arc::clone(&event_bus));
-        let software_conflicts =
-            SoftwareConflictStore::new().with_event_bus(Arc::clone(&event_bus));
+        let software_conflicts = SoftwareConflictStore::new()
+            .with_event_bus(Arc::clone(&event_bus))
+            .with_inventory(capabilities.running_software);
         let bridge_output_locks = BridgeOutputLocks::default();
         // Without an injected registry the built-in drivers compose offline,
         // and the blocksd bridge resolves a socket inside this state's data
@@ -629,6 +633,7 @@ impl AppState {
                 input_manager: input_manager.clone(),
                 // An isolated AppState never spawns a render thread.
                 render_supervision: crate::render_thread::RenderSupervision::detached(),
+                hardware_broker: capabilities.hardware_broker,
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -713,7 +718,7 @@ impl AppState {
             render_acceleration: crate::startup::cpu_compositor_acceleration_resolution(),
             device_metrics,
             config_manager,
-            audio_devices: crate::startup::no_audio_devices(),
+            capabilities,
             _host_user_dirs: None,
             data_dir,
             state_dir,
@@ -820,7 +825,7 @@ impl AppState {
             render_acceleration: daemon.render_acceleration.clone(),
             device_metrics: Arc::clone(&daemon.device_metrics),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
-            audio_devices: daemon.audio_devices,
+            capabilities: daemon.capabilities,
             _host_user_dirs: daemon.host_user_dirs.clone(),
             data_dir,
             state_dir,
