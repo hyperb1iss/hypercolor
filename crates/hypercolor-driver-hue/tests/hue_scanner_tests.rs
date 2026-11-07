@@ -12,6 +12,9 @@ use tokio::net::{TcpListener, TcpStream};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+/// A dead loopback port, so a scan that ever reaches N-UPnP stays on the host.
+const UNREACHABLE_NUPNP: &str = "http://127.0.0.1:9/nupnp";
+
 #[tokio::test]
 async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnect() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -167,6 +170,7 @@ async fn a_tracked_bridge_that_cannot_be_read_is_renewed_not_rewritten() -> Test
         false,
         None,
     )
+    .with_nupnp_url(UNREACHABLE_NUPNP)
     .with_tracked(HashMap::from([(ip, fingerprint.clone())]))
     .scan_bridges()
     .await?;
@@ -195,6 +199,7 @@ async fn an_untracked_bridge_that_cannot_be_read_stays_visible_and_deferred() ->
         false,
         None,
     )
+    .with_nupnp_url(UNREACHABLE_NUPNP)
     .scan_bridges()
     .await?;
 
@@ -204,6 +209,55 @@ async fn an_untracked_bridge_that_cannot_be_read_stays_visible_and_deferred() ->
         DiscoveryConnectBehavior::Deferred
     );
     assert!(outcome.present.is_empty());
+    server_task.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_new_bridge_at_a_tracked_address_is_reported_and_the_old_one_is_not_renewed() -> TestResult
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let api_port = listener.local_addr()?.port();
+    let ip: IpAddr = "127.0.0.1".parse()?;
+    let server_task = spawn_unreadable_bridge(listener);
+    let tempdir = tempfile::tempdir()?;
+    let store = Arc::new(CredentialStore::open(tempdir.path()).await?);
+    // Credentials the old bridge left under its address, which the new bridge
+    // refuses.
+    store
+        .store_driver_json(
+            "hue",
+            &format!("ip:{ip}"),
+            serde_json::json!({
+                "api_key": "old-bridge-key",
+                "client_key": "00112233445566778899aabbccddeeff",
+            }),
+        )
+        .await?;
+    let old_bridge = DeviceFingerprint::from_persisted("net:hue:old-bridge".to_owned());
+
+    let outcome = HueScanner::with_options(
+        vec![known_bridge(ip, api_port)],
+        store,
+        Duration::from_secs(1),
+        false,
+        None,
+    )
+    .with_nupnp_url(UNREACHABLE_NUPNP)
+    .with_tracked(HashMap::from([(ip, old_bridge)]))
+    .scan_bridges()
+    .await?;
+
+    assert!(
+        outcome.present.is_empty(),
+        "a live identity naming another bridge must not keep the old one alive"
+    );
+    assert_eq!(outcome.found.len(), 1);
+    assert_eq!(outcome.found[0].bridge_id, "test-bridge");
+    assert_eq!(
+        outcome.found[0].connect_behavior,
+        DiscoveryConnectBehavior::Deferred
+    );
     server_task.await?;
     Ok(())
 }
@@ -228,6 +282,7 @@ async fn a_tracked_bridge_that_never_answers_holds_only_itself() -> TestResult {
         false,
         None,
     )
+    .with_nupnp_url(UNREACHABLE_NUPNP)
     .with_tracked(HashMap::from([(ip, fingerprint.clone())]))
     .scan_bridges()
     .await?;
@@ -254,6 +309,7 @@ async fn a_configured_bridge_nobody_tracks_that_never_answers_holds_nothing() ->
         false,
         None,
     )
+    .with_nupnp_url(UNREACHABLE_NUPNP)
     .scan_bridges()
     .await?;
 

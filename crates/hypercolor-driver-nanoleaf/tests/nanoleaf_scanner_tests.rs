@@ -59,8 +59,11 @@ async fn paired_store(tempdir: &tempfile::TempDir) -> TestResult<Arc<CredentialS
     Ok(store)
 }
 
+const TRACKED: &str = "net:nanoleaf:s123";
+
 fn known(port: u16) -> TestResult<NanoleafKnownDevice> {
     Ok(NanoleafKnownDevice {
+        device_id: "s123".to_owned(),
         port,
         ..NanoleafKnownDevice::from_ip(LOOPBACK.parse()?)
     })
@@ -83,7 +86,7 @@ async fn scan(
 async fn a_tracked_controller_that_cannot_be_read_is_renewed_not_rewritten() -> TestResult {
     let port = spawn_layoutless_controller().await?;
     let tempdir = tempfile::tempdir()?;
-    let fingerprint = DeviceFingerprint::from_persisted("net:nanoleaf:s123".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted(TRACKED.to_owned());
 
     let outcome = scan(
         known(port)?,
@@ -98,6 +101,37 @@ async fn a_tracked_controller_that_cannot_be_read_is_renewed_not_rewritten() -> 
     );
     assert_eq!(outcome.present, vec![fingerprint]);
     assert!(outcome.gaps.is_empty(), "{:?}", outcome.gaps);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_new_controller_at_a_tracked_address_is_reported_and_the_old_one_is_not_renewed()
+-> TestResult {
+    let port = spawn_layoutless_controller().await?;
+    let tempdir = tempfile::tempdir()?;
+    let live = NanoleafKnownDevice {
+        device_id: "replacement".to_owned(),
+        ..known(port)?
+    };
+    let old_controller = DeviceFingerprint::from_persisted(TRACKED.to_owned());
+
+    let outcome = scan(
+        live,
+        paired_store(&tempdir).await?,
+        HashMap::from([(LOOPBACK.parse()?, old_controller)]),
+    )
+    .await?;
+
+    assert!(
+        outcome.present.is_empty(),
+        "a live id naming another controller must not keep the old one alive"
+    );
+    assert_eq!(outcome.found.len(), 1);
+    assert_eq!(outcome.found[0].device_key, "replacement");
+    assert_eq!(
+        outcome.found[0].connect_behavior,
+        DiscoveryConnectBehavior::Deferred
+    );
     Ok(())
 }
 
@@ -124,7 +158,7 @@ fn closed_port() -> TestResult<u16> {
 #[tokio::test]
 async fn a_tracked_controller_that_never_answers_holds_only_itself() -> TestResult {
     let tempdir = tempfile::tempdir()?;
-    let fingerprint = DeviceFingerprint::from_persisted("net:nanoleaf:dead".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted(TRACKED.to_owned());
 
     let outcome = scan(
         known(closed_port()?)?,

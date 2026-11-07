@@ -24,7 +24,8 @@ use super::fetch_device_info;
 use super::fetch_panel_layout;
 use super::streaming::DEFAULT_NANOLEAF_API_PORT;
 use super::types::{
-    NanoleafDiscoveredDevice, NanoleafPanelLayout, build_device_info, panel_ids_from_layout,
+    NanoleafDiscoveredDevice, NanoleafPanelLayout, build_device_info, fingerprint_for_key,
+    panel_ids_from_layout,
 };
 
 const NANOLEAF_SERVICE_TYPE: &str = "_nanoleafapi._tcp.local.";
@@ -306,6 +307,10 @@ async fn build_discovered_device(
         advertised,
     } = candidate;
     let provisional_device_key = normalized_device_key(&candidate, None);
+    // A live id naming another controller means this address changed hands,
+    // so nothing here speaks for the controller tracked at it.
+    let tracked =
+        tracked.filter(|fingerprint| *fingerprint == fingerprint_for_key(&provisional_device_key));
     let auth_token =
         load_auth_token(&credential_store, &provisional_device_key, candidate.ip).await;
     let mut name = candidate.name.clone();

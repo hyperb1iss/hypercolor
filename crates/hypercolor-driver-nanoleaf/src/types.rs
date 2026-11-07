@@ -90,8 +90,7 @@ impl NanoleafDiscoveredDevice {
     /// Convert into the generic discovery representation.
     #[must_use]
     pub fn into_discovered(self) -> DiscoveredDevice {
-        let fingerprint =
-            DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", &self.device_key);
+        let fingerprint = fingerprint_for_key(&self.device_key);
 
         DiscoveredDevice {
             fingerprint,
@@ -103,6 +102,12 @@ impl NanoleafDiscoveredDevice {
     }
 }
 
+/// Fingerprint for a device key.
+#[must_use]
+pub fn fingerprint_for_key(device_key: &str) -> DeviceFingerprint {
+    DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", device_key)
+}
+
 /// Build `DeviceInfo` from Nanoleaf metadata and panel layout.
 #[must_use]
 pub fn build_device_info(
@@ -112,7 +117,7 @@ pub fn build_device_info(
     firmware: Option<&str>,
     panels: &[NanoleafPanelLayout],
 ) -> DeviceInfo {
-    let fingerprint = DeviceFingerprint::mint(FingerprintNamespace::Net, "nanoleaf", device_key);
+    let fingerprint = fingerprint_for_key(device_key);
     let device_id = fingerprint.stable_device_id();
 
     let segments: Vec<SegmentInfo> = panels

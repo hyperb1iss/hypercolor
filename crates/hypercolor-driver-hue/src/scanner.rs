@@ -6,7 +6,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::time::Instant;
@@ -22,7 +22,7 @@ use hypercolor_types::device::DeviceFingerprint;
 use super::bridge::{DEFAULT_HUE_API_PORT, HueBridgeClient};
 use super::types::{
     HueDiscoveredBridge, HueEntertainmentConfig, HueLight, build_device_info,
-    choose_entertainment_config,
+    choose_entertainment_config, fingerprint_for_bridge,
 };
 
 const HUE_SERVICE_TYPE: &str = "_hue._tcp.local.";
@@ -329,6 +329,15 @@ async fn build_discovered_bridge(
         .map(|identity| identity.sw_version.clone())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| candidate.sw_version.clone());
+    if bridge_id.is_empty() {
+        let unnamed = anyhow!("Hue bridge at {} did not name itself", candidate.ip);
+        return Probed::failed(tracked, unnamed);
+    }
+    // A live identity naming another bridge means this address changed hands,
+    // so nothing here speaks for the bridge tracked at it.
+    let tracked = tracked.filter(|fingerprint| {
+        identity.is_none() || *fingerprint == fingerprint_for_bridge(&bridge_id)
+    });
 
     let Some((api_key, _client_key)) =
         load_bridge_credentials(&credential_store, &bridge_id, candidate.ip).await
