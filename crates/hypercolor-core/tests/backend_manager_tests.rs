@@ -5654,6 +5654,8 @@ enum ScriptedDelivery {
     Failure,
     Defer(Duration),
     Supersede,
+    /// Hand the frame to a worker that writes it after this long.
+    PendingFor(Duration),
 }
 
 struct ScriptedFrameSink {
@@ -5676,7 +5678,17 @@ impl DeviceFrameSink for ScriptedFrameSink {
             .pop_front()
             .unwrap_or(ScriptedDelivery::Complete);
         let error = DeviceError::write("scripted", "hid write reported a short count");
+        if let ScriptedDelivery::PendingFor(hold) = next {
+            let transmission = attempt.start();
+            tokio::spawn(async move {
+                tokio::time::sleep(hold).await;
+                transmission.written();
+            });
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            return Submission::Pending;
+        }
         let receipt = match next {
+            ScriptedDelivery::PendingFor(_) => unreachable!("handled above"),
             ScriptedDelivery::Defer(wait) => attempt.skip(SkipReason::Deferred {
                 retry_at: Instant::now() + wait,
             }),
@@ -5695,6 +5707,7 @@ struct ScriptedFrameSinkBackend {
     expected_device_id: DeviceId,
     script: Arc<StdMutex<std::collections::VecDeque<ScriptedDelivery>>>,
     attempts: Arc<AtomicUsize>,
+    policy: Option<OutputPolicy>,
 }
 
 #[async_trait::async_trait]
@@ -5741,10 +5754,21 @@ impl DeviceBackend for ScriptedFrameSinkBackend {
             }) as Arc<dyn DeviceFrameSink>
         })
     }
+
+    fn output_policy(&self, _id: &DeviceId) -> Option<OutputPolicy> {
+        self.policy
+    }
 }
 
 async fn scripted_sink_manager(
     script: impl IntoIterator<Item = ScriptedDelivery>,
+) -> (BackendManager, Arc<AtomicUsize>, SpatialLayout) {
+    scripted_sink_manager_with_policy(script, None).await
+}
+
+async fn scripted_sink_manager_with_policy(
+    script: impl IntoIterator<Item = ScriptedDelivery>,
+    policy: Option<OutputPolicy>,
 ) -> (BackendManager, Arc<AtomicUsize>, SpatialLayout) {
     let device_id = DeviceId::new();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -5753,6 +5777,7 @@ async fn scripted_sink_manager(
         expected_device_id: device_id,
         script: Arc::new(StdMutex::new(script.into_iter().collect())),
         attempts: Arc::clone(&attempts),
+        policy,
     }));
     manager
         .connect_device("scripted_sink", device_id, "scripted_sink:strip")
@@ -5883,6 +5908,34 @@ async fn a_deferred_frame_comes_back_when_its_lane_said_it_would() {
         2,
         "written once, then quiet"
     );
+}
+
+#[tokio::test]
+async fn idle_replay_resumes_after_a_pending_frame_outlives_its_window() {
+    let replay_after = Duration::from_millis(20);
+    let (mut manager, attempts, layout) = scripted_sink_manager_with_policy(
+        [ScriptedDelivery::PendingFor(Duration::from_millis(80))],
+        Some(OutputPolicy::from_fps(60).with_replay_after(replay_after)),
+    )
+    .await;
+
+    manager.write_frame(
+        &[ZoneColors {
+            zone_id: "zone_0".into(),
+            colors: vec![[10, 20, 30]; 2],
+        }],
+        &layout,
+    );
+
+    // The replay deadline expires while the frame is still out, which has
+    // to leave replay armed for when it settles.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while attempts.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("idle replay should resume once the pending frame settles");
 }
 
 #[tokio::test]

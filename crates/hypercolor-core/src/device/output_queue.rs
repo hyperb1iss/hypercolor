@@ -1391,20 +1391,31 @@ impl DeliverySequence {
     }
 }
 
+/// What a replay deadline found.
+enum Replay {
+    /// The latest frame went back in the queue.
+    Queued,
+    /// The latest frame has not settled yet, so there is nothing to replay
+    /// until it does.
+    Outstanding,
+    /// There is no frame.
+    Empty,
+}
+
 fn requeue_cached_payload(
     tx: &watch::Sender<Option<Arc<FramePayload>>>,
     delivery_sequence: &StdMutex<DeliverySequence>,
     metrics: &OutputQueueMetrics,
-) -> bool {
+) -> Replay {
     let mut delivery_sequence = delivery_sequence
         .lock()
         .expect("device delivery sequence lock should not be poisoned");
     let current = tx.borrow();
     let Some(payload) = current.as_ref() else {
-        return false;
+        return Replay::Empty;
     };
     if payload.id.sequence > metrics.last_terminal_sequence() {
-        return false;
+        return Replay::Outstanding;
     }
     drop(current);
 
@@ -1435,7 +1446,7 @@ fn requeue_cached_payload(
             cached_reassertion: true,
         });
     });
-    true
+    Replay::Queued
 }
 
 #[derive(Debug, Default)]
@@ -1627,14 +1638,23 @@ impl OutputQueue {
                                 pending.clone_from(&rx.borrow_and_update());
                             }
                             () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                                if requeue_cached_payload(
+                                reassert_at = match requeue_cached_payload(
                                     &tx_for_task,
                                     delivery_sequence_for_task.as_ref(),
                                     metrics_for_task.as_ref(),
                                 ) {
-                                    pending.clone_from(&rx.borrow_and_update());
-                                }
-                                reassert_at = None;
+                                    Replay::Queued => {
+                                        pending.clone_from(&rx.borrow_and_update());
+                                        None
+                                    }
+                                    // A receipt never wakes this loop, so a
+                                    // frame still out has to be checked on.
+                                    Replay::Outstanding => replay_after.map(|replay_after| {
+                                        let now = Instant::now();
+                                        advance_deadline(now, replay_after, now)
+                                    }),
+                                    Replay::Empty => None,
+                                };
                             }
                         }
                     } else {
