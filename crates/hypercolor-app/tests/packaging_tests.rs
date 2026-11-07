@@ -2001,7 +2001,7 @@ fn installer_moves_names_onto_a_finished_release_and_retires_the_old_layout_last
         "!insertmacro HYPERCOLOR_HOOK_BEFORE_FILES",
         "!insertmacro HYPERCOLOR_INSTALL_UNIT",
         "SetOutPath $INSTDIR",
-        "File \"/oname=${MAINBINARYNAME}.exe.new\"",
+        "File \"/oname=${MAINBINARYNAME}.new.exe\"",
         "kernel32::MoveFileExW",
         "WriteUninstaller",
         "Call CreateOrUpdateStartMenuShortcut",

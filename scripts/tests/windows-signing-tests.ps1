@@ -200,7 +200,7 @@ try {
         [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($pawnIo)))
     $unit = '$PLUGINSDIR\unit'
     $payload = @{
-        'Hypercolor.exe' = $ours; 'uninstall.exe' = $ours
+        'Hypercolor.new.exe' = $ours; 'uninstall.exe' = $ours
         "$unit\hypercolor-app.exe" = $ours; "$unit\hypercolor-daemon.exe" = $ours; "$unit\hypercolor.exe" = $ours
         "$unit\libEGL.dll" = $ours; "$unit\libGLESv2.dll" = $ours
         "$unit\msvcp140.dll" = $vendor; "$unit\vcruntime140.dll" = $vendor; "$unit\vcruntime140_1.dll" = $vendor
