@@ -25,6 +25,7 @@ mod model;
 mod ownership;
 #[cfg(unix)]
 mod payload;
+mod release_selection;
 #[cfg(unix)]
 mod store;
 pub mod windows;

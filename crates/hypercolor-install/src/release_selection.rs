@@ -1,6 +1,6 @@
 //! Which release a program outside any unit must start.
 //!
-//! The launcher and the recovery bootstrap read the journal before the
+//! A launcher and a recovery bootstrap read the journal before the
 //! pointer. While a transaction is open the pointer may already name its
 //! candidate, which nothing has proven yet, so they take the transaction's
 //! prior instead. Neither program ever holds the install lock, and only
@@ -11,6 +11,8 @@
 //! Both programs outlive the releases they select. An update replaces
 //! neither the launcher nor, as a matter of course, the bootstrap, so they
 //! read only the journal fields that decide this, not its whole schema.
+//! Platforms store the pointer their own way; Windows keeps `active.json`,
+//! and each [`ReleaseRecords`] decodes what it reads.
 
 use std::io;
 
@@ -34,7 +36,7 @@ struct ActivePointer {
 
 /// Encode the pointer to `unit`.
 #[cfg(any(windows, test))]
-pub(super) fn encode_active_pointer(unit: &UnitId) -> serde_json::Result<Vec<u8>> {
+pub(crate) fn encode_active_pointer(unit: &UnitId) -> serde_json::Result<Vec<u8>> {
     serde_json::to_vec(&ActivePointer {
         schema_version: ACTIVE_POINTER_SCHEMA_VERSION,
         unit: unit.clone(),
@@ -42,7 +44,7 @@ pub(super) fn encode_active_pointer(unit: &UnitId) -> serde_json::Result<Vec<u8>
 }
 
 /// Decode a pointer, with the reason it is invalid.
-pub(super) fn decode_active_pointer(bytes: &[u8]) -> Result<UnitId, String> {
+pub(crate) fn decode_active_pointer(bytes: &[u8]) -> Result<UnitId, String> {
     let pointer: ActivePointer =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     if pointer.schema_version != ACTIVE_POINTER_SCHEMA_VERSION {
@@ -85,6 +87,15 @@ pub trait ReleaseRecords {
     ///
     /// Returns the host's error when the pointer cannot be read or trusted.
     fn read_pointer(&mut self) -> io::Result<Option<Vec<u8>>>;
+
+    /// The unit `bytes`, as [`Self::read_pointer`] returned them, name.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the pointer is invalid.
+    fn decode_pointer(&self, bytes: &[u8]) -> Result<UnitId, String> {
+        decode_active_pointer(bytes)
+    }
 }
 
 /// Why no release can be named.
@@ -135,7 +146,9 @@ pub fn select_release<R: ReleaseRecords>(records: &mut R) -> Result<UnitId, Rele
             .map_err(ReleaseSelectionError::Read)?;
         if confirmed == journal {
             let bytes = pointer.ok_or(ReleaseSelectionError::NoActive)?;
-            return decode_active_pointer(&bytes).map_err(ReleaseSelectionError::InvalidPointer);
+            return records
+                .decode_pointer(&bytes)
+                .map_err(ReleaseSelectionError::InvalidPointer);
         }
     }
     Err(ReleaseSelectionError::Unsettled)
