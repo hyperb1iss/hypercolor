@@ -1307,6 +1307,10 @@ async fn run_identify_flash(
         "identify released direct control"
     );
 
+    // Global output controls wait on this guard, so it must not span
+    // transport cleanup.
+    drop(output_power);
+
     if disconnect_after_identify {
         if let Err(error) = direct_backend.disconnect(device_id).await {
             warn!(
