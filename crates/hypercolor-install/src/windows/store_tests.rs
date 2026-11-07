@@ -373,6 +373,35 @@ fn a_reparse_point_on_the_path_is_refused() {
     ));
 }
 
+#[test]
+fn a_release_path_through_a_link_is_refused_before_anything_exists() {
+    let fixture = Fixture::new();
+    let target = fixture.release.with_file_name("Elsewhere");
+    fs::create_dir(&target).expect("target");
+    let link = fixture.release.with_file_name("Linked");
+    if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
+        eprintln!("skipping reparse refusal: {error}");
+        return;
+    }
+    let policy = fixture.store().ownership_policy().clone();
+    for root in [link.clone(), link.join("Hypercolor")] {
+        let store = InstallStore::with_roots(&root, &fixture.state, JOURNAL_LIMIT)
+            .expect("store")
+            .with_ownership_policy(policy.clone());
+        store
+            .require_safe_release_path()
+            .expect_err("a link on the path");
+    }
+}
+
+#[test]
+fn a_release_root_that_does_not_exist_yet_is_a_safe_path() {
+    let fixture = Fixture::new();
+    fs::remove_dir(&fixture.release).expect("no release root yet");
+
+    fixture.store().require_safe_release_path().expect("safe");
+}
+
 /// Change an entry's DACL the way an administrator would, with `icacls`.
 fn icacls(path: &std::path::Path, arguments: &[&str]) {
     let status = std::process::Command::new("icacls")

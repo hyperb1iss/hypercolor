@@ -1663,9 +1663,14 @@ fn installer_hook_keeps_privileged_paths_administrator_owned() {
             "{flag} must stay inside the unit, got {value}"
         );
     }
+    // Nothing may write inside a unit, and an elevated install never writes
+    // into a directory the user owns.
+    assert!(!INSTALLER_HOOKS_NSH.contains("-ModuleDestination"));
+    assert!(INSTALLER_HOOKS_NSH.contains("-NoUserModules"));
     assert!(
-        !INSTALLER_HOOKS_NSH.contains("-ModuleDestination"),
-        "nothing may write inside a unit"
+        INSTALL_BUNDLED_PAWNIO_PS1
+            .contains("if (-not $NoUserModules) {\n        Copy-BundledModules"),
+        "the bundled setup must honor -NoUserModules"
     );
 }
 
@@ -1981,8 +1986,10 @@ fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
 /// registry value that says what it was called, go last.
 #[test]
 fn installer_moves_names_onto_a_finished_release_and_retires_the_old_layout_last() {
-    let (_, install) = INSTALLER_NSI
+    let install = INSTALLER_NSI
         .split_once("Section Install\n")
+        .and_then(|(_, rest)| rest.split_once("SectionEnd"))
+        .map(|(body, _)| body)
         .expect("installer.nsi has an Install section");
     let position = |needle: &str| {
         install
@@ -1994,7 +2001,8 @@ fn installer_moves_names_onto_a_finished_release_and_retires_the_old_layout_last
         "!insertmacro HYPERCOLOR_HOOK_BEFORE_FILES",
         "!insertmacro HYPERCOLOR_INSTALL_UNIT",
         "SetOutPath $INSTDIR",
-        "File \"/oname=${MAINBINARYNAME}.exe\"",
+        "File \"/oname=${MAINBINARYNAME}.exe.new\"",
+        "kernel32::MoveFileExW",
         "WriteUninstaller",
         "Call CreateOrUpdateStartMenuShortcut",
         "Call CreateOrUpdateDesktopShortcut",
@@ -2014,12 +2022,16 @@ fn installer_moves_names_onto_a_finished_release_and_retires_the_old_layout_last
     assert!(unit.contains("__install-release --expected-manifest-sha256 ${HYPERCOLOR_UNIT}"));
     assert!(unit.contains("${If} $0 != 0"));
     assert!(unit.contains("Abort"));
-    // NTFS reads the flat CLI, hypercolor.exe, as the launcher's own name.
+    // Everything names the launcher, so a kill must never leave it missing.
     assert!(
-        position("Delete \"$INSTDIR\\${MAINBINARYNAME}.exe\"")
-            < position("File \"/oname=${MAINBINARYNAME}.exe\"")
+        !install.contains("Delete \"$INSTDIR\\${MAINBINARYNAME}.exe\""),
+        "the launcher is replaced in one step"
     );
     let retire = nsis_macro_body("HYPERCOLOR_RETIRE_FLAT_LAYOUT");
+    assert!(
+        retire.contains("EnumRegKey $R9 HKU"),
+        "every signed-in account's autostart moves"
+    );
     assert!(
         retire.contains("--minimized"),
         "autostart moves to the launcher"

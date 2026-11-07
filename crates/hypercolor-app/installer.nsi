@@ -933,10 +933,16 @@ Section Install
   !insertmacro HYPERCOLOR_INSTALL_UNIT
   SetOutPath $INSTDIR
 
-  ; Hypercolor: NTFS reads the flat layout's CLI, hypercolor.exe, as this very
-  ; name, so that file goes first and the launcher keeps its own spelling.
-  Delete "$INSTDIR\${MAINBINARYNAME}.exe"
-  File "/oname=${MAINBINARYNAME}.exe" "${HYPERCOLOR_STAGE_DIR}\tools\hypercolor-launcher.exe"
+  ; Hypercolor: every name below runs this file, so it moves into place in one
+  ; step and a kill leaves the old one whole. 9 is MOVEFILE_REPLACE_EXISTING
+  ; plus MOVEFILE_WRITE_THROUGH. NTFS reads the flat layout's CLI,
+  ; hypercolor.exe, as this very name, and the rename takes over its entry
+  ; under the launcher's own spelling.
+  File "/oname=${MAINBINARYNAME}.exe.new" "${HYPERCOLOR_STAGE_DIR}\tools\hypercolor-launcher.exe"
+  System::Call 'kernel32::MoveFileExW(w "$INSTDIR\${MAINBINARYNAME}.exe.new", w "$INSTDIR\${MAINBINARYNAME}.exe", i 9) i .r0'
+  ${If} $0 = 0
+    Abort "The Hypercolor launcher could not be put in place."
+  ${EndIf}
 
   ; Create file associations
   {{#each file_associations as |association| ~}}
@@ -1073,6 +1079,7 @@ Section Uninstall
   ; Delete the app directory and its content from disk
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+  Delete "$INSTDIR\${MAINBINARYNAME}.exe.new"
 
   ; Hypercolor: every release and the update service's bootstrap slots.
   RMDir /r /REBOOTOK "$INSTDIR\units"

@@ -199,6 +199,40 @@ impl InstallStore {
         root: &Path,
         access: WindowsDirectoryAccess,
     ) -> Result<WindowsDirectory, InstallStoreError> {
+        self.require_safe_ancestors(root)?;
+        let directory = WindowsDirectory::open(root, access)
+            .map_err(|source| self.open_root_error(root, source))?;
+        self.require_installer_owned(&directory, root)?;
+        let file_system = directory
+            .file_system_name()
+            .map_err(|source| self.open_root_error(root, source))?;
+        if !DURABLE_FILE_SYSTEMS.contains(&file_system.as_str()) {
+            return Err(InstallStoreError::UnsupportedFileSystem {
+                path: root.to_path_buf(),
+                file_system,
+            });
+        }
+        Ok(directory)
+    }
+
+    /// Prove every directory above the release root safe, and the root
+    /// itself no link, so a program that goes on to create or change it by
+    /// path reaches exactly what it named.
+    ///
+    /// # Errors
+    /// Returns an error for a link anywhere on the path, or an ancestor an
+    /// untrusted principal could replace.
+    pub(crate) fn require_safe_release_path(&self) -> Result<(), InstallStoreError> {
+        self.require_safe_ancestors(&self.root)?;
+        match WindowsDirectory::open(&self.root, WindowsDirectoryAccess::Read) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            opened => opened
+                .map(drop)
+                .map_err(|source| self.open_root_error(&self.root, source)),
+        }
+    }
+
+    fn require_safe_ancestors(&self, root: &Path) -> Result<(), InstallStoreError> {
         let mut ancestor = PathBuf::new();
         let mut components = root.components().peekable();
         while let Some(component) = components.next() {
@@ -215,19 +249,7 @@ impl InstallStore {
                 .require_ancestor(&security)
                 .map_err(|refusal| InstallStoreError::Untrusted(ancestor.clone(), refusal))?;
         }
-        let directory = WindowsDirectory::open(root, access)
-            .map_err(|source| self.open_root_error(root, source))?;
-        self.require_installer_owned(&directory, root)?;
-        let file_system = directory
-            .file_system_name()
-            .map_err(|source| self.open_root_error(root, source))?;
-        if !DURABLE_FILE_SYSTEMS.contains(&file_system.as_str()) {
-            return Err(InstallStoreError::UnsupportedFileSystem {
-                path: root.to_path_buf(),
-                file_system,
-            });
-        }
-        Ok(directory)
+        Ok(())
     }
 
     fn require_installer_owned(

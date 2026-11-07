@@ -64,8 +64,9 @@ flat install from before units always counts as older. An upgrade:
   otherwise leaves them exactly as the user left them
 - moves the `Hypercolor` value under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which is how
-  "start with Windows" is stored, onto the launcher. The app moves the value
-  of any other account the next time it starts there.
+  "start with Windows" is stored, onto the launcher, for every account signed
+  in at the time. An account that is not signed in keeps a value naming the
+  old layout, which starts nothing, until that account next opens Hypercolor.
 - keeps app data under `%APPDATA%` and `%LOCALAPPDATA%`
 - closes a running Hypercolor first, then stops any daemon still running from
   the install directory. A daemon registered as a Windows service is removed:
@@ -174,7 +175,9 @@ previous release, give it a user's state (autostart on, desktop shortcut
 removed, files the new release no longer ships), upgrade it, and check the
 contract above; `Interactive` clicks through the wizard the way a person does.
 `-Mode Killed` kills the installer while it publishes the unit, inside the
-transaction and after it committed, then finishes with one more run.
+transaction and after it committed, runs the Start menu shortcut after each
+kill, then finishes with one more run. A kill that misses its moment throws
+that round away.
 `-Mode Replace` replaces one unit with another. Every mode checks the ACLs and
 owners of the units and records, that a standard user can start the launcher,
 and with `-Managed` the update service's registration, and every mode ends by
