@@ -1069,21 +1069,6 @@ jobs:
       - name: Run shared crate tests
         run: ./scripts/cargo-cache-build.ps1 cargo nextest run --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}
 
-      # Runners hold administrator rights, so the install platform's service
-      # and firewall steps run against the real ones, with the real broker.
-      - name: Build the SMBus broker for the install platform proofs
-        run: >-
-          ./scripts/cargo-cache-build.ps1 cargo build --locked -p hypercolor-windows-pawnio
-          --bin hypercolor-smbus-service
-
-      - name: Run install platform proofs against the real service manager and firewall
-        env:
-          HYPERCOLOR_TEST_BROKER_EXE: ${{ env.CARGO_TARGET_DIR }}/debug/hypercolor-smbus-service.exe
-        run: >-
-          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked
-          -p hypercolor-install -p hypercolor-windows-install-native
-          --run-ignored only --no-tests=fail --test-threads=1
-
       - name: Run Windows capture and host input fixtures
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo nextest run --locked --no-tests=fail -p hypercolor-core
@@ -1162,6 +1147,21 @@ jobs:
           ./scripts/cargo-cache-build.ps1 cargo nextest run --locked
           -p hypercolor-windows-launcher --run-ignored only --no-tests=fail
           --no-capture
+
+      # The install platform's service and firewall steps, against the real
+      # ones and the real broker.
+      - name: Build the SMBus broker for the install platform proofs
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo build --locked -p hypercolor-windows-pawnio
+          --bin hypercolor-smbus-service
+
+      - name: Run install platform proofs against the real service manager and firewall
+        env:
+          HYPERCOLOR_TEST_BROKER_EXE: ${{ env.CARGO_TARGET_DIR }}/debug/hypercolor-smbus-service.exe
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked
+          -p hypercolor-install -p hypercolor-windows-install-native
+          --run-ignored only --no-tests=fail --test-threads=1
 
       - name: Save Rust build caches
         if: always()
