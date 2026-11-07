@@ -259,7 +259,8 @@ pub fn launch_agent_plist(launch_agents: &Path, target: &LaunchdTarget) -> PathB
 pub fn launchctl_service_disabled(output: &str, label: &str) -> bool {
     output.lines().any(|line| {
         let line = line.trim();
-        line.contains(&format!("\"{label}\"")) && line.ends_with("=> true")
+        line.contains(&format!("\"{label}\""))
+            && (line.ends_with("=> disabled") || line.ends_with("=> true"))
     })
 }
 

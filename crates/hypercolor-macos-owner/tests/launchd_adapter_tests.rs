@@ -31,6 +31,10 @@ fn disabled_set_parser_matches_exact_labels() {
         output,
         "homebrew.mxcl.hypercolor"
     ));
+    assert!(launchctl_service_disabled(
+        "\tdisabled services = {\n\t\t\"tech.hyperbliss.hypercolor\" => disabled\n\t}\n",
+        MACOS_DIRECT_LAUNCHD_LABEL,
+    ));
     assert!(!launchctl_service_disabled(output, "Hypercolor"));
 }
 
