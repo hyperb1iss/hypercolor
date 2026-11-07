@@ -160,6 +160,7 @@ graph TD
     PFS --> INST[hypercolor-install] --> CLI
     PFS & INST --> WL[hypercolor-windows-launcher]
     MO -.->|macOS only| INST
+    INST -.->|macOS managed-update only| APP
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
     CORE & T --> APP[hypercolor-app]

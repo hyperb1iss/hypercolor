@@ -85,6 +85,7 @@ fn main() -> anyhow::Result<()> {
 
     builder
         .setup(move |app| {
+            let adoption = hypercolor_app::macos_update::prepare_adoption();
             hypercolor_app::macos_update::serve_app_control(app.handle());
             let control_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -126,7 +127,7 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::tray::register(app.handle())?;
             tracing::info!("tray icon registered");
 
-            hypercolor_app::supervisor::start(app.handle(), url.clone())?;
+            hypercolor_app::macos_update::start_supervision(app.handle(), url.clone(), adoption)?;
             tracing::info!("daemon supervisor started");
 
             Ok(())

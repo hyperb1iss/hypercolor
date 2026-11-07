@@ -35,6 +35,8 @@ pub use model::{
     require_macos_owner, service_identity,
 };
 
+#[cfg(all(target_os = "macos", feature = "managed-update"))]
+pub(crate) use planning::hand_daemon_to_direct_agent;
 #[cfg(target_os = "macos")]
 pub(crate) use planning::{
     MacosStartupRecoveryDisposition, recover_daemon_owner_before_supervisor,

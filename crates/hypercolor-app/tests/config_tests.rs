@@ -426,6 +426,19 @@ fn tauri_config_declares_workspace_resources() {
 }
 
 #[test]
+fn a_bundle_seals_the_store_inventory_adoption_gives_its_first_unit() {
+    let config = tauri_bundle_config();
+    let source = config
+        .pointer("/bundle/macOS/files/Resources~1durable-stores.json")
+        .and_then(serde_json::Value::as_str)
+        .expect("the macOS bundle should carry the store inventory");
+
+    let inventory = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+        .expect("the inventory the bundle config names");
+    assert!(inventory.contains("\"stores\""), "{inventory}");
+}
+
+#[test]
 fn tauri_bundle_config_declares_staged_web_resources() {
     let config = tauri_bundle_config();
     let resources = config

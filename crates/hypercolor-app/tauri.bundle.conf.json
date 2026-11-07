@@ -10,6 +10,11 @@
     "resources": {
       "../../target/bundle-stage/ui/": "ui/",
       "../../target/bundle-stage/effects/": "effects/bundled/"
+    },
+    "macOS": {
+      "files": {
+        "Resources/durable-stores.json": "../../packaging/managed/durable-stores.json"
+      }
     }
   }
 }
