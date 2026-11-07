@@ -396,9 +396,7 @@ function Find-LaunchFailures {
     $failures
 }
 
-function Assert-Clean {
-    param([string] $Description)
-
+function Find-Leftovers {
     $failures = @()
     if (Test-Path -LiteralPath $UninstallKey) {
         $failures += "the uninstall entry stayed"
@@ -421,6 +419,13 @@ function Assert-Clean {
     if ((Get-ItemProperty -Path $RunKey -Name "Hypercolor" -ErrorAction SilentlyContinue).Hypercolor) {
         $failures += "the autostart value stayed"
     }
+    $failures
+}
+
+function Assert-Clean {
+    param([string] $Description)
+
+    $failures = @(Find-Leftovers)
     if ($failures) {
         foreach ($failure in $failures) {
             Write-Host "::error::$failure"
@@ -435,17 +440,20 @@ function Invoke-Uninstall {
     $uninstaller = Join-Path $InstallDir "uninstall.exe"
     Write-Host "Uninstalling with: $uninstaller /S"
     # NSIS copies the uninstaller away and starts the copy, so the process
-    # this starts says nothing; the files going does.
+    # this starts says nothing, and the registry goes after the files. Only
+    # everything having gone says it finished.
     Start-Process -FilePath $uninstaller -ArgumentList "/S" | Out-Null
     $deadline = (Get-Date).AddSeconds($UninstallDeadlineSeconds)
-    while (Test-Path -LiteralPath $InstallDir) {
+    while ((Test-Path -LiteralPath $InstallDir) -or @(Find-Leftovers).Count -gt 0) {
         if ((Get-Date) -gt $deadline) {
-            $left = @(Get-ChildItem -LiteralPath $InstallDir -Force | ForEach-Object { $_.Name }) -join ", "
-            throw "uninstalling left $InstallDir holding: $left"
+            if (Test-Path -LiteralPath $InstallDir) {
+                $left = @(Get-ChildItem -LiteralPath $InstallDir -Force | ForEach-Object { $_.Name }) -join ", "
+                throw "uninstalling left $InstallDir holding: $left"
+            }
+            Assert-Clean -Description "uninstalling"
         }
         Start-Sleep -Milliseconds 500
     }
-    Assert-Clean -Description "uninstalling"
 }
 
 function Show-BrokerState {
