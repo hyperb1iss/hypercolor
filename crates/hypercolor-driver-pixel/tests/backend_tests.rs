@@ -574,37 +574,64 @@ async fn frame_sink_rejects_writes_after_disconnect() {
 }
 
 #[tokio::test]
-async fn reconnect_retires_the_previous_session_without_a_blackout() {
+async fn repeated_connect_keeps_the_stream_without_a_blackout() {
     let (receiver, addr) = loopback_receiver().await;
     let config = config_for(json!({
         "id": "again", "host": "127.0.0.1", "port": addr.port(), "protocol": "e131",
         "pixel_count": 1
     }));
     let (backend, id) = connect(&config).await;
-    let old_sink = backend.frame_sink(&id).expect("sink");
-    old_sink
-        .write_colors_shared_outcome(Arc::new(vec![[5, 5, 5]]))
+    let sink = backend.frame_sink(&id).expect("sink");
+    sink.write_colors_shared_outcome(Arc::new(vec![[5, 5, 5]]))
         .await
         .expect("write before reconnect");
     recv(&receiver).await;
 
-    backend.connect(&id).await.expect("reconnect");
-    assert!(old_sink.is_closed());
-    assert!(matches!(
-        old_sink
-            .write_colors_shared_outcome(Arc::new(vec![[6, 6, 6]]))
-            .await,
-        Err(DeviceError::Disconnected { .. })
-    ));
+    backend.connect(&id).await.expect("repeated connect");
+    assert!(!sink.is_closed());
     assert_quiet(&receiver).await;
 
     backend
         .write_colors(&id, &[[7, 7, 7]])
         .await
-        .expect("new session writes");
+        .expect("the open session keeps writing");
     let packet = recv(&receiver).await;
     assert_eq!(&packet[126..129], &[7, 7, 7]);
     assert_quiet(&receiver).await;
+}
+
+#[tokio::test]
+async fn closing_one_session_leaves_the_shared_socket_running() {
+    let (_left_receiver, left_addr) = loopback_receiver().await;
+    let (receiver, addr) = loopback_receiver().await;
+    let config: PixelConfig = serde_json::from_value(json!({ "devices": [
+        { "id": "left", "host": "127.0.0.1", "port": left_addr.port(), "protocol": "ddp",
+          "pixel_count": 1 },
+        { "id": "right", "host": "127.0.0.1", "port": addr.port(), "protocol": "ddp",
+          "pixel_count": 1 },
+    ]}))
+    .expect("config fixture");
+    let rig = Rig::new();
+    rig.config.set(&config);
+    let devices = configured_devices(&config).expect("config should resolve");
+    for device in &devices {
+        rig.backend.adopt_device(device).expect("adopt");
+        rig.backend.connect(&device.info.id).await.expect("connect");
+    }
+    let (left, right) = (devices[0].info.id, devices[1].info.id);
+    assert_eq!(
+        rig.backend.connected_socket_local_addr(&left),
+        rig.backend.connected_socket_local_addr(&right),
+        "DDP sessions share one backend socket"
+    );
+
+    rig.backend.disconnect(&left).await.expect("disconnect");
+
+    rig.backend
+        .write_colors(&right, &[[3, 2, 1]])
+        .await
+        .expect("the other session keeps its socket");
+    recv(&receiver).await;
 }
 
 #[tokio::test]

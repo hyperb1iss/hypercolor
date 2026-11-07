@@ -10,19 +10,19 @@
 //! every connect resolves the device from the config at that moment, and
 //! discovery metadata never names a receiver here.
 
-use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock, Weak};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, DriverConfigView,
-    DriverError, InstallationId, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
+    DriverConfigSource, DriverConfigView, DriverError, InstallationId, OutputCadence,
 };
-use hypercolor_driver_support::ConfiguredDevices;
+use hypercolor_driver_support::{
+    ConfiguredDevices, DeviceSession, FrameDelivery, Session, SessionTable,
+};
 use hypercolor_pixel_protocols::artnet::{
     ARTNET_PORT, ArtDmxPacket, ArtDmxSequenceTracker, PortAddress,
 };
@@ -30,7 +30,7 @@ use hypercolor_pixel_protocols::ddp::{DDP_ID_DEFAULT, DdpSequence, DdpSpan, buil
 use hypercolor_pixel_protocols::e131::{E131Packet, E131SequenceTracker, E131SyncPacket};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
 use crate::color::encode_pixels;
@@ -64,7 +64,7 @@ pub struct PixelBackend {
     /// Identity that scopes derived E1.31 CIDs to this installation.
     installation_id: InstallationId,
     /// Connected sessions.
-    sessions: StdRwLock<HashMap<DeviceId, Arc<SessionSlot>>>,
+    sessions: SessionTable<PixelSession>,
     /// Shared IPv4 socket on an ephemeral port (E1.31 and DDP).
     socket_v4: OnceCell<Arc<UdpSocket>>,
     /// Shared IPv6 socket on an ephemeral port (E1.31 and DDP).
@@ -77,81 +77,10 @@ pub struct PixelBackend {
     artnet_fallback_warned: AtomicBool,
 }
 
-/// A connected session plus its plan and closed flag.
-///
-/// The flag lives outside the mutex so frame sinks can answer `is_closed`
-/// without blocking, and disconnect sets it while holding the session lock
-/// so no write can slip in after the shutdown frames.
-struct SessionSlot {
-    closed: AtomicBool,
+/// What a connect fixed about one session.
+struct PixelFacts {
     plan: Arc<PixelDevicePlan>,
-    session: Mutex<PixelSession>,
-}
-
-impl SessionSlot {
-    fn open(session: PixelSession) -> Arc<Self> {
-        Arc::new(Self {
-            closed: AtomicBool::new(false),
-            plan: Arc::clone(&session.plan),
-            session: Mutex::new(session),
-        })
-    }
-
-    /// Close the session under its lock and release its transport.
-    ///
-    /// When `shutdown` approves the session, the black frame and E1.31
-    /// termination go out first. Frame sinks may keep this slot alive, so
-    /// the socket is taken out of the session here rather than when the last
-    /// handle drops; that frees UDP 6454 for other applications as soon as no
-    /// open session uses it.
-    async fn close(&self, device_id: DeviceId, shutdown: impl FnOnce(&PixelSession) -> bool) {
-        let mut session = self.session.lock().await;
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        if shutdown(&session)
-            && let Err(error) = session.finish().await
-        {
-            debug!(
-                device_id = %device_id,
-                target = %session.plan.target,
-                error = %error,
-                "best-effort pixel controller shutdown frames failed"
-            );
-        }
-        session.socket = None;
-    }
-
-    /// Retire a session replaced by a reconnect to `successor_target`.
-    ///
-    /// The successor carries the stream on, so shutdown frames only go out
-    /// when the device moved to a different receiver.
-    async fn retire(&self, device_id: DeviceId, successor_target: SocketAddr) {
-        self.close(device_id, |session| session.plan.target != successor_target)
-            .await;
-    }
-
-    /// Lock the session and write a frame unless it was disconnected.
-    async fn write(
-        &self,
-        device_id: DeviceId,
-        colors: &[[u8; 3]],
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let mut session = self.session.lock().await;
-        if self.closed.load(Ordering::Acquire) {
-            return Err(disconnected(device_id));
-        }
-        session
-            .write_colors(colors)
-            .await
-            .map_err(|error| DeviceError::write(device_id, error))
-    }
-}
-
-fn disconnected(device_id: DeviceId) -> DeviceError {
-    DeviceError::Disconnected {
-        device: device_id.to_string(),
-    }
+    local_addr: Option<SocketAddr>,
 }
 
 /// Every configured device with its plan, for [`ConfiguredDevices`].
@@ -175,7 +104,7 @@ impl PixelBackend {
         Self {
             devices: ConfiguredDevices::new(crate::DESCRIPTOR.id, config, configured_plans),
             installation_id,
-            sessions: StdRwLock::default(),
+            sessions: SessionTable::new(),
             socket_v4: OnceCell::new(),
             socket_v6: OnceCell::new(),
             artnet_socket: StdMutex::default(),
@@ -186,17 +115,7 @@ impl PixelBackend {
     /// Local address of the socket a connected device sends from.
     #[must_use]
     pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
-        self.session(id)
-            .and_then(|slot| slot.session.try_lock().ok().and_then(|s| s.socket.clone()))
-            .and_then(|socket| socket.local_addr().ok())
-    }
-
-    fn session(&self, id: &DeviceId) -> Option<Arc<SessionSlot>> {
-        self.sessions
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
+        self.sessions.facts(id).and_then(|facts| facts.local_addr)
     }
 
     async fn socket_for(&self, plan: &PixelDevicePlan) -> Result<Arc<UdpSocket>> {
@@ -262,10 +181,6 @@ impl PixelBackend {
         .await
         .map(Arc::clone)
     }
-
-    fn require_session(&self, id: &DeviceId) -> Result<Arc<SessionSlot>, DeviceError> {
-        self.session(id).ok_or_else(|| disconnected(*id))
-    }
 }
 
 #[async_trait::async_trait]
@@ -288,8 +203,18 @@ impl DeviceBackend for PixelBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        self.sessions.ensure_accepting(id)?;
         let device = self.devices.current(id)?;
         let plan = Arc::clone(device.plan());
+        if let Some(open) = self.sessions.facts(id) {
+            if open.plan == plan {
+                return Ok(());
+            }
+            // The device moved, so the old stream ends properly first.
+            if let Err(error) = self.sessions.close(id).await {
+                debug!(device_id = %id, error = %error, "closing a moved pixel session failed");
+            }
+        }
         let socket = self
             .socket_for(&plan)
             .await
@@ -306,94 +231,39 @@ impl DeviceBackend for PixelBackend {
             universes = plan.universe_summary().unwrap_or_default(),
             "Connected pixel controller"
         );
-        let target = plan.target;
+        let facts = PixelFacts {
+            plan: Arc::clone(&plan),
+            local_addr: socket.local_addr().ok(),
+        };
         let session = PixelSession::new(*id, plan, socket, &self.installation_id)
             .map_err(|error| DeviceError::connection(id, error))?;
-        let previous = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, SessionSlot::open(session));
-        // A repeated connect replaces the session. Retire the old one so a
-        // frame sink still holding it cannot transmit, and so it releases its
-        // socket. The map insert is atomic, so concurrent connects for one id
-        // each retire whichever slot they displaced and one open slot remains.
-        if let Some(previous) = previous {
-            previous.retire(*id, target).await;
-        }
-        Ok(())
+        self.sessions.install(Session::new(*id, facts, session)).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let slot = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id)
-            .ok_or_else(|| disconnected(*id))?;
-        // Close under the session lock: frame sinks still hold this slot,
-        // and any write that waits on the lock must see the flag.
-        slot.close(*id, |_| true).await;
+        self.sessions.close(id).await?;
         info!(device_id = %id, "Disconnected pixel controller");
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.sessions.retire().await
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        self.require_session(id)?
-            .write(*id, colors)
-            .await
-            .map(|_| ())
-    }
-
-    async fn write_colors_shared(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<(), DeviceError> {
-        self.write_colors(id, colors.as_slice()).await
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.require_session(id)?
-            .write(*id, colors.as_slice())
-            .await
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        match self.require_session(device_id) {
-            Ok(session) => {
-                deliver_observed(
-                    *device_id,
-                    &session,
-                    delivery_id,
-                    &colors,
-                    observer.as_ref(),
-                )
-                .await
-            }
-            Err(error) => DeviceDeliveryAck::rejected(delivery_id, error),
-        }
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.session(id)
-            .map(|slot| slot.plan.max_fps)
+        self.sessions
+            .facts(id)
+            .map(|facts| facts.plan.max_fps)
             .filter(|fps| *fps > 0)
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.session(id).map(|slot| {
-            let plan = &slot.plan;
+        self.sessions.facts(id).map(|facts| {
+            let plan = &facts.plan;
             let identical_sends = if plan.protocol == PixelProtocol::E131 {
                 E131_IDENTICAL_SENDS
             } else {
@@ -406,65 +276,7 @@ impl DeviceBackend for PixelBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.session(id).map(|slot| {
-            Arc::new(PixelFrameSink {
-                device_id: *id,
-                slot,
-            }) as Arc<dyn DeviceFrameSink>
-        })
-    }
-}
-
-async fn deliver_observed(
-    device_id: DeviceId,
-    slot: &SessionSlot,
-    delivery_id: DeviceDeliveryId,
-    colors: &[[u8; 3]],
-    observer: &dyn DeviceDeliveryObserver,
-) -> DeviceDeliveryAck {
-    let payload_bytes = colors.len().saturating_mul(3);
-    let started_at = Instant::now();
-    let mut session = slot.session.lock().await;
-    if slot.closed.load(Ordering::Acquire) {
-        return DeviceDeliveryAck::rejected(delivery_id, disconnected(device_id));
-    }
-    observer.transport_started(delivery_id);
-    let result = session
-        .write_colors(colors)
-        .await
-        .map_err(|error| DeviceError::write(device_id, error));
-    DeviceDeliveryAck::from_write_result(delivery_id, payload_bytes, started_at.elapsed(), result)
-}
-
-struct PixelFrameSink {
-    device_id: DeviceId,
-    slot: Arc<SessionSlot>,
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for PixelFrameSink {
-    fn is_closed(&self) -> bool {
-        self.slot.closed.load(Ordering::Acquire)
-    }
-
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        self.write_colors_shared_outcome(colors).await.map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        self.slot.write(self.device_id, colors.as_slice()).await
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        deliver_observed(self.device_id, &self.slot, id, &colors, observer.as_ref()).await
+        self.sessions.frame_sink(id)
     }
 }
 
@@ -509,8 +321,8 @@ enum WireState {
 struct PixelSession {
     device_id: DeviceId,
     plan: Arc<PixelDevicePlan>,
-    /// Output socket; `None` once the session is closed.
-    socket: Option<Arc<UdpSocket>>,
+    /// Output socket, shared with every session on the same local port.
+    socket: Arc<UdpSocket>,
     /// Encoded channel stream, reused every frame.
     stream: Vec<u8>,
     wire: WireState,
@@ -589,14 +401,18 @@ impl PixelSession {
             device_id,
             stream: Vec::with_capacity(plan.total_channels()),
             plan,
-            socket: Some(socket),
+            socket,
             wire,
             has_sent: false,
             last_size_mismatch_warn_at: None,
         })
     }
 
-    async fn write_colors(&mut self, colors: &[[u8; 3]]) -> Result<DeviceWriteOutcome> {
+    async fn write_colors(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome> {
         let pixel_count = self.plan.total_pixels() as usize;
         if colors.len() != pixel_count {
             let should_warn = self
@@ -619,13 +435,16 @@ impl PixelSession {
             pixel_count,
             &mut self.stream,
         );
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
+        }
         self.send_stream(false).await?;
         self.has_sent = true;
         Ok(DeviceWriteOutcome::Sent)
     }
 
     /// Send a black frame and, for E1.31, terminate every universe stream.
-    async fn finish(&mut self) -> Result<()> {
+    async fn shutdown(&mut self) -> Result<()> {
         if !self.has_sent {
             return Ok(());
         }
@@ -641,9 +460,7 @@ impl PixelSession {
 
     async fn send_stream(&mut self, terminated: bool) -> Result<()> {
         let target = self.plan.target;
-        let Some(socket) = self.socket.clone() else {
-            bail!("pixel controller session transport was released");
-        };
+        let socket = self.socket.as_ref();
         match (&mut self.wire, &self.plan.output) {
             (
                 WireState::E131 {
@@ -658,12 +475,12 @@ impl PixelSession {
                     let sequence = sequences.advance(universe.universe);
                     universe.packet.set_stream_terminated(terminated);
                     universe.packet.set_channels(&universe.data, sequence);
-                    send(&socket, universe.packet.as_bytes(), target, "E1.31").await?;
+                    send(socket, universe.packet.as_bytes(), target, "E1.31").await?;
                 }
                 if let Some(sync) = sync.as_mut().filter(|_| !terminated) {
                     let sequence = sync.sequences.advance(sync.universe);
                     let packet = E131SyncPacket::new(sync.cid, sync.universe, sequence);
-                    send(&socket, packet.as_bytes(), target, "E1.31 sync").await?;
+                    send(socket, packet.as_bytes(), target, "E1.31 sync").await?;
                 }
             }
             (
@@ -677,7 +494,7 @@ impl PixelSession {
                 for universe in universes.iter_mut() {
                     let sequence = sequences.advance(universe.port_address);
                     universe.packet.set_data(&universe.data, sequence);
-                    send(&socket, universe.packet.as_bytes(), target, "Art-Net").await?;
+                    send(socket, universe.packet.as_bytes(), target, "Art-Net").await?;
                 }
             }
             (WireState::Ddp { sequence }, OutputPlan::Ddp(ddp)) => {
@@ -697,10 +514,39 @@ impl PixelSession {
                     sequence,
                 );
                 for packet in &packets {
-                    send(&socket, packet.as_bytes(), target, "DDP").await?;
+                    send(socket, packet.as_bytes(), target, "DDP").await?;
                 }
             }
             _ => bail!("pixel controller session state does not match its plan"),
+        }
+        Ok(())
+    }
+}
+
+impl DeviceSession for PixelSession {
+    type Facts = PixelFacts;
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        self.write_colors(colors, delivery)
+            .await
+            .map_err(|error| DeviceError::write(self.device_id, error))
+    }
+
+    /// Send the black frame and E1.31 termination. Dropping the session
+    /// then releases its socket, which frees UDP 6454 for other applications
+    /// once no open session uses it.
+    async fn finish(mut self) -> Result<(), DeviceError> {
+        if let Err(error) = self.shutdown().await {
+            debug!(
+                device_id = %self.device_id,
+                target = %self.plan.target,
+                error = %error,
+                "best-effort pixel controller shutdown frames failed"
+            );
         }
         Ok(())
     }

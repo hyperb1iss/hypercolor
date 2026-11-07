@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use hypercolor_driver_api::{DeviceBackend, DriverConfigSource, InstallationId};
+use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
 use hypercolor_driver_pixel::controls::{pixel_config_values, values_entry};
 use hypercolor_driver_pixel::{PixelBackend, PixelConfig, configured_devices};
 use hypercolor_types::config::DriverConfigEntry;
@@ -248,7 +249,7 @@ async fn concurrent_reconnects_leave_one_open_session_and_release_6454() {
     left.expect("concurrent connect");
     right.expect("concurrent connect");
     let current_sink = backend.frame_sink(&id).expect("sink");
-    assert!(first_sink.is_closed(), "the displaced session is retired");
+    assert!(!first_sink.is_closed(), "the open session stays open");
     assert!(!current_sink.is_closed());
 
     // One write through the backend reaches the receiver exactly once.
@@ -281,4 +282,54 @@ async fn concurrent_reconnects_leave_one_open_session_and_release_6454() {
         "retired sinks never transmit"
     );
     drop(bind_6454().expect("every retired session released 6454"));
+}
+
+struct ArtNetRig {
+    rig: Rig,
+    id: DeviceId,
+    receiver: UdpSocket,
+}
+
+#[async_trait::async_trait]
+impl SessionRig for ArtNetRig {
+    fn backend(&self) -> &dyn DeviceBackend {
+        &self.rig.backend
+    }
+
+    fn device_id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn frame(&self, shade: u8) -> Vec<[u8; 3]> {
+        vec![[shade, 0, 255]]
+    }
+
+    async fn saw_traffic(&mut self, window: Duration) -> bool {
+        let mut buf = [0u8; 600];
+        timeout(window, self.receiver.recv_from(&mut buf))
+            .await
+            .is_ok_and(|received| received.is_ok())
+    }
+
+    async fn discard_traffic(&mut self) {
+        let mut buf = [0u8; 600];
+        while self.receiver.try_recv_from(&mut buf).is_ok() {}
+    }
+
+    /// The Art-Net session is the only holder of UDP 6454.
+    async fn assert_transport_released(&mut self) {
+        drop(bind_6454().expect("a closed session must release 6454"));
+    }
+}
+
+#[tokio::test]
+async fn pixel_sessions_keep_the_contract() {
+    let _guard = PORT_6454.lock().await;
+    let (receiver, addr) = loopback_receiver().await;
+    let rig = rig();
+    let id = connect_artnet(&rig, "contract", addr).await;
+    rig.disconnect(&id).await.expect("disconnect");
+
+    let mut contract = ArtNetRig { rig, id, receiver };
+    assert_session_contract(&mut contract).await;
 }

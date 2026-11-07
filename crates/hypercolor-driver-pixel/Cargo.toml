@@ -26,5 +26,6 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+hypercolor-driver-conformance = { workspace = true }
 socket2 = { workspace = true }
 toml = { workspace = true }
