@@ -22,7 +22,7 @@ $RuntimePattern = '^(msvc[pr]\d+d?(_\w+)?|vcruntime\d+(_1)?d?|concrt\d+d?|vccorl
 # must be present.
 $Unit = '$PLUGINSDIR\unit'
 $RequiredBinaries = @(
-    'Hypercolor.exe',
+    'Hypercolor.new.exe',
     "$Unit\hypercolor-app.exe",
     "$Unit\hypercolor-daemon.exe",
     "$Unit\hypercolor.exe",

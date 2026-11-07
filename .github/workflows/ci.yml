@@ -1285,10 +1285,6 @@ jobs:
           ./scripts/build-windows-installer.ps1 -Profile dev -SkipUi -SkipEffects -NoServo -ManagedUpdate
           Copy-Item -Path "target/debug/bundle/nsis/*_x64-setup.exe" -Destination (Join-Path $env:RUNNER_TEMP "installer-proof/managed-setup.exe")
 
-      - name: Verify installer DLL closure
-        shell: pwsh
-        run: ./scripts/check-windows-dll-closure.ps1 -Installer (Join-Path $env:RUNNER_TEMP "installer-proof/managed-setup.exe")
-
       - name: Prove installs, upgrades, kills and uninstalls
         shell: pwsh
         env:
@@ -1310,6 +1306,12 @@ jobs:
           & $harness -Mode Silent -PreviousInstaller $flat -CandidateInstaller $openSource
           & $harness -Mode Replace -PreviousInstaller $managed -CandidateInstaller $openSource
           & $harness -Mode Replace -PreviousInstaller $openSource -CandidateInstaller $managed -Managed
+
+      # After the proof and on its failure too, so one round reports both.
+      - name: Verify installer DLL closure
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./scripts/check-windows-dll-closure.ps1 -Installer (Join-Path $env:RUNNER_TEMP "installer-proof/managed-setup.exe")
 
       - name: Save Rust build caches
         if: always()

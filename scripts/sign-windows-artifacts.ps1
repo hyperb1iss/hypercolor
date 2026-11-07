@@ -106,7 +106,7 @@ $StagedPrograms = @(
 # Payload paths (as 7-Zip extracts them) that every installer must carry
 # with a Hypercolor signature.
 $RequiredSignedPayload = @(
-    'Hypercolor.exe',
+    'Hypercolor.new.exe',
     "$PayloadUnit\hypercolor-app.exe",
     "$PayloadUnit\hypercolor-daemon.exe",
     "$PayloadUnit\hypercolor.exe",

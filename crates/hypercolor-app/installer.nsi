@@ -937,9 +937,10 @@ Section Install
   ; step and a kill leaves the old one whole. 9 is MOVEFILE_REPLACE_EXISTING
   ; plus MOVEFILE_WRITE_THROUGH. NTFS reads the flat layout's CLI,
   ; hypercolor.exe, as this very name, and the rename takes over its entry
-  ; under the launcher's own spelling.
-  File "/oname=${MAINBINARYNAME}.exe.new" "${HYPERCOLOR_STAGE_DIR}\tools\hypercolor-launcher.exe"
-  System::Call 'kernel32::MoveFileExW(w "$INSTDIR\${MAINBINARYNAME}.exe.new", w "$INSTDIR\${MAINBINARYNAME}.exe", i 9) i .r0'
+  ; under the launcher's own spelling. The temporary name stays a .exe so the
+  ; signature and DLL checks of a built installer still see a program.
+  File "/oname=${MAINBINARYNAME}.new.exe" "${HYPERCOLOR_STAGE_DIR}\tools\hypercolor-launcher.exe"
+  System::Call 'kernel32::MoveFileExW(w "$INSTDIR\${MAINBINARYNAME}.new.exe", w "$INSTDIR\${MAINBINARYNAME}.exe", i 9) i .r0'
   ${If} $0 = 0
     Abort "The Hypercolor launcher could not be put in place."
   ${EndIf}
@@ -1079,7 +1080,7 @@ Section Uninstall
   ; Delete the app directory and its content from disk
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
-  Delete "$INSTDIR\${MAINBINARYNAME}.exe.new"
+  Delete "$INSTDIR\${MAINBINARYNAME}.new.exe"
 
   ; Hypercolor: every release and the update service's bootstrap slots.
   RMDir /r /REBOOTOK "$INSTDIR\units"
