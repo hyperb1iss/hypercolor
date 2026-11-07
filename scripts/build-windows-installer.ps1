@@ -162,8 +162,12 @@ if (-not $SkipEffects) {
     Invoke-Checked "Build bundled effects" "bun" @("run", "build:effects") (Join-Path $RepoRoot "sdk")
 }
 
+# Servo is in the daemon's default features, so leaving it out takes more
+# than not asking for it.
 $DaemonArgs = @("-p", "hypercolor-daemon", "--bin", "hypercolor-daemon")
-if (-not $NoServo) {
+if ($NoServo) {
+    $DaemonArgs += @("--no-default-features", "--features", "builtin-drivers")
+} else {
     $DaemonArgs += @("--features", "servo")
 }
 $CliArgs = @("-p", "hypercolor")
