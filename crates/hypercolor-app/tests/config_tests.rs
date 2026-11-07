@@ -459,59 +459,18 @@ fn tauri_bundle_config_declares_staged_web_resources() {
     }
 }
 
+/// The installer carries one release unit and nothing else, so a Windows
+/// bundle lists no resources and no sidecars for the bundler to copy or sign.
 #[test]
-fn tauri_windows_bundle_config_layers_pawnio_resources() {
+fn tauri_windows_bundle_config_leaves_the_payload_to_the_unit() {
     let config = config_json("tauri.windows.bundle.conf.json");
-    let resources = config
-        .get("bundle")
-        .and_then(|bundle| bundle.get("resources"))
-        .and_then(serde_json::Value::as_object)
-        .expect("windows bundle resources should be a map");
+    let bundle = config.get("bundle").expect("windows bundle config");
 
-    for (source, target) in [
-        (
-            "../../target/bundle-stage/tools/hypercolor-smbus-service.exe",
-            "tools/hypercolor-smbus-service.exe",
-        ),
-        (
-            "../../target/bundle-stage/tools/hypercolor-windows-helper.exe",
-            "tools/hypercolor-windows-helper.exe",
-        ),
-        ("../../target/bundle-stage/tools/pawnio/", "tools/pawnio/"),
-        ("../../target/bundle-stage/dlls/libEGL.dll", "libEGL.dll"),
-        (
-            "../../target/bundle-stage/dlls/libGLESv2.dll",
-            "libGLESv2.dll",
-        ),
-        (
-            "../../target/bundle-stage/dlls/msvcp140.dll",
-            "msvcp140.dll",
-        ),
-        (
-            "../../target/bundle-stage/dlls/vcruntime140.dll",
-            "vcruntime140.dll",
-        ),
-        (
-            "../../target/bundle-stage/dlls/vcruntime140_1.dll",
-            "vcruntime140_1.dll",
-        ),
-        (
-            "../../target/bundle-stage/tools/msvcp140.dll",
-            "tools/msvcp140.dll",
-        ),
-        (
-            "../../target/bundle-stage/tools/vcruntime140.dll",
-            "tools/vcruntime140.dll",
-        ),
-        (
-            "../../target/bundle-stage/tools/vcruntime140_1.dll",
-            "tools/vcruntime140_1.dll",
-        ),
-    ] {
+    for key in ["resources", "externalBin"] {
         assert_eq!(
-            resources.get(source).and_then(serde_json::Value::as_str),
-            Some(target),
-            "windows bundle should map {source} -> {target}"
+            bundle.get(key),
+            Some(&serde_json::Value::Null),
+            "{key} must be cleared from the merged config"
         );
     }
 }

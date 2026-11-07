@@ -198,16 +198,20 @@ try {
     $pawnIo = 'signed|namazso.eu|NotTrusted|ts'
     $pawnIoHash = [Convert]::ToHexString(
         [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($pawnIo)))
+    $unit = '$PLUGINSDIR\unit'
     $payload = @{
-        'hypercolor-app.exe' = $ours; 'hypercolor-daemon.exe' = $ours; 'hypercolor.exe' = $ours
-        'libEGL.dll' = $ours; 'libGLESv2.dll' = $ours; 'uninstall.exe' = $ours
-        'msvcp140.dll' = $vendor; 'vcruntime140.dll' = $vendor; 'vcruntime140_1.dll' = $vendor
-        'tools\hypercolor-smbus-service.exe' = $ours; 'tools\hypercolor-windows-helper.exe' = $ours
-        'tools\vcruntime140.dll' = $vendor
-        'tools\pawnio\PawnIO_setup.exe' = $pawnIo
-        'tools\pawnio\manifest.json' = "{`"pawnio_setup`":{`"sha256`":`"$pawnIoHash`"}}"
+        'Hypercolor.exe' = $ours; 'uninstall.exe' = $ours
+        "$unit\hypercolor-app.exe" = $ours; "$unit\hypercolor-daemon.exe" = $ours; "$unit\hypercolor.exe" = $ours
+        "$unit\libEGL.dll" = $ours; "$unit\libGLESv2.dll" = $ours
+        "$unit\msvcp140.dll" = $vendor; "$unit\vcruntime140.dll" = $vendor; "$unit\vcruntime140_1.dll" = $vendor
+        "$unit\tools\hypercolor-smbus-service.exe" = $ours; "$unit\tools\hypercolor-windows-helper.exe" = $ours
+        "$unit\tools\hypercolor-update-bootstrap.exe" = $ours
+        "$unit\tools\vcruntime140.dll" = $vendor
+        "$unit\tools\pawnio\PawnIO_setup.exe" = $pawnIo
+        "$unit\tools\pawnio\manifest.json" = "{`"pawnio_setup`":{`"sha256`":`"$pawnIoHash`"}}"
         '$PLUGINSDIR\System.dll' = $ours; '$PLUGINSDIR\nsExec.dll' = $ours
-        'ui\index.html' = '<html></html>'
+        "$unit\ui\index.html" = '<html></html>'
+        "$unit\manifest.json" = 'signed hashes'
         '[NSIS].nsi' = 'signed build'
     }
 
@@ -245,32 +249,33 @@ try {
         if ($unsigned[$key] -eq $ours) { $unsigned[$key] = 'unsigned' }
     }
     $unsigned['[NSIS].nsi'] = 'unsigned build'
+    $unsigned["$unit\manifest.json"] = 'unsigned hashes'
 
     Test-Verify 'a fully signed installer' $payload $unsigned ''
     $case = $payload.Clone(); $case['$PLUGINSDIR\nsExec.dll'] = 'unsigned'
     Test-Verify 'an unsigned NSIS plugin' $case $unsigned '$PLUGINSDIR\nsExec.dll: status NotSigned'
-    $case = $payload.Clone(); $case['tools\pawnio\PawnIO_setup.exe'] = $ours
+    $case = $payload.Clone(); $case["$unit\tools\pawnio\PawnIO_setup.exe"] = $ours
     Test-Verify 'a re-signed vendor binary' $case $unsigned 'PawnIO_setup.exe is a vendor binary but carries the Hypercolor signature'
     Test-Verify 'a changed PawnIO setup' $case $unsigned 'differs from its pin'
     $case = $payload.Clone(); $case.Remove('uninstall.exe')
     $twin = $unsigned.Clone(); $twin.Remove('uninstall.exe')
     Test-Verify 'a missing uninstaller' $case $twin 'uninstall.exe is missing from the installer'
-    $case = $payload.Clone(); $case['tools\hypercolor-windows-helper.exe'] = 'signed|Someone Else|Valid|ts'
+    $case = $payload.Clone(); $case["$unit\tools\hypercolor-windows-helper.exe"] = 'signed|Someone Else|Valid|ts'
     Test-Verify 'a foreign first-party signature' $case $unsigned "signed by 'Someone Else'"
-    $case = $payload.Clone(); $case['hypercolor-daemon.exe'] = 'signed|Fixture Publisher|Valid|'
+    $case = $payload.Clone(); $case["$unit\hypercolor-daemon.exe"] = 'signed|Fixture Publisher|Valid|'
     Test-Verify 'an untimestamped binary' $case $unsigned 'hypercolor-daemon.exe: no timestamp countersignature'
     Test-Verify 'an untimestamped installer' $payload $unsigned 'no timestamp countersignature' 'signed|Fixture Publisher|Valid|'
-    $case = $payload.Clone(); $case['ui\index.html'] = '<html>changed</html>'
+    $case = $payload.Clone(); $case["$unit\ui\index.html"] = '<html>changed</html>'
     Test-Verify 'a payload file the rebundle changed' $case $unsigned 'ui\index.html differs between'
-    $case = $payload.Clone(); $case['ui\extra.js'] = 'x'
+    $case = $payload.Clone(); $case["$unit\ui\extra.js"] = 'x'
     Test-Verify 'a file only the signed installer ships' $case $unsigned 'ui\extra.js is in the signed installer but not the unsigned one'
-    $case = $payload.Clone(); $case['vcruntime140.dll'] = 'signed|Microsoft Corporation|HashMismatch|ts'
+    $case = $payload.Clone(); $case["$unit\vcruntime140.dll"] = 'signed|Microsoft Corporation|HashMismatch|ts'
     Test-Verify 'a VC++ runtime whose hash no longer matches' $case $unsigned "vcruntime140.dll is a VC++ runtime but carries a HashMismatch signature"
-    $case = $payload.Clone(); $case['msvcp140.dll'] = 'signed|Unexpected Publisher|Valid|ts'
+    $case = $payload.Clone(); $case["$unit\msvcp140.dll"] = 'signed|Unexpected Publisher|Valid|ts'
     Test-Verify 'a VC++ runtime from an unexpected publisher' $case $unsigned "msvcp140.dll is a VC++ runtime but carries a Valid signature from 'Unexpected Publisher'"
-    $case = $payload.Clone(); $case['tools\vcruntime140.dll'] = 'signed|Microsoft Corporation|Valid|ts|another build'
+    $case = $payload.Clone(); $case["$unit\tools\vcruntime140.dll"] = 'signed|Microsoft Corporation|Valid|ts|another build'
     Test-Verify 'a substituted but validly signed VC++ runtime' $case $unsigned 'tools\vcruntime140.dll differs between'
-    $case = $payload.Clone(); $case['tools\pawnio\PawnIO_setup.exe'] = 'signed|namazso.eu|Valid|ts|another build'
+    $case = $payload.Clone(); $case["$unit\tools\pawnio\PawnIO_setup.exe"] = 'signed|namazso.eu|Valid|ts|another build'
     Test-Verify 'a substituted PawnIO setup' $case $unsigned 'tools\pawnio\PawnIO_setup.exe differs between'
 
     # Sign: first-party files get signed, vendor signatures stay untouched,

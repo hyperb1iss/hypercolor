@@ -2176,6 +2176,8 @@ jobs:
           if ($env:RUNNER_OS -eq "Windows") {
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-helper --bin hypercolor-windows-helper
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-launcher --bins
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-install --bin hypercolor-windows-unit
           }
 
       - name: Stage downloaded web assets
@@ -2228,7 +2230,13 @@ jobs:
           $nsisDirs = @("../../target/release/bundle/nsis", "target/release/bundle/nsis")
           if ($env:CARGO_TARGET_DIR) { $nsisDirs += Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis" }
           $nsisDirs | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item -Recurse -Force $_ }
-          cargo tauri build @buildArgs @configArgs
+          # The installer carries a unit of the finished programs, so the app
+          # is built first and bundled once the unit exists.
+          cargo tauri build --no-bundle @buildArgs @configArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ../../scripts/produce-windows-unit.ps1
+          cargo tauri bundle @buildArgs @configArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify installer DLL closure
         if: runner.os == 'Windows'
@@ -2287,7 +2295,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "gh release download $($older.Tag) failed with exit code $LASTEXITCODE" }
           $previous = Get-ChildItem $previousDir -Filter "*_x64-setup.exe" | Select-Object -First 1
           if (-not $previous) { throw "$($older.Tag) has no *_x64-setup.exe asset" }
-          foreach ($mode in "Interactive", "Silent") {
+          foreach ($mode in "Interactive", "Silent", "Killed") {
             ./scripts/test-windows-installer-upgrade.ps1 -PreviousInstaller $previous.FullName -CandidateInstaller $candidate.FullName -Mode $mode
           }
 
@@ -2349,9 +2357,15 @@ jobs:
           if (Test-Path -LiteralPath $payload) { Remove-Item -LiteralPath $payload -Recurse -Force }
           New-Item -ItemType Directory -Force -Path (Join-Path $payload "installer") | Out-Null
           Set-Content -NoNewline -LiteralPath (Join-Path $payload "version") -Value $env:VERSION
-          # Bundling patched the NSIS bundle type into this binary in place.
-          Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR "release/hypercolor-app.exe") -Destination $payload
+          # Signing changes these bytes, so the signing job produces the unit
+          # again, with the same producer, from what it signed.
+          $programs = Join-Path $payload "programs"
+          New-Item -ItemType Directory -Force -Path $programs | Out-Null
+          foreach ($program in "hypercolor-app", "hypercolor-daemon", "hypercolor", "hypercolor-smbus-service", "hypercolor-update-bootstrap", "hypercolor-windows-helper", "hypercolor-windows-unit") {
+            Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR "release/$program.exe") -Destination $programs
+          }
           Copy-Item -LiteralPath "target/bundle-stage" -Destination (Join-Path $payload "bundle-stage") -Recurse
+          Remove-Item -LiteralPath (Join-Path $payload "bundle-stage/windows-unit") -Recurse -Force
           $roots = @("target/release/bundle/nsis", "crates/hypercolor-app/target/release/bundle/nsis")
           if ($env:CARGO_TARGET_DIR) { $roots += Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis" }
           $installers = @($roots | Where-Object { Test-Path $_ } |
@@ -2628,10 +2642,10 @@ jobs:
           $config = Get-Content -Raw $configPath | ConvertFrom-Json
           $config.version = $version
           $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
-          # Put every input where build-native-app's Tauri build left it.
+          # Put every input where build-native-app's build left it.
           $release = Join-Path $env:CARGO_TARGET_DIR "release"
           New-Item -ItemType Directory -Force -Path $release | Out-Null
-          Copy-Item -LiteralPath (Join-Path $payload "hypercolor-app.exe") -Destination $release
+          Copy-Item -Path (Join-Path $payload "programs/*") -Destination $release
           Copy-Item -LiteralPath (Join-Path $payload "bundle-stage") -Destination "target/bundle-stage" -Recurse
           $unsigned = @(Get-ChildItem (Join-Path $payload "installer") -Filter "*_x64-setup.exe")
           if ($unsigned.Count -ne 1) { throw "the payload must carry one unsigned installer, found $($unsigned.Count)" }
@@ -2661,6 +2675,17 @@ jobs:
           WINDOWS_SIGNING_PUBLISHER: ${{ vars.WINDOWS_SIGNING_PUBLISHER }}
         run: ./scripts/sign-windows-artifacts.ps1 setup
 
+      # A unit holds its programs' exact bytes, so they are signed before the
+      # unit that carries them is produced.
+      - name: Sign Windows programs
+        if: needs.release-credentials.outputs.windows_signing == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/sign-windows-artifacts.ps1 sign-payload
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/produce-windows-unit.ps1
+
       - name: Bundle and sign Windows installer
         if: needs.release-credentials.outputs.windows_signing == 'true'
         working-directory: crates/hypercolor-app
@@ -2669,8 +2694,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           $nsis = Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis"
           if (Test-Path $nsis) { Remove-Item -Recurse -Force $nsis }
-          # The payload's app binary already carries its NSIS bundle type,
-          # and patching it again would only warn.
+          # The app in the unit is what ships, and the unit is already sealed,
+          # so the bundler has no reason to touch the binary it sees.
           cargo tauri bundle --ci --bundles nsis --no-binary-patching `
             --config tauri.bundle.conf.json `
             --config tauri.windows.bundle.conf.json `

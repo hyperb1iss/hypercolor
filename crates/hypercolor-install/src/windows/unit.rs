@@ -88,9 +88,9 @@ const fn tree(path: &'static str, source: Source) -> Placement {
     }
 }
 
-/// The unit tree: the flat layout the installer has always laid out, as
-/// `crates/hypercolor-app/tauri*.conf.json` describe it, plus the notices
-/// and the store inventory a unit carries like every other release.
+/// The unit tree: the programs, what they load from beside them, the UI and
+/// bundled effects, the hardware tools, and the notices. The store inventory
+/// joins them when the unit is written.
 pub(super) const LAYOUT: [Placement; 26] = [
     file("hypercolor-app.exe", Source::Built("hypercolor-app.exe")),
     file(

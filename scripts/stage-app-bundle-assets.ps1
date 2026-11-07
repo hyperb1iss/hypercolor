@@ -1,7 +1,11 @@
 param(
     [string] $Profile = 'release',
     [string] $Target = '',
-    [switch] $SkipPawnIo
+    [switch] $SkipPawnIo,
+    # A daemon built without Servo loads no ANGLE, and no build produces it,
+    # but a unit has members at those paths. The installer proof fills them
+    # with a real DLL that nothing loads.
+    [switch] $StandInAngle
 )
 
 $ErrorActionPreference = 'Stop'
@@ -244,9 +248,16 @@ Copy-Sidecar 'hypercolor'
 if (Test-WindowsTarget) {
     Copy-WindowsToolBinary 'hypercolor-smbus-service'
     Copy-WindowsToolBinary 'hypercolor-windows-helper'
+    Copy-WindowsToolBinary 'hypercolor-launcher'
 
-    Copy-AngleRuntime
     Copy-VcRuntime
+    if ($StandInAngle) {
+        foreach ($dll in 'libEGL.dll', 'libGLESv2.dll') {
+            Copy-Item -LiteralPath (Join-Path $StageDlls 'vcruntime140_1.dll') -Destination (Join-Path $StageDlls $dll) -Force
+        }
+    } else {
+        Copy-AngleRuntime
+    }
 
     if (-not $SkipPawnIo) {
         & (Join-Path $RepoRoot 'scripts\fetch-pawnio-assets.ps1') `
