@@ -954,6 +954,10 @@ impl UsbSession {
 impl DeviceSession for UsbSession {
     type Facts = UsbFacts;
 
+    /// Init runs on blocking transport threads with the native handle, and
+    /// dropping the wait would detach them.
+    const OPEN: Duration = Duration::MAX;
+
     /// Stopping the actor runs the protocol's shutdown sequence over USB.
     const CLEANUP: Duration = USB_ACTOR_SHUTDOWN_TIMEOUT.saturating_add(Duration::from_millis(100));
 
