@@ -26,7 +26,7 @@ use hypercolor_driver_api::{
     ValidatedControlChanges,
 };
 use hypercolor_driver_support::http::{BoundedHttpClient, BoundedResponse, ReadBudget};
-use hypercolor_driver_support::network::validate_ip;
+use hypercolor_driver_support::network::{tracked_fingerprints_by_ip, validate_ip};
 use hypercolor_driver_support::{MdnsScope, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::control::{ControlValue, IpText};
@@ -243,7 +243,8 @@ impl DiscoveryCapability for WledDriverModule {
             &cached_targets,
         );
         let mdns = request.mdns_enabled.then_some(MdnsScope::Network);
-        let mut scanner = WledScanner::with_known_targets(known_targets, mdns, request.timeout);
+        let mut scanner = WledScanner::with_known_targets(known_targets, mdns, request.timeout)
+            .with_tracked(tracked_fingerprints_by_ip(&tracked_devices));
         scanner.scan().await.map_err(DriverError::discovery)
     }
 }

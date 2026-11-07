@@ -225,7 +225,11 @@ fn admit_resolved(admission: &mut CandidateAdmission<IpAddr, MdnsService>, info:
         return;
     };
 
-    let name = info.get_hostname().trim_end_matches('.').to_owned();
+    // Fingerprints derive from this name, and an empty key is not one.
+    let name = match info.get_hostname().trim_end_matches('.') {
+        "" => host.to_string(),
+        name => name.to_owned(),
+    };
     let txt = info
         .get_properties()
         .iter()
@@ -294,6 +298,16 @@ mod tests {
             outcome.gaps,
             vec![CoverageGap::AdmissionFull { refused: 496 }]
         );
+    }
+
+    #[test]
+    fn a_service_with_an_empty_hostname_is_named_after_its_address() {
+        let mut admission = CandidateAdmission::new(1, []);
+        let mut service = resolved(host(1), 80);
+        service.host = ".".to_owned();
+        admit_resolved(&mut admission, &service);
+
+        assert_eq!(admission.finish().found[0].name, host(1).to_string());
     }
 
     #[test]

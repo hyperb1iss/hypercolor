@@ -11,11 +11,12 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use hypercolor_driver_api::{
-    DiscoveredDevice, DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation,
+    CoverageGap, DiscoveredDevice, DiscoveryBatch, DiscoveryConnectBehavior, DiscoveryObservation,
 };
 use hypercolor_driver_support::discovery::{
     DEFAULT_PROBE_CONCURRENCY, ProbeBudget, Probed, ScanOutcome, probe_candidates,
 };
+use hypercolor_driver_support::http::HttpError;
 use hypercolor_driver_support::{MdnsBrowser, MdnsScope, MdnsService};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -100,6 +101,7 @@ pub struct WledScanner {
     scan_timeout: Duration,
     /// Explicit IPs to probe over HTTP before or alongside mDNS.
     known_targets: Vec<WledKnownTarget>,
+    tracked: HashMap<IpAddr, DeviceFingerprint>,
     /// Interfaces to browse mDNS on, beside known-IP probing, if any.
     mdns: Option<MdnsScope>,
 }
@@ -111,6 +113,7 @@ impl WledScanner {
         Self {
             scan_timeout: DEFAULT_SCAN_TIMEOUT,
             known_targets: Vec::new(),
+            tracked: HashMap::new(),
             mdns: Some(MdnsScope::Network),
         }
     }
@@ -121,6 +124,7 @@ impl WledScanner {
         Self {
             scan_timeout: timeout,
             known_targets: Vec::new(),
+            tracked: HashMap::new(),
             mdns: Some(MdnsScope::Network),
         }
     }
@@ -135,8 +139,17 @@ impl WledScanner {
         Self {
             scan_timeout: timeout,
             known_targets,
+            tracked: HashMap::new(),
             mdns,
         }
+    }
+
+    /// Name the devices the host tracks now. A cached fingerprint may belong
+    /// to a device this run has not registered, so only these can be renewed.
+    #[must_use]
+    pub fn with_tracked(mut self, tracked: HashMap<IpAddr, DeviceFingerprint>) -> Self {
+        self.tracked = tracked;
+        self
     }
 
     /// Create a scanner that probes known IPs and optionally browses mDNS.
@@ -242,18 +255,22 @@ impl WledScanner {
     /// What a candidate without a working HTTP probe amounts to.
     ///
     /// Only mDNS can vouch for it: a device that advertised itself is alive,
-    /// and a known address nothing vouched for is simply gone.
+    /// and a known address nothing vouched for is simply gone. An advertised
+    /// device the host tracks renews its presence. Any other surfaces as a
+    /// deferred placeholder, under its cached identity when a previous run
+    /// left one, so it stays visible until HTTP answers.
     fn unprobed_observation(
         ip: IpAddr,
         target: WledKnownTarget,
         advertised: bool,
+        tracked: Option<&DeviceFingerprint>,
     ) -> Option<DiscoveryObservation> {
         if !advertised {
             debug!(ip = %ip, "Skipping stale WLED probe candidate without HTTP enrichment");
             return None;
         }
-        if let Some(fingerprint) = target.fingerprint {
-            return Some(DiscoveryObservation::Present(fingerprint));
+        if let Some(fingerprint) = tracked {
+            return Some(DiscoveryObservation::Present(fingerprint.clone()));
         }
         let hostname = target.hostname.as_deref()?;
         debug!(
@@ -261,9 +278,12 @@ impl WledScanner {
             hostname = %hostname,
             "Using mDNS-only WLED placeholder until HTTP enrichment succeeds"
         );
-        Some(DiscoveryObservation::Device(Self::build_discovered(
-            hostname, ip, None,
-        )))
+        let mut placeholder = Self::build_discovered(hostname, ip, None);
+        if let Some(fingerprint) = target.fingerprint {
+            placeholder.info.id = fingerprint.stable_device_id();
+            placeholder.fingerprint = fingerprint;
+        }
+        Some(DiscoveryObservation::Device(placeholder))
     }
 
     async fn browse_mdns(&self, known_ips: &[IpAddr]) -> Result<ScanOutcome<MdnsService>> {
@@ -286,8 +306,10 @@ impl WledScanner {
     /// Discover configured and mDNS-visible WLED devices.
     ///
     /// A known address that fails its HTTP probe and is not advertised is
-    /// simply gone. An advertised one is alive, so it renews presence when
-    /// the host tracks it and surfaces as a deferred placeholder when not.
+    /// simply gone, unless a controller answered and could not be read, which
+    /// holds the device tracked there. An advertised one is alive, so it
+    /// renews presence when the host tracks it and surfaces as a deferred
+    /// placeholder when not.
     ///
     /// # Errors
     ///
@@ -342,6 +364,8 @@ impl WledScanner {
 
         let mut observations = Vec::with_capacity(candidates.len());
         for (ip, target) in candidates {
+            let advertised = mdns_seen_ips.contains(&ip);
+            let tracked = self.tracked.get(&ip);
             let wled_info = match enriched.remove(&ip) {
                 Some(Ok(info)) => Some(info),
                 Some(Err(error)) => {
@@ -352,6 +376,15 @@ impl WledScanner {
                         error = %error,
                         "WLED candidate found but HTTP enrichment failed"
                     );
+                    if !advertised
+                        && controller_answered(&error)
+                        && let Some(fingerprint) = tracked
+                    {
+                        gaps.push(CoverageGap::DeviceUnverified {
+                            fingerprint: fingerprint.clone(),
+                            reason: format!("{error:#}"),
+                        });
+                    }
                     None
                 }
                 None => None,
@@ -367,16 +400,28 @@ impl WledScanner {
                 continue;
             }
 
-            observations.extend(Self::unprobed_observation(
-                ip,
-                target,
-                mdns_seen_ips.contains(&ip),
-            ));
+            observations.extend(Self::unprobed_observation(ip, target, advertised, tracked));
         }
 
         debug!(count = observations.len(), "WLED mDNS scan complete");
         Ok(DiscoveryBatch::new(observations, gaps))
     }
+}
+
+/// Whether a failed probe came from a live controller: a server error, or a
+/// reply it could not make sense of. Silence is not that, and neither is a 4xx
+/// from whatever host now holds the address.
+fn controller_answered(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<HttpError>())
+        .is_none_or(|http| match http {
+            HttpError::Status(status) => status.is_server_error(),
+            HttpError::Json(_) | HttpError::BodyTooLarge { .. } => true,
+            HttpError::ClientBuild(_) | HttpError::Transport(_) | HttpError::DeadlineExceeded => {
+                false
+            }
+        })
 }
 
 /// Fetch `/json/info` from a WLED device over HTTP, keeping the outcome for
@@ -389,9 +434,13 @@ async fn enrich_candidate(
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
     use super::*;
 
     const IP: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 7));
+    const CACHED: &str = "net:wled:aabbccddeeff";
 
     fn target(fingerprint: Option<&str>, hostname: Option<&str>) -> WledKnownTarget {
         WledKnownTarget {
@@ -402,23 +451,41 @@ mod tests {
     }
 
     #[test]
-    fn an_advertised_known_device_renews_presence_without_a_record() {
+    fn an_advertised_tracked_device_renews_presence_without_a_record() {
+        let tracked = DeviceFingerprint::from_persisted(CACHED.to_owned());
         let observation = WledScanner::unprobed_observation(
             IP,
-            target(Some("net:wled:aabbccddeeff"), Some("wled.local")),
+            target(Some(CACHED), Some("wled.local")),
             true,
+            Some(&tracked),
         );
         assert!(matches!(
             observation,
-            Some(DiscoveryObservation::Present(fingerprint))
-                if fingerprint.as_str() == "net:wled:aabbccddeeff"
+            Some(DiscoveryObservation::Present(fingerprint)) if fingerprint == tracked
         ));
+    }
+
+    #[test]
+    fn an_advertised_device_this_run_never_registered_stays_visible_under_its_cached_identity() {
+        let observation = WledScanner::unprobed_observation(
+            IP,
+            target(Some(CACHED), Some("wled.local")),
+            true,
+            None,
+        );
+        let Some(DiscoveryObservation::Device(device)) = observation else {
+            panic!("a fresh registry would discard presence, so this must be a description");
+        };
+        assert_eq!(device.fingerprint.as_str(), CACHED);
+        assert_eq!(device.info.id, device.fingerprint.stable_device_id());
+        assert_eq!(device.connect_behavior, DiscoveryConnectBehavior::Deferred);
+        assert!(device.claim.is_none(), "a cached string proves nothing");
     }
 
     #[test]
     fn an_advertised_stranger_becomes_a_deferred_placeholder() {
         let observation =
-            WledScanner::unprobed_observation(IP, target(None, Some("wled.local")), true);
+            WledScanner::unprobed_observation(IP, target(None, Some("wled.local")), true, None);
         let Some(DiscoveryObservation::Device(device)) = observation else {
             panic!("an advertised device with no identity surfaces as a placeholder");
         };
@@ -427,11 +494,61 @@ mod tests {
 
     #[test]
     fn a_silent_address_nothing_advertised_is_gone() {
+        let tracked = DeviceFingerprint::from_persisted(CACHED.to_owned());
         let observation = WledScanner::unprobed_observation(
             IP,
-            target(Some("net:wled:aabbccddeeff"), Some("wled.local")),
+            target(Some(CACHED), Some("wled.local")),
             false,
+            Some(&tracked),
         );
         assert!(observation.is_none());
+    }
+
+    /// The error a probe of a server answering `reply` ends in.
+    async fn probe_error(reply: &'static str) -> anyhow::Error {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut buffer = [0_u8; 512];
+            let _ = stream.read(&mut buffer).await;
+            let _ = stream.write_all(reply.as_bytes()).await;
+        });
+        http_probe(addr).await
+    }
+
+    async fn http_probe(addr: std::net::SocketAddr) -> anyhow::Error {
+        let client = crate::wled_info_http_client().expect("client");
+        crate::fetch_json(
+            client,
+            &format!("http://{addr}/json/info"),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect_err("no reply here is valid JSON")
+    }
+
+    #[tokio::test]
+    async fn a_server_error_or_garbage_comes_from_a_live_controller() {
+        let server_error =
+            probe_error("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n");
+        assert!(controller_answered(&server_error.await));
+        let garbage = probe_error("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nnope");
+        assert!(controller_answered(&garbage.await));
+        assert!(
+            controller_answered(&anyhow::anyhow!("reply is missing the LED count")),
+            "JSON that is not WLED's still came from something alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn silence_and_a_foreign_host_are_not_a_live_controller() {
+        let not_found = probe_error("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        assert!(!controller_answered(&not_found.await));
+
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = closed.local_addr().expect("address");
+        drop(closed);
+        assert!(!controller_answered(&http_probe(addr).await));
     }
 }
