@@ -18,6 +18,7 @@ use hypercolor_driver_adalight::{
 use hypercolor_driver_api::{
     DeviceBackend, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource,
 };
+use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde_json::{Value, json};
@@ -721,4 +722,64 @@ async fn metadata_neither_authorizes_nor_redirects_an_open() {
             .adopt_device(&unconfigured)
             .expect_err("metadata alone authorizes nothing"),
     );
+}
+
+// ── Session contract ────────────────────────────────────────────────────
+
+struct SerialRig {
+    rig: Rig,
+    id: DeviceId,
+    pty: Pty,
+}
+
+#[async_trait::async_trait]
+impl SessionRig for SerialRig {
+    fn backend(&self) -> &dyn DeviceBackend {
+        &self.rig.backend
+    }
+
+    fn device_id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn frame(&self, shade: u8) -> Vec<[u8; 3]> {
+        vec![[shade, 0, 255]]
+    }
+
+    async fn saw_traffic(&mut self, window: Duration) -> bool {
+        let mut buffer = [0_u8; 64];
+        tokio::time::timeout(window, self.pty.master.read(&mut buffer))
+            .await
+            .is_ok_and(|read| read.is_ok_and(|count| count > 0))
+    }
+
+    async fn discard_traffic(&mut self) {
+        let mut buffer = [0_u8; 256];
+        while tokio::time::timeout(Duration::from_millis(50), self.pty.master.read(&mut buffer))
+            .await
+            .is_ok_and(|read| read.is_ok_and(|count| count > 0))
+        {}
+    }
+
+    /// The backend opens ports exclusively, so another open proves the
+    /// descriptor is gone.
+    async fn assert_transport_released(&mut self) {
+        let reopened = tokio_serial::new(&self.pty.slave_path, 115_200)
+            .open_native()
+            .expect("a closed session must release its port");
+        drop(reopened);
+    }
+}
+
+#[tokio::test]
+async fn adalight_sessions_keep_the_contract() {
+    let pty = pty();
+    let rig = Rig::new();
+    let id = rig
+        .connected(json!({ "id": "desk", "port": pty.slave_path, "led_count": 1 }))
+        .await;
+    rig.backend.disconnect(&id).await.expect("disconnect");
+
+    let mut contract = SerialRig { rig, id, pty };
+    assert_session_contract(&mut contract).await;
 }

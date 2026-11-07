@@ -14,20 +14,20 @@
 //! delivery so the lifecycle reconnects. Frames never queue behind the
 //! UART.
 
-use std::collections::HashMap;
-use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice,
-    DriverConfigSource, DriverConfigView, DriverError, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceFrameSink, DeviceLifecyclePolicy,
+    DeviceWriteOutcome, DiscoveredDevice, DriverConfigSource, DriverConfigView, DriverError,
+    OutputCadence,
 };
-use hypercolor_driver_support::ConfiguredDevices;
+use hypercolor_driver_support::{
+    ConfiguredDevices, DeviceSession, FrameDelivery, Session, SessionTable,
+};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
 use tokio_serial::{
     ClearBuffer, DataBits, FlowControl, Parity, SerialPort, SerialPortBuilderExt, SerialStream,
     StopBits,
@@ -78,14 +78,7 @@ pub struct AdalightBackend {
     /// The live config, the only authority on what may open.
     devices: ConfiguredDevices<AdalightDevicePlan>,
     /// Connected sessions.
-    sessions: StdRwLock<HashMap<DeviceId, OpenSession>>,
-}
-
-/// A connected session with its plan readable without the session lock.
-#[derive(Clone)]
-struct OpenSession {
-    plan: Arc<AdalightDevicePlan>,
-    session: Arc<Mutex<AdalightSession>>,
+    sessions: SessionTable<AdalightSession>,
 }
 
 /// Every configured device with its plan, for [`ConfiguredDevices`].
@@ -108,24 +101,8 @@ impl AdalightBackend {
     pub fn new(config: Arc<dyn DriverConfigSource>) -> Self {
         Self {
             devices: ConfiguredDevices::new(crate::DESCRIPTOR.id, config, configured_plans),
-            sessions: StdRwLock::default(),
+            sessions: SessionTable::new(),
         }
-    }
-
-    fn session(&self, id: &DeviceId) -> Option<OpenSession> {
-        self.sessions
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    }
-
-    fn require_session(&self, id: &DeviceId) -> Result<Arc<Mutex<AdalightSession>>, DeviceError> {
-        self.session(id)
-            .map(|open| open.session)
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })
     }
 }
 
@@ -160,22 +137,19 @@ impl DeviceBackend for AdalightBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        self.sessions.ensure_accepting(id)?;
         let device = self.devices.current(id)?;
         let plan = Arc::clone(device.plan());
 
-        if let Some(existing) = self.session(id) {
-            let mut session = existing.session.lock().await;
-            if *session.plan == *plan {
+        if let Some(open) = self.sessions.facts(id) {
+            if *open == plan {
                 return Ok(());
             }
             // The config changed under a live session: release the old port
             // before reopening, since the open is exclusive.
-            session.close_and_wait(DISCONNECT_BUDGET).await;
-            drop(session);
-            self.sessions
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(id);
+            if let Err(error) = self.sessions.close(id).await {
+                debug!(device_id = %id, error = %error, "closing a moved serial session failed");
+            }
         }
 
         // Closing an old session can take a while; check again right
@@ -218,112 +192,36 @@ impl DeviceBackend for AdalightBackend {
             );
         }
 
-        let session = Arc::new(Mutex::new(AdalightSession::new(
-            *id,
-            Arc::clone(&plan),
-            port,
-        )));
+        let session = AdalightSession::new(*id, Arc::clone(&plan), port);
         self.sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, OpenSession { plan, session });
-        Ok(())
+            .install(Session::new(*id, plan, session))
+            .await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let started = Instant::now();
-        let open = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id)
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-        let mut session = open.session.lock().await;
-        if let Err(error) = session.finish().await {
-            debug!(
-                device_id = %id,
-                port = %session.plan.port,
-                error = %format!("{error:#}"),
-                "best-effort serial blackout frames failed"
-            );
-        }
-        session
-            .close_and_wait(DISCONNECT_BUDGET.saturating_sub(started.elapsed()))
-            .await;
+        self.sessions.close(id).await?;
         info!(device_id = %id, "Disconnected serial LED controller");
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.sessions.retire().await
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        let session = self.require_session(id)?;
-        let mut session = session.lock().await;
-        session
-            .write_colors(colors)
-            .await
-            .map(|_| ())
-            .map_err(|error| DeviceError::write(id, format!("{error:#}")))
-    }
-
-    async fn write_colors_shared(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<(), DeviceError> {
-        self.write_colors(id, colors.as_slice()).await
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let session = self.require_session(id)?;
-        let mut session = session.lock().await;
-        session
-            .write_colors(colors.as_slice())
-            .await
-            .map_err(|error| DeviceError::write(id, format!("{error:#}")))
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        match self.require_session(device_id) {
-            Ok(session) => {
-                deliver_observed(
-                    *device_id,
-                    &session,
-                    delivery_id,
-                    &colors,
-                    observer.as_ref(),
-                )
-                .await
-            }
-            Err(error) => DeviceDeliveryAck::rejected(delivery_id, error),
-        }
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.session(id).map(|open| open.plan.effective_max_fps())
+        self.sessions.facts(id).map(|plan| plan.effective_max_fps())
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.session(id).map(|open| output_cadence_for(&open.plan))
+        self.sessions.facts(id).map(|plan| output_cadence_for(&plan))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.session(id).map(|open| {
-            Arc::new(AdalightFrameSink {
-                device_id: *id,
-                session: open.session,
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.sessions.frame_sink(id)
     }
 }
 
@@ -418,63 +316,6 @@ async fn log_greeting(id: DeviceId, plan: &AdalightDevicePlan, port: &mut Serial
     );
 }
 
-async fn deliver_observed(
-    device_id: DeviceId,
-    session: &Arc<Mutex<AdalightSession>>,
-    delivery_id: DeviceDeliveryId,
-    colors: &[[u8; 3]],
-    observer: &dyn DeviceDeliveryObserver,
-) -> DeviceDeliveryAck {
-    let started_at = Instant::now();
-    let mut session = session.lock().await;
-    let payload_bytes = session.plan.frame_bytes();
-    observer.transport_started(delivery_id);
-    let result = session
-        .write_colors(colors)
-        .await
-        .map_err(|error| DeviceError::write(device_id, format!("{error:#}")));
-    DeviceDeliveryAck::from_write_result(delivery_id, payload_bytes, started_at.elapsed(), result)
-}
-
-struct AdalightFrameSink {
-    device_id: DeviceId,
-    session: Arc<Mutex<AdalightSession>>,
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for AdalightFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        self.write_colors_shared_outcome(colors).await.map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let mut session = self.session.lock().await;
-        session
-            .write_colors(colors.as_slice())
-            .await
-            .map_err(|error| DeviceError::write(self.device_id, format!("{error:#}")))
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        deliver_observed(
-            self.device_id,
-            &self.session,
-            id,
-            &colors,
-            observer.as_ref(),
-        )
-        .await
-    }
-}
-
 // ── Session ─────────────────────────────────────────────────────────────
 
 struct AdalightSession {
@@ -509,7 +350,11 @@ impl AdalightSession {
         }
     }
 
-    async fn write_colors(&mut self, colors: &[[u8; 3]]) -> Result<DeviceWriteOutcome> {
+    async fn write_colors(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome> {
         self.warn_on_size_mismatch(colors.len());
         match self.drain_verdict() {
             DrainVerdict::Clear => {}
@@ -524,6 +369,9 @@ impl AdalightSession {
             ),
         }
         self.encoder.encode(colors);
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
+        }
         self.send_frame(self.stall_budget).await?;
         self.has_sent = true;
         Ok(DeviceWriteOutcome::Sent)
@@ -532,7 +380,7 @@ impl AdalightSession {
     /// Send black frames so the strip goes dark when output stops. Frames
     /// still waiting in the OS driver are discarded first, so the blackout
     /// goes out at once and the close drains only the blackout.
-    async fn finish(&mut self) -> Result<()> {
+    async fn black_out(&mut self) -> Result<()> {
         if !self.has_sent {
             return Ok(());
         }
@@ -654,6 +502,57 @@ impl AdalightSession {
     }
 }
 
+impl DeviceSession for AdalightSession {
+    type Facts = Arc<AdalightDevicePlan>;
+
+    const CLEANUP: Duration = DISCONNECT_BUDGET.saturating_add(Duration::from_millis(100));
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        self.write_colors(colors, delivery)
+            .await
+            .map_err(|error| DeviceError::write(self.device_id, format!("{error:#}")))
+    }
+
+    /// Acknowledge encoded frame bytes, which is what the line carries.
+    async fn deliver_frame(
+        &mut self,
+        delivery: FrameDelivery,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = self.plan.frame_bytes();
+        let started_at = Instant::now();
+        let result = self.write_frame(colors.as_slice(), Some(&delivery)).await;
+        DeviceDeliveryAck::from_write_result(
+            delivery.id(),
+            payload_bytes,
+            started_at.elapsed(),
+            result,
+        )
+    }
+
+    /// Black out the strip, then release the port and its exclusive lock.
+    async fn finish(mut self) -> Result<(), DeviceError> {
+        let started = Instant::now();
+        if let Err(error) = self.black_out().await {
+            debug!(
+                device_id = %self.device_id,
+                port = %self.plan.port,
+                error = %format!("{error:#}"),
+                "best-effort serial blackout frames failed"
+            );
+        }
+        self.close_and_wait(DISCONNECT_BUDGET.saturating_sub(started.elapsed()))
+            .await;
+        Ok(())
+    }
+}
+
+/// Closing a tty can block for its full closing wait, so a session that ends
+/// by any path still hands its port to a blocking thread.
 impl Drop for AdalightSession {
     fn drop(&mut self) {
         drop(self.close());
