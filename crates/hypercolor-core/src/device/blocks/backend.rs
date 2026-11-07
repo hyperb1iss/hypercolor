@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 
 use anyhow::Result;
 use tokio::sync::Mutex;
@@ -29,7 +29,7 @@ pub struct BlocksBackend {
     /// Touch and button input, when the host accepts device input.
     input: Option<BlocksInput>,
     /// Device-change watcher, when the host accepts discovery requests.
-    watcher: Option<BlocksDeviceWatcher>,
+    watcher: StdMutex<Option<BlocksDeviceWatcher>>,
 }
 
 #[derive(Clone)]
@@ -70,7 +70,7 @@ impl BlocksBackend {
                 retired: false,
             }),
             input: None,
-            watcher: None,
+            watcher: StdMutex::new(None),
         }
     }
 
@@ -93,11 +93,12 @@ impl BlocksBackend {
         runtime: Arc<dyn DriverRuntimeActions>,
         driver_id: &str,
     ) -> Self {
-        self.watcher =
+        let watcher =
             BlocksDeviceWatcher::spawn(self.socket_path.clone(), runtime, Arc::from(driver_id));
-        if self.watcher.is_none() {
+        if watcher.is_none() {
             warn!("no Tokio runtime for the blocksd device watcher; relying on periodic scans");
         }
+        self.watcher = StdMutex::new(watcher);
         self
     }
 
@@ -295,14 +296,27 @@ impl DeviceBackend for BlocksBackend {
         Ok(())
     }
 
+    /// End everything this backend owns: the device sessions and the
+    /// blocksd socket they share, the input stream, and the device watcher.
     async fn retire(&self) -> Result<(), DeviceError> {
-        let open: Vec<DeviceId> = {
+        {
             let mut state = self.state.lock().await;
             state.retired = true;
-            state.devices.keys().copied().collect()
-        };
-        for id in open {
-            self.disconnect(&id).await?;
+            state.connection = None;
+            for device in state.devices.values_mut() {
+                device.connected = false;
+            }
+        }
+        if let Some(input) = &self.input {
+            input.shut_down().await;
+        }
+        let watcher = self
+            .watcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(watcher) = watcher {
+            watcher.stop().await;
         }
         Ok(())
     }
@@ -339,6 +353,11 @@ impl DeviceBackend for BlocksBackend {
         let device = state.devices.get(id).ok_or_else(|| DeviceError::NotFound {
             device: id.to_string(),
         })?;
+        if state.retired || !device.connected {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
+        }
 
         let uid = device.uid;
 

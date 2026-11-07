@@ -95,6 +95,39 @@ fn serve_backend_handshake(socket_path: &Path, acks: &'static [u8]) -> TestResul
 }
 
 #[tokio::test]
+async fn retirement_revokes_every_operation_and_drops_the_socket() -> TestResult {
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let (frame_rx, server_task) = serve_backend_handshake(&socket_path, &[0x01])?;
+
+    let mut scanner = BlocksScanner::new(socket_path.clone());
+    let discovered = scanner.scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    backend.adopt_device(&discovered[0])?;
+    let device_id = discovered[0].info.id;
+    backend.connect(&device_id).await?;
+    backend.write_colors(&device_id, &[[1, 2, 3]]).await?;
+    frame_rx.await?;
+    server_task.await??;
+
+    backend.retire().await?;
+
+    assert!(matches!(
+        backend.set_brightness(&device_id, 10).await,
+        Err(DeviceError::Disconnected { .. })
+    ));
+    assert!(matches!(
+        backend.write_colors(&device_id, &[[1, 2, 3]]).await,
+        Err(DeviceError::Disconnected { .. })
+    ));
+    assert!(
+        backend.connect(&device_id).await.is_err(),
+        "a retired backend refuses connects"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
     let tempdir = tempdir()?;
     let socket_path = tempdir.path().join("blocksd.sock");

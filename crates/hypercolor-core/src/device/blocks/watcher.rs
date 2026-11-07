@@ -53,6 +53,12 @@ impl BlocksDeviceWatcher {
         });
         Some(Self { task })
     }
+
+    /// Stop the task and wait for it to go.
+    pub(super) async fn stop(mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+    }
 }
 
 impl Drop for BlocksDeviceWatcher {

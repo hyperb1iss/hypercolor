@@ -135,6 +135,24 @@ impl BlocksInput {
     }
 }
 
+impl BlocksInput {
+    /// Stop publishing input for every device and wait for the event
+    /// connection to go.
+    pub(super) async fn shut_down(&self) {
+        let task = {
+            let mut state = lock(&self.state);
+            state.devices.clear();
+            state.streaming = false;
+            state.stream_generation = state.stream_generation.wrapping_add(1);
+            lock(&self.stream).take()
+        };
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
 impl Drop for BlocksInput {
     fn drop(&mut self) {
         // Retire the stream's generation too, so a stream mid-poll cannot
