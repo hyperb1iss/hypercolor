@@ -54,11 +54,17 @@ pub use protocol::{
 };
 
 const DEFAULT_DEDUP_THRESHOLD: u8 = 2;
+/// WLED's JSON API, unless discovery says otherwise.
+const DEFAULT_API_PORT: u16 = 80;
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_mins(1);
+
+/// Longest the clear frame may take, so a stuck one leaves the realtime exit
+/// its whole budget.
+const CLEAR_FRAME_BOUND: Duration = Duration::from_millis(500);
 
 /// What a connect fixed about one session.
 pub struct WledFacts {
-    ip: IpAddr,
+    api_addr: SocketAddr,
     target_fps: u32,
     e131_start_universe: u16,
     local_addr: Option<SocketAddr>,
@@ -71,7 +77,7 @@ impl DeviceSession for WledDevice {
     /// that would leave the device in live override with nobody to exit it.
     const SETTLE: Duration = REALTIME_HTTP_TIMEOUT;
     /// One HTTP exit from realtime mode, plus the clear frame before it.
-    const CLEANUP: Duration = REALTIME_HTTP_TIMEOUT.saturating_add(Duration::from_millis(500));
+    const CLEANUP: Duration = REALTIME_HTTP_TIMEOUT.saturating_add(CLEAR_FRAME_BOUND);
 
     async fn write_frame(
         &mut self,
@@ -113,19 +119,19 @@ impl DeviceSession for WledDevice {
 
     /// Blank the strip and hand it back to WLED's own effects. Both steps
     /// are best effort: the session is ending either way.
-    async fn finish(mut self) -> std::result::Result<(), DeviceError> {
-        if self.last_sent_pixels.is_some()
-            && let Err(error) = clear_device(&mut self).await
-        {
-            debug!(
-                device_id = %self.device_id,
-                ip = %self.ip,
-                error = %error,
-                "best-effort WLED clear frame failed during disconnect"
-            );
+    async fn finish(&mut self) -> std::result::Result<(), DeviceError> {
+        if self.last_sent_pixels.is_some() {
+            let cleared = tokio::time::timeout(CLEAR_FRAME_BOUND, clear_device(self)).await;
+            if !matches!(cleared, Ok(Ok(()))) {
+                debug!(
+                    device_id = %self.device_id,
+                    ip = %self.ip,
+                    "best-effort WLED clear frame failed during disconnect"
+                );
+            }
         }
         if self.realtime_mode_active
-            && let Err(error) = exit_realtime_mode(self.ip).await
+            && let Err(error) = exit_realtime_mode(self.api_addr).await
         {
             debug!(
                 device_id = %self.device_id,
@@ -146,19 +152,19 @@ impl WledDevice {
 
         let id = self.device_id;
         if self.realtime_http_enabled {
-            enter_realtime_mode(self.ip)
+            enter_realtime_mode(self.api_addr)
                 .await
                 .with_context(|| format!("Failed to enter realtime mode for WLED device {id}"))?;
             self.realtime_mode_active = true;
             validate_wled_receiver_config(
-                self.ip,
+                self.api_addr,
                 self.protocol,
                 self.color_format,
                 self.e131_start_universe,
             )
             .await;
             if let Err(error) = prime_device(self).await {
-                if let Err(exit_error) = exit_realtime_mode(self.ip).await {
+                if let Err(exit_error) = exit_realtime_mode(self.api_addr).await {
                     debug!(
                         device_id = %id,
                         ip = %self.ip,
@@ -186,8 +192,8 @@ pub struct WledBackend {
     /// shared socket, so closing one leaves the others sending.
     sessions: SessionTable<WledDevice>,
 
-    /// Maps `DeviceId` to IP for lookup during connect.
-    device_ips: StdRwLock<HashMap<DeviceId, IpAddr>>,
+    /// Maps `DeviceId` to its JSON API address for lookup during connect.
+    device_addrs: StdRwLock<HashMap<DeviceId, SocketAddr>>,
 
     /// Maps `DeviceId` to parsed info for lazy connect.
     device_infos: StdRwLock<HashMap<DeviceId, WledDeviceInfo>>,
@@ -217,7 +223,7 @@ impl WledBackend {
     pub fn new() -> Self {
         Self {
             sessions: SessionTable::new(),
-            device_ips: StdRwLock::new(HashMap::new()),
+            device_addrs: StdRwLock::new(HashMap::new()),
             device_infos: StdRwLock::new(HashMap::new()),
             default_protocol: WledProtocol::default(),
             shared_socket: OnceCell::new(),
@@ -360,10 +366,15 @@ impl DeviceBackend for WledBackend {
             effect_count: 0,
             palette_count: 0,
         };
-        self.device_ips
+        let api_port = discovered
+            .metadata
+            .get("api_port")
+            .and_then(|port| port.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_API_PORT);
+        self.device_addrs
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(discovered.info.id, ip);
+            .insert(discovered.info.id, SocketAddr::new(ip, api_port));
         self.device_infos
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -376,27 +387,26 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        let ip = {
-            let device_ips = self
-                .device_ips
+        let api_addr = {
+            let device_addrs = self
+                .device_addrs
                 .read()
                 .unwrap_or_else(PoisonError::into_inner);
-            device_ips
+            device_addrs
                 .get(id)
                 .copied()
                 .ok_or(DeviceError::NotAdopted { device_id: *id })?
         };
-        if let Some(open) = self.sessions.facts(id) {
-            if open.ip == ip {
-                return Ok(());
-            }
-            // The device moved. Finish with the old address first, so its
-            // realtime exit cannot land on the session replacing it.
-            if let Err(error) = self.sessions.close(id).await {
-                debug!(device_id = %id, error = %error, "closing a moved WLED session failed");
-            }
-        }
+        let ip = api_addr.ip();
+        // A device that moved closes first, so its realtime exit cannot land
+        // on the session replacing it.
+        let Some(ticket) = self
+            .sessions
+            .open_unless(id, |open| open.api_addr == api_addr)
+            .await?
+        else {
+            return Ok(());
+        };
         let wled_info = {
             let device_infos = self
                 .device_infos
@@ -430,6 +440,7 @@ impl DeviceBackend for WledBackend {
         let device = WledDevice {
             device_id: *id,
             ip,
+            api_addr,
             protocol,
             pixel_addr,
             color_format,
@@ -462,14 +473,12 @@ impl DeviceBackend for WledBackend {
         );
 
         let facts = WledFacts {
-            ip,
+            api_addr,
             target_fps: device.info.negotiated_target_fps(),
             e131_start_universe: device.e131_start_universe,
             local_addr: device.socket.local_addr().ok(),
         };
-        self.sessions
-            .install(Session::new(*id, facts, device))
-            .await
+        ticket.install(Session::new(*id, facts, device)).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {

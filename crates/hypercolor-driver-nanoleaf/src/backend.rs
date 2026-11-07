@@ -210,10 +210,9 @@ impl DeviceBackend for NanoleafBackend {
         reason = "connect performs credential lookup, metadata refresh, and stream bootstrap in one linear flow"
     )]
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             return Ok(());
-        }
+        };
 
         let discovered = self
             .discovered
@@ -309,7 +308,7 @@ impl DeviceBackend for NanoleafBackend {
 
         let led_count = usize::try_from(info.total_led_count()).unwrap_or(usize::MAX);
         let panels = info.total_led_count();
-        self.sessions
+        ticket
             .install(Session::new(
                 *id,
                 info,

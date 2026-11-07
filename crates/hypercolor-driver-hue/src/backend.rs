@@ -46,6 +46,10 @@ const HUE_MAX_FRAME_SILENCE: Duration = Duration::from_secs(1);
 /// pathological case needs a tracked, cancellable background connect instead.
 const HUE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Longest the DTLS goodbye may take, so a wedged one leaves the stop its
+/// whole budget.
+const HUE_DTLS_CLOSE_BOUND: Duration = Duration::from_secs(1);
+
 /// Budget for closing the DTLS stream and stopping entertainment mode.
 ///
 /// A bridge left streaming refuses the next client, so the stop must get
@@ -159,9 +163,11 @@ impl DeviceSession for HueSession {
     ///
     /// A failed DTLS close only means the bridge already dropped the stream,
     /// so it never stands in the way of the stop that frees the bridge.
-    async fn finish(self) -> Result<(), DeviceError> {
-        if let Err(error) = self.stream.close().await {
-            debug!(device_id = %self.device_id, %error, "Hue DTLS close failed");
+    async fn finish(&mut self) -> Result<(), DeviceError> {
+        match tokio::time::timeout(HUE_DTLS_CLOSE_BOUND, self.stream.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => debug!(device_id = %self.device_id, %error, "Hue DTLS close failed"),
+            Err(_) => debug!(device_id = %self.device_id, "Hue DTLS close timed out"),
         }
         self.client
             .stop_streaming(&self.entertainment_config.id)
@@ -301,10 +307,9 @@ impl DeviceBackend for HueBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             return Ok(());
-        }
+        };
 
         let discovered = self
             .discovered
@@ -421,7 +426,7 @@ impl DeviceBackend for HueBackend {
             );
 
         let channels = entertainment_config.channels.len();
-        self.sessions
+        ticket
             .install(Session::new(
                 *id,
                 (),

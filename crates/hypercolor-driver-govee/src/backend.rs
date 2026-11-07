@@ -325,7 +325,7 @@ impl DeviceSession for GoveeSession {
             .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
-    async fn finish(self) -> std::result::Result<(), DeviceError> {
+    async fn finish(&mut self) -> std::result::Result<(), DeviceError> {
         self.shut_down()
             .await
             .map_err(|error| DeviceError::write(self.device_id, error))
@@ -484,10 +484,9 @@ impl DeviceBackend for GoveeBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             return Ok(());
-        }
+        };
         let route = self
             .route(id)
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
@@ -495,7 +494,7 @@ impl DeviceBackend for GoveeBackend {
             .open_session(*id, route)
             .await
             .map_err(|error| DeviceError::connection(id, error))?;
-        self.sessions.install(session).await
+        ticket.install(session).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {

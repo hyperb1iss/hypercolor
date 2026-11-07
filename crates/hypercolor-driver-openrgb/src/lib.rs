@@ -99,6 +99,9 @@ const OUTPUT_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Budget for stopping the writer and restoring the controller's mode.
 const SESSION_CLEANUP_BUDGET: Duration = Duration::from_secs(4);
+
+/// Time a closing session's caller waits for the shared link to go down.
+const SESSION_RELEASE_BUDGET: Duration = Duration::from_secs(1);
 const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_STARTED: u8 = 1;
 const DELIVERY_REJECTED: u8 = 2;
@@ -496,10 +499,9 @@ impl DeviceBackend for OpenRgbBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             return Ok(());
-        }
+        };
         let route = self
             .discovered_route(id)
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
@@ -530,9 +532,7 @@ impl DeviceBackend for OpenRgbBackend {
                     controller,
                     target_fps,
                 };
-                self.sessions
-                    .install(Session::new(*id, facts, session))
-                    .await
+                ticket.install(Session::new(*id, facts, session)).await
             }
             Err(error) => Err(map_openrgb_device_error(
                 *id,
@@ -714,8 +714,8 @@ impl OpenRgbSession {
         }
     }
 
-    /// Hand the controller back and leave the endpoint.
-    async fn tear_down(&mut self) {
+    /// Hand the controller back.
+    async fn restore_controller(&mut self) {
         let id = self.device_id;
         {
             let mut link = self.endpoint.link.lock().await;
@@ -740,9 +740,6 @@ impl OpenRgbSession {
                 }
             }
         }
-        self.endpoint.unregister_controller(&id);
-        self.released = true;
-        endpoint_pool().release_if_idle(&self.endpoint).await;
     }
 }
 
@@ -750,6 +747,7 @@ impl DeviceSession for OpenRgbSession {
     type Facts = OpenRgbFacts;
 
     const CLEANUP: Duration = SESSION_CLEANUP_BUDGET;
+    const RELEASE: Duration = SESSION_RELEASE_BUDGET;
 
     fn write_frame(
         &mut self,
@@ -765,9 +763,18 @@ impl DeviceSession for OpenRgbSession {
         )
     }
 
-    async fn finish(mut self) -> std::result::Result<(), DeviceError> {
+    async fn finish(&mut self) -> std::result::Result<(), DeviceError> {
         self.stop_writer().await;
-        self.tear_down().await;
+        self.restore_controller().await;
+        Ok(())
+    }
+
+    /// Leave the endpoint. The last session on it takes the shared link
+    /// and its task along, and this waits for both.
+    async fn release(mut self) -> std::result::Result<(), DeviceError> {
+        self.endpoint.unregister_controller(&self.device_id);
+        self.released = true;
+        endpoint_pool().release_if_idle(&self.endpoint).await;
         Ok(())
     }
 }
@@ -1488,6 +1495,7 @@ impl EndpointConnection {
             .take();
         if let Some(task) = task {
             task.abort();
+            let _ = task.await;
         }
         // Keep retirement ordered across deferred cleanup and replacement
         // acquisition, including the socket's asynchronous close.

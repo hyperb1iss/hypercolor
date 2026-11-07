@@ -209,7 +209,7 @@ impl DeviceSession for TwinklySession {
     /// Put the device back in the mode it had before connect, bounded by
     /// [`RESTORE_TIMEOUT`]. Skipped when another app holds the lights or the
     /// session already failed.
-    async fn finish(self) -> Result<(), DeviceError> {
+    async fn finish(&mut self) -> Result<(), DeviceError> {
         let Some(mode) = self.previous_mode.as_deref() else {
             return Ok(());
         };
@@ -613,10 +613,9 @@ impl DeviceBackend for TwinklyBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             return Ok(());
-        }
+        };
         let endpoint = self
             .adopted
             .read()
@@ -630,7 +629,7 @@ impl DeviceBackend for TwinklyBackend {
             .await
             .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
         let facts = session.facts();
-        self.sessions.install(session).await?;
+        ticket.install(session).await?;
         info!(
             device_id = %id,
             %endpoint,

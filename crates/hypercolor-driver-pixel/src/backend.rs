@@ -203,18 +203,16 @@ impl DeviceBackend for PixelBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
         let device = self.devices.current(id)?;
         let plan = Arc::clone(device.plan());
-        if let Some(open) = self.sessions.facts(id) {
-            if open.plan == plan {
-                return Ok(());
-            }
-            // The device moved, so the old stream ends properly first.
-            if let Err(error) = self.sessions.close(id).await {
-                debug!(device_id = %id, error = %error, "closing a moved pixel session failed");
-            }
-        }
+        // A device that moved closes first, so its old stream ends properly.
+        let Some(ticket) = self
+            .sessions
+            .open_unless(id, |open| open.plan == plan)
+            .await?
+        else {
+            return Ok(());
+        };
         let socket = self
             .socket_for(&plan)
             .await
@@ -237,9 +235,7 @@ impl DeviceBackend for PixelBackend {
         };
         let session = PixelSession::new(*id, plan, socket, &self.installation_id)
             .map_err(|error| DeviceError::connection(id, error))?;
-        self.sessions
-            .install(Session::new(*id, facts, session))
-            .await
+        ticket.install(Session::new(*id, facts, session)).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
@@ -541,7 +537,7 @@ impl DeviceSession for PixelSession {
     /// Send the black frame and E1.31 termination. Dropping the session
     /// then releases its socket, which frees UDP 6454 for other applications
     /// once no open session uses it.
-    async fn finish(mut self) -> Result<(), DeviceError> {
+    async fn finish(&mut self) -> Result<(), DeviceError> {
         if let Err(error) = self.shutdown().await {
             debug!(
                 device_id = %self.device_id,

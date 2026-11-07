@@ -249,7 +249,7 @@ impl DeviceSession for YeelightSession {
     }
 
     /// Leave music mode. Dropping the session then closes both connections.
-    async fn finish(mut self) -> Result<(), DeviceError> {
+    async fn finish(&mut self) -> Result<(), DeviceError> {
         if self.mode != StreamMode::Music {
             return Ok(());
         }
@@ -641,10 +641,9 @@ impl DeviceBackend for YeelightBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             return Ok(());
-        }
+        };
         let route = self
             .adopted
             .read()
@@ -657,7 +656,7 @@ impl DeviceBackend for YeelightBackend {
             .await
             .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
         let facts = session.facts();
-        self.sessions.install(session).await?;
+        ticket.install(session).await?;
         info!(
             device_id = %id,
             control = %facts.profile.reply.location,

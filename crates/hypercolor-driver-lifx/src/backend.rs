@@ -584,10 +584,9 @@ impl DeviceBackend for LifxBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
-        if self.sessions.is_open(id) {
+        let Some(ticket) = self.sessions.begin_open(id).await? else {
             return Ok(());
-        }
+        };
         let route = self
             .adopted
             .read()
@@ -601,7 +600,7 @@ impl DeviceBackend for LifxBackend {
             .await
             .map_err(|error| DeviceError::connection(id, error))?;
         let facts = session.facts();
-        self.sessions.install(session).await?;
+        ticket.install(session).await?;
         info!(
             device_id = %id,
             serial = %route.serial,

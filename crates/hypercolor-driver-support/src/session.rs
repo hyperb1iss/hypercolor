@@ -1,11 +1,30 @@
 //! Revocable device sessions.
 //!
-//! A backend keeps its open connections in a [`SessionTable`]. Each connect
-//! opens one [`Session`], the sole owner of that connection's protocol state
-//! and tasks, and every [`SessionSink`] handed out refers to the session's
-//! slot, not to the state itself. Holding a sink therefore keeps nothing
-//! alive: closing the session empties the slot, so a sink retained past
-//! [`SessionTable::close`] rejects every frame and holds no socket.
+//! A backend keeps its connections in a [`SessionTable`], which holds one
+//! state machine per device:
+//!
+//! ```text
+//!             begin_open                install
+//! (nothing) -------------> Opening ----------------> Open
+//!     ^                       |                        |
+//!     |  connect failed       |  retired while         |  close, retire,
+//!     +-----------------------+  opening               |  moved device
+//!     ^                       v                        v
+//!     +------------------- Closing <-------------------+
+//!        cleanup finished
+//! ```
+//!
+//! At most one generation of a device is Opening or Open at a time, and a
+//! Closing generation stays in the table until its transport is really gone.
+//! Device state outside any one connection (a controller registration keyed
+//! by device id, entertainment mode on a bridge, realtime mode on a strip)
+//! therefore never sees two generations: a new connection starts after the
+//! old one's cleanup, and concurrent connects of one device share one open.
+//!
+//! Each [`Session`] is the sole owner of its protocol state and tasks. A
+//! [`SessionSink`] refers to the session's slot, not to the state, so holding
+//! a sink keeps nothing alive: a sink retained past close rejects every frame
+//! and holds no socket.
 //!
 //! When close returns `Ok`, all of this is true, in this order:
 //!
@@ -14,22 +33,23 @@
 //! 3. Admitted I/O has settled, or was cancelled once
 //!    [`DeviceSession::SETTLE`] ran out.
 //! 4. [`DeviceSession::finish`] ran bounded protocol cleanup.
-//! 5. The session state is gone, and with it the session's transport.
+//! 5. [`DeviceSession::release`] gave the transport back.
 //!
 //! Close runs on its own task and the caller only waits for it, so a caller
 //! that gives up early never leaves a half-closed session behind. An error
-//! means cleanup failed or timed out; revocation and release still happen.
+//! means one of those steps failed or has not finished, and a generation that
+//! has not finished stays Closing, so a reconnect or a retirement waits for
+//! it instead of racing a transport that is still in use.
 //!
-//! A reconnect installs a new session with a new slot. Sinks from the old
-//! generation stay revoked. Retiring a table closes everything in it and
-//! refuses every later install, so a connect still in flight when its
-//! backend is retired ends up closed instead of published.
+//! Retiring a table closes everything in it, refuses every later connect, and
+//! waits for every Opening and Closing generation, so a connect still in
+//! flight ends up closed instead of published.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
@@ -37,7 +57,7 @@ use hypercolor_driver_api::{
     DeviceWriteOutcome,
 };
 use hypercolor_types::device::{DeviceError, DeviceId};
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -46,6 +66,9 @@ pub const DEFAULT_SETTLE: Duration = Duration::from_millis(500);
 
 /// Default [`DeviceSession::CLEANUP`].
 pub const DEFAULT_CLEANUP: Duration = Duration::from_millis(1_400);
+
+/// Default [`DeviceSession::RELEASE`].
+pub const DEFAULT_RELEASE: Duration = Duration::from_millis(100);
 
 /// Time cancelled I/O gets to release the session. Cancellation drops the
 /// write at its next await, so this only covers a busy runtime.
@@ -89,6 +112,11 @@ pub trait DeviceSession: Send + 'static {
     /// How long [`Self::finish`] may run before close drops it.
     const CLEANUP: Duration = DEFAULT_CLEANUP;
 
+    /// How long close's caller waits for [`Self::release`]. Release itself
+    /// runs to the end; past this the caller gets a timeout while the
+    /// generation stays Closing.
+    const RELEASE: Duration = DEFAULT_RELEASE;
+
     /// Write one frame to the device.
     ///
     /// The future may be dropped at any await once close runs out of
@@ -118,12 +146,20 @@ pub trait DeviceSession: Send + 'static {
         }
     }
 
-    /// Run protocol cleanup, consuming the session.
+    /// Run protocol cleanup: say goodbye on the wire.
     ///
-    /// The transport is released when this returns or when close drops it
-    /// at [`Self::CLEANUP`]. Sessions with nothing to say on the way out
-    /// keep the default.
-    fn finish(self) -> impl Future<Output = Result<(), DeviceError>> + Send
+    /// Close drops this future at [`Self::CLEANUP`] and carries on, so a
+    /// step that matters more than the one before it needs its own bound.
+    fn finish(&mut self) -> impl Future<Output = Result<(), DeviceError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Give the transport back, consuming the session.
+    ///
+    /// The default drops the session. A transport whose release can block
+    /// awaits that here, however long it takes, because the device stays
+    /// Closing until this returns.
+    fn release(self) -> impl Future<Output = Result<(), DeviceError>> + Send
     where
         Self: Sized,
     {
@@ -131,27 +167,28 @@ pub trait DeviceSession: Send + 'static {
     }
 }
 
-/// Where a session's state lives while the session is open.
+/// The state itself. Only its session holds a lasting reference; admitted
+/// operations hold one just for their own length, so when the session is gone
+/// the last of them to finish drops the state, with no handoff to miss.
+type SessionState<S> = Arc<Mutex<Option<S>>>;
+
+/// What a sink needs to reach a session's state.
 struct Slot<S> {
     /// Set once; nothing is admitted afterwards.
     revoked: AtomicBool,
     /// Set when close stopped waiting for admitted I/O.
     cancelled: AtomicBool,
-    /// Set when no close is coming, so the last admitted operation drops
-    /// the state on its way out.
-    abandoned: AtomicBool,
     cancel: Notify,
-    state: Mutex<Option<S>>,
+    state: Weak<Mutex<Option<S>>>,
 }
 
 impl<S> Slot<S> {
-    fn new(session: S) -> Self {
+    fn new(state: &SessionState<S>) -> Self {
         Self {
             revoked: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
-            abandoned: AtomicBool::new(false),
             cancel: Notify::new(),
-            state: Mutex::new(Some(session)),
+            state: Arc::downgrade(state),
         }
     }
 
@@ -168,16 +205,6 @@ impl<S> Slot<S> {
         self.cancel.notify_waiters();
     }
 
-    /// Drop the state as soon as nothing holds it.
-    fn abandon(&self) {
-        self.revoke();
-        self.abandoned.store(true, Ordering::Release);
-        self.cancel();
-        if let Ok(mut state) = self.state.try_lock() {
-            state.take();
-        }
-    }
-
     async fn cancelled(&self) {
         // Created before the check: `notify_waiters` reaches a `Notified`
         // from the moment it exists, so a cancel cannot slip between.
@@ -187,15 +214,20 @@ impl<S> Slot<S> {
         }
     }
 
-    async fn admit(&self) -> Option<Admitted<'_, S>> {
+    async fn admit(&self) -> Option<Admitted<S>> {
         if self.is_revoked() {
             return None;
         }
-        let state = self.state.lock().await;
-        if self.is_revoked() || state.is_none() {
+        let state = self.state.upgrade()?.lock_owned().await;
+        (!self.is_revoked() && state.is_some()).then_some(Admitted { state })
+    }
+
+    fn try_admit(&self) -> Option<Admitted<S>> {
+        if self.is_revoked() {
             return None;
         }
-        Some(Admitted { state, slot: self })
+        let state = self.state.upgrade()?.try_lock_owned().ok()?;
+        (!self.is_revoked() && state.is_some()).then_some(Admitted { state })
     }
 
     /// Run admitted I/O, giving up when close cancels it.
@@ -213,12 +245,11 @@ impl<S> Slot<S> {
 /// Close waits for this to drop, so hold it across short bookkeeping only.
 /// Device I/O goes through [`SessionSink::write`] or
 /// [`SessionSink::transact`], which close can cancel.
-pub struct Admitted<'a, S> {
-    state: MutexGuard<'a, Option<S>>,
-    slot: &'a Slot<S>,
+pub struct Admitted<S> {
+    state: OwnedMutexGuard<Option<S>>,
 }
 
-impl<S> Deref for Admitted<'_, S> {
+impl<S> Deref for Admitted<S> {
     type Target = S;
 
     fn deref(&self) -> &S {
@@ -228,19 +259,11 @@ impl<S> Deref for Admitted<'_, S> {
     }
 }
 
-impl<S> DerefMut for Admitted<'_, S> {
+impl<S> DerefMut for Admitted<S> {
     fn deref_mut(&mut self) -> &mut S {
         self.state
             .as_mut()
             .expect("an admitted session stays in its slot")
-    }
-}
-
-impl<S> Drop for Admitted<'_, S> {
-    fn drop(&mut self) {
-        if self.slot.abandoned.load(Ordering::Acquire) {
-            self.state.take();
-        }
     }
 }
 
@@ -271,7 +294,7 @@ impl<S> SessionSink<S> {
     /// # Errors
     ///
     /// Returns [`DeviceError::Disconnected`] once the session is revoked.
-    pub async fn admit(&self) -> Result<Admitted<'_, S>, DeviceError> {
+    pub async fn admit(&self) -> Result<Admitted<S>, DeviceError> {
         self.slot
             .admit()
             .await
@@ -281,15 +304,8 @@ impl<S> SessionSink<S> {
     /// Take exclusive access to the session state without waiting for it,
     /// or `None` when it is busy or revoked.
     #[must_use]
-    pub fn try_admit(&self) -> Option<Admitted<'_, S>> {
-        if self.slot.is_revoked() {
-            return None;
-        }
-        let state = self.slot.state.try_lock().ok()?;
-        (!self.slot.is_revoked() && state.is_some()).then_some(Admitted {
-            state,
-            slot: &self.slot,
-        })
+    pub fn try_admit(&self) -> Option<Admitted<S>> {
+        self.slot.try_admit()
     }
 }
 
@@ -364,10 +380,11 @@ impl<S: DeviceSession> DeviceFrameSink for SessionSink<S> {
     }
 }
 
-/// Owner of one open device connection.
+/// Owner of one device connection.
 pub struct Session<S: DeviceSession> {
     device_id: DeviceId,
     slot: Arc<Slot<S>>,
+    state: SessionState<S>,
     facts: Arc<S::Facts>,
     tasks: Vec<JoinHandle<()>>,
     closing: bool,
@@ -377,9 +394,11 @@ impl<S: DeviceSession> Session<S> {
     /// Open a session for `device_id` around `state`.
     #[must_use]
     pub fn new(device_id: DeviceId, facts: S::Facts, state: S) -> Self {
+        let state = Arc::new(Mutex::new(Some(state)));
         Self {
             device_id,
-            slot: Arc::new(Slot::new(state)),
+            slot: Arc::new(Slot::new(&state)),
+            state,
             facts: Arc::new(facts),
             tasks: Vec::new(),
             closing: false,
@@ -410,95 +429,256 @@ impl<S: DeviceSession> Session<S> {
     }
 
     /// Revoke the session now and finish closing it on its own task.
-    fn begin_close(mut self) -> JoinHandle<Result<(), DeviceError>> {
+    ///
+    /// The table must already hold this device as Closing. The task clears
+    /// that when it ends, however it ends.
+    fn begin_close(mut self, shared: Arc<TableShared<S>>) -> JoinHandle<Result<(), DeviceError>> {
         self.closing = true;
         self.slot.revoke();
         let tasks = std::mem::take(&mut self.tasks);
         for task in &tasks {
             task.abort();
         }
-        tokio::spawn(finish_close(self.device_id, Arc::clone(&self.slot), tasks))
+        let device_id = self.device_id;
+        let slot = Arc::clone(&self.slot);
+        let state = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            let closing = ClosingEntry { shared, device_id };
+            let result = finish_close(device_id, &slot, state, tasks).await;
+            if let Err(error) = &result {
+                closing.record_failure(error);
+            }
+            result
+        })
     }
 }
 
 impl<S: DeviceSession> Drop for Session<S> {
     /// A session dropped without closing still ends: it transmits nothing
-    /// further and releases its transport, skipping only protocol cleanup.
+    /// further, and the state goes with the last operation holding it,
+    /// skipping only protocol cleanup.
     fn drop(&mut self) {
         if self.closing {
             return;
         }
-        self.slot.abandon();
+        self.slot.revoke();
+        self.slot.cancel();
         for task in &self.tasks {
             task.abort();
         }
     }
 }
 
+/// Keeps a device Closing for exactly as long as its close task lives.
+struct ClosingEntry<S: DeviceSession> {
+    shared: Arc<TableShared<S>>,
+    device_id: DeviceId,
+}
+
+impl<S: DeviceSession> ClosingEntry<S> {
+    fn record_failure(&self, error: &DeviceError) {
+        let mut state = self.shared.write();
+        if state.retired {
+            state.failure.get_or_insert_with(|| error.clone());
+        }
+    }
+}
+
+impl<S: DeviceSession> Drop for ClosingEntry<S> {
+    fn drop(&mut self) {
+        self.shared.write().devices.remove(&self.device_id);
+        self.shared.changed.notify_waiters();
+    }
+}
+
+/// Join owned tasks, keeping the handle of any that has not finished, so a
+/// deadline can interrupt this and a later call can pick up where it stopped.
+async fn join_tasks(tasks: &mut Vec<JoinHandle<()>>) {
+    while let Some(task) = tasks.last_mut() {
+        let _ = task.await;
+        tasks.pop();
+    }
+}
+
 async fn finish_close<S: DeviceSession>(
     device_id: DeviceId,
-    slot: Arc<Slot<S>>,
-    tasks: Vec<JoinHandle<()>>,
+    slot: &Slot<S>,
+    state: SessionState<S>,
+    mut tasks: Vec<JoinHandle<()>>,
 ) -> Result<(), DeviceError> {
-    let join_tasks = async {
-        for task in tasks {
-            let _ = task.await;
-        }
-    };
-    if tokio::time::timeout(S::SETTLE, join_tasks).await.is_err() {
+    // A task that ignores its abort must not hold protocol cleanup hostage,
+    // but it does keep this close from reporting success.
+    let tasks_joined = tokio::time::timeout(S::SETTLE, join_tasks(&mut tasks))
+        .await
+        .is_ok();
+    if !tasks_joined {
         warn!(%device_id, "a session task outlived its abort");
     }
 
-    let mut settled = tokio::time::timeout(S::SETTLE, slot.state.lock())
-        .await
-        .ok();
-    if settled.is_none() {
+    let mut guard = if let Ok(guard) = tokio::time::timeout(S::SETTLE, state.lock()).await {
+        guard
+    } else {
         debug!(%device_id, "cancelling device I/O that outlived its session");
         slot.cancel();
-        settled = tokio::time::timeout(CANCEL_GRACE, slot.state.lock())
-            .await
-            .ok();
-    }
-    let Some(mut state) = settled else {
-        warn!(%device_id, "device session state stayed busy past close");
-        slot.abandon();
-        return Err(DeviceError::Timeout {
-            after: S::SETTLE.saturating_add(CANCEL_GRACE),
-        });
+        state.lock().await
     };
-    let session = state.take();
-    drop(state);
+    let session = guard.take();
+    drop(guard);
 
-    let Some(session) = session else {
-        return Ok(());
-    };
-    tokio::time::timeout(S::CLEANUP, session.finish())
-        .await
-        .unwrap_or(Err(DeviceError::Timeout { after: S::CLEANUP }))
+    let mut result = Ok(());
+    if let Some(mut session) = session {
+        result = tokio::time::timeout(S::CLEANUP, session.finish())
+            .await
+            .unwrap_or(Err(DeviceError::Timeout { after: S::CLEANUP }));
+        let released = session.release().await;
+        if result.is_ok() {
+            result = released;
+        }
+    }
+
+    join_tasks(&mut tasks).await;
+    if !tasks_joined && result.is_ok() {
+        result = Err(DeviceError::Timeout { after: S::SETTLE });
+    }
+    result
 }
 
-async fn join_close(close: JoinHandle<Result<(), DeviceError>>) -> Result<(), DeviceError> {
-    close
-        .await
-        .unwrap_or_else(|error| Err(DeviceError::protocol("device session", error)))
+/// Wait for a close, reporting a timeout when it runs past everything the
+/// session was allowed. The close keeps running and the device stays Closing.
+async fn await_close<S: DeviceSession>(
+    mut close: JoinHandle<Result<(), DeviceError>>,
+) -> Result<(), DeviceError> {
+    let budget = S::SETTLE
+        .saturating_add(S::SETTLE)
+        .saturating_add(CANCEL_GRACE)
+        .saturating_add(S::CLEANUP)
+        .saturating_add(S::RELEASE);
+    match tokio::time::timeout(budget, &mut close).await {
+        Ok(joined) => {
+            joined.unwrap_or_else(|error| Err(DeviceError::protocol("device session", error)))
+        }
+        Err(_) => Err(DeviceError::Timeout { after: budget }),
+    }
+}
+
+/// Where one device stands in its table.
+enum Generation<S: DeviceSession> {
+    /// A connect holds the [`OpenTicket`].
+    Opening,
+    /// The session is live.
+    Open(Session<S>),
+    /// A close task is running.
+    Closing,
 }
 
 struct TableState<S: DeviceSession> {
     retired: bool,
-    sessions: HashMap<DeviceId, Session<S>>,
+    /// First close that failed since retirement began.
+    failure: Option<DeviceError>,
+    devices: HashMap<DeviceId, Generation<S>>,
 }
 
-/// Every open session of one backend.
-pub struct SessionTable<S: DeviceSession> {
+struct TableShared<S: DeviceSession> {
     state: StdRwLock<TableState<S>>,
+    /// Wakes everyone waiting for a device or the table to change.
+    changed: Notify,
+}
+
+impl<S: DeviceSession> TableShared<S> {
+    fn read(&self) -> RwLockReadGuard<'_, TableState<S>> {
+        self.state.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, TableState<S>> {
+        self.state.write().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl<S: DeviceSession> TableState<S> {
+    /// Move an open device to Closing, handing back its session.
+    fn begin_closing(&mut self, id: DeviceId) -> Option<Session<S>> {
+        let generation = self.devices.get_mut(&id)?;
+        if !matches!(generation, Generation::Open(_)) {
+            return None;
+        }
+        match std::mem::replace(generation, Generation::Closing) {
+            Generation::Open(session) => Some(session),
+            Generation::Opening | Generation::Closing => None,
+        }
+    }
+}
+
+/// The right to open one device.
+///
+/// While this exists the device is Opening: nobody else opens it, and a close
+/// or a retirement waits to see how the connect ends. Dropping it gives the
+/// right back, so a connect that fails or gets cancelled needs no cleanup
+/// here.
+#[must_use = "dropping a ticket gives up the open"]
+pub struct OpenTicket<S: DeviceSession> {
+    shared: Arc<TableShared<S>>,
+    device_id: DeviceId,
+    held: bool,
+}
+
+impl<S: DeviceSession> OpenTicket<S> {
+    /// Publish the session this ticket was for.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::ConnectionFailed`] when the table was retired
+    /// in the meantime. The session is closed through its normal cleanup,
+    /// so nothing it opened survives the refusal.
+    pub async fn install(mut self, session: Session<S>) -> Result<(), DeviceError> {
+        debug_assert_eq!(session.device_id, self.device_id);
+        let device_id = self.device_id;
+        self.held = false;
+        let refused = {
+            let mut state = self.shared.write();
+            if state.retired {
+                state.devices.insert(device_id, Generation::Closing);
+                Some(session)
+            } else {
+                state.devices.insert(device_id, Generation::Open(session));
+                None
+            }
+        };
+        self.shared.changed.notify_waiters();
+        let Some(session) = refused else {
+            return Ok(());
+        };
+        let close = session.begin_close(Arc::clone(&self.shared));
+        if let Err(error) = await_close::<S>(close).await {
+            debug!(%device_id, %error, "cleanup of a refused session failed");
+        }
+        Err(retired(device_id))
+    }
+}
+
+impl<S: DeviceSession> Drop for OpenTicket<S> {
+    fn drop(&mut self) {
+        if self.held {
+            self.shared.write().devices.remove(&self.device_id);
+            self.shared.changed.notify_waiters();
+        }
+    }
+}
+
+/// Every session of one backend.
+pub struct SessionTable<S: DeviceSession> {
+    shared: Arc<TableShared<S>>,
 }
 
 impl<S: DeviceSession> Default for SessionTable<S> {
     fn default() -> Self {
         Self {
-            state: StdRwLock::new(TableState {
-                retired: false,
-                sessions: HashMap::new(),
+            shared: Arc::new(TableShared {
+                state: StdRwLock::new(TableState {
+                    retired: false,
+                    failure: None,
+                    devices: HashMap::new(),
+                }),
+                changed: Notify::new(),
             }),
         }
     }
@@ -511,25 +691,29 @@ impl<S: DeviceSession> SessionTable<S> {
         Self::default()
     }
 
+    fn open_session<T>(&self, id: &DeviceId, read: impl FnOnce(&Session<S>) -> T) -> Option<T> {
+        match self.shared.read().devices.get(id) {
+            Some(Generation::Open(session)) => Some(read(session)),
+            _ => None,
+        }
+    }
+
     /// Whether `id` has an open session.
     #[must_use]
     pub fn is_open(&self, id: &DeviceId) -> bool {
-        self.read().sessions.contains_key(id)
+        self.open_session(id, |_| ()).is_some()
     }
 
     /// Facts of the session open for `id`.
     #[must_use]
     pub fn facts(&self, id: &DeviceId) -> Option<Arc<S::Facts>> {
-        self.read()
-            .sessions
-            .get(id)
-            .map(|session| Arc::clone(&session.facts))
+        self.open_session(id, Session::facts)
     }
 
     /// Sink over the session open for `id`.
     #[must_use]
     pub fn sink(&self, id: &DeviceId) -> Option<SessionSink<S>> {
-        self.read().sessions.get(id).map(Session::sink)
+        self.open_session(id, Session::sink)
     }
 
     /// Sink over the session open for `id`.
@@ -548,101 +732,126 @@ impl<S: DeviceSession> SessionTable<S> {
             .map(|sink| Arc::new(sink) as Arc<dyn DeviceFrameSink>)
     }
 
-    /// Fail early when this table can never hold a session again.
+    /// Claim the right to open `id`, or `None` when it is already open.
+    ///
+    /// A connect already in flight for `id` is joined, and a close in flight
+    /// is waited out, so this returns with the device in a settled state.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError::ConnectionFailed`] once the table is retired.
-    pub fn ensure_accepting(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        if self.read().retired {
-            return Err(retired(*id));
-        }
-        Ok(())
+    pub async fn begin_open(&self, id: &DeviceId) -> Result<Option<OpenTicket<S>>, DeviceError> {
+        self.open_unless(id, |_| true).await
     }
 
-    /// Publish a new session, closing any session it displaces.
+    /// Like [`Self::begin_open`], for a device whose target can move: an open
+    /// session `keep` turns down is closed, cleanup included, before the
+    /// ticket is issued.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::ConnectionFailed`] when the table is retired.
-    /// The session is closed before this returns, so nothing it opened
-    /// survives the refusal.
-    pub async fn install(&self, session: Session<S>) -> Result<(), DeviceError> {
-        let device_id = session.device_id;
-        let published = {
-            let mut state = self.write();
-            if state.retired {
-                Err(session)
-            } else {
-                Ok(state.sessions.insert(device_id, session))
-            }
-        };
-        match published {
-            Ok(None) => Ok(()),
-            Ok(Some(displaced)) => {
-                if let Err(error) = join_close(displaced.begin_close()).await {
-                    debug!(%device_id, %error, "cleanup of a displaced session failed");
+    /// Returns [`DeviceError::ConnectionFailed`] once the table is retired.
+    pub async fn open_unless(
+        &self,
+        id: &DeviceId,
+        keep: impl Fn(&S::Facts) -> bool,
+    ) -> Result<Option<OpenTicket<S>>, DeviceError> {
+        loop {
+            // Created before reading the table: `notify_waiters` reaches a
+            // `Notified` from the moment it exists, so no change can slip
+            // between the read and the wait.
+            let changed = self.shared.changed.notified();
+            let moved = {
+                let mut state = self.shared.write();
+                if state.retired {
+                    return Err(retired(*id));
                 }
-                Ok(())
-            }
-            Err(refused) => {
-                if let Err(error) = join_close(refused.begin_close()).await {
-                    debug!(%device_id, %error, "cleanup of a refused session failed");
+                match state.devices.get(id) {
+                    None => {
+                        state.devices.insert(*id, Generation::Opening);
+                        return Ok(Some(OpenTicket {
+                            shared: Arc::clone(&self.shared),
+                            device_id: *id,
+                            held: true,
+                        }));
+                    }
+                    Some(Generation::Open(session)) if keep(&session.facts) => return Ok(None),
+                    Some(Generation::Open(_)) => state.begin_closing(*id),
+                    Some(Generation::Opening | Generation::Closing) => None,
                 }
-                Err(retired(device_id))
+            };
+            if let Some(session) = moved {
+                let close = session.begin_close(Arc::clone(&self.shared));
+                if let Err(error) = await_close::<S>(close).await {
+                    debug!(device_id = %id, %error, "closing a moved session failed");
+                }
             }
+            changed.await;
         }
     }
 
-    /// Close the session open for `id`.
+    /// Close the session open for `id`, once any connect in flight settles.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Disconnected`] when no session is open, and
-    /// the cleanup failure when protocol cleanup fails or times out. The
-    /// session is over either way.
+    /// Returns [`DeviceError::Disconnected`] when no session is open, the
+    /// cleanup failure when protocol cleanup fails or times out, and
+    /// [`DeviceError::Timeout`] when the close is still running. The session
+    /// is revoked either way, and an unfinished close keeps the device
+    /// Closing.
     pub async fn close(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let session = self
-            .write()
-            .sessions
-            .remove(id)
-            .ok_or_else(|| disconnected(*id))?;
-        join_close(session.begin_close()).await
+        loop {
+            let changed = self.shared.changed.notified();
+            let session = {
+                let mut state = self.shared.write();
+                match state.devices.get(id) {
+                    None => return Err(disconnected(*id)),
+                    Some(Generation::Open(_)) => state.begin_closing(*id),
+                    Some(Generation::Opening | Generation::Closing) => None,
+                }
+            };
+            if let Some(session) = session {
+                return await_close::<S>(session.begin_close(Arc::clone(&self.shared))).await;
+            }
+            changed.await;
+        }
     }
 
-    /// Close every session and refuse all later installs.
+    /// Close every session, refuse all later connects, and wait for every
+    /// generation still Opening or Closing.
     ///
     /// # Errors
     ///
-    /// Returns the first cleanup failure. Every session is over either way.
+    /// Returns the first cleanup failure since retirement began. Every
+    /// session is revoked either way.
     pub async fn retire(&self) -> Result<(), DeviceError> {
         let closing: Vec<_> = {
-            let mut state = self.write();
+            let mut state = self.shared.write();
             state.retired = true;
-            state.sessions.drain().collect()
+            let open: Vec<DeviceId> = state
+                .devices
+                .iter()
+                .filter(|(_, generation)| matches!(generation, Generation::Open(_)))
+                .map(|(id, _)| *id)
+                .collect();
+            open.into_iter()
+                .filter_map(|id| state.begin_closing(id))
+                .collect()
         };
-        let closing: Vec<_> = closing
-            .into_iter()
-            .map(|(device_id, session)| (device_id, session.begin_close()))
-            .collect();
-        let mut result = Ok(());
-        for (device_id, close) in closing {
-            if let Err(error) = join_close(close).await {
-                debug!(%device_id, %error, "cleanup of a retired session failed");
-                if result.is_ok() {
-                    result = Err(error);
+        self.shared.changed.notify_waiters();
+        for session in closing {
+            drop(session.begin_close(Arc::clone(&self.shared)));
+        }
+        loop {
+            let changed = self.shared.changed.notified();
+            {
+                let state = self.shared.read();
+                if state.devices.is_empty() {
+                    return state.failure.clone().map_or(Ok(()), Err);
                 }
             }
+            changed.await;
         }
-        result
-    }
-
-    fn read(&self) -> std::sync::RwLockReadGuard<'_, TableState<S>> {
-        self.state.read().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, TableState<S>> {
-        self.state.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

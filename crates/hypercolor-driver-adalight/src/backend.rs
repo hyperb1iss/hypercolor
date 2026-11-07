@@ -137,20 +137,18 @@ impl DeviceBackend for AdalightBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        self.sessions.ensure_accepting(id)?;
         let device = self.devices.current(id)?;
         let plan = Arc::clone(device.plan());
 
-        if let Some(open) = self.sessions.facts(id) {
-            if *open == plan {
-                return Ok(());
-            }
-            // The config changed under a live session: release the old port
-            // before reopening, since the open is exclusive.
-            if let Err(error) = self.sessions.close(id).await {
-                debug!(device_id = %id, error = %error, "closing a moved serial session failed");
-            }
-        }
+        // When the config changed under a live session, the old port closes
+        // first, since the open is exclusive.
+        let Some(ticket) = self
+            .sessions
+            .open_unless(id, |open| **open == *plan)
+            .await?
+        else {
+            return Ok(());
+        };
 
         // Closing an old session can take a while; check again right
         // before the open.
@@ -193,9 +191,7 @@ impl DeviceBackend for AdalightBackend {
         }
 
         let session = AdalightSession::new(*id, Arc::clone(&plan), port);
-        self.sessions
-            .install(Session::new(*id, plan, session))
-            .await
+        ticket.install(Session::new(*id, plan, session)).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
@@ -270,7 +266,7 @@ async fn close_port(port: SerialStream) {
         let _runtime = handle.enter();
         drop(port);
     });
-    let _ = tokio::time::timeout(DISCONNECT_BUDGET, close).await;
+    let _ = close.await;
 }
 
 fn map_open_error(id: DeviceId, port: &str, error: &tokio_serial::Error) -> DeviceError {
@@ -421,24 +417,6 @@ impl AdalightSession {
         }))
     }
 
-    /// Close the port and wait up to `bound` for it to be released, so a
-    /// reconnect does not race the old descriptor's exclusive lock. A
-    /// wedged driver can hold a tty close for its full closing wait; past
-    /// the bound the close finishes in the background.
-    async fn close_and_wait(&mut self, bound: Duration) {
-        let Some(task) = self.close() else {
-            return;
-        };
-        if tokio::time::timeout(bound, task).await.is_err() {
-            debug!(
-                device_id = %self.device_id,
-                port = %self.plan.port,
-                bound_ms = bound.as_millis(),
-                "serial port close is still draining; finishing in the background"
-            );
-        }
-    }
-
     async fn send_frame(&mut self, bound: Duration) -> Result<()> {
         let port = self
             .port
@@ -507,7 +485,10 @@ impl AdalightSession {
 impl DeviceSession for AdalightSession {
     type Facts = Arc<AdalightDevicePlan>;
 
-    const CLEANUP: Duration = DISCONNECT_BUDGET.saturating_add(Duration::from_millis(100));
+    const CLEANUP: Duration = DISCONNECT_BUDGET;
+
+    /// A wedged driver can hold a tty close for its full closing wait.
+    const RELEASE: Duration = DISCONNECT_BUDGET;
 
     async fn write_frame(
         &mut self,
@@ -536,9 +517,8 @@ impl DeviceSession for AdalightSession {
         )
     }
 
-    /// Black out the strip, then release the port and its exclusive lock.
-    async fn finish(mut self) -> Result<(), DeviceError> {
-        let started = Instant::now();
+    /// Black out the strip.
+    async fn finish(&mut self) -> Result<(), DeviceError> {
         if let Err(error) = self.black_out().await {
             debug!(
                 device_id = %self.device_id,
@@ -547,9 +527,19 @@ impl DeviceSession for AdalightSession {
                 "best-effort serial blackout frames failed"
             );
         }
-        self.close_and_wait(DISCONNECT_BUDGET.saturating_sub(started.elapsed()))
-            .await;
         Ok(())
+    }
+
+    /// Close the port and hold on until the descriptor and its exclusive lock
+    /// are gone, so a reconnect waits for them instead of racing them.
+    async fn release(mut self) -> Result<(), DeviceError> {
+        let device_id = self.device_id;
+        match self.close() {
+            Some(task) => task.await.map_err(|error| {
+                DeviceError::protocol(device_id, format!("serial close task failed: {error}"))
+            }),
+            None => Ok(()),
+        }
     }
 }
 

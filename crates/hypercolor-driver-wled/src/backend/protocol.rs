@@ -90,6 +90,8 @@ pub struct WledDevice {
     pub device_id: DeviceId,
     /// Resolved IP address.
     pub ip: IpAddr,
+    /// Where the device's JSON API answers.
+    pub api_addr: SocketAddr,
     /// Which protocol to use for pixel data.
     pub protocol: WledProtocol,
     /// Socket address for pixel data.
