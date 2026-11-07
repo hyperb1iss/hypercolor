@@ -1,4 +1,4 @@
-use std::path::{Component, Path};
+use std::path::Path;
 use std::time::Duration;
 
 use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
@@ -9,6 +9,7 @@ use super::super::{
     PlatformTransitionStates, PreparedPlatformTransaction, RestoredRelease, UnitId, UnitRecord,
 };
 use super::executor::MacosBundleExecutor;
+use super::launcher::unit_of_active_link;
 use super::model::{
     MACOS_BUNDLE_STAGING_MARGIN_BYTES, MacosBundleConfig, MacosBundleObservation,
     MacosBundleRunningDaemon, MacosBundleServiceObservation, MacosBundleUnit, error,
@@ -290,37 +291,6 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> MacosBundleInstallPlatform<E
         }
     }
 
-    fn transitions(prior: &PlatformState, target: &PlatformState) -> PlatformTransitionStates {
-        let prior_unloaded = PlatformState {
-            loaded: false,
-            running_unit: None,
-            ..prior.clone()
-        };
-        let candidate_manager = PlatformState {
-            loaded: false,
-            running_unit: None,
-            autostart_enabled: prior.autostart_enabled,
-            ..target.clone()
-        };
-        let candidate_autostart = PlatformState {
-            autostart_enabled: target.autostart_enabled,
-            ..candidate_manager.clone()
-        };
-        let prior_manager = PlatformState {
-            loaded: false,
-            running_unit: None,
-            autostart_enabled: prior.autostart_enabled,
-            ..prior.clone()
-        };
-        PlatformTransitionStates {
-            prior_unloaded,
-            candidate_manager,
-            candidate_autostart,
-            prior_autostart: prior_manager.clone(),
-            prior_manager,
-        }
-    }
-
     /// End a transaction with launchd's gate where it found it. A disabled
     /// agent can run, so this holds after a start that had to open the gate
     /// and after a transaction with nothing to start.
@@ -441,7 +411,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
         };
         Ok(PreparedPlatformTransaction {
             record: record.encode()?,
-            transitions: Self::transitions(&prior.platform, target),
+            transitions: transition_states(&prior.platform, target),
             layout_operation_count: SWAP_OPERATION_COUNT,
         })
     }
@@ -512,7 +482,7 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
     ) -> Result<(), InstallPlatformError> {
         let record = self.record(platform_record)?;
         if layout_operation_count != SWAP_OPERATION_COUNT
-            || transitions != &Self::transitions(prior, target)
+            || transitions != &transition_states(prior, target)
             || target.layout_unit.as_ref() != Some(&record.candidate.unit)
             || prior.layout_unit.is_some() != record.prior.is_some()
             || prior.launcher_unit.is_some() != target.launcher_unit.is_some()
@@ -840,6 +810,41 @@ impl<E: MacosBundleExecutor, S: MacosBundleService> InstallPlatform
     }
 }
 
+/// The states a transaction from `prior` to `target` passes through.
+pub(super) fn transition_states(
+    prior: &PlatformState,
+    target: &PlatformState,
+) -> PlatformTransitionStates {
+    let prior_unloaded = PlatformState {
+        loaded: false,
+        running_unit: None,
+        ..prior.clone()
+    };
+    let candidate_manager = PlatformState {
+        loaded: false,
+        running_unit: None,
+        autostart_enabled: prior.autostart_enabled,
+        ..target.clone()
+    };
+    let candidate_autostart = PlatformState {
+        autostart_enabled: target.autostart_enabled,
+        ..candidate_manager.clone()
+    };
+    let prior_manager = PlatformState {
+        loaded: false,
+        running_unit: None,
+        autostart_enabled: prior.autostart_enabled,
+        ..prior.clone()
+    };
+    PlatformTransitionStates {
+        prior_unloaded,
+        candidate_manager,
+        candidate_autostart,
+        prior_autostart: prior_manager.clone(),
+        prior_manager,
+    }
+}
+
 /// Read the release root's `active` pointer, `units/<digest>`.
 fn read_active_unit(release_root: &Path) -> Result<Option<UnitId>, InstallPlatformError> {
     let root = ReadOnlyDirectoryAuthority::open(release_root)
@@ -850,21 +855,5 @@ fn read_active_unit(release_root: &Path) -> Result<Option<UnitId>, InstallPlatfo
     else {
         return Ok(None);
     };
-    let mut components = target.components();
-    match (components.next(), components.next(), components.next()) {
-        (Some(Component::Normal(units)), Some(Component::Normal(unit)), None)
-            if units == "units" =>
-        {
-            let unit = unit
-                .to_str()
-                .ok_or_else(|| error("the macOS active pointer is not UTF-8"))?;
-            UnitId::new(unit)
-                .map(Some)
-                .map_err(|source| error(source.to_string()))
-        }
-        _ => Err(error(format!(
-            "the macOS active pointer names {}, not a unit",
-            target.display()
-        ))),
-    }
+    unit_of_active_link(&target).map(Some).map_err(error)
 }

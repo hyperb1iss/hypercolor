@@ -13,9 +13,10 @@ mod macos;
 mod manifest;
 mod tree;
 
+pub(crate) use bundle::publish_macos_bundle_launcher;
 pub use bundle::{
-    bind_macos_bundle_unit, retain_macos_bundle_unit, stage_macos_bundle_unit,
-    stage_macos_bundle_unit_from_authority,
+    bind_macos_bundle_unit, describe_macos_bundle_unit, retain_macos_bundle_unit,
+    stage_macos_bundle_unit, stage_macos_bundle_unit_from_authority, verified_macos_bundle_cli,
 };
 #[cfg(target_os = "macos")]
 pub use macos::{MacosReleaseProvenance, bind_macos_release_provenance};

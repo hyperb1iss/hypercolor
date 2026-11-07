@@ -757,7 +757,7 @@ fn read_opened_exact(
     Ok(bytes)
 }
 
-fn hash_file_exact(
+pub(super) fn hash_file_exact(
     file: &File,
     size: u64,
     operation: &'static str,

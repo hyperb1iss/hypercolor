@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Read as _};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,7 +13,9 @@ use super::ownership::{AclProbe, DirectoryRefusal, DirectoryRole, OwnershipPolic
 
 const INSTALL_LOCK_FILE: &str = "install.lock";
 const ANCHORED_INSTALL_LOCK_FILE: &str = ".hypercolor-release-install.lock";
-const INSTALL_JOURNAL_FILE: &str = "install-journal.json";
+/// A published program: no write bits, like everything else a release holds.
+const PROGRAM_MODE: u32 = 0o555;
+pub(crate) const INSTALL_JOURNAL_FILE: &str = "install-journal.json";
 const UNITS_DIRECTORY: &str = "units";
 const MAX_JOURNAL_STAGE_ATTEMPTS: usize = 128;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -421,6 +423,114 @@ impl InstallStore {
         Ok(())
     }
 
+    /// Read one record from the state root, or `None` when it is absent.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock, a record past `limit`, or a read
+    /// failure.
+    pub(crate) fn read_state_record(
+        &self,
+        name: &Path,
+        limit: usize,
+        lock: &InstallLock,
+    ) -> Result<Option<Vec<u8>>, InstallStoreError> {
+        let directory = self.state_authority(lock)?;
+        let mut file = match directory.open_file(name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(InstallStoreError::ReadStateRecord(error)),
+        };
+        let mut bytes = Vec::new();
+        file.by_ref()
+            .take((limit + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(InstallStoreError::ReadStateRecord)?;
+        if bytes.len() > limit {
+            return Err(InstallStoreError::ReadStateRecord(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("a state record exceeds {limit} bytes"),
+            )));
+        }
+        Ok(Some(bytes))
+    }
+
+    /// Durably replace one owner-only record in the state root.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock or a staging or replacement
+    /// failure.
+    pub(crate) fn write_state_record(
+        &self,
+        name: &Path,
+        bytes: &[u8],
+        lock: &InstallLock,
+    ) -> Result<(), InstallStoreError> {
+        let directory = self.state_authority(lock)?;
+        let temporary = stage_journal(directory, bytes, &TEMPORARY_SEQUENCE)?;
+        if let Err(error) = directory.durable_replace_file(&temporary, name) {
+            let _ = directory.durable_remove_file(&temporary);
+            return Err(InstallStoreError::ReplaceJournal(error));
+        }
+        Ok(())
+    }
+
+    /// Make sure the owner-only directory `name` exists in the state root.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock or an entry that is not a
+    /// directory.
+    pub(crate) fn ensure_state_directory(
+        &self,
+        name: &Path,
+        lock: &InstallLock,
+    ) -> Result<(), InstallStoreError> {
+        let directory = self.state_authority(lock)?;
+        match directory
+            .entry_metadata(name)
+            .map_err(InstallStoreError::CreateStateDirectory)?
+        {
+            None => directory
+                .create_child_directory(name)
+                .map(drop)
+                .map_err(InstallStoreError::CreateStateDirectory),
+            Some(metadata) if metadata.kind() == DirectoryEntryKind::Directory => Ok(()),
+            Some(_) => Err(InstallStoreError::CreateStateDirectory(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "a state directory name holds something else",
+            ))),
+        }
+    }
+
+    /// Durably replace the read-and-execute program `name` in the release
+    /// root with `size` bytes of `source`.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock, a short source, or a staging or
+    /// replacement failure.
+    pub(crate) fn publish_program(
+        &self,
+        lock: &InstallLock,
+        name: &Path,
+        size: u64,
+        source: &mut impl Read,
+    ) -> Result<(), InstallStoreError> {
+        let directory = self.authority(lock)?;
+        let temporary = PathBuf::from(format!(
+            ".{}.{}.{}",
+            name.display(),
+            std::process::id(),
+            TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        directory
+            .create_regular_file(&temporary, PROGRAM_MODE, size, source)
+            .map_err(InstallStoreError::PublishProgram)?;
+        if let Err(error) = directory.durable_replace_file(&temporary, name) {
+            let _ = directory.durable_remove_file(&temporary);
+            return Err(InstallStoreError::PublishProgram(error));
+        }
+        Ok(())
+    }
+
     fn authority<'a>(
         &self,
         lock: &'a InstallLock,
@@ -762,6 +872,12 @@ pub enum InstallStoreError {
     InvalidActiveLink(String),
     #[error("failed to switch active unit: {0}")]
     SwitchActive(io::Error),
+    #[error("failed to read a state record: {0}")]
+    ReadStateRecord(io::Error),
+    #[error("failed to create a state directory: {0}")]
+    CreateStateDirectory(io::Error),
+    #[error("failed to publish a program in the release root: {0}")]
+    PublishProgram(io::Error),
     #[error("failed to open install journal without following links: {0}")]
     OpenJournal(io::Error),
     #[error("failed to read install journal: {0}")]

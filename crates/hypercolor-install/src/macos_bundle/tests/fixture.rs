@@ -23,6 +23,8 @@ const LC_CODE_SIGNATURE: u32 = 0x1d;
 pub(super) const EXECUTABLES: [&str; 3] = ["hypercolor-app", "hypercolor-daemon", "hypercolor"];
 /// The window every fixture transaction holds a candidate through.
 pub(super) const PROBATION: Duration = Duration::from_secs(90);
+/// The inventory an installed fixture bundle seals.
+pub(super) const INSTALLED_INVENTORY: &[u8] = br#"{"stores":[{"name":"adopted"}]}"#;
 
 /// A thin Mach-O for this host's architecture carrying one SHA-256
 /// CodeDirectory, so its cdhash is a function of `seed`.
@@ -184,6 +186,30 @@ impl UnitTree {
         UnitId::new(sha256(manifest)).expect("manifest digest")
     }
 
+    /// Write only the bundle under `applications`, the way a person drags it
+    /// out of the DMG, with the store inventory it seals among its resources.
+    pub(super) fn write_installed(&self, applications: &Path) {
+        for (path, _) in &self.directories {
+            if path.starts_with("Hypercolor.app") {
+                fs::create_dir_all(applications.join(path)).expect("create bundle directory");
+            }
+        }
+        for (path, mode, bytes) in &self.files {
+            if path.starts_with("Hypercolor.app") {
+                fs::write(applications.join(path), bytes).expect("write bundle file");
+                fs::set_permissions(applications.join(path), fs::Permissions::from_mode(*mode))
+                    .expect("set bundle file mode");
+            }
+        }
+        fs::write(
+            applications
+                .join("Hypercolor.app")
+                .join(crate::macos_bundle::MACOS_BUNDLE_INVENTORY),
+            INSTALLED_INVENTORY,
+        )
+        .expect("write the sealed inventory");
+    }
+
     pub(super) fn installed_bytes(&self) -> u64 {
         let files: usize = self.files.iter().map(|(_, _, bytes)| bytes.len()).sum();
         (self.manifest().len() + files) as u64
@@ -271,6 +297,24 @@ impl Fixture {
         self.with_lock(|lock| {
             crate::retain_macos_bundle_unit(&self.store, lock, unit).expect("retain unit")
         })
+    }
+}
+
+/// Give the owner back every directory under `root`, so a temporary
+/// directory holding immutable units can be removed.
+pub(super) fn reopen_tree(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            drop(fs::set_permissions(
+                &path,
+                fs::Permissions::from_mode(0o700),
+            ));
+            reopen_tree(&path);
+        }
     }
 }
 
