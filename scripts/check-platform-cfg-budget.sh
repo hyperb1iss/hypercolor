@@ -28,7 +28,13 @@ from pathlib import Path
 root = Path(sys.argv[1])
 sys.path.insert(0, sys.argv[2])
 budget = int(sys.argv[3])
-from rust_source import RustFile, closing, is_test_predicate, rust_files  # noqa: E402
+from rust_source import (  # noqa: E402
+    RustFile,
+    closing,
+    first_argument,
+    is_test_predicate,
+    rust_files,
+)
 
 PREDICATE = re.compile(r"\bcfg(?:_attr)?\s*!?\s*\(")
 PLATFORM = re.compile(r"\b(target_os|target_family|unix|windows)\b")
@@ -48,7 +54,7 @@ for path in paths:
     if rust.whole_file_is_test:
         continue
     for match in PREDICATE.finditer(rust.masked):
-        predicate = rust.masked[match.end() : closing(rust.masked, match.end() - 1)]
+        predicate = first_argument(rust.masked[match.end() : closing(rust.masked, match.end() - 1)])
         if rust.in_test_code(match.start()) or is_test_predicate(predicate):
             continue
         if PLATFORM.search(predicate):

@@ -16,8 +16,7 @@ from pathlib import Path
 TEST_PATH = re.compile(r"(^|/)(tests?|benches)(/|\.rs$)|_tests\.rs$")
 _RAW_STRING = re.compile(r'b?r(#*)"')
 _CFG_ATTRIBUTE = re.compile(r"#\s*(!?)\s*\[\s*cfg\s*\(")
-_NEGATED_TEST = re.compile(r"not\s*\(\s*test\s*\)")
-_TEST_IDENT = re.compile(r"\btest\b")
+_CFG_TOKEN = re.compile(r'\s*([A-Za-z_][A-Za-z0-9_]*|"[^"]*"|[(),=])')
 _OPEN = "([{"
 _CLOSE = ")]}"
 
@@ -104,9 +103,87 @@ def closing(masked: str, open_index: int) -> int:
     raise ValueError(f"unbalanced delimiter at offset {open_index}")
 
 
+def first_argument(arguments: str) -> str:
+    """The first top-level argument, which is the predicate of a `cfg_attr`."""
+    depth = 0
+    for j, ch in enumerate(arguments):
+        if ch in _OPEN:
+            depth += 1
+        elif ch in _CLOSE:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return arguments[:j]
+    return arguments
+
+
+def _cfg_tokens(predicate: str) -> list[str]:
+    tokens: list[str] = []
+    position = 0
+    text = predicate.rstrip()
+    while position < len(text):
+        match = _CFG_TOKEN.match(text, position)
+        if match is None:
+            raise ValueError(f"unreadable cfg predicate: {predicate!r}")
+        tokens.append(match.group(1))
+        position = match.end()
+    return tokens
+
+
+def _parse_cfg(tokens: list[str], index: int) -> tuple[object, int]:
+    """One predicate at `index`: an atom, or an (operator, children) pair."""
+    if index >= len(tokens):
+        raise ValueError(f"truncated cfg predicate: {tokens!r}")
+    name = tokens[index]
+    index += 1
+    if tokens[index : index + 1] == ["="]:
+        return f"{name}={tokens[index + 1]}", index + 2
+    if tokens[index : index + 1] != ["("]:
+        return name, index
+    index += 1
+    children: list[object] = []
+    while tokens[index] != ")":
+        child, index = _parse_cfg(tokens, index)
+        children.append(child)
+        if tokens[index] == ",":
+            index += 1
+    return (name, children), index + 1
+
+
+def _implies_test(predicate: object) -> bool:
+    """Whether `predicate` can only hold in a test build."""
+    if isinstance(predicate, str):
+        return predicate == "test"
+    operator, children = predicate
+    if operator == "all":
+        return any(_implies_test(child) for child in children)
+    if operator == "any":
+        return bool(children) and all(_implies_test(child) for child in children)
+    if operator == "not" and len(children) == 1:
+        return _holds_without_test(children[0])
+    return False
+
+
+def _holds_without_test(predicate: object) -> bool:
+    """Whether `predicate` holds in every build that is not a test build."""
+    if isinstance(predicate, str):
+        return False
+    operator, children = predicate
+    if operator == "all":
+        return all(_holds_without_test(child) for child in children)
+    if operator == "any":
+        return any(_holds_without_test(child) for child in children)
+    if operator == "not" and len(children) == 1:
+        return _implies_test(children[0])
+    return False
+
+
 def is_test_predicate(predicate: str) -> bool:
-    """Whether a cfg predicate only holds under `cfg(test)`."""
-    return bool(_TEST_IDENT.search(_NEGATED_TEST.sub("", predicate)))
+    """Whether a cfg predicate implies `test`, so it only holds in test builds."""
+    tokens = _cfg_tokens(predicate)
+    if not tokens:
+        return False
+    parsed, _ = _parse_cfg(tokens, 0)
+    return _implies_test(parsed)
 
 
 def _item_end(masked: str, start: int) -> int | None:

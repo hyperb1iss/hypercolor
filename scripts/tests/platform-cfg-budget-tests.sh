@@ -56,6 +56,25 @@ write "$daemon/nested/windows.rs" <<'RS'
 fn windows_only() {}
 RS
 
+# A predicate that merely mentions test still admits production builds.
+write "$daemon/any_test.rs" <<'RS'
+#[cfg(any(test, target_os = "windows"))]
+fn any_test() {}
+RS
+write "$daemon/not_all_test.rs" <<'RS'
+#[cfg(not(all(test, unix)))]
+fn not_all_test() {}
+RS
+
+# A body gated on such a predicate is production code too.
+write "$daemon/nested_any_test.rs" <<'RS'
+#[cfg(any(test, feature = "x"))]
+mod gated {
+    #[cfg(windows)]
+    fn inside() {}
+}
+RS
+
 # None of these count: comments, strings, test files, cfg(test) items, and
 # predicates without a platform.
 write "$core/prose.rs" <<'RS'
@@ -85,24 +104,37 @@ mod tests {
     #[test]
     fn linux_only() {}
 }
+
+#[cfg(not(not(test)))]
+mod doubly_negated {
+    #[cfg(windows)]
+    fn windows_only() {}
+}
+
+#[cfg(not(any(not(test), unix)))]
+fn only_in_tests() {}
+
+#[cfg_attr(all(test, windows), allow(dead_code))]
+fn attribute_only_in_tests() {}
 RS
 
-output="$("$CHECK" --budget 9 "$root")"
-[[ "$output" == *"9/9"* ]] || {
-  echo "expected nine counted files at budget nine, got: $output" >&2
+output="$("$CHECK" --budget 12 "$root")"
+[[ "$output" == *"12/12"* ]] || {
+  echo "expected twelve counted files at budget twelve, got: $output" >&2
   exit 1
 }
 
-if "$CHECK" --budget 8 "$root" 2>"$SANDBOX/over.err"; then
-  echo "expected nine files to exceed a budget of eight" >&2
+if "$CHECK" --budget 11 "$root" 2>"$SANDBOX/over.err"; then
+  echo "expected twelve files to exceed a budget of eleven" >&2
   exit 1
 fi
-grep -q "budget exceeded: 9 files" "$SANDBOX/over.err" || {
+grep -q "budget exceeded: 12 files" "$SANDBOX/over.err" || {
   echo "expected the failure to name the count:" >&2
   cat "$SANDBOX/over.err" >&2
   exit 1
 }
-for listed in plain.rs multiline.rs negated.rs macro.rs attr.rs family.rs nested/windows.rs; do
+for listed in plain.rs multiline.rs negated.rs macro.rs attr.rs family.rs nested/windows.rs \
+  any_test.rs not_all_test.rs nested_any_test.rs; do
   grep -q "crates/hypercolor-daemon/src/$listed" "$SANDBOX/over.err" || {
     echo "expected $listed in the failure listing:" >&2
     cat "$SANDBOX/over.err" >&2
