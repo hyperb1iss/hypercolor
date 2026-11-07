@@ -5,12 +5,13 @@ use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
     DiscoveredDevice, DiscoveryConnectBehavior,
 };
+use hypercolor_driver_conformance::{SessionRig, assert_session_contract};
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
 use hypercolor_driver_govee::{
     GoveeConfig, GoveeLanDevice, build_cloud_discovered_device, build_device_info,
 };
-use hypercolor_types::device::{DeviceFingerprint, FingerprintNamespace};
+use hypercolor_types::device::{DeviceFingerprint, DeviceId, FingerprintNamespace};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::net::UdpSocket;
@@ -72,6 +73,8 @@ async fn write_colors_dedups_and_paces_lan_state_frames() {
         ..GoveeConfig::default()
     });
     adopt_lan_device(&backend, device, target);
+    backend.connect(&device_id).await.expect("connect");
+    assert!(recv_payload(&socket).await.contains("\"turn\""));
 
     backend
         .write_colors(&device_id, &[[255, 0, 0], [0, 0, 255]])
@@ -159,6 +162,9 @@ async fn write_colors_uses_razer_only_when_led_count_matches() {
         ..GoveeConfig::default()
     });
     adopt_lan_device(&backend, device, target);
+    backend.connect(&device_id).await.expect("connect");
+    assert!(recv_payload(&socket).await.contains("\"turn\""));
+    assert!(recv_payload(&socket).await.contains("\"razer\""));
 
     backend
         .write_colors(&device_id, &[[1, 2, 3]; 20])
@@ -214,10 +220,11 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
     let cloud_device = test_cloud_device();
     let device_id = build_cloud_discovered_device(cloud_device.clone()).info.id;
     let (base_url, requests) =
-        serve_http_requests(1, r#"{"code":200,"message":"Success","data":{}}"#).await;
+        serve_http_requests(2, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
     let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
     adopt_cloud_device(&backend, cloud_device);
+    backend.connect(&device_id).await.expect("connect");
 
     let colors = Arc::new(vec![[255, 0, 0], [0, 0, 255]]);
     let starts = Arc::new(AtomicUsize::new(0));
@@ -249,7 +256,7 @@ async fn cloud_only_write_reports_duplicate_suppression_without_counting_a_send(
     assert_eq!(first.status, DeviceDeliveryStatus::Completed);
     assert_eq!(duplicate.status, DeviceDeliveryStatus::SuppressedDuplicate);
     assert_eq!(starts.load(Ordering::Relaxed), 1);
-    assert_eq!(requests.await.expect("server task should join").len(), 1);
+    assert_eq!(requests.await.expect("server task should join").len(), 2);
 }
 
 #[test]
@@ -272,10 +279,11 @@ async fn cloud_only_device_uses_v1_control_for_brightness() {
     let cloud_device = test_cloud_device();
     let device_id = build_cloud_discovered_device(cloud_device.clone()).info.id;
     let (base_url, requests) =
-        serve_http_requests(1, r#"{"code":200,"message":"Success","data":{}}"#).await;
+        serve_http_requests(2, r#"{"code":200,"message":"Success","data":{}}"#).await;
     let client = CloudClient::with_base_url("test-key", base_url).expect("base URL should parse");
     let backend = GoveeBackend::new(GoveeConfig::default()).with_cloud_client(client);
     adopt_cloud_device(&backend, cloud_device);
+    backend.connect(&device_id).await.expect("connect");
 
     backend
         .set_brightness(&device_id, 250)
@@ -283,9 +291,124 @@ async fn cloud_only_device_uses_v1_control_for_brightness() {
         .expect("cloud brightness should send");
 
     let requests = requests.await.expect("server task should join");
-    let body = request_json_body(&requests[0]);
+    let body = request_json_body(&requests[1]);
     assert_eq!(body["cmd"]["name"], "brightness");
     assert_eq!(body["cmd"]["value"], 100);
+}
+
+struct GoveeRig {
+    backend: GoveeBackend,
+    id: DeviceId,
+    receiver: UdpSocket,
+}
+
+#[async_trait::async_trait]
+impl SessionRig for GoveeRig {
+    fn backend(&self) -> &dyn DeviceBackend {
+        &self.backend
+    }
+
+    fn device_id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn frame(&self, shade: u8) -> Vec<[u8; 3]> {
+        vec![[shade, 0, 255]]
+    }
+
+    async fn saw_traffic(&mut self, window: Duration) -> bool {
+        let mut buf = [0_u8; 2048];
+        timeout(window, self.receiver.recv_from(&mut buf))
+            .await
+            .is_ok_and(|received| received.is_ok())
+    }
+
+    async fn discard_traffic(&mut self) {
+        let mut buf = [0_u8; 2048];
+        while self.receiver.try_recv_from(&mut buf).is_ok() {}
+    }
+
+    /// Every Govee session sends from the backend's one LAN socket, so
+    /// there is nothing private to release. Sharing is proven by
+    /// `closing_one_session_leaves_the_shared_socket_running`.
+    async fn assert_transport_released(&mut self) {}
+}
+
+#[tokio::test]
+async fn govee_sessions_keep_the_contract() {
+    let receiver = UdpSocket::bind(("127.0.0.1", 0))
+        .await
+        .expect("test UDP socket should bind");
+    let target = receiver.local_addr().expect("test socket has local addr");
+    let device = test_device("H6163");
+    let id = build_device_info(&device).id;
+    let backend = GoveeBackend::new(GoveeConfig::default());
+    adopt_lan_device(&backend, device, target);
+
+    let mut rig = GoveeRig {
+        backend,
+        id,
+        receiver,
+    };
+    assert_session_contract(&mut rig).await;
+}
+
+#[tokio::test]
+async fn closing_one_session_leaves_the_shared_socket_running() {
+    let receiver = UdpSocket::bind(("127.0.0.1", 0))
+        .await
+        .expect("test UDP socket should bind");
+    let target = receiver.local_addr().expect("test socket has local addr");
+    let first = test_device("H6163");
+    let second = GoveeLanDevice {
+        mac: "ffeeddccbbaa".to_owned(),
+        ..test_device("H6163")
+    };
+    let (first_id, second_id) = (build_device_info(&first).id, build_device_info(&second).id);
+    let backend = GoveeBackend::new(GoveeConfig::default());
+    adopt_lan_device(&backend, first, target);
+    adopt_lan_device(&backend, second, target);
+    backend.connect(&first_id).await.expect("connect first");
+    backend.connect(&second_id).await.expect("connect second");
+    recv_payload(&receiver).await;
+    recv_payload(&receiver).await;
+
+    backend.disconnect(&first_id).await.expect("disconnect");
+
+    backend
+        .write_colors(&second_id, &[[0, 255, 0]])
+        .await
+        .expect("the other session keeps its socket");
+    assert!(recv_payload(&receiver).await.contains("\"colorwc\""));
+}
+
+#[tokio::test]
+async fn retained_sink_goes_dark_when_the_device_disconnects() {
+    let receiver = UdpSocket::bind(("127.0.0.1", 0))
+        .await
+        .expect("test UDP socket should bind");
+    let target = receiver.local_addr().expect("test socket has local addr");
+    let device = test_device("H6163");
+    let id = build_device_info(&device).id;
+    let backend = GoveeBackend::new(GoveeConfig {
+        power_off_on_disconnect: true,
+        ..GoveeConfig::default()
+    });
+    adopt_lan_device(&backend, device, target);
+    backend.connect(&id).await.expect("connect");
+    recv_payload(&receiver).await;
+    let sink = backend.frame_sink(&id).expect("sink");
+
+    backend.disconnect(&id).await.expect("disconnect");
+
+    assert!(recv_payload(&receiver).await.contains("\"turn\""));
+    assert!(sink.is_closed());
+    assert!(
+        sink.write_colors_shared(Arc::new(vec![[9, 9, 9]]))
+            .await
+            .is_err()
+    );
+    assert_no_payload(&receiver).await;
 }
 
 fn test_device(sku: &str) -> GoveeLanDevice {

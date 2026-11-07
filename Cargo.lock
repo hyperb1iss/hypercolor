@@ -4746,6 +4746,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "hypercolor-driver-api",
+ "hypercolor-driver-conformance",
  "hypercolor-driver-support",
  "hypercolor-types",
  "serde",

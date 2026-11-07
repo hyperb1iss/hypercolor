@@ -3,13 +3,15 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice,
+    OutputCadence,
 };
-use hypercolor_driver_support::CredentialStore;
+use hypercolor_driver_support::{
+    CredentialStore, DeviceSession, FrameDelivery, Session, SessionTable,
+};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::net::UdpSocket;
 
@@ -21,61 +23,77 @@ use crate::cloud::{CloudClient, V1Command};
 use crate::lan::protocol::{DEVICE_PORT, LanCommand, encode_command};
 use crate::lan::razer::{encode_razer_frame_base64, encode_razer_mode_base64};
 
+/// Shortest spacing between color commands to a cloud-only device, which
+/// keeps it inside the v1 control API's per-device rate limit.
+const CLOUD_FRAME_INTERVAL: Duration = Duration::from_secs(6);
+
+/// Budget for leaving Razer mode and powering off, which may take one
+/// cloud request.
+const CLEANUP_BUDGET: Duration = Duration::from_secs(5);
+
 pub struct GoveeBackend {
     config: GoveeConfig,
-    devices: StdRwLock<HashMap<DeviceId, Arc<Mutex<GoveeDeviceState>>>>,
+    adopted: StdRwLock<HashMap<DeviceId, GoveeRoute>>,
+    sessions: SessionTable<GoveeSession>,
+    link: GoveeLink,
+}
+
+type SharedLanSocket = Arc<Mutex<Option<Arc<UdpSocket>>>>;
+
+/// Where one discovered device is reachable.
+#[derive(Clone)]
+struct GoveeRoute {
+    info: DeviceInfo,
+    profile: SkuProfile,
+    address: Option<SocketAddr>,
+    cloud_id: Option<String>,
+}
+
+impl GoveeRoute {
+    fn streams_razer(&self) -> bool {
+        self.profile
+            .capabilities
+            .contains(GoveeCapabilities::RAZER_STREAMING)
+    }
+
+    fn frame_interval(&self, config: &GoveeConfig) -> Duration {
+        if self.address.is_none() {
+            return CLOUD_FRAME_INTERVAL;
+        }
+        let fps = if self.streams_razer() {
+            config.razer_fps
+        } else {
+            config.lan_state_fps
+        }
+        .max(1);
+        Duration::from_millis(1000 / u64::from(fps))
+    }
+
+    fn output_cadence(&self, config: &GoveeConfig) -> OutputCadence {
+        if self.address.is_none() {
+            return OutputCadence::from_min_interval(CLOUD_FRAME_INTERVAL, 0);
+        }
+        OutputCadence::from_fps(if self.streams_razer() {
+            config.razer_fps
+        } else {
+            config.lan_state_fps
+        })
+    }
+}
+
+/// The two ways out of this backend. One LAN socket serves every device and
+/// lives as long as the backend, so no session owns it.
+#[derive(Clone, Default)]
+struct GoveeLink {
     shared_socket: SharedLanSocket,
     credential_store: Option<Arc<CredentialStore>>,
     cloud_base_url: Option<String>,
     cloud_client: Option<CloudClient>,
 }
 
-type SharedLanSocket = Arc<Mutex<Option<Arc<UdpSocket>>>>;
-
-#[derive(Clone)]
-struct GoveeDeviceState {
-    info: DeviceInfo,
-    profile: SkuProfile,
-    address: Option<SocketAddr>,
-    cloud_id: Option<String>,
-    last_sent: Option<Vec<[u8; 3]>>,
-    last_write_at: Option<Instant>,
-    razer_enabled: bool,
-}
-
-impl GoveeBackend {
-    #[must_use]
-    pub fn new(config: GoveeConfig) -> Self {
-        Self {
-            config,
-            devices: StdRwLock::new(HashMap::new()),
-            shared_socket: Arc::new(Mutex::new(None)),
-            credential_store: None,
-            cloud_base_url: None,
-            cloud_client: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_credential_store(mut self, credential_store: Arc<CredentialStore>) -> Self {
-        self.credential_store = Some(credential_store);
-        self
-    }
-
-    #[must_use]
-    pub fn with_cloud_client(mut self, cloud_client: CloudClient) -> Self {
-        self.cloud_client = Some(cloud_client);
-        self
-    }
-
-    #[must_use]
-    pub fn with_cloud_base_url(mut self, cloud_base_url: impl Into<String>) -> Self {
-        self.cloud_base_url = Some(cloud_base_url.into());
-        self
-    }
-
-    async fn ensure_socket(shared_socket: &SharedLanSocket) -> Result<Arc<UdpSocket>> {
-        let mut shared_socket = shared_socket.lock().await;
+impl GoveeLink {
+    async fn socket(&self) -> Result<Arc<UdpSocket>> {
+        let mut shared_socket = self.shared_socket.lock().await;
         if let Some(socket) = shared_socket.as_ref() {
             return Ok(Arc::clone(socket));
         }
@@ -89,13 +107,9 @@ impl GoveeBackend {
         Ok(socket)
     }
 
-    async fn send_lan_command(
-        shared_socket: &SharedLanSocket,
-        address: SocketAddr,
-        command: LanCommand,
-    ) -> Result<()> {
+    async fn send_lan(&self, address: SocketAddr, command: LanCommand) -> Result<()> {
         let payload = encode_command(&command)?;
-        let socket = Self::ensure_socket(shared_socket).await?;
+        let socket = self.socket().await?;
         socket
             .send_to(&payload, address)
             .await
@@ -103,49 +117,12 @@ impl GoveeBackend {
         Ok(())
     }
 
-    async fn send_command(&self, id: &DeviceId, command: LanCommand) -> Result<()> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .with_context(|| format!("Govee device {id} is not known"))?;
-        let device = device.lock().await;
-        let address = device
-            .address
-            .with_context(|| format!("Govee device {id} has no LAN address"))?;
-        drop(device);
-        Self::send_lan_command(&self.shared_socket, address, command).await
-    }
-
-    fn frame_interval_for(config: &GoveeConfig, device: &GoveeDeviceState) -> Duration {
-        if device.address.is_none() {
-            return Duration::from_secs(6);
-        }
-        let fps = if device
-            .profile
-            .capabilities
-            .contains(GoveeCapabilities::RAZER_STREAMING)
-        {
-            config.razer_fps
-        } else {
-            config.lan_state_fps
-        }
-        .max(1);
-        Duration::from_millis(1000 / u64::from(fps))
-    }
-
-    async fn cloud_client_from(
-        credential_store: Option<&Arc<CredentialStore>>,
-        cloud_client: Option<&CloudClient>,
-        cloud_base_url: Option<&str>,
-    ) -> Result<Option<CloudClient>> {
-        if let Some(client) = cloud_client {
+    async fn cloud_client(&self) -> Result<Option<CloudClient>> {
+        if let Some(client) = &self.cloud_client {
             return Ok(Some(client.clone()));
         }
 
-        let Some(store) = credential_store else {
+        let Some(store) = &self.credential_store else {
             return Ok(None);
         };
         let Some(api_key) = store
@@ -163,73 +140,116 @@ impl GoveeBackend {
             return Ok(None);
         };
 
-        match cloud_base_url {
+        match &self.cloud_base_url {
             Some(base_url) => CloudClient::with_base_url(api_key, base_url).map(Some),
             None => CloudClient::new(api_key).map(Some),
         }
     }
 
-    async fn send_cloud_command_to(
-        credential_store: Option<&Arc<CredentialStore>>,
-        cloud_client: Option<&CloudClient>,
-        cloud_base_url: Option<&str>,
-        model: &str,
-        cloud_id: &str,
-        command: V1Command,
-    ) -> Result<()> {
-        let client = Self::cloud_client_from(credential_store, cloud_client, cloud_base_url)
+    async fn send_cloud(&self, route: &GoveeRoute, command: V1Command) -> Result<()> {
+        let cloud_id = route
+            .cloud_id
+            .as_deref()
+            .with_context(|| format!("Govee device {} is not cloud-backed", route.info.id))?;
+        let model = route.info.model.clone().unwrap_or_default();
+        let client = self
+            .cloud_client()
             .await?
             .context("Govee cloud credentials are not configured")?;
-        client.v1_control(model, cloud_id, command).await
+        client.v1_control(&model, cloud_id, command).await
+    }
+}
+
+/// One connected device.
+struct GoveeSession {
+    device_id: DeviceId,
+    route: GoveeRoute,
+    link: GoveeLink,
+    config: GoveeConfig,
+    last_sent: Option<Vec<[u8; 3]>>,
+    last_write_at: Option<Instant>,
+    razer_enabled: bool,
+}
+
+impl GoveeSession {
+    async fn set_brightness(&self, brightness: u8) -> Result<()> {
+        match self.route.address {
+            None => {
+                self.link
+                    .send_cloud(&self.route, V1Command::Brightness(brightness))
+                    .await
+            }
+            Some(address) => {
+                self.link
+                    .send_lan(
+                        address,
+                        LanCommand::Brightness {
+                            value: brightness.clamp(1, 100),
+                        },
+                    )
+                    .await
+            }
+        }
     }
 
-    async fn send_cloud_command(&self, id: &DeviceId, command: V1Command) -> Result<()> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-            .with_context(|| format!("Govee device {id} is not known"))?;
-        let device = device.lock().await;
-        let cloud_id = device
-            .cloud_id
-            .clone()
-            .with_context(|| format!("Govee device {id} is not cloud-backed"))?;
-        let model = device.info.model.clone().unwrap_or_default();
-        drop(device);
-        Self::send_cloud_command_to(
-            self.credential_store.as_ref(),
-            self.cloud_client.as_ref(),
-            self.cloud_base_url.as_deref(),
-            &model,
-            &cloud_id,
-            command,
-        )
-        .await
+    async fn send_color(
+        &self,
+        command: LanCommand,
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<()> {
+        let started = || {
+            if let Some(delivery) = delivery {
+                delivery.transport_started();
+            }
+        };
+        match command {
+            LanCommand::Razer { pt } => {
+                let address = self
+                    .route
+                    .address
+                    .with_context(|| format!("Govee device {} has no LAN address", self.device_id))?;
+                started();
+                self.link.send_lan(address, LanCommand::Razer { pt }).await
+            }
+            LanCommand::ColorWc { red, green, blue } => {
+                if let Some(address) = self.route.address {
+                    started();
+                    self.link
+                        .send_lan(address, LanCommand::ColorWc { red, green, blue })
+                        .await
+                } else {
+                    if self.route.cloud_id.is_none() {
+                        bail!("Govee device {} is not cloud-backed", self.device_id);
+                    }
+                    started();
+                    self.link
+                        .send_cloud(
+                            &self.route,
+                            V1Command::Color {
+                                r: red,
+                                g: green,
+                                b: blue,
+                            },
+                        )
+                        .await
+                }
+            }
+            _ => unreachable!("Govee write_colors only emits color frame commands"),
+        }
     }
 
-    async fn write_device_colors(
-        id: &DeviceId,
-        device: &Arc<Mutex<GoveeDeviceState>>,
+    async fn write_colors(
+        &mut self,
         colors: &[[u8; 3]],
-        config: &GoveeConfig,
-        shared_socket: &SharedLanSocket,
-        credential_store: Option<&Arc<CredentialStore>>,
-        cloud_client: Option<&CloudClient>,
-        cloud_base_url: Option<&str>,
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
+        delivery: Option<&FrameDelivery>,
     ) -> Result<DeviceWriteOutcome> {
         if colors.is_empty() {
             return Ok(DeviceWriteOutcome::SuppressedDuplicate);
         }
 
-        let mut device = device.lock().await;
-        let (command, sent_frame) = if device
-            .profile
-            .capabilities
-            .contains(GoveeCapabilities::RAZER_STREAMING)
-            && device
+        let (command, sent_frame) = if self.route.streams_razer()
+            && self
+                .route
                 .profile
                 .razer_led_count
                 .is_some_and(|count| usize::from(count) == colors.len())
@@ -244,129 +264,147 @@ impl GoveeBackend {
             )
         };
 
-        if device.last_sent.as_deref() == Some(sent_frame.as_slice()) {
+        if self.last_sent.as_deref() == Some(sent_frame.as_slice()) {
             return Ok(DeviceWriteOutcome::SuppressedDuplicate);
         }
-        if device.last_write_at.is_some_and(|last_write| {
-            last_write.elapsed() < Self::frame_interval_for(config, &device)
-        }) {
+        if self
+            .last_write_at
+            .is_some_and(|last_write| last_write.elapsed() < self.route.frame_interval(&self.config))
+        {
             return Ok(DeviceWriteOutcome::SuppressedCadence);
         }
 
-        match command {
-            LanCommand::Razer { pt } => {
-                let address = device
-                    .address
-                    .with_context(|| format!("Govee device {id} has no LAN address"))?;
-                if let Some((id, observer)) = delivery {
-                    observer.transport_started(id);
+        self.send_color(command, delivery).await?;
+
+        self.last_sent = Some(sent_frame);
+        self.last_write_at = Some(Instant::now());
+        Ok(DeviceWriteOutcome::Sent)
+    }
+
+    async fn shut_down(&self) -> Result<()> {
+        if self.razer_enabled
+            && let Some(address) = self.route.address
+        {
+            self.link
+                .send_lan(
+                    address,
+                    LanCommand::Razer {
+                        pt: encode_razer_mode_base64(false),
+                    },
+                )
+                .await?;
+        }
+        if self.config.power_off_on_disconnect {
+            match self.route.address {
+                Some(address) => {
+                    self.link
+                        .send_lan(address, LanCommand::Turn { on: false })
+                        .await?;
                 }
-                Self::send_lan_command(shared_socket, address, LanCommand::Razer { pt }).await?;
+                None => {
+                    self.link
+                        .send_cloud(&self.route, V1Command::Turn(false))
+                        .await?;
+                }
             }
-            LanCommand::ColorWc { red, green, blue } => {
-                if let Some(address) = device.address {
-                    if let Some((id, observer)) = delivery {
-                        observer.transport_started(id);
-                    }
-                    Self::send_lan_command(
-                        shared_socket,
+        }
+        Ok(())
+    }
+}
+
+impl DeviceSession for GoveeSession {
+    type Facts = ();
+
+    const CLEANUP: Duration = CLEANUP_BUDGET;
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
+        self.write_colors(colors, delivery)
+            .await
+            .map_err(|error| DeviceError::write(self.device_id, error))
+    }
+
+    async fn finish(self) -> std::result::Result<(), DeviceError> {
+        self.shut_down()
+            .await
+            .map_err(|error| DeviceError::write(self.device_id, error))
+    }
+}
+
+impl GoveeBackend {
+    #[must_use]
+    pub fn new(config: GoveeConfig) -> Self {
+        Self {
+            config,
+            adopted: StdRwLock::new(HashMap::new()),
+            sessions: SessionTable::new(),
+            link: GoveeLink::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_credential_store(mut self, credential_store: Arc<CredentialStore>) -> Self {
+        self.link.credential_store = Some(credential_store);
+        self
+    }
+
+    #[must_use]
+    pub fn with_cloud_client(mut self, cloud_client: CloudClient) -> Self {
+        self.link.cloud_client = Some(cloud_client);
+        self
+    }
+
+    #[must_use]
+    pub fn with_cloud_base_url(mut self, cloud_base_url: impl Into<String>) -> Self {
+        self.link.cloud_base_url = Some(cloud_base_url.into());
+        self
+    }
+
+    fn route(&self, id: &DeviceId) -> Option<GoveeRoute> {
+        self.adopted
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
+    /// Wake the device and open its stream.
+    async fn open_session(&self, id: DeviceId, route: GoveeRoute) -> Result<Session<GoveeSession>> {
+        let mut razer_enabled = false;
+        if let Some(address) = route.address {
+            self.link
+                .send_lan(address, LanCommand::Turn { on: true })
+                .await?;
+            if route.streams_razer() && route.profile.razer_led_count.is_some() {
+                self.link
+                    .send_lan(
                         address,
-                        LanCommand::ColorWc { red, green, blue },
-                    )
-                    .await?;
-                } else {
-                    let cloud_id = device
-                        .cloud_id
-                        .clone()
-                        .with_context(|| format!("Govee device {id} is not cloud-backed"))?;
-                    let model = device.info.model.clone().unwrap_or_default();
-                    if let Some((id, observer)) = delivery {
-                        observer.transport_started(id);
-                    }
-                    Self::send_cloud_command_to(
-                        credential_store,
-                        cloud_client,
-                        cloud_base_url,
-                        &model,
-                        &cloud_id,
-                        V1Command::Color {
-                            r: red,
-                            g: green,
-                            b: blue,
+                        LanCommand::Razer {
+                            pt: encode_razer_mode_base64(true),
                         },
                     )
                     .await?;
-                }
+                razer_enabled = true;
             }
-            _ => unreachable!("Govee write_colors only emits color frame commands"),
+        } else {
+            self.link.send_cloud(&route, V1Command::Turn(true)).await?;
         }
-
-        device.last_sent = Some(sent_frame);
-        device.last_write_at = Some(Instant::now());
-        Ok(DeviceWriteOutcome::Sent)
-    }
-}
-
-struct GoveeFrameSink {
-    device_id: DeviceId,
-    device: Arc<Mutex<GoveeDeviceState>>,
-    config: GoveeConfig,
-    shared_socket: SharedLanSocket,
-    credential_store: Option<Arc<CredentialStore>>,
-    cloud_client: Option<CloudClient>,
-    cloud_base_url: Option<String>,
-}
-
-#[async_trait]
-impl DeviceFrameSink for GoveeFrameSink {
-    async fn write_colors_shared(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<(), DeviceError> {
-        self.write_colors_shared_outcome(colors).await.map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
-        GoveeBackend::write_device_colors(
-            &self.device_id,
-            &self.device,
-            colors.as_slice(),
-            &self.config,
-            &self.shared_socket,
-            self.credential_store.as_ref(),
-            self.cloud_client.as_ref(),
-            self.cloud_base_url.as_deref(),
-            None,
-        )
-        .await
-        .map_err(|error| DeviceError::write(self.device_id, error))
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let result = GoveeBackend::write_device_colors(
-            &self.device_id,
-            &self.device,
-            colors.as_slice(),
-            &self.config,
-            &self.shared_socket,
-            self.credential_store.as_ref(),
-            self.cloud_client.as_ref(),
-            self.cloud_base_url.as_deref(),
-            Some((id, observer.as_ref())),
-        )
-        .await
-        .map_err(|error| DeviceError::write(self.device_id, error));
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
+        Ok(Session::new(
+            id,
+            (),
+            GoveeSession {
+                device_id: id,
+                route,
+                link: self.link.clone(),
+                config: self.config.clone(),
+                last_sent: None,
+                last_write_at: None,
+                razer_enabled,
+            },
+        ))
     }
 }
 
@@ -408,33 +446,31 @@ impl DeviceBackend for GoveeBackend {
             });
         }
         let profile = profile_for_sku(&sku).unwrap_or_else(|| fallback_profile(&sku));
-        self.devices
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(discovered.info.id)
-            .and_modify(|state| {
-                if let Ok(mut state) = state.try_lock() {
-                    state.info.clone_from(&discovered.info);
-                    state.profile.clone_from(&profile);
-                    if address.is_some() {
-                        state.address = address;
-                    }
-                    if cloud_id.is_some() {
-                        state.cloud_id.clone_from(&cloud_id);
-                    }
-                }
-            })
-            .or_insert_with(|| {
-                Arc::new(Mutex::new(GoveeDeviceState {
-                    info: discovered.info.clone(),
-                    profile,
-                    address,
-                    cloud_id,
-                    last_sent: None,
-                    last_write_at: None,
-                    razer_enabled: false,
-                }))
+        let id = discovered.info.id;
+        let route = {
+            let mut adopted = self.adopted.write().unwrap_or_else(PoisonError::into_inner);
+            let route = adopted.entry(id).or_insert_with(|| GoveeRoute {
+                info: discovered.info.clone(),
+                profile: profile.clone(),
+                address,
+                cloud_id: cloud_id.clone(),
             });
+            route.info.clone_from(&discovered.info);
+            route.profile = profile;
+            if address.is_some() {
+                route.address = address;
+            }
+            if cloud_id.is_some() {
+                route.cloud_id = cloud_id;
+            }
+            route.clone()
+        };
+        // A rescan can move a device under its live session.
+        if let Some(sink) = self.sessions.sink(&id)
+            && let Some(mut session) = sink.try_admit()
+        {
+            session.route = route;
+        }
         Ok(())
     }
 
@@ -442,16 +478,7 @@ impl DeviceBackend for GoveeBackend {
         &self,
         id: &DeviceId,
     ) -> std::result::Result<Option<DeviceInfo>, DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
-            return Ok(None);
-        };
-        Ok(Some(device.lock().await.info.clone()))
+        Ok(self.route(id).map(|route| route.info))
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
@@ -459,90 +486,26 @@ impl DeviceBackend for GoveeBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
-            return Err(DeviceError::NotAdopted { device_id: *id });
-        };
-
-        if device
-            .try_lock()
-            .is_ok_and(|device| device.address.is_some())
-        {
-            self.send_command(id, LanCommand::Turn { on: true })
-                .await
-                .map_err(|error| DeviceError::connection(id, error))?;
-        } else {
-            self.send_cloud_command(id, V1Command::Turn(true))
-                .await
-                .map_err(|error| DeviceError::connection(id, error))?;
+        self.sessions.ensure_accepting(id)?;
+        if self.sessions.is_open(id) {
             return Ok(());
         }
-        let should_enable_razer = device.try_lock().is_ok_and(|device| {
-            device
-                .profile
-                .capabilities
-                .contains(GoveeCapabilities::RAZER_STREAMING)
-                && device.profile.razer_led_count.is_some()
-        });
-        if should_enable_razer {
-            self.send_command(
-                id,
-                LanCommand::Razer {
-                    pt: encode_razer_mode_base64(true),
-                },
-            )
+        let route = self
+            .route(id)
+            .ok_or(DeviceError::NotAdopted { device_id: *id })?;
+        let session = self
+            .open_session(*id, route)
             .await
             .map_err(|error| DeviceError::connection(id, error))?;
-            device.lock().await.razer_enabled = true;
-        }
-
-        Ok(())
+        self.sessions.install(session).await
     }
 
     async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
-            return Ok(());
-        };
-        let (razer_enabled, has_lan_address) = {
-            let state = device.lock().await;
-            (state.razer_enabled, state.address.is_some())
-        };
-        if razer_enabled {
-            self.send_command(
-                id,
-                LanCommand::Razer {
-                    pt: encode_razer_mode_base64(false),
-                },
-            )
-            .await
-            .map_err(|error| DeviceError::write(id, error))?;
-        }
-        if self.config.power_off_on_disconnect {
-            if has_lan_address {
-                self.send_command(id, LanCommand::Turn { on: false })
-                    .await
-                    .map_err(|error| DeviceError::write(id, error))?;
-            } else {
-                self.send_cloud_command(id, V1Command::Turn(false))
-                    .await
-                    .map_err(|error| DeviceError::write(id, error))?;
-            }
-        }
-        let mut device = device.lock().await;
-        device.razer_enabled = false;
-        device.last_sent = None;
-        Ok(())
+        self.sessions.close(id).await
+    }
+
+    async fn retire(&self) -> std::result::Result<(), DeviceError> {
+        self.sessions.retire().await
     }
 
     async fn write_colors(
@@ -550,106 +513,7 @@ impl DeviceBackend for GoveeBackend {
         id: &DeviceId,
         colors: &[[u8; 3]],
     ) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
-            return Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            });
-        };
-        Self::write_device_colors(
-            id,
-            &device,
-            colors,
-            &self.config,
-            &self.shared_socket,
-            self.credential_store.as_ref(),
-            self.cloud_client.as_ref(),
-            self.cloud_base_url.as_deref(),
-            None,
-        )
-        .await
-        .map_err(|error| DeviceError::write(id, error))
-        .map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> std::result::Result<DeviceWriteOutcome, DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
-            return Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            });
-        };
-        Self::write_device_colors(
-            id,
-            &device,
-            colors.as_slice(),
-            &self.config,
-            &self.shared_socket,
-            self.credential_store.as_ref(),
-            self.cloud_client.as_ref(),
-            self.cloud_base_url.as_deref(),
-            None,
-        )
-        .await
-        .map_err(|error| DeviceError::write(id, error))
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        device_id: &DeviceId,
-        delivery_id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(device_id)
-            .cloned();
-        let Some(device) = device else {
-            return DeviceDeliveryAck::rejected(
-                delivery_id,
-                DeviceError::Disconnected {
-                    device: device_id.to_string(),
-                },
-            );
-        };
-        let result = Self::write_device_colors(
-            device_id,
-            &device,
-            colors.as_slice(),
-            &self.config,
-            &self.shared_socket,
-            self.credential_store.as_ref(),
-            self.cloud_client.as_ref(),
-            self.cloud_base_url.as_deref(),
-            Some((delivery_id, observer.as_ref())),
-        )
-        .await
-        .map_err(|error| DeviceError::write(device_id, error));
-        DeviceDeliveryAck::from_write_result(
-            delivery_id,
-            payload_bytes,
-            started_at.elapsed(),
-            result,
-        )
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     async fn set_brightness(
@@ -657,74 +521,19 @@ impl DeviceBackend for GoveeBackend {
         id: &DeviceId,
         brightness: u8,
     ) -> std::result::Result<(), DeviceError> {
-        let device = self
-            .devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned();
-        let Some(device) = device else {
-            return Err(DeviceError::NotAdopted { device_id: *id });
-        };
-        if device
-            .try_lock()
-            .map_or(true, |device| device.address.is_none())
-        {
-            return self
-                .send_cloud_command(id, V1Command::Brightness(brightness))
-                .await
-                .map_err(|error| DeviceError::write(id, error));
-        }
-
-        self.send_command(
-            id,
-            LanCommand::Brightness {
-                value: brightness.clamp(1, 100),
-            },
-        )
-        .await
-        .map_err(|error| DeviceError::write(id, error))
+        self.sessions
+            .require(id)?
+            .transact(async |session| session.set_brightness(brightness).await)
+            .await?
+            .map_err(|error| DeviceError::write(id, error))
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .and_then(|device| {
-                let device = device.try_lock().ok()?;
-                if device.address.is_none() {
-                    return Some(OutputCadence::from_min_interval(Duration::from_secs(6), 0));
-                }
-                let target_fps = if device
-                    .profile
-                    .capabilities
-                    .contains(GoveeCapabilities::RAZER_STREAMING)
-                {
-                    self.config.razer_fps
-                } else {
-                    self.config.lan_state_fps
-                };
-                Some(OutputCadence::from_fps(target_fps))
-            })
+        self.route(id).map(|route| route.output_cadence(&self.config))
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.devices
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .map(|device| {
-                Arc::new(GoveeFrameSink {
-                    device_id: *id,
-                    device: Arc::clone(device),
-                    config: self.config.clone(),
-                    shared_socket: Arc::clone(&self.shared_socket),
-                    credential_store: self.credential_store.clone(),
-                    cloud_client: self.cloud_client.clone(),
-                    cloud_base_url: self.cloud_base_url.clone(),
-                }) as Arc<dyn DeviceFrameSink>
-            })
+        self.sessions.frame_sink(id)
     }
 }
 

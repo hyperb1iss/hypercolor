@@ -211,7 +211,8 @@ impl<S> Slot<S> {
 /// Exclusive access to a live session.
 ///
 /// Close waits for this to drop, so hold it across short bookkeeping only.
-/// Frame writes go through [`SessionSink::write`], which close can cancel.
+/// Device I/O goes through [`SessionSink::write`] or
+/// [`SessionSink::transact`], which close can cancel.
 pub struct Admitted<'a, S> {
     state: MutexGuard<'a, Option<S>>,
     slot: &'a Slot<S>,
@@ -289,6 +290,28 @@ impl<S> SessionSink<S> {
             state,
             slot: &self.slot,
         })
+    }
+}
+
+impl<S> SessionSink<S> {
+    /// Run device I/O against the session state, unless it was closed.
+    ///
+    /// Close can cancel this, which is what separates it from holding
+    /// [`Self::admit`] across an await.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::Disconnected`] when the session is revoked or
+    /// close cancelled the I/O.
+    pub async fn transact<T>(
+        &self,
+        io: impl AsyncFnOnce(&mut S) -> T,
+    ) -> Result<T, DeviceError> {
+        let mut session = self.admit().await?;
+        self.slot
+            .until_cancelled(io(&mut session))
+            .await
+            .ok_or_else(|| disconnected(self.device_id))
     }
 }
 
