@@ -10,16 +10,15 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
+    DiscoveredDevice, OutputCadence,
 };
 use hypercolor_driver_support::framing::{BoundedLines, FrameWriteError, FramedWriter, LineError};
+use hypercolor_driver_support::{DeviceSession, FrameDelivery, Session, SessionTable};
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use crate::YEELIGHT_DRIVER_ID;
@@ -76,41 +75,18 @@ impl StreamMode {
     }
 }
 
-struct SessionHandle {
+/// What a connect learned about the device.
+struct YeelightFacts {
     profile: YeelightDeviceProfile,
     info: DeviceInfo,
     cadence: OutputCadence,
     mode: StreamMode,
     capabilities: Capabilities,
     music_enabled: bool,
-    stream: Mutex<StreamState>,
-    shared: Arc<SessionShared>,
-    reader: StdMutex<Option<JoinHandle<()>>>,
-}
-
-impl SessionHandle {
-    fn shut_down(&self) {
-        self.shared.closed.store(true, Ordering::Release);
-        if let Some(task) = self
-            .reader
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
-            task.abort();
-        }
-    }
-}
-
-impl Drop for SessionHandle {
-    fn drop(&mut self) {
-        self.shut_down();
-    }
 }
 
 #[derive(Default)]
 struct SessionShared {
-    closed: AtomicBool,
     quota_blocked_until: StdMutex<Option<Instant>>,
     /// The device rejected a command for quota; the state it would have
     /// set is unknown, so the next frame is resent in full.
@@ -143,11 +119,16 @@ impl SessionShared {
     }
 }
 
-struct StreamState {
-    /// Closed once the connection was dropped after a failure or
-    /// disconnect.
+/// One open connection to a light.
+struct YeelightSession {
+    device_id: DeviceId,
+    mode: StreamMode,
+    capabilities: Capabilities,
+    shared: Arc<SessionShared>,
+    /// Closed once a failed write dropped the connection: the device allows
+    /// only four, and a partial line can never be resumed.
     control: FramedWriter<OwnedWriteHalf>,
-    /// `None` in normal mode and after the connections close.
+    /// `None` in normal mode.
     music: Option<FramedWriter<OwnedWriteHalf>>,
     next_id: u32,
     brightness: u8,
@@ -156,7 +137,7 @@ struct StreamState {
     next_allowed_at: Option<Instant>,
 }
 
-impl StreamState {
+impl YeelightSession {
     fn next_id(&mut self) -> u32 {
         self.next_id = self.next_id.wrapping_add(1).max(1);
         self.next_id
@@ -172,12 +153,121 @@ fn write_deadline() -> tokio::time::Instant {
     tokio::time::Instant::now() + WRITE_TIMEOUT
 }
 
+impl DeviceSession for YeelightSession {
+    type Facts = YeelightFacts;
+
+    /// A stalled writer holds the session for at most [`WRITE_TIMEOUT`].
+    const SETTLE: Duration = WRITE_TIMEOUT;
+    const CLEANUP: Duration = WRITE_TIMEOUT.saturating_add(Duration::from_millis(100));
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        if let Some(reason) = self.shared.failure() {
+            return Err(DeviceError::write(self.device_id, reason));
+        }
+        let now = Instant::now();
+        if self.shared.quota_rejected.swap(false, Ordering::AcqRel) {
+            // The rejected command's state never landed; resend in full.
+            self.last_state = None;
+        }
+        if self.mode == StreamMode::Normal {
+            if self.shared.quota_blocked(now) {
+                return Ok(DeviceWriteOutcome::SuppressedCadence);
+            }
+            if self.next_allowed_at.is_some_and(|next| now < next) {
+                return Ok(DeviceWriteOutcome::SuppressedCadence);
+            }
+        }
+
+        let color = representative_color(colors);
+        let color = if self.brightness == u8::MAX {
+            color
+        } else {
+            let [r, g, b] = color;
+            let scaled = Rgb::new(r, g, b).scale(f32::from(self.brightness) / f32::from(u8::MAX));
+            [scaled.r, scaled.g, scaled.b]
+        };
+        let next = LightState::from_color(color, self.capabilities);
+        let unchanged = self.last_state == Some(next);
+        let refresh_due = self.mode == StreamMode::Music
+            && self
+                .last_sent_at
+                .is_none_or(|sent| now.saturating_duration_since(sent) >= MUSIC_KEEPALIVE);
+        let commands = if unchanged && refresh_due {
+            refresh_commands(next, self.capabilities)
+        } else {
+            commands_for(self.last_state, next, self.capabilities)
+        };
+        if commands.is_empty() {
+            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
+        }
+
+        let mut payload = String::new();
+        for command in &commands {
+            let id = self.next_id();
+            payload.push_str(&command.encode(id));
+        }
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
+        }
+        let writer = match self.mode {
+            StreamMode::Music => self.music.as_mut(),
+            StreamMode::Normal => Some(&mut self.control),
+        };
+        let Some(writer) = writer else {
+            return Err(DeviceError::Disconnected {
+                device: self.device_id.to_string(),
+            });
+        };
+        match writer.write(payload.as_bytes(), write_deadline()).await {
+            Ok(()) => {}
+            Err(FrameWriteError::Closed) => {
+                return Err(DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                });
+            }
+            Err(error) => {
+                // The writer already gave up its connection. Close the
+                // other one too and make every later write report this.
+                let reason = format!("Yeelight command write failed: {error}");
+                self.shared.mark_failed(reason.clone());
+                self.close_connections();
+                return Err(DeviceError::write(self.device_id, reason));
+            }
+        }
+        self.last_state = Some(next);
+        self.last_sent_at = Some(now);
+        if self.mode == StreamMode::Normal {
+            let commands = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+            self.next_allowed_at =
+                Some(now + NORMAL_MODE_COMMAND_INTERVAL.saturating_mul(commands));
+        }
+        Ok(DeviceWriteOutcome::Sent)
+    }
+
+    /// Leave music mode. Dropping the session then closes both connections.
+    async fn finish(mut self) -> Result<(), DeviceError> {
+        if self.mode != StreamMode::Music {
+            return Ok(());
+        }
+        let stop = Command::MusicStop.encode(self.next_id());
+        let sent = self.control.write(stop.as_bytes(), write_deadline());
+        if sent.await.is_err() {
+            debug!(device_id = %self.device_id, "Yeelight set_music stop was not delivered");
+        }
+        Ok(())
+    }
+}
+
 /// Yeelight backend implementing [`DeviceBackend`].
 pub struct YeelightBackend {
     config: YeelightConfig,
     quota_backoff: Duration,
     adopted: StdRwLock<HashMap<DeviceId, AdoptedRoute>>,
-    sessions: StdRwLock<HashMap<DeviceId, Arc<SessionHandle>>>,
+    sessions: SessionTable<YeelightSession>,
 }
 
 impl YeelightBackend {
@@ -187,7 +277,7 @@ impl YeelightBackend {
             config,
             quota_backoff: QUOTA_BACKOFF,
             adopted: StdRwLock::new(HashMap::new()),
-            sessions: StdRwLock::new(HashMap::new()),
+            sessions: SessionTable::new(),
         }
     }
 
@@ -198,21 +288,11 @@ impl YeelightBackend {
         self
     }
 
-    fn session(&self, id: &DeviceId) -> Option<Arc<SessionHandle>> {
-        self.sessions
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    }
-
-    fn connected(&self, id: &DeviceId) -> Result<Arc<SessionHandle>, DeviceError> {
-        self.session(id).ok_or_else(|| DeviceError::Disconnected {
-            device: id.to_string(),
-        })
-    }
-
-    async fn open_session(&self, id: &DeviceId, route: &AdoptedRoute) -> Result<SessionHandle> {
+    async fn open_session(
+        &self,
+        id: &DeviceId,
+        route: &AdoptedRoute,
+    ) -> Result<Session<YeelightSession>> {
         let profile = confirm_identity(route).await?;
         if profile.device_id() != *id {
             bail!(
@@ -294,20 +374,21 @@ impl YeelightBackend {
         let info = profile.device_info(cadence.target_fps());
 
         let shared = Arc::new(SessionShared::default());
-        let reader = tokio::spawn(read_control(
+        let mut session = Session::new(
             *id,
-            lines,
-            Arc::clone(&shared),
-            self.quota_backoff,
-        ));
-        Ok(SessionHandle {
-            profile,
-            info,
-            cadence,
-            mode,
-            capabilities,
-            music_enabled: self.config.music_mode,
-            stream: Mutex::new(StreamState {
+            YeelightFacts {
+                profile,
+                info,
+                cadence,
+                mode,
+                capabilities,
+                music_enabled: self.config.music_mode,
+            },
+            YeelightSession {
+                device_id: *id,
+                mode,
+                capabilities,
+                shared: Arc::clone(&shared),
                 control,
                 music,
                 next_id,
@@ -315,116 +396,10 @@ impl YeelightBackend {
                 last_state: None,
                 last_sent_at: None,
                 next_allowed_at: None,
-            }),
-            shared,
-            reader: StdMutex::new(Some(reader)),
-        })
-    }
-
-    async fn write_session(
-        device_id: &DeviceId,
-        handle: &SessionHandle,
-        colors: &[[u8; 3]],
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        if handle.shared.closed.load(Ordering::Acquire) {
-            return Err(DeviceError::Disconnected {
-                device: device_id.to_string(),
-            });
-        }
-        if let Some(reason) = handle.shared.failure() {
-            return Err(DeviceError::write(device_id, reason));
-        }
-        let now = Instant::now();
-        let mut stream = handle.stream.lock().await;
-        if handle.shared.closed.load(Ordering::Acquire) {
-            // Disconnected while this write waited for the lock.
-            stream.close_connections();
-            return Err(DeviceError::Disconnected {
-                device: device_id.to_string(),
-            });
-        }
-        if handle.shared.quota_rejected.swap(false, Ordering::AcqRel) {
-            // The rejected command's state never landed; resend in full.
-            stream.last_state = None;
-        }
-        if handle.mode == StreamMode::Normal {
-            if handle.shared.quota_blocked(now) {
-                return Ok(DeviceWriteOutcome::SuppressedCadence);
-            }
-            if stream.next_allowed_at.is_some_and(|next| now < next) {
-                return Ok(DeviceWriteOutcome::SuppressedCadence);
-            }
-        }
-
-        let color = representative_color(colors);
-        let color = if stream.brightness == u8::MAX {
-            color
-        } else {
-            let [r, g, b] = color;
-            let scaled = Rgb::new(r, g, b).scale(f32::from(stream.brightness) / f32::from(u8::MAX));
-            [scaled.r, scaled.g, scaled.b]
-        };
-        let next = LightState::from_color(color, handle.capabilities);
-        let unchanged = stream.last_state == Some(next);
-        let refresh_due = handle.mode == StreamMode::Music
-            && stream
-                .last_sent_at
-                .is_none_or(|sent| now.saturating_duration_since(sent) >= MUSIC_KEEPALIVE);
-        let commands = if unchanged && refresh_due {
-            refresh_commands(next, handle.capabilities)
-        } else {
-            commands_for(stream.last_state, next, handle.capabilities)
-        };
-        if commands.is_empty() {
-            return Ok(DeviceWriteOutcome::SuppressedDuplicate);
-        }
-
-        let mut payload = String::new();
-        for command in &commands {
-            let id = stream.next_id();
-            payload.push_str(&command.encode(id));
-        }
-        if let Some((id, observer)) = delivery {
-            observer.transport_started(id);
-        }
-        let writer = match handle.mode {
-            StreamMode::Music => stream.music.as_mut(),
-            StreamMode::Normal => Some(&mut stream.control),
-        };
-        let Some(writer) = writer else {
-            return Err(DeviceError::Disconnected {
-                device: device_id.to_string(),
-            });
-        };
-        match writer.write(payload.as_bytes(), write_deadline()).await {
-            Ok(()) => {}
-            Err(FrameWriteError::Closed) => {
-                return Err(DeviceError::Disconnected {
-                    device: device_id.to_string(),
-                });
-            }
-            Err(error) => {
-                // The writer already gave up its connection. Close the
-                // other one too and make every later write report this.
-                let reason = format!("Yeelight command write failed: {error}");
-                handle.shared.mark_failed(reason.clone());
-                stream.close_connections();
-                return Err(DeviceError::write(device_id, reason));
-            }
-        }
-        if handle.shared.closed.load(Ordering::Acquire) {
-            // Disconnect began while this write was in flight.
-            stream.close_connections();
-        }
-        stream.last_state = Some(next);
-        stream.last_sent_at = Some(now);
-        if handle.mode == StreamMode::Normal {
-            let commands = u32::try_from(commands.len()).unwrap_or(u32::MAX);
-            stream.next_allowed_at =
-                Some(now + NORMAL_MODE_COMMAND_INTERVAL.saturating_mul(commands));
-        }
-        Ok(DeviceWriteOutcome::Sent)
+            },
+        );
+        session.spawn(read_control(*id, lines, shared, self.quota_backoff));
+        Ok(session)
     }
 }
 
@@ -582,10 +557,8 @@ async fn read_control(
             debug!(%device_id, code = error.code, message = %error.message, "Yeelight command rejected");
         }
     };
-    if !shared.closed.load(Ordering::Acquire) {
-        warn!(%device_id, %reason, "Yeelight control connection lost");
-        shared.mark_failed(format!("Yeelight {reason}"));
-    }
+    warn!(%device_id, %reason, "Yeelight control connection lost");
+    shared.mark_failed(format!("Yeelight {reason}"));
 }
 
 /// One color for a single-zone light; a longer frame is averaged.
@@ -604,49 +577,6 @@ pub fn representative_color(colors: &[[u8; 3]]) -> [u8; 3] {
             let count = u32::try_from(many.len()).unwrap_or(u32::MAX).max(1);
             sums.map(|sum| u8::try_from(sum / count).unwrap_or(u8::MAX))
         }
-    }
-}
-
-struct YeelightFrameSink {
-    device_id: DeviceId,
-    handle: Arc<SessionHandle>,
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for YeelightFrameSink {
-    fn is_closed(&self) -> bool {
-        self.handle.shared.closed.load(Ordering::Acquire)
-    }
-
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        YeelightBackend::write_session(&self.device_id, &self.handle, colors.as_slice(), None)
-            .await
-            .map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        YeelightBackend::write_session(&self.device_id, &self.handle, colors.as_slice(), None).await
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let result = YeelightBackend::write_session(
-            &self.device_id,
-            &self.handle,
-            colors.as_slice(),
-            Some((id, observer.as_ref())),
-        )
-        .await;
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
 
@@ -676,24 +606,24 @@ impl DeviceBackend for YeelightBackend {
         &self,
         id: &DeviceId,
     ) -> Result<Option<DeviceInfo>, DeviceError> {
-        Ok(self.session(id).map(|handle| handle.info.clone()))
+        Ok(self.sessions.facts(id).map(|facts| facts.info.clone()))
     }
 
     async fn connected_device_metadata(
         &self,
         id: &DeviceId,
     ) -> Result<Option<HashMap<String, String>>, DeviceError> {
-        Ok(self.session(id).map(|handle| {
-            let mut metadata = profile_metadata(&handle.profile, handle.music_enabled);
-            metadata.insert("stream_mode".to_owned(), handle.mode.as_str().to_owned());
+        Ok(self.sessions.facts(id).map(|facts| {
+            let mut metadata = profile_metadata(&facts.profile, facts.music_enabled);
+            metadata.insert("stream_mode".to_owned(), facts.mode.as_str().to_owned());
             metadata.insert(
                 metadata_key::MUSIC_MODE.to_owned(),
-                match handle.mode {
+                match facts.mode {
                     StreamMode::Music => "on",
-                    StreamMode::Normal if handle.capabilities.music && handle.music_enabled => {
+                    StreamMode::Normal if facts.capabilities.music && facts.music_enabled => {
                         "failed"
                     }
-                    StreamMode::Normal if handle.capabilities.music => "off",
+                    StreamMode::Normal if facts.capabilities.music => "off",
                     StreamMode::Normal => "unsupported",
                 }
                 .to_owned(),
@@ -711,7 +641,8 @@ impl DeviceBackend for YeelightBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        if self.session(id).is_some() {
+        self.sessions.ensure_accepting(id)?;
+        if self.sessions.is_open(id) {
             return Ok(());
         }
         let route = self
@@ -721,74 +652,36 @@ impl DeviceBackend for YeelightBackend {
             .get(id)
             .cloned()
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        let handle = self
+        let session = self
             .open_session(id, &route)
             .await
             .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
+        let facts = session.facts();
+        self.sessions.install(session).await?;
         info!(
             device_id = %id,
-            control = %handle.profile.reply.location,
-            yeelight_id = %handle.profile.reply.id,
-            model = ?handle.profile.reply.model,
-            mode = handle.mode.as_str(),
-            max_fps = handle.info.capabilities.max_fps,
+            control = %facts.profile.reply.location,
+            yeelight_id = %facts.profile.reply.id,
+            model = ?facts.profile.reply.model,
+            mode = facts.mode.as_str(),
+            max_fps = facts.info.capabilities.max_fps,
             "Connected to Yeelight device"
         );
-        let previous = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(handle));
-        if let Some(previous) = previous {
-            previous.shut_down();
-        }
         Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let removed = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-        let Some(handle) = removed else {
-            return Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            });
-        };
-        handle.shut_down();
-        // A stalled writer holds the stream lock for at most WRITE_TIMEOUT;
-        // never wait longer than that plus the stop itself.
-        if let Ok(mut stream) = tokio::time::timeout(WRITE_TIMEOUT, handle.stream.lock()).await {
-            if handle.mode == StreamMode::Music {
-                let stop = Command::MusicStop.encode(stream.next_id());
-                let sent = stream.control.write(stop.as_bytes(), write_deadline());
-                if sent.await.is_err() {
-                    debug!(device_id = %id, "Yeelight set_music stop was not delivered");
-                }
-            }
-            // Close both connections now, even if a frame sink is still
-            // held somewhere: the device allows only four.
-            stream.close_connections();
-        } else {
-            // The session is already closed, so the stalled writer bails
-            // or times out within WRITE_TIMEOUT; drop the sockets as soon
-            // as it lets go, even if a frame sink is still held.
-            debug!(device_id = %id, "Yeelight writer stalled; closing its connections once it yields");
-            let cleanup = Arc::clone(&handle);
-            tokio::spawn(async move {
-                cleanup.stream.lock().await.close_connections();
-            });
-        }
-        info!(device_id = %id, yeelight_id = %handle.profile.reply.id, "Disconnected from Yeelight device");
+        self.sessions.close(id).await?;
+        info!(device_id = %id, "Disconnected from Yeelight device");
         Ok(())
     }
 
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.sessions.retire().await
+    }
+
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        let handle = self.connected(id)?;
-        Self::write_session(id, &handle, colors, None)
-            .await
-            .map(|_| ())
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     async fn write_colors_shared_outcome(
@@ -796,30 +689,25 @@ impl DeviceBackend for YeelightBackend {
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let handle = self.connected(id)?;
-        Self::write_session(id, &handle, colors.as_slice(), None).await
+        self.sessions.require(id)?.write(colors.as_slice()).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
-        let handle = self.connected(id)?;
-        handle.stream.lock().await.brightness = brightness;
+        self.sessions.require(id)?.admit().await?.brightness = brightness;
         Ok(())
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.session(id).map(|handle| handle.cadence.target_fps())
+        self.sessions
+            .facts(id)
+            .map(|facts| facts.cadence.target_fps())
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.session(id).map(|handle| handle.cadence)
+        self.sessions.facts(id).map(|facts| facts.cadence)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.session(id).map(|handle| {
-            Arc::new(YeelightFrameSink {
-                device_id: *id,
-                handle,
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.sessions.frame_sink(id)
     }
 }
