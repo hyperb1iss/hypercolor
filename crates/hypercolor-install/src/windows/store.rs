@@ -17,6 +17,7 @@ use hypercolor_platform_fs::{
 };
 
 use super::installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation};
+use super::machine_layout::BOOTSTRAP_DIRECTORY;
 use super::ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
 use super::update_pipe::{UPDATE_PIPE_RECORD, UpdatePipeName};
 use crate::model::{InstallDisposition, InstallJournalV1, InstallModelError, UnitId};
@@ -29,6 +30,8 @@ const MAX_ACTIVE_POINTER_BYTES: usize = 4 * 1024;
 const MAX_INSTALLATION_BYTES: usize = 4 * 1024;
 /// The activator's records, and the pipe record the service publishes.
 const ACTIVATOR_DIRECTORY: &str = "activator";
+/// The records the daemon keeps as the recorded user.
+const COORDINATOR_DIRECTORY: &str = "coordinator";
 const UNITS_DIRECTORY: &str = "units";
 /// File systems whose rename and flush give the journal and pointer one
 /// durable step.
@@ -196,6 +199,40 @@ impl InstallStore {
         root: &Path,
         access: WindowsDirectoryAccess,
     ) -> Result<WindowsDirectory, InstallStoreError> {
+        self.require_safe_ancestors(root)?;
+        let directory = WindowsDirectory::open(root, access)
+            .map_err(|source| self.open_root_error(root, source))?;
+        self.require_installer_owned(&directory, root)?;
+        let file_system = directory
+            .file_system_name()
+            .map_err(|source| self.open_root_error(root, source))?;
+        if !DURABLE_FILE_SYSTEMS.contains(&file_system.as_str()) {
+            return Err(InstallStoreError::UnsupportedFileSystem {
+                path: root.to_path_buf(),
+                file_system,
+            });
+        }
+        Ok(directory)
+    }
+
+    /// Prove every directory above the release root safe, and the root
+    /// itself no link, so a program that goes on to create or change it by
+    /// path reaches exactly what it named.
+    ///
+    /// # Errors
+    /// Returns an error for a link anywhere on the path, or an ancestor an
+    /// untrusted principal could replace.
+    pub(crate) fn require_safe_release_path(&self) -> Result<(), InstallStoreError> {
+        self.require_safe_ancestors(&self.root)?;
+        match WindowsDirectory::open(&self.root, WindowsDirectoryAccess::Read) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            opened => opened
+                .map(drop)
+                .map_err(|source| self.open_root_error(&self.root, source)),
+        }
+    }
+
+    fn require_safe_ancestors(&self, root: &Path) -> Result<(), InstallStoreError> {
         let mut ancestor = PathBuf::new();
         let mut components = root.components().peekable();
         while let Some(component) = components.next() {
@@ -212,19 +249,7 @@ impl InstallStore {
                 .require_ancestor(&security)
                 .map_err(|refusal| InstallStoreError::Untrusted(ancestor.clone(), refusal))?;
         }
-        let directory = WindowsDirectory::open(root, access)
-            .map_err(|source| self.open_root_error(root, source))?;
-        self.require_installer_owned(&directory, root)?;
-        let file_system = directory
-            .file_system_name()
-            .map_err(|source| self.open_root_error(root, source))?;
-        if !DURABLE_FILE_SYSTEMS.contains(&file_system.as_str()) {
-            return Err(InstallStoreError::UnsupportedFileSystem {
-                path: root.to_path_buf(),
-                file_system,
-            });
-        }
-        Ok(directory)
+        Ok(())
     }
 
     fn require_installer_owned(
@@ -310,6 +335,35 @@ impl InstallStore {
                 Err(error) => Err(InstallStoreError::SwitchActive(error)),
             },
         }
+    }
+
+    /// What the installer recorded, or `None` before it did.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock or an unsafe or invalid record.
+    pub fn installation(
+        &self,
+        lock: &InstallLock,
+    ) -> Result<Option<WindowsInstallation>, InstallStoreError> {
+        let state = self.state_directory(lock)?;
+        read_installation(self, state)
+    }
+
+    /// Write the installation's record in one durable step.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock or a failed replacement.
+    pub fn record_installation(
+        &self,
+        installation: &WindowsInstallation,
+        lock: &InstallLock,
+    ) -> Result<(), InstallStoreError> {
+        let state = self.state_directory(lock)?;
+        let bytes = installation
+            .encode()
+            .map_err(|error| InstallStoreError::WriteRecord(io::Error::other(error)))?;
+        replace_durably(state, WINDOWS_INSTALLATION_FILE, &bytes)
+            .map_err(InstallStoreError::WriteRecord)
     }
 
     /// Read and validate the journal, or `None` when no transaction ran.
@@ -418,6 +472,80 @@ impl InstallStore {
             .require_units_directory(&security)
             .map_err(|refusal| InstallStoreError::Untrusted(path, refusal))?;
         Ok(Some(units))
+    }
+
+    /// Create the directory the recorded user's daemon keeps its update
+    /// records in, which only that user and the machine may reach. The
+    /// state root admits nobody else, so one already there is this one.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock or a failed creation.
+    pub(crate) fn prepare_coordinator_directory(
+        &self,
+        lock: &InstallLock,
+        user_sid: &str,
+    ) -> Result<(), InstallStoreError> {
+        let state = self.state_directory(lock)?;
+        let name = OsStr::new(COORDINATOR_DIRECTORY);
+        let path = self.state_root.join(COORDINATOR_DIRECTORY);
+        let exists = state
+            .entry_metadata(name)
+            .map_err(|source| self.open_root_error(&path, source))?
+            .is_some();
+        if !exists {
+            let sddl = format!("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{user_sid})");
+            state
+                .create_child_directory_with_security(name, &sddl)
+                .map_err(|source| self.open_root_error(&path, source))?;
+        }
+        Ok(())
+    }
+
+    /// The directory holding the recovery bootstrap's slots, created under
+    /// the units directory's own DACL when it is absent.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock, an entry that is not a plain
+    /// directory, or a directory an untrusted principal can change.
+    pub(crate) fn bootstrap_directory(
+        &self,
+        lock: &InstallLock,
+    ) -> Result<WindowsDirectory, InstallStoreError> {
+        let release = self.release_directory(lock)?;
+        let name = OsStr::new(BOOTSTRAP_DIRECTORY);
+        let path = self.root.join(BOOTSTRAP_DIRECTORY);
+        let directory = match release.entry_metadata(name) {
+            Ok(None) => {
+                release.create_child_directory_with_security(name, &self.ownership.units_sddl())
+            }
+            Ok(Some(_)) => release.open_child_directory(name, WindowsDirectoryAccess::Write),
+            Err(error) => Err(error),
+        }
+        .map_err(|source| self.open_root_error(&path, source))?;
+        self.require_installer_owned(&directory, &path)?;
+        Ok(directory)
+    }
+
+    /// Remove the slots, which are gone already when the directory is.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign lock or a failed removal.
+    pub(crate) fn remove_bootstrap_directory(
+        &self,
+        lock: &InstallLock,
+    ) -> Result<(), InstallStoreError> {
+        let release = self.release_directory(lock)?;
+        let name = OsStr::new(BOOTSTRAP_DIRECTORY);
+        let remove = || -> io::Result<()> {
+            if release.entry_metadata(name)?.is_some() {
+                release.remove_tree(name)?;
+            }
+            Ok(())
+        };
+        remove().map_err(|source| InstallStoreError::RemoveUnit {
+            name: BOOTSTRAP_DIRECTORY.to_owned(),
+            source,
+        })
     }
 
     /// Units this store keeps whatever a caller asks: the active unit and
@@ -645,27 +773,48 @@ impl WindowsReleaseRecords {
     /// # Errors
     /// Returns an error for a missing, unsafe or invalid record.
     pub fn installation(&self) -> Result<WindowsInstallation, InstallStoreError> {
-        let bytes = self
-            .read_trusted(WINDOWS_INSTALLATION_FILE, MAX_INSTALLATION_BYTES)?
-            .ok_or_else(|| {
-                InstallStoreError::InvalidInstallation("the record is missing".to_owned())
-            })?;
-        WindowsInstallation::decode(&bytes).map_err(InstallStoreError::InvalidInstallation)
+        read_installation(&self.store, &self.state)?.ok_or_else(|| {
+            InstallStoreError::InvalidInstallation("the record is missing".to_owned())
+        })
     }
 
     fn read_trusted(&self, name: &str, limit: usize) -> Result<Option<Vec<u8>>, InstallStoreError> {
-        let file = match self.state.open_file(OsStr::new(name)) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(InstallStoreError::ReadRecord(error)),
-        };
-        self.store
-            .require_trusted_file(&file, &self.store.state_root.join(name))?;
-        let bytes = read_bounded(file, limit)
-            .map_err(InstallStoreError::ReadRecord)?
-            .ok_or(InstallStoreError::RecordTooLarge { limit })?;
-        Ok(Some(bytes))
+        read_trusted(&self.store, &self.state, name, limit)
     }
+}
+
+fn read_installation(
+    store: &InstallStore,
+    state: &WindowsDirectory,
+) -> Result<Option<WindowsInstallation>, InstallStoreError> {
+    read_trusted(
+        store,
+        state,
+        WINDOWS_INSTALLATION_FILE,
+        MAX_INSTALLATION_BYTES,
+    )?
+    .map(|bytes| {
+        WindowsInstallation::decode(&bytes).map_err(InstallStoreError::InvalidInstallation)
+    })
+    .transpose()
+}
+
+fn read_trusted(
+    store: &InstallStore,
+    state: &WindowsDirectory,
+    name: &str,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, InstallStoreError> {
+    let file = match state.open_file(OsStr::new(name)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(InstallStoreError::ReadRecord(error)),
+    };
+    store.require_trusted_file(&file, &store.state_root.join(name))?;
+    let bytes = read_bounded(file, limit)
+        .map_err(InstallStoreError::ReadRecord)?
+        .ok_or(InstallStoreError::RecordTooLarge { limit })?;
+    Ok(Some(bytes))
 }
 
 impl ReleaseRecords for WindowsReleaseRecords {
@@ -846,6 +995,8 @@ pub enum InstallStoreError {
     InspectState(io::Error),
     #[error("failed to read an installation record: {0}")]
     ReadRecord(io::Error),
+    #[error("failed to write an installation record: {0}")]
+    WriteRecord(io::Error),
     #[error("an installation record exceeds {limit} bytes")]
     RecordTooLarge { limit: usize },
     #[error("invalid installation record: {0}")]

@@ -20,12 +20,15 @@ $RuntimePattern = '^(msvc[pr]\d+d?(_\w+)?|vcruntime\d+(_1)?d?|concrt\d+d?|vccorl
 
 # A guard that sees no binaries proves nothing, so the core of the bundle
 # must be present.
+$Unit = '$PLUGINSDIR\unit'
 $RequiredBinaries = @(
-    'hypercolor-app.exe',
-    'hypercolor-daemon.exe',
-    'hypercolor.exe',
-    'tools\hypercolor-smbus-service.exe',
-    'tools\hypercolor-windows-helper.exe'
+    'Hypercolor.new.exe',
+    "$Unit\hypercolor-app.exe",
+    "$Unit\hypercolor-daemon.exe",
+    "$Unit\hypercolor.exe",
+    "$Unit\tools\hypercolor-smbus-service.exe",
+    "$Unit\tools\hypercolor-update-bootstrap.exe",
+    "$Unit\tools\hypercolor-windows-helper.exe"
 )
 
 function Get-PeImports {
@@ -67,8 +70,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $system32 = Join-Path $env:WINDIR 'System32'
+# NSIS plugins and the uninstaller run on any Windows without help. The unit
+# unpacks under the plugins directory, and it is what ships.
 $binaries = Get-ChildItem -LiteralPath $extractDir -Recurse -File -Include '*.exe', '*.dll' |
-    Where-Object { $_.FullName -notmatch '\\\$PLUGINSDIR\\' -and $_.Name -ne 'uninstall.exe' -and $_.Name -ne 'PawnIO_setup.exe' }
+    Where-Object {
+        ($_.FullName -notmatch '\\\$PLUGINSDIR\\' -or $_.FullName -match '\\\$PLUGINSDIR\\unit\\') -and
+        $_.Name -ne 'uninstall.exe' -and $_.Name -ne 'PawnIO_setup.exe'
+    }
 
 $failures = @()
 foreach ($required in $RequiredBinaries) {

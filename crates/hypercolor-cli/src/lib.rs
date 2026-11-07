@@ -10,6 +10,8 @@ pub mod config;
 #[cfg(unix)]
 mod install_command;
 pub mod output;
+#[cfg(windows)]
+mod windows_install;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -350,6 +352,12 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
     #[cfg(target_os = "macos")]
     if let Some(status) = hypercolor_install::macos_bundle::run_macos_bundle_launcher_role() {
         std::process::exit(status);
+    }
+    #[cfg(windows)]
+    match windows_install::parse_invocation(std::env::args_os()) {
+        Some(Ok(args)) => return windows_install::execute(&args),
+        Some(Err(error)) => error.exit(),
+        None => {}
     }
     #[cfg(unix)]
     match parse_install_release_invocation(std::env::args_os()) {

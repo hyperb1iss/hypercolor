@@ -247,12 +247,16 @@ uninstaller in the middle of a Tauri build.
    scripts.
 3. The `sign-windows` job runs on a fresh Windows runner in the
    `windows-signing` environment and compiles nothing. It signs in to Azure,
-   fetches the pinned Artifact Signing dlib, and reruns the Tauri bundle
-   phase (`cargo tauri bundle --no-binary-patching`) with a `signCommand`
-   that points at the same script. Tauri signs the app, the daemon and CLI
-   sidecars, `tools\hypercolor-smbus-service.exe`,
-   `tools\hypercolor-windows-helper.exe`, the ANGLE DLLs, and its copy of
-   the NSIS plugins before makensis packs them. The NSIS compiler then signs
+   fetches the pinned Artifact Signing dlib, and signs every first-party
+   program with `sign-windows-artifacts.ps1 sign-payload`: the app, daemon,
+   CLI, `tools\hypercolor-smbus-service.exe`,
+   `tools\hypercolor-windows-helper.exe`,
+   `tools\hypercolor-update-bootstrap.exe`, the ANGLE DLLs and the launcher. A
+   release unit holds its programs' exact bytes, so it then produces the unit
+   again from what it signed (`produce-windows-unit.ps1`), and reruns the Tauri
+   bundle phase (`cargo tauri bundle --no-binary-patching`) with a
+   `signCommand` that points at the same script. Tauri signs its copy of the
+   NSIS plugins before makensis packs them. The NSIS compiler then signs
    the uninstaller it generates through the `!uninstfinalize` hook in
    `installer.nsi`, which fails the build if that signature fails, and Tauri
    signs the finished installer last. The script also signs `nsExec.dll`, a
@@ -267,7 +271,8 @@ uninstaller in the middle of a Tauri build.
    carries a valid Microsoft signature, and `PawnIO_setup.exe` matches its
    pinned SHA-256. The signed installer ships the same files as the tested
    unsigned one, and every non-executable file and every vendor binary in it
-   is byte for byte equal. The job then reruns the DLL closure check on the
+   is byte for byte equal, the unit's manifest aside, which holds the signed
+   programs' hashes. The job then reruns the DLL closure check on the
    signed installer and uploads it under the release artifact name that
    `create-release` publishes.
 

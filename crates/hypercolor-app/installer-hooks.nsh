@@ -1,32 +1,77 @@
 ; NSIS installer hooks for Hypercolor's Windows bundle.
 ;
 ; Tauri's templated NSIS installer handles the file/registry steps,
-; but it has no knowledge of our hardware access stack (PawnIO kernel
-; driver + SMBus broker service + Windows Firewall exception), and no
-; concept of cleaning that stack up on uninstall. These hooks fill
-; that gap.
+; but it has no knowledge of a release unit or of our hardware access stack
+; (PawnIO kernel driver + SMBus broker service), and no concept of cleaning
+; that stack up on uninstall. These hooks fill that gap.
 ;
 ; Wired in via bundle.windows.nsis.installerHooks in
 ; tauri.windows.bundle.conf.json. The installer runs elevated
 ; (installMode = perMachine), so sc.exe / netsh / PawnIO_setup.exe
-; all inherit the rights they need.
+; and the unit's CLI all inherit the rights they need.
 
 ; This file's directory at compile time, for the scripts the hooks embed.
 ; NSIS caps every string at 1024 characters, command lines included, so
 ; logic longer than a one-liner ships as a script file rather than inline.
 !define HYPERCOLOR_HOOKS_DIR "${__FILEDIR__}"
 
-; Arguments to the daemon services script, double-quoted so no path (a
-; profile named O'Brien, say) can break them.
-!define HYPERCOLOR_DAEMON_SERVICES_ARGS `-InstallDir "$INSTDIR" -StateFile "$PLUGINSDIR\hypercolor-daemon-services.txt"`
+; What scripts/produce-windows-unit.ps1 leaves for this build: the unit tree
+; and its digest. A missing digest stops makensis, so no installer is ever
+; built around a unit nobody produced.
+!define HYPERCOLOR_STAGE_DIR "${HYPERCOLOR_HOOKS_DIR}\..\..\target\bundle-stage"
+!define /file HYPERCOLOR_UNIT "${HYPERCOLOR_STAGE_DIR}\windows-unit.digest"
 
-; Start exactly the daemon services HYPERCOLOR_STOP_DAEMON stopped for the
-; file copy. A fresh install never stopped any, so there is no list.
-!macro HYPERCOLOR_RESTORE_DAEMON_SERVICES
-  ${If} ${FileExists} "$PLUGINSDIR\hypercolor-daemon-services.txt"
-    nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -Action Restore ${HYPERCOLOR_DAEMON_SERVICES_ARGS}'
-    Pop $0
+; The desktop app, at the root of every unit and of the flat layout.
+!define HYPERCOLOR_APP "hypercolor-app.exe"
+
+; Publish the unit this installer carries and switch the machine to it. Where
+; the files are unpacked does not matter: the CLI proves every byte against
+; the digest compiled in here as it copies them into the store. A failure
+; leaves what ran before in place, and the next installer finishes whatever a
+; kill interrupted.
+!macro HYPERCOLOR_INSTALL_UNIT
+  DetailPrint "Unpacking Hypercolor ${VERSION}"
+  SetOutPath "$PLUGINSDIR\unit"
+  File /r "${HYPERCOLOR_STAGE_DIR}\windows-unit\*"
+  SetOutPath "$PLUGINSDIR"
+  DetailPrint "Installing Hypercolor ${VERSION}"
+  nsExec::ExecToLog '"$PLUGINSDIR\unit\hypercolor.exe" __install-release --expected-manifest-sha256 ${HYPERCOLOR_UNIT} --install-dir "$INSTDIR"'
+  Pop $0
+  ${If} $0 != 0
+    DetailPrint "  Installing failed (exit code $0). Run this installer again to finish."
+    MessageBox MB_OK|MB_ICONSTOP "Hypercolor could not be installed (exit code $0). Close anything running Hypercolor, then run this installer again." /SD IDOK
+    Abort "Hypercolor could not be installed."
   ${EndIf}
+!macroend
+
+; Take the old flat layout off the disk, last of all: until this runs, a
+; killed installer leaves a Hypercolor that still starts. Every name here is
+; absent on a fresh install, and so is every effect.
+!macro HYPERCOLOR_RETIRE_FLAT_LAYOUT
+  ; The app's autostart value named the flat program, which is about to go.
+  ; Whoever elevated this may not be whoever sits at the desktop, so every
+  ; signed-in account moves here. An account that is not signed in has no
+  ; hive to reach, and the app moves its value when it next starts.
+  StrCpy $R8 0
+  ${Do}
+    EnumRegKey $R9 HKU "" $R8
+    ${IfThen} $R9 == "" ${|} ${Break} ${|}
+    IntOp $R8 $R8 + 1
+    ReadRegStr $0 HKU "$R9\Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    ${If} $0 != ""
+      WriteRegStr HKU "$R9\Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" '"$INSTDIR\${MAINBINARYNAME}.exe" --minimized'
+    ${EndIf}
+  ${Loop}
+  Delete "$INSTDIR\${HYPERCOLOR_APP}"
+  Delete "$INSTDIR\hypercolor-daemon.exe"
+  Delete "$INSTDIR\libEGL.dll"
+  Delete "$INSTDIR\libGLESv2.dll"
+  Delete "$INSTDIR\msvcp140.dll"
+  Delete "$INSTDIR\vcruntime140.dll"
+  Delete "$INSTDIR\vcruntime140_1.dll"
+  RMDir /r "$INSTDIR\ui"
+  RMDir /r "$INSTDIR\effects"
+  RMDir /r "$INSTDIR\tools"
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
@@ -34,7 +79,8 @@
   ; broker, installed in one elevated pass. The orchestrator installs
   ; PawnIO (short-circuiting when already present), copies the verified
   ; module blobs into PawnIO's install dir, then registers and starts the
-  ; broker.
+  ; broker. The broker runs from the unit, which already holds the modules
+  ; it loads, and nothing may write inside a unit.
   ;
   ; Both halves are load-bearing. The broker is what loads PawnIO modules
   ; on behalf of the unelevated daemon, so skipping it leaves CPU package
@@ -45,8 +91,8 @@
   ; An unelevated app cannot register a LocalSystem service, so deferring
   ; this means either an out-of-nowhere UAC prompt later or — as shipped in
   ; 0.2.1 — silently broken hardware. Every path handed to the orchestrator
-  ; sits under $INSTDIR (Program Files under perMachine), which satisfies
-  ; the broker installer's own rejection of user-writable service paths.
+  ; sits under $INSTDIR, which satisfies the broker installer's own rejection
+  ; of user-writable service paths.
   ;
   ; -ReinstallService keeps upgrades idempotent: the broker installer
   ; refuses to clobber an existing registration without it.
@@ -68,7 +114,7 @@
 
   DetailPrint "Installing Hypercolor hardware access (this may take a moment)..."
   ${DisableX64FSRedirection}
-  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -ModuleDestination "$INSTDIR\tools\pawnio\modules" -Silent -ReinstallService'
+  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\pawnio" -BrokerExe "$INSTDIR\units\${HYPERCOLOR_UNIT}\tools\hypercolor-smbus-service.exe" -NoUserModules -Silent -ReinstallService'
   Pop $R0
   DetailPrint "  Hardware access exit code: $R0"
 
@@ -98,23 +144,6 @@
     MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but part of its hardware access setup failed (exit code $R0). The SMBus broker is running, but motherboard and RAM lighting and CPU temperature may not work until PawnIO is set up. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $R2\Hypercolor\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support." /SD IDOK
   ${EndIf}
 
-  ; Windows Firewall — pre-grant the daemon so mDNS discovery and any
-  ; future inbound traffic don't trigger the "Allow on public networks?"
-  ; popup the first time the user opens Hypercolor. The daemon only
-  ; binds 127.0.0.1 for the HTTP API; the inbound exception is for
-  ; mDNS multicast responses on UDP 5353.
-  DetailPrint "Adding Windows Firewall rules for Hypercolor..."
-  nsExec::ExecToLog 'netsh.exe advfirewall firewall delete rule name="Hypercolor Daemon"'
-  Pop $0
-  nsExec::ExecToLog 'netsh.exe advfirewall firewall add rule name="Hypercolor Daemon" dir=in action=allow program="$INSTDIR\hypercolor-daemon.exe" profile=domain,private,public enable=yes'
-  Pop $0
-  nsExec::ExecToLog 'netsh.exe advfirewall firewall delete rule name="Hypercolor App"'
-  Pop $0
-  nsExec::ExecToLog 'netsh.exe advfirewall firewall add rule name="Hypercolor App" dir=in action=allow program="$INSTDIR\hypercolor-app.exe" profile=domain,private,public enable=yes'
-  Pop $0
-
-  !insertmacro HYPERCOLOR_RESTORE_DAEMON_SERVICES
-
   ; If PawnIO asked for a reboot, surface it. The MUI2 finish page
   ; doesn't natively expose a reboot prompt for installer-driven
   ; restarts, so a simple MessageBox keeps the user informed instead
@@ -131,81 +160,91 @@
   ${EndIf}
 !macroend
 
-; Stop the HypercolorSmBus broker and wait until it has exited. The
-; LocalSystem service runs from $INSTDIR\tools and holds its exe and the
-; app-local VC++ runtime beside it open, so files can only be replaced or
-; deleted once the process is gone. `sc.exe stop` returns as soon as the
-; stop is requested, which races the file operations that follow, and
-; Stop-Service waits without a bound while the service is stopping, so
-; the stop goes through the controller with a bounded wait. The wait
-; never fails the installer: an absent service is the normal state on a
-; first install.
-!macro HYPERCOLOR_STOP_BROKER
-  DetailPrint "Stopping HypercolorSmBus service"
-  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$$service = Get-Service -Name HypercolorSmBus -ErrorAction SilentlyContinue; if ($$service -and $$service.Status -ne 'Stopped') { try { if ($$service.Status -ne 'StopPending') { $$service.Stop() }; $$service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) } catch { Write-Output ('HypercolorSmBus did not stop: ' + $$_.Exception.GetBaseException().Message) } }"`
+; Stop a service and wait until it has exited. A LocalSystem service runs from
+; the install directory and holds its exe and whatever loaded beside it open,
+; so files can only be replaced or deleted once the process is gone.
+; `sc.exe stop` returns as soon as the stop is requested, which races the file
+; operations that follow, and Stop-Service waits without a bound while the
+; service is stopping, so the stop goes through the controller with a bounded
+; wait. The wait never fails the installer: an absent service is the normal
+; state on a first install.
+!macro HYPERCOLOR_STOP_SERVICE NAME
+  DetailPrint "Stopping ${NAME} service"
+  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$$service = Get-Service -Name ${NAME} -ErrorAction SilentlyContinue; if ($$service -and $$service.Status -ne 'Stopped') { try { if ($$service.Status -ne 'StopPending') { $$service.Stop() }; $$service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) } catch { Write-Output ('${NAME} did not stop: ' + $$_.Exception.GetBaseException().Message) } }"`
   Pop $0
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
-  ; Upgrades write over a running broker's files. POSTINSTALL re-registers
-  ; and starts the service with -ReinstallService, so stopping it here
-  ; costs nothing on a fresh install and unblocks every upgrade.
-  !insertmacro HYPERCOLOR_STOP_BROKER
+  ; The broker runs from the release this install replaces, and POSTINSTALL
+  ; registers and starts it from the new one with -ReinstallService, so
+  ; stopping it here costs nothing on a fresh install. The transaction
+  ; refuses to leave a running broker behind it.
+  !insertmacro HYPERCOLOR_STOP_SERVICE HypercolorSmBus
 !macroend
 
 ; The app's daemon sidecar lives in the app's kill-on-close job object, so
 ; it normally exits with the app, but asynchronously. The daemon can also
 ; run on its own: as a Windows service registered by
 ; install-windows-service.ps1, or as a process the user started. Any of
-; those still running from $INSTDIR would hold hypercolor-daemon.exe open
-; and fail the copy. installer-daemon-services.ps1 stops them, bounding
-; every wait, and records the services it stopped so
-; HYPERCOLOR_RESTORE_DAEMON_SERVICES can start exactly those again.
+; those still running from $INSTDIR would keep the transaction from starting.
+; installer-daemon-services.ps1 stops them, bounding every wait, and removes
+; those services, because the program each one names does not outlive this
+; install and the app supervises the daemon from now on.
 !macro HYPERCOLOR_STOP_DAEMON
   DetailPrint "Stopping any Hypercolor daemon running from $INSTDIR"
   File "/oname=$PLUGINSDIR\hypercolor-daemon-services.ps1" "${HYPERCOLOR_HOOKS_DIR}\installer-daemon-services.ps1"
-  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -Action Stop ${HYPERCOLOR_DAEMON_SERVICES_ARGS}'
+  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -InstallDir "$INSTDIR"'
   Pop $0
 !macroend
 
-; Upgrades install in place, and copying files only ever overwrites. The UI
-; and bundled effects are rebuilt in full by every install, but their file
-; names change between releases (trunk names UI assets by content hash, and
-; effects come and go), so without this each upgrade left the previous
-; release's files behind, the uninstaller never removed them, and dropped
-; effects kept appearing in the library. installer.nsi runs this hook once
-; the app is closed; the guard only clears folders inside a directory that
-; already holds a Hypercolor install.
+; Runs once the app is closed. Only a directory that already holds a
+; Hypercolor install can hold a daemon to stop.
 !macro HYPERCOLOR_HOOK_BEFORE_FILES
-  ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
-  ${AndIf} ${FileExists} "$INSTDIR\uninstall.exe"
+  ${If} ${FileExists} "$INSTDIR\uninstall.exe"
     !insertmacro HYPERCOLOR_STOP_DAEMON
-    DetailPrint "Removing the previous release's UI and bundled effects"
-    RMDir /r "$INSTDIR\ui"
-    RMDir /r "$INSTDIR\effects\bundled"
   ${EndIf}
 !macroend
 
-!macro NSIS_HOOK_PREUNINSTALL
-  ; Stop + delete the HypercolorSmBus broker service. NSIS runs the
-  ; uninstaller elevated, so sc.exe inherits the necessary rights.
-  ; nsExec::ExecToLog silently swallows missing-service failures — we
-  ; never want an absent service to block uninstall on retried runs.
-  !insertmacro HYPERCOLOR_STOP_BROKER
+; Have the broker of any installed unit remove the machine directory. Every
+; user may create folders under ProgramData, so this elevated uninstaller
+; never deletes there by path: the broker, stopped by now and still on disk,
+; removes it through handles that refuse links, and leaves alone one a
+; standard user could have prepared. A name starting with a dot is an
+; interrupted copy, which may hold no whole program.
+!macro HYPERCOLOR_REMOVE_MACHINE_DIRECTORY
+  DetailPrint "Removing Hypercolor's logs and release records"
+  ClearErrors
+  FindFirst $R8 $R9 "$INSTDIR\units\*"
+  ${DoUntil} ${Errors}
+    StrCpy $R7 $R9 1
+    ${If} $R7 != "."
+    ${AndIf} ${FileExists} "$INSTDIR\units\$R9\tools\hypercolor-smbus-service.exe"
+      nsExec::ExecToLog '"$INSTDIR\units\$R9\tools\hypercolor-smbus-service.exe" --remove-machine-directory'
+      Pop $0
+      ${Break}
+    ${EndIf}
+    ClearErrors
+    FindNext $R8 $R9
+  ${Loop}
+  FindClose $R8
+!macroend
 
+!macro NSIS_HOOK_PREUNINSTALL
+  ; Stop + delete both services. NSIS runs the uninstaller elevated, so
+  ; sc.exe inherits the necessary rights. nsExec::ExecToLog silently
+  ; swallows missing-service failures — we never want an absent service to
+  ; block uninstall on retried runs, and an open-source build has no update
+  ; service at all.
+  !insertmacro HYPERCOLOR_STOP_SERVICE HypercolorUpdate
+  DetailPrint "Removing HypercolorUpdate service registration"
+  nsExec::ExecToLog 'sc.exe delete HypercolorUpdate'
+  Pop $0
+  !insertmacro HYPERCOLOR_STOP_SERVICE HypercolorSmBus
   DetailPrint "Removing HypercolorSmBus service registration"
   nsExec::ExecToLog 'sc.exe delete HypercolorSmBus'
   Pop $0
 
-  ; The broker and the hardware support setup log to the machine log
-  ; directory, which the installer never listed. Every user may create
-  ; folders under ProgramData, so this elevated uninstaller never deletes
-  ; there by path: the broker, stopped by now and still on disk, removes
-  ; the directory through handles that refuse links, and leaves alone one a
-  ; standard user could have prepared.
-  DetailPrint "Removing the Hypercolor hardware access logs"
-  nsExec::ExecToLog '"$INSTDIR\tools\hypercolor-smbus-service.exe" --remove-log-directory'
-  Pop $0
+  !insertmacro HYPERCOLOR_REMOVE_MACHINE_DIRECTORY
 
   ; Drop Windows Firewall exceptions so an uninstall doesn't leave
   ; rules pointing at a path that no longer exists.

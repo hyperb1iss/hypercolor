@@ -292,9 +292,9 @@ test('only main jobs can reach the read-write R2 key, and every cache restore pa
       assert.match(job, /uses: \.\/\.github\/actions\/rust-build-cache\n {8}with:\n {10}r2-access-key-id:/);
     }
   }
-  assert.equal(consumers, 15);
+  assert.equal(consumers, 16);
   const ci = readFileSync(new URL('../../workflows/ci.yml', import.meta.url), 'utf8');
-  for (const id of ['rust-windows', 'rust-windows-update-service', 'rust-windows-gpu']) {
+  for (const id of ['rust-windows', 'rust-windows-update-service', 'windows-installer', 'rust-windows-gpu']) {
     const windows = ci.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:\\n)`, 'm'))[1];
     assert.match(windows, /^ {10}archive-key: dependencies$/m, `${id}: the Windows archive is saved per lockfile set`);
   }

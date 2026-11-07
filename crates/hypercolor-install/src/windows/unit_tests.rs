@@ -445,46 +445,6 @@ fn only_msvc_windows_targets_name_a_platform() {
     }
 }
 
-/// Until the installer installs units, it lays out the same tree from the
-/// Tauri bundle configuration, so the unit layout must name exactly the
-/// paths those files install.
-#[test]
-fn the_unit_layout_is_the_tree_the_installer_lays_out() {
-    let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hypercolor-app");
-    let mut installed = BTreeSet::from(["hypercolor-app.exe".to_owned()]);
-    for config in [
-        "tauri.conf.json",
-        "tauri.bundle.conf.json",
-        "tauri.windows.bundle.conf.json",
-    ] {
-        let value: Value =
-            serde_json::from_slice(&fs::read(app.join(config)).expect("Tauri config"))
-                .expect("Tauri config JSON");
-        if let Some(resources) = value["bundle"]["resources"].as_object() {
-            for destination in resources.values() {
-                let destination = destination.as_str().expect("resource destination");
-                installed.insert(destination.trim_end_matches('/').to_owned());
-            }
-        }
-        if let Some(binaries) = value["bundle"]["externalBin"].as_array() {
-            for binary in binaries {
-                let name = binary
-                    .as_str()
-                    .and_then(|path| path.rsplit('/').next())
-                    .expect("sidecar name");
-                installed.insert(format!("{name}.exe"));
-            }
-        }
-    }
-    let unit_only = ["LICENSE", "NOTICE", "tools/hypercolor-update-bootstrap.exe"];
-    let layout: BTreeSet<String> = LAYOUT
-        .iter()
-        .map(|placement| placement.path.to_owned())
-        .filter(|path| !unit_only.contains(&path.as_str()))
-        .collect();
-    assert_eq!(layout, installed);
-}
-
 #[cfg(windows)]
 mod round_trip {
     use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess, WindowsSid};

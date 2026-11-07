@@ -26,6 +26,9 @@ workspace = true
 [features]
 default = ["tui"]
 tui = ["dep:hypercolor-tui"]
+# Set only by the official release: its Windows installer registers the update
+# service and its bootstrap slots. A build without it never touches them.
+managed-update = []
 
 [dependencies]
 hypercolor-openrgb-host = { workspace = true }

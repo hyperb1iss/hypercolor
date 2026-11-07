@@ -1,11 +1,16 @@
 param(
-    [ValidateSet("preview", "release")]
+    [ValidateSet("dev", "release")]
     [string] $Profile = "release",
-    [string] $Target = "",
     [string] $Bundles = "nsis",
     [switch] $SkipPawnIo,
     [switch] $SkipUi,
     [switch] $SkipEffects,
+    # Build the daemon without Servo. The result installs and runs but renders
+    # no HTML effects: it exists to prove the installer in minutes, not hours.
+    [switch] $NoServo,
+    # Build the installer that registers the update service. Only the official
+    # release sets this.
+    [switch] $ManagedUpdate,
     [switch] $CheckOnly
 )
 
@@ -14,6 +19,11 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CargoCacheBuild = Join-Path $RepoRoot "scripts\cargo-cache-build.ps1"
 $StageAssets = Join-Path $RepoRoot "scripts\stage-app-bundle-assets.ps1"
+$ProduceUnit = Join-Path $RepoRoot "scripts\produce-windows-unit.ps1"
+# Cargo builds the dev profile into a directory with another name.
+$ProfileDirectory = if ($Profile -eq "dev") { "debug" } else { $Profile }
+$TauriProfileArgs = if ($Profile -eq "dev") { @("--debug") } else { @() }
+$TauriConfigArgs = @("--config", "tauri.bundle.conf.json", "--config", "tauri.windows.bundle.conf.json")
 # crates/hypercolor-app/installer.nsi forks the NSIS template of the
 # tauri-bundler this CLI version pins, so installers build with exactly it.
 $PinnedTauriCli = "2.12.1"
@@ -63,9 +73,6 @@ function Invoke-CargoBuild {
     )
 
     $arguments = @("cargo", "build", "--locked", "--profile", $Profile)
-    if ($Target) {
-        $arguments += @("--target", $Target)
-    }
     $arguments += $CargoArgs
 
     Invoke-Checked $Description $CargoCacheBuild $arguments
@@ -73,11 +80,7 @@ function Invoke-CargoBuild {
 
 function Invoke-StageAssets {
     Write-Step "Stage app bundle assets"
-    if ($Target) {
-        & $StageAssets -Profile $Profile -Target $Target -SkipPawnIo:$SkipPawnIo
-    } else {
-        & $StageAssets -Profile $Profile -SkipPawnIo:$SkipPawnIo
-    }
+    & $StageAssets -Profile $ProfileDirectory -SkipPawnIo:$SkipPawnIo -StandInAngle:$NoServo
     if ($LASTEXITCODE -ne 0) {
         throw "Stage app bundle assets failed with exit code $LASTEXITCODE"
     }
@@ -86,8 +89,12 @@ function Invoke-StageAssets {
 function Assert-Prerequisites {
     Require-Command "cargo" "Install Rust from https://rustup.rs/."
     Require-Command "rustc" "Install Rust from https://rustup.rs/."
-    Require-Command "bun" "Install Bun from https://bun.sh/."
-    Require-Command "trunk" "Install with: cargo install trunk --locked"
+    if (-not ($SkipUi -and $SkipEffects)) {
+        Require-Command "bun" "Install Bun from https://bun.sh/."
+    }
+    if (-not $SkipUi) {
+        Require-Command "trunk" "Install with: cargo install trunk --locked"
+    }
 
     $installHint = "cargo install tauri-cli --version '=$PinnedTauriCli' --locked"
     $tauriVersion = & cargo tauri --version 2>$null
@@ -107,16 +114,16 @@ function Assert-Prerequisites {
 function Show-InstallerArtifacts {
     $roots = @()
     if ($env:CARGO_TARGET_DIR) {
-        $roots += (Join-Path $env:CARGO_TARGET_DIR "release\bundle\nsis")
+        $roots += (Join-Path $env:CARGO_TARGET_DIR "$ProfileDirectory\bundle\nsis")
     }
 
     $userProfile = [Environment]::GetFolderPath("UserProfile")
     if ($userProfile) {
-        $roots += (Join-Path $userProfile ".cache\hypercolor\target\release\bundle\nsis")
+        $roots += (Join-Path $userProfile ".cache\hypercolor\target\$ProfileDirectory\bundle\nsis")
     }
 
-    $roots += (Join-Path $RepoRoot "target\release\bundle\nsis")
-    $roots += (Join-Path $RepoRoot "crates\hypercolor-app\target\release\bundle\nsis")
+    $roots += (Join-Path $RepoRoot "target\$ProfileDirectory\bundle\nsis")
+    $roots += (Join-Path $RepoRoot "crates\hypercolor-app\target\$ProfileDirectory\bundle\nsis")
     $roots = $roots | Select-Object -Unique
 
     $artifacts = @()
@@ -155,21 +162,39 @@ if (-not $SkipEffects) {
     Invoke-Checked "Build bundled effects" "bun" @("run", "build:effects") (Join-Path $RepoRoot "sdk")
 }
 
-Invoke-CargoBuild "Build daemon sidecar" @("-p", "hypercolor-daemon", "--features", "servo")
-Invoke-CargoBuild "Build CLI sidecar" @("-p", "hypercolor")
+# Servo is in the daemon's default features, so leaving it out takes more
+# than not asking for it.
+$DaemonArgs = @("-p", "hypercolor-daemon", "--bin", "hypercolor-daemon")
+if ($NoServo) {
+    $DaemonArgs += @("--no-default-features", "--features", "builtin-drivers")
+} else {
+    $DaemonArgs += @("--features", "servo")
+}
+$CliArgs = @("-p", "hypercolor")
+if ($ManagedUpdate) {
+    $CliArgs += @("--features", "managed-update")
+}
+Invoke-CargoBuild "Build daemon" $DaemonArgs
+Invoke-CargoBuild "Build CLI" $CliArgs
 Invoke-CargoBuild "Build Windows SMBus broker" @("-p", "hypercolor-windows-pawnio", "--bin", "hypercolor-smbus-service")
 Invoke-CargoBuild "Build Windows privileged helper" @("-p", "hypercolor-windows-helper", "--bin", "hypercolor-windows-helper")
+Invoke-CargoBuild "Build the stable launcher and recovery bootstrap" @("-p", "hypercolor-windows-launcher", "--bins")
+Invoke-CargoBuild "Build the Windows unit producer" @("-p", "hypercolor-install", "--bin", "hypercolor-windows-unit")
 Invoke-StageAssets
 
+$AppDirectory = Join-Path $RepoRoot "crates\hypercolor-app"
+Invoke-Checked "Build the desktop app" "cargo" (@("tauri", "build", "--no-bundle") + $TauriProfileArgs + $TauriConfigArgs) $AppDirectory
+
+Write-Step "Produce the release unit"
+& $ProduceUnit -ProfileDirectory $ProfileDirectory
+if ($LASTEXITCODE -ne 0) {
+    throw "Produce the release unit failed with exit code $LASTEXITCODE"
+}
+
 Invoke-Checked `
-    "Build unsigned Tauri Windows installer" `
+    "Bundle unsigned Windows installer" `
     "cargo" `
-    @(
-        "tauri", "build",
-        "--config", "tauri.bundle.conf.json",
-        "--config", "tauri.windows.bundle.conf.json",
-        "--bundles", $Bundles
-    ) `
-    (Join-Path $RepoRoot "crates\hypercolor-app")
+    (@("tauri", "bundle", "--bundles", $Bundles) + $TauriProfileArgs + $TauriConfigArgs) `
+    $AppDirectory
 
 Show-InstallerArtifacts

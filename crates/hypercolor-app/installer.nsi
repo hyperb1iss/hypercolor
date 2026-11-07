@@ -8,8 +8,14 @@
 ;
 ; Every change from upstream is marked with a "Hypercolor:" comment so the
 ; fork can be rebased onto a newer bundler by diffing against its template.
-; Lifecycle steps that only add work (stopping the broker, hardware support,
-; firewall rules) stay in installer-hooks.nsh.
+; Lifecycle steps that only add work (stopping the broker, hardware support)
+; stay in installer-hooks.nsh.
+;
+; Upstream copies the app and its resources into a flat directory. This
+; installer lays down a release unit instead, which the unit's own CLI
+; publishes in one transaction, plus the stable launcher everything else
+; names. Bundle resources and sidecars never reach this template: the unit
+; holds them all.
 
 Unicode true
 ManifestDPIAware true
@@ -63,8 +69,9 @@ ${StrLoc}
 !define HEADERIMAGE "{{header_image}}"
 !define UNINSTALLERICON "{{uninstaller_icon}}"
 !define UNINSTALLERHEADERIMAGE "{{uninstaller_header_image}}"
-!define MAINBINARYNAME "{{main_binary_name}}"
-!define MAINBINARYSRCPATH "{{main_binary_path}}"
+; Hypercolor: shortcuts, the uninstall entry and the finish page all start
+; the stable launcher, never a program inside a unit.
+!define MAINBINARYNAME "Hypercolor"
 !define BUNDLEID "{{bundle_id}}"
 !define COPYRIGHT "{{copyright}}"
 !define OUTFILE "{{out_file}}"
@@ -429,11 +436,8 @@ Function PageLeaveReinstall
   reinst_done:
 FunctionEnd
 
-; 5. Choose install directory page
-; Hypercolor: an in-place upgrade installs where the old version lives;
-; choosing another folder here would leave that install behind.
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpdate
-!insertmacro MUI_PAGE_DIRECTORY
+; 5. Hypercolor: no directory page. The installation lives in Program Files,
+; where only administrators can change what the update service runs.
 
 ; 6. Start menu shortcut page
 Var AppStartMenuFolder
@@ -468,6 +472,34 @@ Var AppStartMenuFolder
 Function RunMainBinary
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
 FunctionEnd
+
+; Hypercolor: the launcher exits as soon as it has started the app, so closing
+; a running Hypercolor means closing the app of the flat layout or of any unit.
+; CheckIfAppIsRunning spells its labels from one line number, so each section
+; or function gets at most one copy of it.
+!macro HYPERCOLOR_CLOSE_APP_FUNCTIONS UN
+Function ${UN}HypercolorCloseApp
+  !insertmacro CheckIfAppIsRunning "$R7" "${PRODUCTNAME}"
+FunctionEnd
+
+Function ${UN}HypercolorCloseApps
+  StrCpy $R7 "$INSTDIR\${HYPERCOLOR_APP}"
+  Call ${UN}HypercolorCloseApp
+  ClearErrors
+  FindFirst $R8 $R9 "$INSTDIR\units\*"
+  ${DoUntil} ${Errors}
+    StrCpy $R7 "$INSTDIR\units\$R9\${HYPERCOLOR_APP}"
+    ${If} ${FileExists} "$R7"
+      Call ${UN}HypercolorCloseApp
+    ${EndIf}
+    ClearErrors
+    FindNext $R8 $R9
+  ${Loop}
+  FindClose $R8
+FunctionEnd
+!macroend
+!insertmacro HYPERCOLOR_CLOSE_APP_FUNCTIONS ""
+!insertmacro HYPERCOLOR_CLOSE_APP_FUNCTIONS "un."
 
 ; Hypercolor: DPI-exact wizard art.
 ;
@@ -748,7 +780,10 @@ Function HypercolorDetectUpgrade
   ${EndIf}
   nsis_tauri_utils::SemverCompare "${VERSION}" $0
   Pop $1
+  ; A flat layout only ever moves forward into units, whatever version it
+  ; holds.
   ${If} $1 = 1
+  ${OrIf} ${FileExists} "$INSTDIR\${HYPERCOLOR_APP}"
     StrCpy $HypercolorUpgradeFrom $0
     ${If} $UpdateMode <> 1
       StrCpy $UpdateMode 1
@@ -875,13 +910,17 @@ Section WebView2
 SectionEnd
 
 Section Install
-  SetOutPath $INSTDIR
+  ; Hypercolor: the unit's CLI creates the install directory, with the owner
+  ; the store requires, so nothing here may touch it first.
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  ; Hypercolor: a running app holds its unit open.
+  Call HypercolorCloseApps
 
   ; Hypercolor: a hook that runs once the app has been closed and before any
   ; file is copied, which NSIS_HOOK_PREINSTALL (run before the check) is not.
@@ -889,21 +928,22 @@ Section Install
     !insertmacro HYPERCOLOR_HOOK_BEFORE_FILES
   !endif
 
-  ; Copy main executable
-  File "${MAINBINARYSRCPATH}"
+  ; Hypercolor: from here on the release is installed. Everything below only
+  ; moves names onto it, and a killed installer repeats all of it.
+  !insertmacro HYPERCOLOR_INSTALL_UNIT
+  SetOutPath $INSTDIR
 
-  ; Copy resources
-  {{#each resources_dirs}}
-    CreateDirectory "$INSTDIR\\{{this}}"
-  {{/each}}
-  {{#each resources}}
-    File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
-  {{/each}}
-
-  ; Copy external binaries
-  {{#each binaries}}
-    File /a "/oname={{this}}" "{{no-escape @key}}"
-  {{/each}}
+  ; Hypercolor: every name below runs this file, so it moves into place in one
+  ; step and a kill leaves the old one whole. 9 is MOVEFILE_REPLACE_EXISTING
+  ; plus MOVEFILE_WRITE_THROUGH. NTFS reads the flat layout's CLI,
+  ; hypercolor.exe, as this very name, and the rename takes over its entry
+  ; under the launcher's own spelling. The temporary name stays a .exe so the
+  ; signature and DLL checks of a built installer still see a program.
+  File "/oname=${MAINBINARYNAME}.new.exe" "${HYPERCOLOR_STAGE_DIR}\tools\hypercolor-launcher.exe"
+  System::Call 'kernel32::MoveFileExW(w "$INSTDIR\${MAINBINARYNAME}.new.exe", w "$INSTDIR\${MAINBINARYNAME}.exe", i 9) i .r0'
+  ${If} $0 = 0
+    Abort "The Hypercolor launcher could not be put in place."
+  ${EndIf}
 
   ; Create file associations
   {{#each file_associations as |association| ~}}
@@ -932,15 +972,10 @@ Section Install
     WriteRegStr SHCTX "${UNINSTKEY}" $MultiUser.InstallMode 1
   !endif
 
-  ; Remove old main binary if it doesn't match new main binary name
+  ; Hypercolor: only read here. The old binary goes, and the registry forgets
+  ; it, after the shortcuts have moved, or a killed installer would strand
+  ; them on a file that is gone with nothing left to say what they named.
   ReadRegStr $OldMainBinaryName SHCTX "${UNINSTKEY}" "MainBinaryName"
-  ${If} $OldMainBinaryName != ""
-  ${AndIf} $OldMainBinaryName != "${MAINBINARYNAME}.exe"
-    Delete "$INSTDIR\$OldMainBinaryName"
-  ${EndIf}
-
-  ; Save current MAINBINARYNAME for future updates
-  WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
   ; Registry information for add/remove programs
   WriteRegStr SHCTX "${UNINSTKEY}" "DisplayName" "${PRODUCTNAME}"
@@ -951,11 +986,6 @@ Section Install
   WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" "1"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" "1"
-
-  ${GetSize} "$INSTDIR" "/M=uninstall.exe /S=0K /G=0" $0 $1 $2
-  IntOp $0 $0 + ${ESTIMATEDSIZE}
-  IntFmt $0 "0x%08X" $0
-  WriteRegDWORD SHCTX "${UNINSTKEY}" "EstimatedSize" "$0"
 
   !if "${HOMEPAGE}" != ""
     WriteRegStr SHCTX "${UNINSTKEY}" "URLInfoAbout" "${HOMEPAGE}"
@@ -970,10 +1000,29 @@ Section Install
 
   ; Create desktop shortcut for silent and passive installers
   ; because finish page will be skipped
+  ; Hypercolor: an update hides the finish page's box, so a shortcut on the
+  ; old binary has to move here. Update mode creates none.
   ${If} $PassiveMode = 1
   ${OrIf} ${Silent}
+  ${OrIf} $UpdateMode = 1
     Call CreateOrUpdateDesktopShortcut
   ${EndIf}
+
+  ; Hypercolor: the shortcuts name the launcher now, so the old layout can go.
+  ${If} $OldMainBinaryName != ""
+  ${AndIf} $OldMainBinaryName != "${MAINBINARYNAME}.exe"
+    Delete "$INSTDIR\$OldMainBinaryName"
+  ${EndIf}
+  !insertmacro HYPERCOLOR_RETIRE_FLAT_LAYOUT
+
+  ; Hypercolor: measured here, once what is on disk is what stays. The release
+  ; lives in units\, which the bundler knows nothing of.
+  ${GetSize} "$INSTDIR" "/S=0K /G=1" $0 $1 $2
+  IntFmt $0 "0x%08X" $0
+  WriteRegDWORD SHCTX "${UNINSTKEY}" "EstimatedSize" "$0"
+
+  ; Save current MAINBINARYNAME for future updates
+  WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL
@@ -1020,25 +1069,22 @@ FunctionEnd
 
 Section Uninstall
 
+  ; Hypercolor: a running app holds its unit open, and the hook below needs a
+  ; broker that nothing runs.
+  Call un.HypercolorCloseApps
+
   !ifmacrodef NSIS_HOOK_PREUNINSTALL
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-
   ; Delete the app directory and its content from disk
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+  Delete "$INSTDIR\${MAINBINARYNAME}.new.exe"
 
-  ; Delete resources
-  {{#each resources}}
-    Delete "$INSTDIR\\{{this.[1]}}"
-  {{/each}}
-
-  ; Delete external binaries
-  {{#each binaries}}
-    Delete "$INSTDIR\\{{this}}"
-  {{/each}}
+  ; Hypercolor: every release and the update service's bootstrap slots.
+  RMDir /r /REBOOTOK "$INSTDIR\units"
+  RMDir /r /REBOOTOK "$INSTDIR\update"
 
   ; Delete app associations
   {{#each file_associations as |association| ~}}
@@ -1059,9 +1105,6 @@ Section Uninstall
   ; Delete uninstaller
   Delete "$INSTDIR\uninstall.exe"
 
-  {{#each resources_ancestors}}
-  RMDir /REBOOTOK "$INSTDIR\\{{this}}"
-  {{/each}}
   RMDir "$INSTDIR"
 
   ; Remove shortcuts if not updating
@@ -1151,11 +1194,6 @@ FunctionEnd
 
 Function SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
-FunctionEnd
-; Hypercolor: used by pages that an in-place upgrade has no use for.
-Function SkipIfPassiveOrUpdate
-  ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
-  ${IfThen} $UpdateMode = 1  ${|} Abort ${|}
 FunctionEnd
 Function un.SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}

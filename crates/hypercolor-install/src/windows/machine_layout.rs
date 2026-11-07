@@ -30,7 +30,7 @@ pub const WINDOWS_BOOTSTRAP_PROGRAM: &str = "tools/hypercolor-update-bootstrap.e
 /// The CLI, at the root of every unit. Its `update activator` command is
 /// the activator.
 pub const WINDOWS_CLI_PROGRAM: &str = "hypercolor.exe";
-const BOOTSTRAP_DIRECTORY: &str = "update";
+pub(super) const BOOTSTRAP_DIRECTORY: &str = "update";
 
 /// One of the two fixed places a recovery bootstrap lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -85,6 +85,7 @@ fn main() -> anyhow::Result<()> {
 
     builder
         .setup(move |app| {
+            hypercolor_app::autostart::keep_on_the_launcher();
             let adoption = hypercolor_app::macos_update::prepare_adoption();
             hypercolor_app::macos_update::serve_app_control(app.handle());
             let control_app = app.handle().clone();
