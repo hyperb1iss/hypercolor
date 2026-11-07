@@ -75,11 +75,13 @@ $ExcludedCredentials = @(
 )
 
 # Vendor binaries the installer carries, never re-signed. The VC++ runtime
-# must arrive with a valid Microsoft signature. PawnIO's setup may chain to
-# a root the runner does not trust, so it is held to the SHA-256 pin that
+# must arrive with a valid Microsoft signature; Microsoft signs the
+# redistributable DLLs as its Windows Software Compatibility Publisher, not
+# as Microsoft Corporation. PawnIO's setup may chain to a root the runner
+# does not trust, so it is held to the SHA-256 pin that
 # install-bundled-pawnio.ps1 also checks at install time.
 $MicrosoftRuntimeBinaries = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
-$MicrosoftSigner = 'Microsoft Corporation'
+$MicrosoftSigner = 'Microsoft Windows Software Compatibility Publisher'
 $ThirdPartyBinaries = @('PawnIO_setup.exe') + $MicrosoftRuntimeBinaries
 
 # Where 7-Zip extracts the unit an installer carries.
