@@ -2516,6 +2516,7 @@ fn windows_installer_target_builds_all_bundle_inputs() {
         "\"tauri\", \"build\", \"--no-bundle\"",
         "\"tauri\", \"bundle\", \"--bundles\"",
         "\"--features\", \"managed-update\"",
+        "\"--no-default-features\", \"--features\", \"builtin-drivers\"",
         "$env:CARGO_TARGET_DIR",
         "[Environment]::GetFolderPath(\"UserProfile\")",
         ".cache\\hypercolor\\target\\$ProfileDirectory\\bundle\\nsis",
