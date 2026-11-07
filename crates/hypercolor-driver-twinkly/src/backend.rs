@@ -9,14 +9,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use hypercolor_color::Rgb;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome,
+    DiscoveredDevice, OutputCadence,
+};
+use hypercolor_driver_support::{
+    DeviceSession, FrameDelivery, Session, SessionSink, SessionTable,
 };
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
@@ -75,32 +76,16 @@ impl Default for ContentionPolicy {
     }
 }
 
-/// Connected device: immutable facts plus the shared stream state.
-struct SessionHandle {
+/// What a connect learned, plus the live control state for metadata.
+struct TwinklyFacts {
     profile: TwinklyDeviceProfile,
     info: DeviceInfo,
     layout_source: LayoutSource,
     cadence: OutputCadence,
-    client: TwinklyClient,
-    /// Mode the device was in before connect, restored on disconnect.
-    previous_mode: Option<String>,
     shared: Arc<SessionShared>,
-    upkeep: StdMutex<Option<JoinHandle<()>>>,
 }
 
-impl SessionHandle {
-    fn shut_down(&self) {
-        self.shared.closed.store(true, Ordering::Release);
-        if let Some(task) = self
-            .upkeep
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
-            task.abort();
-        }
-    }
-
+impl TwinklyFacts {
     fn metadata(&self) -> HashMap<String, String> {
         let mut metadata = profile_metadata(&self.profile);
         metadata.insert(
@@ -118,38 +103,10 @@ impl SessionHandle {
         );
         metadata
     }
-
-    /// Put the device back in the mode it had before connect, bounded by
-    /// [`RESTORE_TIMEOUT`]. Skipped when another app holds the lights or the
-    /// session already failed.
-    async fn restore_previous_mode(&self, device_id: &DeviceId) {
-        let Some(mode) = self.previous_mode.as_deref() else {
-            return;
-        };
-        if self.shared.yielded.load(Ordering::Acquire) || self.shared.failure().is_some() {
-            return;
-        }
-        let token = self.shared.token();
-        match tokio::time::timeout(RESTORE_TIMEOUT, self.client.set_mode(&token, mode)).await {
-            Ok(Ok(())) => debug!(%device_id, mode, "Restored the Twinkly LED mode"),
-            Ok(Err(error)) => {
-                debug!(%device_id, mode, error = %error, "Twinkly LED mode not restored");
-            }
-            Err(_) => debug!(%device_id, mode, "Twinkly LED mode restore timed out"),
-        }
-    }
 }
 
-impl Drop for SessionHandle {
-    fn drop(&mut self) {
-        self.shut_down();
-    }
-}
-
-/// State shared between the frame path and the upkeep task.
+/// State the frame path and the upkeep task both read.
 struct SessionShared {
-    stream: Mutex<StreamState>,
-    closed: AtomicBool,
     /// Another client keeps taking the login; frames are declined until
     /// the upkeep takes the lights back.
     yielded: AtomicBool,
@@ -177,12 +134,101 @@ impl SessionShared {
     }
 }
 
-struct StreamState {
+/// One open real-time session.
+struct TwinklySession {
+    device_id: DeviceId,
+    client: TwinklyClient,
+    /// Mode the device was in before connect, restored on close.
+    previous_mode: Option<String>,
+    shared: Arc<SessionShared>,
     socket: UdpSocket,
     encoder: RtFrameEncoder,
     brightness: u8,
     scaled: Vec<[u8; 3]>,
     last_size_mismatch_warn_at: Option<Instant>,
+}
+
+impl DeviceSession for TwinklySession {
+    type Facts = TwinklyFacts;
+
+    const CLEANUP: Duration = RESTORE_TIMEOUT.saturating_add(Duration::from_millis(100));
+
+    async fn write_frame(
+        &mut self,
+        colors: &[[u8; 3]],
+        delivery: Option<&FrameDelivery>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        if let Some(reason) = self.shared.failure() {
+            return Err(DeviceError::write(self.device_id, reason));
+        }
+        if self.shared.yielded.load(Ordering::Acquire) {
+            // Another app holds the login: frames would carry a dead token.
+            return Ok(DeviceWriteOutcome::Declined);
+        }
+
+        let led_count = self.encoder.led_count();
+        if colors.len() != led_count {
+            let should_warn = self
+                .last_size_mismatch_warn_at
+                .is_none_or(|warned_at| warned_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+            if should_warn {
+                warn!(
+                    device_id = %self.device_id,
+                    expected_led_count = led_count,
+                    actual_led_count = colors.len(),
+                    "Twinkly frame size mismatch; padding or truncating to the LED count"
+                );
+                self.last_size_mismatch_warn_at = Some(Instant::now());
+            }
+        }
+
+        let datagrams = if self.brightness == u8::MAX {
+            self.encoder.encode(colors)
+        } else {
+            let factor = f32::from(self.brightness) / f32::from(u8::MAX);
+            self.scaled.clear();
+            self.scaled.extend(colors.iter().map(|&[r, g, b]| {
+                let scaled = Rgb::new(r, g, b).scale(factor);
+                [scaled.r, scaled.g, scaled.b]
+            }));
+            self.encoder.encode(&self.scaled)
+        };
+
+        if let Some(delivery) = delivery {
+            delivery.transport_started();
+        }
+        for datagram in datagrams {
+            self.socket.send(datagram).await.map_err(|error| {
+                DeviceError::write(
+                    self.device_id,
+                    format!("Twinkly datagram send failed: {error}"),
+                )
+            })?;
+        }
+        Ok(DeviceWriteOutcome::Sent)
+    }
+
+    /// Put the device back in the mode it had before connect, bounded by
+    /// [`RESTORE_TIMEOUT`]. Skipped when another app holds the lights or the
+    /// session already failed.
+    async fn finish(self) -> Result<(), DeviceError> {
+        let Some(mode) = self.previous_mode.as_deref() else {
+            return Ok(());
+        };
+        if self.shared.yielded.load(Ordering::Acquire) || self.shared.failure().is_some() {
+            return Ok(());
+        }
+        let device_id = self.device_id;
+        let token = self.shared.token();
+        match tokio::time::timeout(RESTORE_TIMEOUT, self.client.set_mode(&token, mode)).await {
+            Ok(Ok(())) => debug!(%device_id, mode, "Restored the Twinkly LED mode"),
+            Ok(Err(error)) => {
+                debug!(%device_id, mode, error = %error, "Twinkly LED mode not restored");
+            }
+            Err(_) => debug!(%device_id, mode, "Twinkly LED mode restore timed out"),
+        }
+        Ok(())
+    }
 }
 
 /// Twinkly backend implementing [`DeviceBackend`].
@@ -192,7 +238,7 @@ pub struct TwinklyBackend {
     upkeep_interval: Duration,
     contention: ContentionPolicy,
     adopted: StdRwLock<HashMap<DeviceId, TwinklyEndpoint>>,
-    sessions: StdRwLock<HashMap<DeviceId, Arc<SessionHandle>>>,
+    sessions: SessionTable<TwinklySession>,
 }
 
 impl TwinklyBackend {
@@ -204,7 +250,7 @@ impl TwinklyBackend {
             upkeep_interval: DEFAULT_UPKEEP_INTERVAL,
             contention: ContentionPolicy::default(),
             adopted: StdRwLock::new(HashMap::new()),
-            sessions: StdRwLock::new(HashMap::new()),
+            sessions: SessionTable::new(),
         }
     }
 
@@ -229,25 +275,11 @@ impl TwinklyBackend {
         self
     }
 
-    fn session(&self, id: &DeviceId) -> Option<Arc<SessionHandle>> {
-        self.sessions
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    }
-
-    fn connected(&self, id: &DeviceId) -> Result<Arc<SessionHandle>, DeviceError> {
-        self.session(id).ok_or_else(|| DeviceError::Disconnected {
-            device: id.to_string(),
-        })
-    }
-
     async fn open_session(
         &self,
         id: &DeviceId,
         endpoint: TwinklyEndpoint,
-    ) -> Result<SessionHandle> {
+    ) -> Result<Session<TwinklySession>> {
         let client = TwinklyClient::new(endpoint, self.request_timeout)?;
         let gestalt = client.gestalt().await?;
         let firmware = client.firmware_version().await?;
@@ -296,96 +328,42 @@ impl TwinklyBackend {
         let cadence = OutputCadence::from_fps(max_fps).with_max_frame_silence(RT_KEEPALIVE);
 
         let shared = Arc::new(SessionShared {
-            stream: Mutex::new(StreamState {
+            yielded: AtomicBool::new(false),
+            token: StdMutex::new(token.clone()),
+            failure: StdMutex::new(None),
+        });
+        let mut session = Session::new(
+            *id,
+            TwinklyFacts {
+                profile,
+                info,
+                layout_source,
+                cadence,
+                shared: Arc::clone(&shared),
+            },
+            TwinklySession {
+                device_id: *id,
+                client: client.clone(),
+                previous_mode,
+                shared: Arc::clone(&shared),
                 socket,
                 encoder,
                 brightness: u8::MAX,
                 scaled: Vec::with_capacity(led_count),
                 last_size_mismatch_warn_at: None,
-            }),
-            closed: AtomicBool::new(false),
-            yielded: AtomicBool::new(false),
-            token: StdMutex::new(token.clone()),
-            failure: StdMutex::new(None),
-        });
-        let upkeep = tokio::spawn(run_upkeep(
+            },
+        );
+        let upkeep = run_upkeep(
             *id,
-            client.clone(),
+            client,
             token,
-            Arc::clone(&shared),
+            shared,
+            session.sink(),
             self.upkeep_interval,
             self.contention,
-        ));
-        Ok(SessionHandle {
-            profile,
-            info,
-            layout_source,
-            cadence,
-            client,
-            previous_mode,
-            shared,
-            upkeep: StdMutex::new(Some(upkeep)),
-        })
-    }
-
-    async fn write_session(
-        device_id: &DeviceId,
-        handle: &SessionHandle,
-        colors: &[[u8; 3]],
-        delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        if handle.shared.closed.load(Ordering::Acquire) {
-            return Err(DeviceError::Disconnected {
-                device: device_id.to_string(),
-            });
-        }
-        if let Some(reason) = handle.shared.failure() {
-            return Err(DeviceError::write(device_id, reason));
-        }
-        if handle.shared.yielded.load(Ordering::Acquire) {
-            // Another app holds the login: frames would carry a dead token.
-            return Ok(DeviceWriteOutcome::Declined);
-        }
-
-        let mut guard = handle.shared.stream.lock().await;
-        let stream = &mut *guard;
-        let led_count = stream.encoder.led_count();
-        if colors.len() != led_count {
-            let should_warn = stream
-                .last_size_mismatch_warn_at
-                .is_none_or(|warned_at| warned_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
-            if should_warn {
-                warn!(
-                    device_id = %device_id,
-                    expected_led_count = led_count,
-                    actual_led_count = colors.len(),
-                    "Twinkly frame size mismatch; padding or truncating to the LED count"
-                );
-                stream.last_size_mismatch_warn_at = Some(Instant::now());
-            }
-        }
-
-        let datagrams = if stream.brightness == u8::MAX {
-            stream.encoder.encode(colors)
-        } else {
-            let factor = f32::from(stream.brightness) / f32::from(u8::MAX);
-            stream.scaled.clear();
-            stream.scaled.extend(colors.iter().map(|&[r, g, b]| {
-                let scaled = Rgb::new(r, g, b).scale(factor);
-                [scaled.r, scaled.g, scaled.b]
-            }));
-            stream.encoder.encode(&stream.scaled)
-        };
-
-        if let Some((id, observer)) = delivery {
-            observer.transport_started(id);
-        }
-        for datagram in datagrams {
-            stream.socket.send(datagram).await.map_err(|error| {
-                DeviceError::write(device_id, format!("Twinkly datagram send failed: {error}"))
-            })?;
-        }
-        Ok(DeviceWriteOutcome::Sent)
+        );
+        session.spawn(upkeep);
+        Ok(session)
     }
 }
 
@@ -479,6 +457,7 @@ async fn run_upkeep(
     client: TwinklyClient,
     mut token: AuthToken,
     shared: Arc<SessionShared>,
+    sink: SessionSink<TwinklySession>,
     interval: Duration,
     policy: ContentionPolicy,
 ) {
@@ -487,15 +466,12 @@ async fn run_upkeep(
     let mut state = OwnershipState::new(policy, obtained_at);
     loop {
         tokio::time::sleep(interval).await;
-        if shared.closed.load(Ordering::Acquire) {
-            return;
-        }
         let now = Instant::now();
         let outcome: Result<()> = match state.ownership {
             Ownership::Yielded { resume_at } if now < resume_at => continue,
             Ownership::Yielded { .. } => {
                 info!(%device_id, "Taking the Twinkly lights back after a pause");
-                match resume(&client, &shared).await {
+                match resume(&client, &shared, &sink).await {
                     Ok(fresh) => {
                         token = fresh;
                         obtained_at = Instant::now();
@@ -532,7 +508,7 @@ async fn run_upkeep(
                         });
                         if refresh_due {
                             debug!(%device_id, "Twinkly token near expiry; logging in again");
-                            match resume(&client, &shared).await {
+                            match resume(&client, &shared, &sink).await {
                                 Ok(fresh) => {
                                     token = fresh;
                                     obtained_at = Instant::now();
@@ -582,55 +558,16 @@ async fn check_mode(client: &TwinklyClient, token: &AuthToken) -> Result<()> {
 
 /// Log in, hand the token to the frame encoder, and switch to real-time
 /// mode. Both steps must succeed for the token to count as held.
-async fn resume(client: &TwinklyClient, shared: &SessionShared) -> Result<AuthToken> {
+async fn resume(
+    client: &TwinklyClient,
+    shared: &SessionShared,
+    sink: &SessionSink<TwinklySession>,
+) -> Result<AuthToken> {
     let token = client.login().await?;
-    shared.stream.lock().await.encoder.set_token(token.bytes);
+    sink.admit().await?.encoder.set_token(token.bytes);
     token.clone_into(&mut shared.token.lock().unwrap_or_else(PoisonError::into_inner));
     client.set_mode(&token, RT_MODE).await?;
     Ok(token)
-}
-
-struct TwinklyFrameSink {
-    device_id: DeviceId,
-    handle: Arc<SessionHandle>,
-}
-
-#[async_trait::async_trait]
-impl DeviceFrameSink for TwinklyFrameSink {
-    fn is_closed(&self) -> bool {
-        self.handle.shared.closed.load(Ordering::Acquire)
-    }
-
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
-        TwinklyBackend::write_session(&self.device_id, &self.handle, colors.as_slice(), None)
-            .await
-            .map(|_| ())
-    }
-
-    async fn write_colors_shared_outcome(
-        &self,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<DeviceWriteOutcome, DeviceError> {
-        TwinklyBackend::write_session(&self.device_id, &self.handle, colors.as_slice(), None).await
-    }
-
-    async fn deliver_colors_shared_observed(
-        &self,
-        id: DeviceDeliveryId,
-        colors: Arc<Vec<[u8; 3]>>,
-        observer: Arc<dyn DeviceDeliveryObserver>,
-    ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
-        let started_at = Instant::now();
-        let result = TwinklyBackend::write_session(
-            &self.device_id,
-            &self.handle,
-            colors.as_slice(),
-            Some((id, observer.as_ref())),
-        )
-        .await;
-        DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
-    }
 }
 
 #[async_trait::async_trait]
@@ -659,14 +596,14 @@ impl DeviceBackend for TwinklyBackend {
         &self,
         id: &DeviceId,
     ) -> Result<Option<DeviceInfo>, DeviceError> {
-        Ok(self.session(id).map(|handle| handle.info.clone()))
+        Ok(self.sessions.facts(id).map(|facts| facts.info.clone()))
     }
 
     async fn connected_device_metadata(
         &self,
         id: &DeviceId,
     ) -> Result<Option<HashMap<String, String>>, DeviceError> {
-        Ok(self.session(id).map(|handle| handle.metadata()))
+        Ok(self.sessions.facts(id).map(|facts| facts.metadata()))
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
@@ -678,7 +615,8 @@ impl DeviceBackend for TwinklyBackend {
     }
 
     async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        if self.session(id).is_some() {
+        self.sessions.ensure_accepting(id)?;
+        if self.sessions.is_open(id) {
             return Ok(());
         }
         let endpoint = self
@@ -689,56 +627,38 @@ impl DeviceBackend for TwinklyBackend {
             .copied()
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
 
-        let handle = self
+        let session = self
             .open_session(id, endpoint)
             .await
             .map_err(|error| DeviceError::connection(id, format!("{error:#}")))?;
+        let facts = session.facts();
+        self.sessions.install(session).await?;
         info!(
             device_id = %id,
             %endpoint,
-            mac = %handle.profile.mac,
-            leds = handle.info.total_led_count(),
-            profile = %handle.profile.led_profile,
-            rt_protocol = %handle.profile.rt_protocol(),
-            layout = handle.layout_source.as_str(),
-            max_fps = handle.info.capabilities.max_fps,
+            mac = %facts.profile.mac,
+            leds = facts.info.total_led_count(),
+            profile = %facts.profile.led_profile,
+            rt_protocol = %facts.profile.rt_protocol(),
+            layout = facts.layout_source.as_str(),
+            max_fps = facts.info.capabilities.max_fps,
             "Connected to Twinkly device"
         );
-        let previous = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(handle));
-        if let Some(previous) = previous {
-            previous.shut_down();
-        }
         Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
-        let removed = self
-            .sessions
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id);
-        match removed {
-            Some(handle) => {
-                handle.shut_down();
-                handle.restore_previous_mode(id).await;
-                info!(device_id = %id, mac = %handle.profile.mac, "Disconnected from Twinkly device");
-                Ok(())
-            }
-            None => Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            }),
-        }
+        self.sessions.close(id).await?;
+        info!(device_id = %id, "Disconnected from Twinkly device");
+        Ok(())
+    }
+
+    async fn retire(&self) -> Result<(), DeviceError> {
+        self.sessions.retire().await
     }
 
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        let handle = self.connected(id)?;
-        Self::write_session(id, &handle, colors, None)
-            .await
-            .map(|_| ())
+        self.sessions.require(id)?.write(colors).await.map(|_| ())
     }
 
     async fn write_colors_shared_outcome(
@@ -746,30 +666,23 @@ impl DeviceBackend for TwinklyBackend {
         id: &DeviceId,
         colors: Arc<Vec<[u8; 3]>>,
     ) -> Result<DeviceWriteOutcome, DeviceError> {
-        let handle = self.connected(id)?;
-        Self::write_session(id, &handle, colors.as_slice(), None).await
+        self.sessions.require(id)?.write(colors.as_slice()).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
-        let handle = self.connected(id)?;
-        handle.shared.stream.lock().await.brightness = brightness;
+        self.sessions.require(id)?.admit().await?.brightness = brightness;
         Ok(())
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        self.session(id).map(|handle| handle.cadence.target_fps())
+        self.sessions.facts(id).map(|facts| facts.cadence.target_fps())
     }
 
     fn output_cadence(&self, id: &DeviceId) -> Option<OutputCadence> {
-        self.session(id).map(|handle| handle.cadence)
+        self.sessions.facts(id).map(|facts| facts.cadence)
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.session(id).map(|handle| {
-            Arc::new(TwinklyFrameSink {
-                device_id: *id,
-                handle,
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.sessions.frame_sink(id)
     }
 }

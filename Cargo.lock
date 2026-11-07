@@ -4875,6 +4875,7 @@ dependencies = [
  "base64 0.23.1",
  "hypercolor-color",
  "hypercolor-driver-api",
+ "hypercolor-driver-conformance",
  "hypercolor-driver-support",
  "hypercolor-types",
  "if-addrs",

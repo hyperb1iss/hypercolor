@@ -83,6 +83,7 @@ struct State {
     datagrams: Vec<Vec<u8>>,
     discovery_requests: Vec<Vec<u8>>,
     failing_mode_posts: usize,
+    last_rt_source: Option<SocketAddr>,
 }
 
 /// A running fake device.
@@ -121,6 +122,7 @@ impl FakeTwinkly {
             datagrams: Vec::new(),
             discovery_requests: Vec::new(),
             failing_mode_posts: 0,
+            last_rt_source: None,
         }));
 
         let http_state = Arc::clone(&state);
@@ -135,12 +137,10 @@ impl FakeTwinkly {
         let rt_state = Arc::clone(&state);
         let rt_task = tokio::spawn(async move {
             let mut buffer = vec![0_u8; 2048];
-            while let Ok((len, _)) = rt.recv_from(&mut buffer).await {
-                rt_state
-                    .lock()
-                    .expect("state lock")
-                    .datagrams
-                    .push(buffer[..len].to_vec());
+            while let Ok((len, source)) = rt.recv_from(&mut buffer).await {
+                let mut state = rt_state.lock().expect("state lock");
+                state.datagrams.push(buffer[..len].to_vec());
+                state.last_rt_source = Some(source);
             }
         });
         let discovery_state = Arc::clone(&state);
@@ -198,6 +198,11 @@ impl FakeTwinkly {
 
     pub fn datagrams(&self) -> Vec<Vec<u8>> {
         self.state.lock().expect("state lock").datagrams.clone()
+    }
+
+    /// Address the newest real-time datagram came from.
+    pub fn last_rt_source(&self) -> Option<SocketAddr> {
+        self.state.lock().expect("state lock").last_rt_source
     }
 
     pub fn discovery_requests(&self) -> Vec<Vec<u8>> {
