@@ -831,6 +831,42 @@ async fn every_wait_on_a_wedged_close_is_bounded() {
 }
 
 #[tokio::test]
+async fn a_refused_open_answers_its_connect_past_a_wedged_close() {
+    let fixture = Fixture::new();
+    let gate = Arc::new(Semaphore::new(0));
+    let bound = Duration::from_secs(2);
+
+    let (connected, retired, ()) = tokio::join!(
+        tokio::time::timeout(
+            bound,
+            fixture.connect(Behavior {
+                open_gate: Some(Arc::clone(&gate)),
+                release_gate: Some(Arc::new(Semaphore::new(0))),
+                ..Behavior::default()
+            }),
+        ),
+        async {
+            tokio::task::yield_now().await;
+            tokio::time::timeout(bound, fixture.table.retire()).await
+        },
+        async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            gate.add_permits(1);
+        },
+    );
+
+    let error = connected
+        .expect("the wait is bounded")
+        .expect_err("a retired table refuses the session");
+    assert!(matches!(error, DeviceError::ConnectionFailed { .. }));
+    let error = retired
+        .expect("the wait is bounded")
+        .expect_err("still closing");
+    assert!(matches!(error, DeviceError::Timeout { .. }));
+    assert!(!fixture.transport_released(), "the close still owns it");
+}
+
+#[tokio::test]
 async fn retire_reports_a_failed_cleanup() {
     let fixture = Fixture::new();
     fixture

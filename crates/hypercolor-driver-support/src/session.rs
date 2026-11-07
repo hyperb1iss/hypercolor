@@ -678,7 +678,12 @@ impl<S: DeviceSession> OpeningEntry<S> {
         let Some((session, refusal)) = refused else {
             return Ok(());
         };
-        if let Err(error) = join_close(session.begin_close(Arc::clone(&self.shared))).await {
+        let budget = close_budget::<S>();
+        let close = session.begin_close(Arc::clone(&self.shared));
+        let closed = tokio::time::timeout(budget, join_close(close))
+            .await
+            .unwrap_or(Err(DeviceError::Timeout { after: budget }));
+        if let Err(error) = closed {
             debug!(%device_id, %error, "cleanup of a refused session failed");
         }
         Err(refusal)
