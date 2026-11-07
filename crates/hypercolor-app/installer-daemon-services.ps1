@@ -1,22 +1,27 @@
 <#
 .SYNOPSIS
-    Stops every Hypercolor daemon running from an install directory, and
-    removes the daemon services registered there, before an install switches
-    releases.
+    Stops every Hypercolor daemon running from an install directory before an
+    install switches releases, and removes the daemon services registered
+    there once it has.
 
 .DESCRIPTION
     installer-hooks.nsh embeds this script in the installer and runs it from
     the installer's plugins directory. It lives in a file because NSIS caps
     every string, command lines included, at 1024 characters.
 
-    Each service whose binary is a hypercolor-daemon.exe under the install
-    directory is asked to stop, gets up to twenty seconds, like the broker,
-    and is deleted: the program it names does not outlive this install, and
-    the app supervises the daemon from here on. Daemon processes still
-    running from the directory after that, a service that would not stop
-    included, get ten seconds to exit before they are ended.
+    -Action Stop asks each service whose binary is a hypercolor-daemon.exe
+    under the install directory to stop, and gives it up to twenty seconds,
+    like the broker. Daemon processes still running from the directory after
+    that, a service that would not stop included, get ten seconds to exit
+    before they are ended.
+
+    -Action Remove deletes those services, because the program each one names
+    does not outlive the install and the app supervises the daemon from then
+    on. The installer only asks once the new release is in: an install that
+    fails leaves the registration, and the service back at the next boot.
 #>
 param(
+    [Parameter(Mandatory)] [ValidateSet("Stop", "Remove")] [string] $Action,
     [Parameter(Mandatory)] [string] $InstallDir
 )
 
@@ -26,6 +31,14 @@ $services = @(Get-CimInstance Win32_Service | Where-Object {
     $path = "$($_.PathName)".ToLowerInvariant()
     $path.Contains($root) -and $path.Contains('hypercolor-daemon.exe')
 })
+if ($Action -eq "Remove") {
+    foreach ($svc in $services) {
+        Write-Output ("Removing the daemon service {0}" -f $svc.Name)
+        & sc.exe delete $svc.Name | Out-Null
+    }
+    return
+}
+
 foreach ($svc in $services) {
     try {
         $service = Get-Service -Name $svc.Name
@@ -38,8 +51,6 @@ foreach ($svc in $services) {
     } catch {
         Write-Output ("{0} did not stop: {1}" -f $svc.Name, $_.Exception.Message)
     }
-    Write-Output ("Removing the daemon service {0}" -f $svc.Name)
-    & sc.exe delete $svc.Name | Out-Null
 }
 
 # The installer is 32-bit, so this runs in 32-bit PowerShell, where

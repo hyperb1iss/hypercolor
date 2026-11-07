@@ -239,9 +239,9 @@ uninstaller in the middle of a Tauri build.
 2. The `build-native-app` job builds, bundles, and tests the Windows
    installer exactly as it does unsigned, including the DLL closure check
    and the in-place upgrade check. On a signing run it uploads the bundle
-   inputs (`hypercolor-app.exe`, `target/bundle-stage`, and the tested
-   unsigned installer) as `unsigned-windows-x64` instead of uploading the
-   installer.
+   inputs (the first-party programs, `target/bundle-stage` without its unit,
+   and the tested unsigned installer) as `unsigned-windows-x64` instead of
+   uploading the installer.
    That job never gets an OIDC token: npm and PyPI trust any `ci.yml` job
    that can mint one, and the build runs hundreds of third-party build
    scripts.

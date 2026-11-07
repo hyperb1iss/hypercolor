@@ -219,17 +219,35 @@ impl InstallStore {
     /// itself no link, so a program that goes on to create or change it by
     /// path reaches exactly what it named.
     ///
+    /// An existing root may belong to the administrator who installed it,
+    /// which taking ownership settles, but only where nobody else could have
+    /// made it: a standard user who owns the root could hold a handle across
+    /// the takeover and change it afterwards.
+    ///
     /// # Errors
-    /// Returns an error for a link anywhere on the path, or an ancestor an
-    /// untrusted principal could replace.
+    /// Returns an error for a link anywhere on the path, an ancestor an
+    /// untrusted principal could replace, or a root such a principal could
+    /// have created.
     pub(crate) fn require_safe_release_path(&self) -> Result<(), InstallStoreError> {
         self.require_safe_ancestors(&self.root)?;
-        match WindowsDirectory::open(&self.root, WindowsDirectoryAccess::Read) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            opened => opened
-                .map(drop)
-                .map_err(|source| self.open_root_error(&self.root, source)),
+        let root = match WindowsDirectory::open(&self.root, WindowsDirectoryAccess::Read) {
+            Ok(root) => root,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => return Err(self.open_root_error(&self.root, source)),
+        };
+        let security = root
+            .security()
+            .map_err(|source| self.open_root_error(&self.root, source))?;
+        if self.ownership.trusts(&security.owner) {
+            return Ok(());
         }
+        let parent = self
+            .root
+            .parent()
+            .ok_or_else(|| InstallStoreError::InvalidRoot(self.root.clone()))?;
+        let directory = WindowsDirectory::open(parent, WindowsDirectoryAccess::Read)
+            .map_err(|source| self.open_root_error(parent, source))?;
+        self.require_installer_owned(&directory, parent)
     }
 
     fn require_safe_ancestors(&self, root: &Path) -> Result<(), InstallStoreError> {

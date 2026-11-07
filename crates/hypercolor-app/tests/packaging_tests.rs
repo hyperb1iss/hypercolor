@@ -2071,7 +2071,8 @@ fn nsis_template_installs_a_unit_and_no_bundle_resources() {
 /// A daemon still running from the install directory (exiting with the app,
 /// orphaned, or registered as a Windows service) would keep the transaction
 /// from starting, so installs stop it first, with every wait bounded. Its
-/// service goes too: the program it names does not outlive the install. The
+/// service goes once the release is in, because the program it names does not
+/// outlive the install, and not before, so a failed install leaves it. The
 /// logic ships as a script the installer embeds, with paths passed as
 /// double-quoted arguments that no apostrophe can break.
 #[test]
@@ -2083,7 +2084,11 @@ fn installer_stops_daemons_and_removes_their_services_before_the_transaction() {
     assert!(stop.contains(
         "File \"/oname=$PLUGINSDIR\\hypercolor-daemon-services.ps1\" \"${HYPERCOLOR_HOOKS_DIR}\\installer-daemon-services.ps1\""
     ));
-    assert!(stop.contains("-InstallDir \"$INSTDIR\""));
+    assert!(stop.contains("-Action Stop -InstallDir \"$INSTDIR\""));
+    assert!(
+        nsis_macro_body("HYPERCOLOR_RETIRE_FLAT_LAYOUT")
+            .contains("-Action Remove -InstallDir \"$INSTDIR\"")
+    );
 
     for step in [
         "if ($svc.State -ne \"Stop Pending\") {",

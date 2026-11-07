@@ -33,6 +33,8 @@ const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 const ERROR_SERVICE_EXISTS: i32 = 1073;
 /// `ERROR_SERVICE_NOT_ACTIVE`.
 const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
+/// `ERROR_SERVICE_CANNOT_ACCEPT_CTRL`: a stop or start is already underway.
+const ERROR_SERVICE_CANNOT_ACCEPT_CTRL: i32 = 1061;
 /// How long a run gets to end when an installer removes the service. Its
 /// own stop ends the activator without waiting for it.
 const STOP_DEADLINE: Duration = Duration::from_secs(30);
@@ -154,15 +156,24 @@ impl ScmUpdateService {
             }
             Err(error) => return Err(service_error(error)),
         };
-        match service.stop() {
-            Ok(_) => {}
-            Err(windows_service::Error::Winapi(error))
-                if error.raw_os_error() == Some(ERROR_SERVICE_NOT_ACTIVE) => {}
-            Err(error) => return Err(service_error(error)),
-        }
+        // A stop only lands on a running service, so one that is still
+        // starting is asked again once it runs.
         let deadline = Instant::now() + STOP_DEADLINE;
-        while service.query_status().map_err(service_error)?.current_state != ServiceState::Stopped
-        {
+        loop {
+            let state = service.query_status().map_err(service_error)?.current_state;
+            match state {
+                ServiceState::Stopped => break,
+                ServiceState::Running | ServiceState::Paused => match service.stop() {
+                    Ok(_) => {}
+                    Err(windows_service::Error::Winapi(error))
+                        if matches!(
+                            error.raw_os_error(),
+                            Some(ERROR_SERVICE_NOT_ACTIVE | ERROR_SERVICE_CANNOT_ACCEPT_CTRL)
+                        ) => {}
+                    Err(error) => return Err(service_error(error)),
+                },
+                _ => {}
+            }
             if Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,

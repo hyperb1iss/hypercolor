@@ -69,9 +69,10 @@ flat install from before units always counts as older. An upgrade:
   old layout, which starts nothing, until that account next opens Hypercolor.
 - keeps app data under `%APPDATA%` and `%LOCALAPPDATA%`
 - closes a running Hypercolor first, then stops any daemon still running from
-  the install directory. A daemon registered as a Windows service is removed:
-  the program it names does not outlive the install, and the app supervises
-  the daemon from then on.
+  the install directory. A daemon registered as a Windows service is removed
+  once the new release is in: the program it names does not outlive the
+  install, and the app supervises the daemon from then on. An install that
+  fails leaves the registration.
 - stops the `HypercolorSmBus` broker first, then registers and starts it from
   the new unit
 - reinstalls the WebView2 runtime if it has gone missing
@@ -178,7 +179,8 @@ contract above; `Interactive` clicks through the wizard the way a person does.
 transaction and after it committed, runs the Start menu shortcut after each
 kill, then finishes with one more run. A kill that misses its moment throws
 that round away.
-`-Mode Replace` replaces one unit with another. Every mode checks the ACLs and
+`-Mode Replace` replaces one unit with another, and `Fresh` first checks the
+installer refuses a folder standard users can change. Every mode checks the ACLs and
 owners of the units and records, that a standard user can start the launcher,
 and with `-Managed` the update service's registration, and every mode ends by
 uninstalling and checking nothing stayed behind.
