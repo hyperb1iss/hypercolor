@@ -289,7 +289,8 @@ impl DeviceBackend for BlocksBackend {
             frames_sent: 0,
         });
         device.connected = true;
-        drop(state);
+        // Under the lock retirement sets its flag with, so input either lands
+        // before retirement shuts it down or never starts.
         if let Some(input) = &self.input {
             input.connect(pending.uid, *id, &pending.info.name);
         }
