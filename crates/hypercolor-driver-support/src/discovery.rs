@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::future::Future;
 use std::hash::Hash;
+use std::net::IpAddr;
 use std::num::NonZeroUsize;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryBatch, DiscoveryObservation};
@@ -71,23 +72,36 @@ pub enum Admission {
     Full,
 }
 
+/// A target a scan already knows about, which always gets a slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KnownTarget<K> {
+    /// An identity the host tracks.
+    Identity(K),
+    /// A configured address whose identity is not known yet. It holds one
+    /// slot, so spoofing that address cannot grow state past the known set.
+    Address(IpAddr),
+}
+
 #[derive(Debug)]
 struct Admitted<V> {
+    known: bool,
     arrival: usize,
     value: V,
 }
 
-/// Per-scan admission of unsolicited candidates.
+/// Per-scan admission of candidates.
 ///
 /// Every check runs before any state changes, so a flood of invented
-/// identities grows nothing past the limit. A key reserved for a configured
-/// or tracked target is always admitted and never counts against the limit,
-/// so unsolicited candidates cannot crowd it out. Keep any auxiliary index a
+/// identities grows nothing past the limit. Configured and tracked targets
+/// are stated up front: each gets a slot that never counts against the limit,
+/// so unsolicited candidates cannot crowd one out, and the retained set stays
+/// bounded by the limit plus the known targets. Keep any auxiliary index a
 /// driver needs behind [`Admission::Added`].
 #[derive(Debug)]
 pub struct CandidateAdmission<K, V> {
     limit: usize,
-    reserved: HashSet<K>,
+    identities: HashSet<K>,
+    open_addresses: HashSet<IpAddr>,
     entries: HashMap<K, Admitted<V>>,
     unsolicited: usize,
     arrivals: usize,
@@ -98,12 +112,26 @@ impl<K, V> CandidateAdmission<K, V>
 where
     K: Eq + Hash,
 {
-    /// Admission for at most `limit` unsolicited candidates.
+    /// Admission for `known` targets plus at most `limit` unsolicited
+    /// candidates.
     #[must_use]
-    pub fn new(limit: usize) -> Self {
+    pub fn new(limit: usize, known: impl IntoIterator<Item = KnownTarget<K>>) -> Self {
+        let mut identities = HashSet::new();
+        let mut open_addresses = HashSet::new();
+        for target in known {
+            match target {
+                KnownTarget::Identity(key) => {
+                    identities.insert(key);
+                }
+                KnownTarget::Address(ip) => {
+                    open_addresses.insert(ip);
+                }
+            }
+        }
         Self {
             limit,
-            reserved: HashSet::new(),
+            identities,
+            open_addresses,
             entries: HashMap::new(),
             unsolicited: 0,
             arrivals: 0,
@@ -111,43 +139,39 @@ where
         }
     }
 
-    /// Reserve `keys` for the targets the scan already knows about.
-    #[must_use]
-    pub fn reserving(mut self, keys: impl IntoIterator<Item = K>) -> Self {
-        self.reserved.extend(keys);
-        self
-    }
-
-    /// Offer a candidate. The first value for a key stays.
-    pub fn offer(&mut self, key: K, value: V) -> Admission {
+    /// Offer a candidate heard from `source`. The first value for a key
+    /// stays.
+    pub fn offer(&mut self, source: IpAddr, key: K, value: V) -> Admission {
         if self.entries.contains_key(&key) {
             return Admission::Duplicate;
         }
-        self.admit(key, value)
+        self.admit(source, key, value)
     }
 
-    /// Offer a candidate. The latest value for a key replaces the last.
-    pub fn offer_latest(&mut self, key: K, value: V) -> Admission {
+    /// Offer a candidate heard from `source`. The latest value for a key
+    /// replaces the last.
+    pub fn offer_latest(&mut self, source: IpAddr, key: K, value: V) -> Admission {
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.value = value;
             return Admission::Updated;
         }
-        self.admit(key, value)
+        self.admit(source, key, value)
     }
 
-    fn admit(&mut self, key: K, value: V) -> Admission {
-        let reserved = self.reserved.contains(&key);
-        if !reserved && self.unsolicited >= self.limit {
+    fn admit(&mut self, source: IpAddr, key: K, value: V) -> Admission {
+        let known = self.identities.contains(&key) || self.open_addresses.remove(&source);
+        if !known && self.unsolicited >= self.limit {
             self.refused = self.refused.saturating_add(1);
             return Admission::Full;
         }
-        if !reserved {
+        if !known {
             self.unsolicited += 1;
         }
         self.arrivals += 1;
         self.entries.insert(
             key,
             Admitted {
+                known,
                 arrival: self.arrivals,
                 value,
             },
@@ -178,26 +202,19 @@ where
         self.entries.is_empty()
     }
 
-    /// The admitted candidates, reserved keys first and then in arrival
+    /// The admitted candidates, known targets first and then in arrival
     /// order, with the gap any refusal left.
     #[must_use]
     pub fn finish(self) -> ScanOutcome<V> {
-        let Self {
-            reserved,
-            entries,
-            refused,
-            ..
-        } = self;
-        let mut admitted: Vec<(bool, Admitted<V>)> = entries
-            .into_iter()
-            .map(|(key, entry)| (!reserved.contains(&key), entry))
-            .collect();
-        admitted.sort_unstable_by_key(|(unsolicited, entry)| (*unsolicited, entry.arrival));
+        let mut admitted: Vec<Admitted<V>> = self.entries.into_values().collect();
+        admitted.sort_unstable_by_key(|entry| (!entry.known, entry.arrival));
         ScanOutcome {
-            found: admitted.into_iter().map(|(_, entry)| entry.value).collect(),
+            found: admitted.into_iter().map(|entry| entry.value).collect(),
             present: Vec::new(),
-            gaps: (refused > 0)
-                .then_some(CoverageGap::AdmissionFull { refused })
+            gaps: (self.refused > 0)
+                .then_some(CoverageGap::AdmissionFull {
+                    refused: self.refused,
+                })
                 .into_iter()
                 .collect(),
         }
@@ -230,8 +247,9 @@ pub enum Probed<T> {
 ///
 /// A probe that returns `Err` may have found a device the scan could not
 /// describe, so it leaves a gap. Put tracked and configured targets first:
-/// the deadline falls on whatever is left. Every probe still running at the
-/// deadline has been cancelled and joined by the time this returns.
+/// the deadline falls on whatever is left, and nothing starts once it has
+/// passed. Every probe still running at the deadline has been cancelled and
+/// joined by the time this returns.
 pub async fn probe_candidates<C, T, E, F, Fut>(
     candidates: impl IntoIterator<Item = C>,
     budget: ProbeBudget,
@@ -248,6 +266,17 @@ where
     let mut tasks = JoinSet::new();
     let mut outcome = ScanOutcome::default();
     loop {
+        if Instant::now() >= budget.deadline {
+            let unfinished = tasks.len() + pending.count();
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {}
+            if unfinished > 0 {
+                outcome
+                    .gaps
+                    .push(CoverageGap::ProbesCancelled { unfinished });
+            }
+            return outcome;
+        }
         while tasks.len() < budget.in_flight.get() {
             let Some(candidate) = pending.next() else {
                 break;
@@ -257,13 +286,7 @@ where
             tasks.spawn(async move { (label, probing.await) });
         }
         let Ok(joined) = timeout_at(budget.deadline, tasks.join_next()).await else {
-            let unfinished = tasks.len() + pending.count();
-            tasks.abort_all();
-            while tasks.join_next().await.is_some() {}
-            outcome
-                .gaps
-                .push(CoverageGap::ProbesCancelled { unfinished });
-            return outcome;
+            continue;
         };
         match joined {
             None => return outcome,

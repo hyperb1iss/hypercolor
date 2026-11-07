@@ -238,7 +238,7 @@ async fn discovery_replies_from_one_address_are_admitted_once() -> TestResult {
     let found = collect_discovery_replies(
         &[first.discovery_addr(), second.discovery_addr()],
         Duration::from_millis(300),
-        CandidateAdmission::new(8),
+        CandidateAdmission::new(8, []),
     )
     .await?
     .found;
@@ -268,7 +268,7 @@ async fn discovery_stops_admitting_at_its_limit() -> TestResult {
     let replies = collect_discovery_replies(
         &targets,
         Duration::from_millis(400),
-        CandidateAdmission::new(2),
+        CandidateAdmission::new(2, []),
     )
     .await?;
     for responder in responders {

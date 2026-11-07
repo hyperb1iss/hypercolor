@@ -9,7 +9,7 @@ use hypercolor_driver_api::CoverageGap;
 use mdns_sd::{IfKind, ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent};
 use tracing::debug;
 
-use crate::discovery::{CandidateAdmission, ScanOutcome};
+use crate::discovery::{CandidateAdmission, KnownTarget, ScanOutcome};
 
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(250);
 
@@ -155,8 +155,10 @@ impl MdnsBrowser {
             .with_context(|| format!("failed to browse mDNS service type {service_type}"))?;
 
         let deadline = tokio::time::Instant::now() + timeout;
-        let mut admission =
-            CandidateAdmission::new(MAX_BROWSED_HOSTS).reserving(known_hosts.iter().copied());
+        let mut admission = CandidateAdmission::new(
+            MAX_BROWSED_HOSTS,
+            known_hosts.iter().copied().map(KnownTarget::Address),
+        );
         let mut failure = None;
 
         loop {
@@ -231,6 +233,7 @@ fn admit_resolved(admission: &mut CandidateAdmission<IpAddr, MdnsService>, info:
         .collect::<HashMap<_, _>>();
     admission.offer_latest(
         host,
+        host,
         MdnsService {
             name,
             host,
@@ -278,7 +281,7 @@ mod tests {
     #[test]
     fn a_flood_of_advertisements_retains_a_bounded_set_and_the_known_host() {
         let known = host(9_999);
-        let mut admission = CandidateAdmission::new(4).reserving([known]);
+        let mut admission = CandidateAdmission::new(4, [KnownTarget::Address(known)]);
         for index in 0..500 {
             admit_resolved(&mut admission, &resolved(host(index), 80));
         }
@@ -295,7 +298,7 @@ mod tests {
 
     #[test]
     fn one_address_on_many_ports_holds_one_slot_and_reports_its_latest() {
-        let mut admission = CandidateAdmission::new(1);
+        let mut admission = CandidateAdmission::new(1, []);
         for port in 8_000..8_100 {
             admit_resolved(&mut admission, &resolved(host(1), port));
         }

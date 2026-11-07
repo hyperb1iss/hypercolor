@@ -12,7 +12,7 @@ use tracing::debug;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_driver_support::discovery::{
-    Admission, CandidateAdmission, ProbeBudget, Probed, ScanOutcome, probe_candidates,
+    Admission, CandidateAdmission, KnownTarget, ProbeBudget, Probed, ScanOutcome, probe_candidates,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
@@ -249,8 +249,10 @@ impl WizScanner {
         let mut gaps = Vec::new();
         let mut answered = HashSet::new();
         if !self.options.broadcast_targets.is_empty() {
-            let admission = CandidateAdmission::new(MAX_DISCOVERY_CANDIDATES)
-                .reserving(targets.iter().map(SocketAddr::ip));
+            let admission = CandidateAdmission::new(
+                MAX_DISCOVERY_CANDIDATES,
+                targets.iter().map(|addr| KnownTarget::Address(addr.ip())),
+            );
             let registrations =
                 collect_registrations(&self.options.broadcast_targets, window, admission).await?;
             gaps = registrations.gaps;
@@ -357,7 +359,7 @@ pub async fn collect_registrations(
                         continue;
                     }
                     // Replies come from the device's listening port.
-                    if admission.offer(source.ip(), source) == Admission::Added {
+                    if admission.offer(source.ip(), source.ip(), source) == Admission::Added {
                         debug!(%source, %mac, "WiZ discovery reply");
                         macs.insert(mac);
                     }

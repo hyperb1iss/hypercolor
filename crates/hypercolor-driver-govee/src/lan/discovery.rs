@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
-use hypercolor_driver_support::discovery::{Admission, CandidateAdmission, ScanOutcome};
+use hypercolor_driver_support::discovery::{
+    Admission, CandidateAdmission, KnownTarget, ScanOutcome,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,
@@ -58,17 +60,19 @@ pub struct GoveeLanDevice {
     pub firmware_version: Option<String>,
 }
 
-/// Admission that always takes responses from `known` devices.
+/// Admission that always keeps a slot for `known` devices: by MAC when one is
+/// known, else by the configured address.
 #[must_use]
 pub fn scan_admission(
     known: &[GoveeKnownDevice],
     limit: usize,
 ) -> CandidateAdmission<String, DiscoveredDevice> {
-    CandidateAdmission::new(limit).reserving(
-        known
-            .iter()
-            .filter_map(|device| device.mac.as_deref())
-            .map(normalize_mac),
+    CandidateAdmission::new(
+        limit,
+        known.iter().map(|device| match device.mac.as_deref() {
+            Some(mac) => KnownTarget::Identity(normalize_mac(mac)),
+            None => KnownTarget::Address(device.ip),
+        }),
     )
 }
 
@@ -81,7 +85,8 @@ pub fn offer_scan_response(
 ) -> Option<Admission> {
     match parse_scan_response(bytes, source) {
         Ok(device) => {
-            Some(admission.offer_latest(device.mac.clone(), build_discovered_device(device)))
+            let mac = device.mac.clone();
+            Some(admission.offer_latest(source, mac, build_discovered_device(device)))
         }
         Err(error) => {
             debug!(ip = %source, error = %error, "ignored invalid Govee scan response");

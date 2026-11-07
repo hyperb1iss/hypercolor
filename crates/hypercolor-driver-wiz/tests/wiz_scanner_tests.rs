@@ -60,7 +60,7 @@ async fn registration_replies_report_the_device_port() -> TestResult {
     let found = collect_registrations(
         &[fake.addr()],
         Duration::from_millis(300),
-        CandidateAdmission::new(8),
+        CandidateAdmission::new(8, []),
     )
     .await?
     .found;

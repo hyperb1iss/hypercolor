@@ -14,7 +14,9 @@ use tokio::time::{Instant, timeout_at};
 use tracing::debug;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
-use hypercolor_driver_support::discovery::{Admission, CandidateAdmission, ScanOutcome};
+use hypercolor_driver_support::discovery::{
+    Admission, CandidateAdmission, KnownTarget, ScanOutcome,
+};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
@@ -224,8 +226,12 @@ pub async fn search_until(
     limit: Option<usize>,
 ) -> Result<ScanOutcome<YeelightDeviceProfile>> {
     let limit = limit.unwrap_or(MAX_SEARCH_REPLIES).min(MAX_SEARCH_REPLIES);
-    let mut admission =
-        CandidateAdmission::new(limit).reserving(targets.iter().map(SocketAddr::ip));
+    let mut admission = CandidateAdmission::new(
+        limit,
+        targets
+            .iter()
+            .map(|target| KnownTarget::Address(target.ip())),
+    );
     let mut gaps = Vec::new();
     // A target stays unreached until one round's send to it succeeds.
     let mut unreached = targets.to_vec();
@@ -311,7 +317,7 @@ pub fn offer_reply(
         reply,
         search_port: source.port(),
     };
-    Some(admission.offer_latest(ip, profile))
+    Some(admission.offer_latest(ip, ip, profile))
 }
 
 /// Metadata published for a device.

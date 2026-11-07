@@ -67,6 +67,33 @@ fn a_flood_of_invented_macs_cannot_crowd_out_a_known_device() {
 }
 
 #[test]
+fn a_flood_of_invented_macs_cannot_crowd_out_a_newly_configured_address() {
+    let flood_source = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
+    let configured = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+    let known = GoveeKnownDevice::from_ip(configured);
+    let mut admission = scan_admission(std::slice::from_ref(&known), 0);
+    for index in 0..1_000_u32 {
+        offer_scan_response(
+            &mut admission,
+            &scan_reply(&format!("0000{index:08x}")),
+            flood_source,
+        );
+    }
+    assert_eq!(
+        offer_scan_response(&mut admission, &scan_reply("AABBCCDDEEFF"), configured),
+        Some(Admission::Added),
+        "a configured address has a slot before anyone knows its MAC"
+    );
+
+    let scan = admission.finish();
+    assert_eq!(scan.found.len(), 1);
+    assert_eq!(
+        scan.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 1_000 }]
+    );
+}
+
+#[test]
 fn scan_replies_keep_each_macs_latest_answer_and_ignore_garbage() {
     let source = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8));
     let mut admission = scan_admission(&[], MAX_SCAN_RESPONSES);

@@ -426,7 +426,7 @@ async fn discovery_rounds_keep_at_most_their_cap() -> TestResult {
         .discover(
             &[fake.addr()],
             Duration::from_millis(300),
-            CandidateAdmission::new(3),
+            CandidateAdmission::new(3, []),
         )
         .await?;
     assert_eq!(round.replies.len(), 3);
@@ -487,10 +487,42 @@ async fn a_flood_past_the_cap_is_partial_and_a_tracked_light_still_gets_probed()
         outcome.found.iter().any(|light| light.serial == tracked),
         "the flood must not crowd out the light the host tracks"
     );
-    assert_eq!(outcome.found.len(), 3);
+    assert_eq!(
+        outcome.found.len(),
+        4,
+        "the tracked light, the configured address's slot, and the limit"
+    );
     assert_eq!(
         outcome.gaps,
-        vec![CoverageGap::AdmissionFull { refused: 9 }]
+        vec![CoverageGap::AdmissionFull { refused: 8 }]
+    );
+    Ok(())
+}
+
+/// Linux routes all of 127.0.0.0/8 to the loopback interface, so a second
+/// source address can be tested there without leaving the host.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_flood_cannot_crowd_out_a_configured_light_nobody_tracks_yet() -> TestResult {
+    let flood = FakeLifx::spawn_on(
+        SocketAddr::from((Ipv4Addr::new(127, 0, 0, 2), 0)),
+        bulb_fleet(8),
+    )
+    .await?;
+    let configured = FakeLifx::spawn(vec![FakeDevice::new(1, 27, (3, 70), FakeKind::Bulb)]).await?;
+    let outcome = LifxScanner::new(LifxScanOptions {
+        broadcast_targets: vec![flood.addr()],
+        // No room for strangers, so only a reserved slot can admit it.
+        max_candidates: 0,
+        ..options(vec![configured.addr()])
+    })
+    .scan()
+    .await?;
+    assert_eq!(outcome.found.len(), 1);
+    assert_eq!(outcome.found[0].serial, serial(1));
+    assert_eq!(
+        outcome.gaps,
+        vec![CoverageGap::AdmissionFull { refused: 8 }]
     );
     Ok(())
 }
@@ -504,10 +536,14 @@ async fn a_reply_flood_past_the_cap_reports_partial_coverage() -> TestResult {
     })
     .scan()
     .await?;
-    assert_eq!(outcome.found.len(), 8, "admitted lights still apply");
+    assert_eq!(
+        outcome.found.len(),
+        9,
+        "the configured address's slot and the limit still apply"
+    );
     assert_eq!(
         outcome.gaps,
-        vec![CoverageGap::AdmissionFull { refused: 4 }],
+        vec![CoverageGap::AdmissionFull { refused: 3 }],
         "a truncated scan must not look complete"
     );
     Ok(())

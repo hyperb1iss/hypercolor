@@ -3,7 +3,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use hypercolor_driver_api::CoverageGap;
-use hypercolor_driver_support::discovery::{Admission, CandidateAdmission};
+use hypercolor_driver_support::discovery::{Admission, CandidateAdmission, KnownTarget};
 use hypercolor_driver_yeelight::protocol::SearchReply;
 use hypercolor_driver_yeelight::scanner::{YeelightDeviceProfile, offer_reply};
 
@@ -28,7 +28,7 @@ fn reply(at: SocketAddr, id: &str) -> SearchReply {
 
 #[test]
 fn spoofed_sources_repeating_one_id_never_grow_state() {
-    let mut admission = SearchAdmission::new(256);
+    let mut admission = SearchAdmission::new(256, []);
     assert_eq!(
         offer_reply(&mut admission, source(1), reply(source(1), "0x1")),
         Some(Admission::Added)
@@ -44,7 +44,7 @@ fn spoofed_sources_repeating_one_id_never_grow_state() {
 
 #[test]
 fn each_address_reports_only_its_most_recent_id() {
-    let mut admission = SearchAdmission::new(256);
+    let mut admission = SearchAdmission::new(256, []);
     assert_eq!(
         offer_reply(&mut admission, source(1), reply(source(1), "0xa")),
         Some(Admission::Added)
@@ -63,7 +63,7 @@ fn each_address_reports_only_its_most_recent_id() {
 
 #[test]
 fn admission_stops_at_the_limit_without_tracking_more() {
-    let mut admission = SearchAdmission::new(2);
+    let mut admission = SearchAdmission::new(2, []);
     assert_eq!(
         offer_reply(&mut admission, source(1), reply(source(1), "0x1")),
         Some(Admission::Added)
@@ -94,7 +94,7 @@ fn admission_stops_at_the_limit_without_tracking_more() {
 #[test]
 fn a_flood_cannot_crowd_out_a_tracked_light() {
     let tracked = source(9_999);
-    let mut admission = SearchAdmission::new(2).reserving([tracked.ip()]);
+    let mut admission = SearchAdmission::new(2, [KnownTarget::Address(tracked.ip())]);
     for host in 1..1_000 {
         let id = format!("0x{host:x}");
         offer_reply(&mut admission, source(host), reply(source(host), &id));
@@ -108,7 +108,7 @@ fn a_flood_cannot_crowd_out_a_tracked_light() {
 
 #[test]
 fn replies_naming_another_address_are_refused() {
-    let mut admission = SearchAdmission::new(256);
+    let mut admission = SearchAdmission::new(256, []);
     assert_eq!(
         offer_reply(&mut admission, source(1), reply(source(7), "0x1")),
         None

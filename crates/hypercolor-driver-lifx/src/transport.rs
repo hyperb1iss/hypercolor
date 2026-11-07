@@ -240,6 +240,7 @@ impl LifxClient {
                 continue;
             };
             admission.offer(
+                from.ip(),
                 serial,
                 ServiceReply {
                     serial,

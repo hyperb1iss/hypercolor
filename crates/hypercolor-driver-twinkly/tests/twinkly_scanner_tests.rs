@@ -63,7 +63,7 @@ async fn discovery_replies_report_the_sender() -> TestResult {
     let found = collect_discovery_replies(
         &[fake.discovery_addr()],
         Duration::from_millis(300),
-        CandidateAdmission::new(8),
+        CandidateAdmission::new(8, []),
     )
     .await?
     .found;

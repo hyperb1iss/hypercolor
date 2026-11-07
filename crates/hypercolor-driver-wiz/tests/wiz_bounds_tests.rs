@@ -1,12 +1,16 @@
 //! Bounds on untrusted LAN input: registration replies, probe fanout, and
 //! the signing key's debug output (Spec 93 §3.1 and §5).
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(target_os = "linux")]
+use std::net::IpAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::CoverageGap;
 use hypercolor_driver_support::discovery::CandidateAdmission;
+#[cfg(target_os = "linux")]
+use hypercolor_driver_support::discovery::KnownTarget;
 use hypercolor_driver_wiz::config::WizConfig;
 use hypercolor_driver_wiz::scanner::{
     MAX_CONCURRENT_PROBES, collect_registrations, registration_mac,
@@ -67,7 +71,7 @@ async fn invented_macs_from_many_ports_admit_nothing() -> TestResult {
     let found = collect_registrations(
         &targets,
         Duration::from_millis(300),
-        CandidateAdmission::new(64),
+        CandidateAdmission::new(64, []),
     )
     .await?
     .found;
@@ -95,7 +99,7 @@ async fn one_source_address_is_admitted_once() -> TestResult {
     let found = collect_registrations(
         &targets,
         Duration::from_millis(300),
-        CandidateAdmission::new(64),
+        CandidateAdmission::new(64, []),
     )
     .await?
     .found;
@@ -128,7 +132,7 @@ async fn a_flood_past_the_limit_is_partial_and_keeps_room_for_a_tracked_bulb() -
     let registrations = collect_registrations(
         &targets,
         Duration::from_millis(400),
-        CandidateAdmission::new(2).reserving([IpAddr::V4(tracked)]),
+        CandidateAdmission::new(2, [KnownTarget::Address(IpAddr::V4(tracked))]),
     )
     .await?;
     tasks.iter().for_each(JoinHandle::abort);
@@ -164,7 +168,7 @@ async fn admission_stops_at_its_limit() -> TestResult {
     let registrations = collect_registrations(
         &targets,
         Duration::from_millis(400),
-        CandidateAdmission::new(2),
+        CandidateAdmission::new(2, []),
     )
     .await?;
     tasks.iter().for_each(JoinHandle::abort);

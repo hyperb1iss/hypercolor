@@ -1,6 +1,7 @@
 //! Admission and probing bounds, and the gaps they report.
 
 use std::convert::Infallible;
+use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,7 +10,7 @@ use std::time::Duration;
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryCoverage};
 use hypercolor_driver_api::{DiscoveryConnectBehavior, DiscoveryObservation};
 use hypercolor_driver_support::discovery::{
-    Admission, CandidateAdmission, ProbeBudget, Probed, ScanOutcome, probe_candidates,
+    Admission, CandidateAdmission, KnownTarget, ProbeBudget, Probed, ScanOutcome, probe_candidates,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo,
@@ -24,13 +25,19 @@ fn budget(after: Duration, in_flight: usize) -> ProbeBudget {
     }
 }
 
+const SOURCE: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+
+fn host(last: u8) -> IpAddr {
+    IpAddr::V4(Ipv4Addr::new(192, 0, 2, last))
+}
+
 #[test]
 fn admission_retains_nothing_past_its_limit() {
-    let mut admission = CandidateAdmission::new(2);
-    assert_eq!(admission.offer(1, "a"), Admission::Added);
-    assert_eq!(admission.offer(2, "b"), Admission::Added);
+    let mut admission = CandidateAdmission::new(2, []);
+    assert_eq!(admission.offer(SOURCE, 1, "a"), Admission::Added);
+    assert_eq!(admission.offer(SOURCE, 2, "b"), Admission::Added);
     for key in 3..1_000 {
-        assert_eq!(admission.offer(key, "flood"), Admission::Full);
+        assert_eq!(admission.offer(SOURCE, key, "flood"), Admission::Full);
     }
 
     assert_eq!(admission.len(), 2);
@@ -41,9 +48,9 @@ fn admission_retains_nothing_past_its_limit() {
 
 #[test]
 fn a_full_admission_that_refused_nothing_leaves_no_gap() {
-    let mut admission = CandidateAdmission::new(1);
-    assert_eq!(admission.offer("only", 1), Admission::Added);
-    assert_eq!(admission.offer("only", 2), Admission::Duplicate);
+    let mut admission = CandidateAdmission::new(1, []);
+    assert_eq!(admission.offer(SOURCE, "only", 1), Admission::Added);
+    assert_eq!(admission.offer(SOURCE, "only", 2), Admission::Duplicate);
 
     let outcome = admission.finish();
     assert_eq!(outcome.found, [1]);
@@ -55,25 +62,31 @@ fn a_full_admission_that_refused_nothing_leaves_no_gap() {
 
 #[test]
 fn offers_keep_the_first_value_and_latest_offers_replace_it() {
-    let mut admission = CandidateAdmission::new(1);
-    admission.offer("key", "first");
-    assert_eq!(admission.offer("key", "second"), Admission::Duplicate);
+    let mut admission = CandidateAdmission::new(1, []);
+    admission.offer(SOURCE, "key", "first");
+    assert_eq!(
+        admission.offer(SOURCE, "key", "second"),
+        Admission::Duplicate
+    );
     assert_eq!(admission.values().copied().collect::<Vec<_>>(), ["first"]);
 
-    assert_eq!(admission.offer_latest("key", "latest"), Admission::Updated);
+    assert_eq!(
+        admission.offer_latest(SOURCE, "key", "latest"),
+        Admission::Updated
+    );
     assert_eq!(admission.values().copied().collect::<Vec<_>>(), ["latest"]);
 }
 
 #[test]
-fn a_flood_cannot_crowd_out_a_tracked_target() {
-    let mut admission = CandidateAdmission::new(2).reserving([1_000]);
+fn a_flood_cannot_crowd_out_a_tracked_identity() {
+    let mut admission = CandidateAdmission::new(2, [KnownTarget::Identity(1_000)]);
     for key in 0..500 {
-        admission.offer(key, key);
+        admission.offer(SOURCE, key, key);
     }
     assert_eq!(
-        admission.offer(1_000, 1_000),
+        admission.offer(SOURCE, 1_000, 1_000),
         Admission::Added,
-        "a reserved key is admitted however full admission is"
+        "a tracked identity is admitted however full admission is"
     );
     assert!(admission.contains(&1_000));
 
@@ -81,21 +94,53 @@ fn a_flood_cannot_crowd_out_a_tracked_target() {
     assert_eq!(
         outcome.found,
         [1_000, 0, 1],
-        "reserved keys come first, so they are probed first"
+        "known targets come first, so they are probed first"
     );
     assert_eq!(outcome.gaps, [CoverageGap::AdmissionFull { refused: 498 }]);
 }
 
 #[test]
-fn reserved_targets_do_not_use_up_the_unsolicited_limit() {
-    let mut admission = CandidateAdmission::new(1).reserving(["tracked"]);
-    assert_eq!(admission.offer("tracked", 1), Admission::Added);
+fn a_flood_cannot_crowd_out_a_configured_address_of_unknown_identity() {
+    let configured = host(50);
+    let mut admission = CandidateAdmission::new(2, [KnownTarget::Address(configured)]);
+    for key in 0..500 {
+        admission.offer(SOURCE, key, key);
+    }
     assert_eq!(
-        admission.offer("stranger", 2),
+        admission.offer(configured, 9_000, 9_000),
+        Admission::Added,
+        "the reply from a configured address has a slot waiting"
+    );
+
+    let outcome = admission.finish();
+    assert_eq!(outcome.found, [9_000, 0, 1]);
+}
+
+#[test]
+fn a_configured_address_holds_one_slot_however_many_identities_it_claims() {
+    let configured = host(50);
+    let mut admission = CandidateAdmission::new(1, [KnownTarget::Address(configured)]);
+    for key in 0..500 {
+        admission.offer(configured, key, key);
+    }
+
+    assert_eq!(admission.len(), 2, "its slot plus the unsolicited limit");
+    assert_eq!(
+        admission.finish().gaps,
+        [CoverageGap::AdmissionFull { refused: 498 }]
+    );
+}
+
+#[test]
+fn known_targets_do_not_use_up_the_unsolicited_limit() {
+    let mut admission = CandidateAdmission::new(1, [KnownTarget::Identity("tracked")]);
+    assert_eq!(admission.offer(SOURCE, "tracked", 1), Admission::Added);
+    assert_eq!(
+        admission.offer(SOURCE, "stranger", 2),
         Admission::Added,
         "the limit bounds unsolicited candidates, not the known inventory"
     );
-    assert_eq!(admission.offer("another", 3), Admission::Full);
+    assert_eq!(admission.offer(SOURCE, "another", 3), Admission::Full);
 }
 
 #[tokio::test]
@@ -212,6 +257,35 @@ async fn the_deadline_cancels_what_is_left_and_reports_it() {
         dropped.load(Ordering::SeqCst),
         "cancelled probes are joined before the batch returns"
     );
+}
+
+#[tokio::test]
+async fn an_expired_budget_starts_nothing_and_reports_every_candidate() {
+    let started = Arc::new(AtomicUsize::new(0));
+    let batch = probe_candidates(0..5, budget(Duration::ZERO, 2), |candidate: u32| {
+        started.fetch_add(1, Ordering::SeqCst);
+        async move { Ok::<_, Infallible>(Probed::Described(candidate)) }
+    })
+    .await;
+
+    assert_eq!(started.load(Ordering::SeqCst), 0, "no probe was created");
+    assert!(batch.found.is_empty());
+    assert_eq!(
+        batch.gaps,
+        vec![CoverageGap::ProbesCancelled { unfinished: 5 }]
+    );
+}
+
+#[tokio::test]
+async fn an_expired_budget_with_nothing_to_probe_leaves_no_gap() {
+    let batch = probe_candidates(
+        Vec::<u32>::new(),
+        budget(Duration::ZERO, 2),
+        |candidate: u32| async move { Ok::<_, Infallible>(Probed::Described(candidate)) },
+    )
+    .await;
+
+    assert!(batch.gaps.is_empty());
 }
 
 #[tokio::test]

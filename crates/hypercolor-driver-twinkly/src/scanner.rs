@@ -20,7 +20,7 @@ use tracing::debug;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_driver_support::discovery::{
-    CandidateAdmission, ProbeBudget, Probed, ScanOutcome, probe_candidates,
+    CandidateAdmission, KnownTarget, ProbeBudget, Probed, ScanOutcome, probe_candidates,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorSpace, DeviceFamily, DeviceFeatures,
@@ -325,8 +325,12 @@ impl TwinklyScanner {
         let mut gaps = Vec::new();
         let mut answered = HashSet::new();
         if !self.options.broadcast_targets.is_empty() {
-            let admission = CandidateAdmission::new(MAX_DISCOVERY_CANDIDATES)
-                .reserving(endpoints.iter().map(|endpoint| endpoint.ip));
+            let admission = CandidateAdmission::new(
+                MAX_DISCOVERY_CANDIDATES,
+                endpoints
+                    .iter()
+                    .map(|endpoint| KnownTarget::Address(endpoint.ip)),
+            );
             let replies =
                 collect_discovery_replies(&self.options.broadcast_targets, window, admission)
                     .await?;
@@ -423,7 +427,7 @@ pub async fn collect_discovery_replies(
             Ok(Ok((len, source))) => match decode_discovery_reply(&buffer[..len]) {
                 Ok(reply) => {
                     debug!(%source, device_id = %reply.device_id, "Twinkly discovery reply");
-                    admission.offer(source.ip(), source.ip());
+                    admission.offer(source.ip(), source.ip(), source.ip());
                 }
                 Err(error) => debug!(%source, %error, "ignoring non-Twinkly discovery reply"),
             },

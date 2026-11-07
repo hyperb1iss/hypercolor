@@ -11,7 +11,7 @@ use tracing::debug;
 
 use hypercolor_driver_api::{CoverageGap, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_driver_support::discovery::{
-    CandidateAdmission, ProbeBudget, Probed, ScanOutcome, probe_candidates,
+    CandidateAdmission, KnownTarget, ProbeBudget, Probed, ScanOutcome, probe_candidates,
 };
 use hypercolor_types::device::DeviceFingerprint;
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
@@ -216,8 +216,14 @@ impl LifxScanner {
         let v4_targets: Vec<SocketAddr> = v4_unicast.iter().chain(&v4_broadcast).copied().collect();
 
         let admission = || {
-            CandidateAdmission::new(self.options.max_candidates)
-                .reserving(self.options.tracked.keys().copied())
+            let tracked = self.options.tracked.keys().copied();
+            let configured = self.options.unicast_targets.iter().map(SocketAddr::ip);
+            CandidateAdmission::new(
+                self.options.max_candidates,
+                tracked
+                    .map(KnownTarget::Identity)
+                    .chain(configured.map(KnownTarget::Address)),
+            )
         };
         let (v4, v6) = tokio::join!(
             discovery_pass("IPv4", &v4_targets, &v4_broadcast, window, admission()),
@@ -243,7 +249,7 @@ impl LifxScanner {
             };
             gaps.extend(round_gaps(&round, &v4_broadcast));
             for reply in round.replies {
-                collected.offer(reply.serial, reply);
+                collected.offer(reply.addr.ip(), reply.serial, reply);
             }
         }
         let mut outcome = collected.finish();
