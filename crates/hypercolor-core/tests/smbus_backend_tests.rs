@@ -39,6 +39,9 @@ struct ScriptedTransport {
     native_handle: Option<Arc<()>>,
     /// Holds `send_receive` back, so a test can keep an open in flight.
     gate: Option<Arc<Semaphore>>,
+    /// Holds `close` back, the way a transaction still running on its
+    /// blocking thread does on a real bus.
+    close_gate: Option<Arc<Semaphore>>,
 }
 
 impl ScriptedTransport {
@@ -55,7 +58,13 @@ impl ScriptedTransport {
             close_count,
             native_handle: None,
             gate: None,
+            close_gate: None,
         }
+    }
+
+    fn close_held_by(mut self, gate: &Arc<Semaphore>) -> Self {
+        self.close_gate = Some(Arc::clone(gate));
+        self
     }
 
     fn holding(mut self, native_handle: &Arc<()>) -> Self {
@@ -125,6 +134,9 @@ impl Transport for ScriptedTransport {
     }
 
     async fn close(&self) -> Result<(), TransportError> {
+        if let Some(gate) = &self.close_gate {
+            let _permit = gate.acquire().await.expect("gate stays open");
+        }
         self.close_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -663,6 +675,48 @@ async fn retirement_waits_for_an_open_in_flight_and_closes_it() {
         .expect("connect task")
         .expect_err("the open lost to retirement");
     assert!(backend.frame_sink(&device_id).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retirement_waits_for_native_work_that_outlived_settlement() {
+    let device_id = DeviceId::new();
+    let native_work = Arc::new(Semaphore::new(0));
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let backend = Arc::new(SmBusBackend::with_transport_factory({
+        let native_work = Arc::clone(&native_work);
+        let close_count = Arc::clone(&close_count);
+        move |_bus_path, _address, _bus_arbiter| {
+            Ok(Box::new(
+                ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    Vec::new(),
+                    Arc::default(),
+                    Arc::clone(&close_count),
+                )
+                .close_held_by(&native_work),
+            ))
+        }
+    }));
+    backend
+        .adopt_device(&discovered_smbus_device(device_id))
+        .expect("adopt");
+    backend.connect(&device_id).await.expect("connect");
+
+    let retire = tokio::spawn({
+        let backend = Arc::clone(&backend);
+        async move { backend.retire().await }
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !retire.is_finished(),
+        "the transaction still holds the native handle"
+    );
+    assert_eq!(close_count.load(Ordering::SeqCst), 0);
+
+    native_work.add_permits(1);
+
+    retire.await.expect("retire task").expect("retire");
+    assert_eq!(close_count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

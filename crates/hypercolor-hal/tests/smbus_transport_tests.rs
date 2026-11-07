@@ -1,5 +1,5 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use hypercolor_hal::transport::smbus::{
@@ -165,6 +165,51 @@ async fn run_gauged_claim(
         })
         .await
         .expect("claimed transaction should succeed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_transaction_keeps_the_bus_until_it_ends() {
+    let arbiter = SmBusBusArbiter::default();
+    let (started, is_started) = tokio::sync::oneshot::channel();
+    let (release, is_released) = mpsc::channel::<()>();
+    let finished = Arc::new(AtomicBool::new(false));
+
+    let waiter = tokio::spawn({
+        let arbiter = arbiter.clone();
+        let finished = Arc::clone(&finished);
+        async move {
+            arbiter
+                .run_blocking_claimed(SmBusClaim::Device { address: 0x71 }, move || {
+                    let _ = started.send(());
+                    let _ = is_released.recv();
+                    finished.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        }
+    });
+    is_started.await.expect("the transaction starts");
+    waiter.abort();
+    assert!(
+        waiter
+            .await
+            .expect_err("the wait was cancelled")
+            .is_cancelled()
+    );
+
+    // This is what closing a transport waits on.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), arbiter.acquire(SmBusClaim::Bus))
+            .await
+            .is_err(),
+        "the transaction still owns the bus"
+    );
+
+    release.send(()).expect("the transaction is waiting");
+    let _bus = tokio::time::timeout(Duration::from_secs(1), arbiter.acquire(SmBusClaim::Bus))
+        .await
+        .expect("the bus comes free when the transaction ends");
+    assert!(finished.load(Ordering::SeqCst));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
