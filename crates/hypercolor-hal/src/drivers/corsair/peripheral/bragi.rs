@@ -11,8 +11,8 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceFeatures};
 use tracing::warn;
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 use super::topology::zones_for_bragi;
@@ -223,10 +223,14 @@ impl Protocol for CorsairBragiProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         if self.config.led_count == 0 {
             commands.clear();
-            return;
+            return FrameBatch::from_commands(commands);
         }
 
         let normalized = self.normalize_colors(colors);
@@ -244,6 +248,7 @@ impl Protocol for CorsairBragiProtocol {
             self.push_property_set(&mut buffer, BragiProperty::Brightness, 1_000);
         }
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {

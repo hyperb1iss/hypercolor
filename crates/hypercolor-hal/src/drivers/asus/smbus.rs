@@ -15,8 +15,8 @@ use hypercolor_types::device::{
 };
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, FrameToken, Protocol, ProtocolCommand, ProtocolError,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 /// ENE indirect address register.
@@ -127,9 +127,9 @@ struct FrameBaseline {
     /// Colors the controller last accepted, `None` when unknown.
     shown: Option<Vec<[u8; 3]>>,
     /// The frame most recently encoded, until its write is reported.
-    staged: Option<Vec<[u8; 3]>>,
-    /// Pixel bytes the most recently encoded frame writes.
-    written_frame_bytes: usize,
+    staged: Option<(FrameToken, Vec<[u8; 3]>)>,
+    /// Frames encoded so far, which names the next one.
+    frames_encoded: u64,
     /// Frames encoded since the last one that started from unknown colors.
     frames_since_full_write: u32,
 }
@@ -153,7 +153,14 @@ impl FrameBaseline {
         if self.shown.is_none() {
             self.frames_since_full_write = 0;
         }
-        self.written_frame_bytes = 0;
+    }
+
+    /// Hold `colors` until the write of this frame is reported.
+    fn stage(&mut self, colors: &[[u8; 3]]) -> FrameToken {
+        self.frames_encoded = self.frames_encoded.wrapping_add(1);
+        let token = FrameToken::new(self.frames_encoded);
+        self.staged = Some((token, colors.to_vec()));
+        token
     }
 
     fn needs_write(&self, colors: &[[u8; 3]], index: usize) -> bool {
@@ -163,9 +170,15 @@ impl FrameBaseline {
             .is_none_or(|shown| shown.get(index) != colors.get(index))
     }
 
-    fn finish(&mut self, succeeded: bool) {
-        match (succeeded, self.staged.take()) {
-            (true, Some(staged)) => self.shown = Some(staged),
+    /// A report for any frame but the staged one finds it already replaced,
+    /// and the shown colors already forgotten, so it adopts nothing.
+    fn finish(&mut self, token: FrameToken, succeeded: bool) {
+        let staged = self
+            .staged
+            .take_if(|(staged, _)| *staged == token)
+            .map(|(_, colors)| colors);
+        match (succeeded, staged) {
+            (true, Some(colors)) => self.shown = Some(colors),
             (true, None) => {}
             (false, _) => self.shown = None,
         }
@@ -596,12 +609,16 @@ impl Protocol for AuraSmBusProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let mut baseline = self.baseline();
         baseline.begin_frame();
         let Some(variant) = self.firmware_variant() else {
             commands.clear();
-            return;
+            return FrameBatch::Unchanged;
         };
 
         let mut operations = Vec::new();
@@ -624,31 +641,29 @@ impl Protocol for AuraSmBusProtocol {
         {
             operations.extend(ene_write_register(register, ENE_APPLY_VAL));
         }
-        baseline.written_frame_bytes = written_leds * ENE_LED_BYTES;
         let mut command_buffer = CommandBuffer::new(commands);
         if operations.is_empty() {
             command_buffer.finish();
-        } else {
-            let data = encode_ene_transaction(&operations)
-                .expect("ENE transaction encoding should succeed for built-in operations");
-            command_buffer.push_slice(
-                &data,
-                false,
-                Duration::ZERO,
-                Duration::ZERO,
-                TransferType::Primary,
-            );
-            command_buffer.finish();
-            baseline.staged = Some(colors.to_vec());
+            return FrameBatch::Unchanged;
+        }
+        let data = encode_ene_transaction(&operations)
+            .expect("ENE transaction encoding should succeed for built-in operations");
+        command_buffer.push_slice(
+            &data,
+            false,
+            Duration::ZERO,
+            Duration::ZERO,
+            TransferType::Primary,
+        );
+        command_buffer.finish();
+        FrameBatch::Write {
+            pixel_bytes: Some(written_leds * ENE_LED_BYTES),
+            completion: Some(baseline.stage(colors)),
         }
     }
 
-    fn written_frame_bytes(&self) -> Option<usize> {
-        Some(self.baseline().written_frame_bytes)
-    }
-
-    fn frame_write_finished(&self, succeeded: bool) {
-        self.baseline().finish(succeeded);
+    fn frame_write_finished(&self, token: FrameToken, succeeded: bool) {
+        self.baseline().finish(token, succeeded);
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

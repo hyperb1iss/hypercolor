@@ -22,8 +22,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 /// Frame report length on the wire, excluding the HIDAPI report ID prefix.
@@ -149,7 +149,11 @@ impl Protocol for RazerArgbProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = Self::normalize_colors(colors);
         let mut buffer = CommandBuffer::new(commands);
         let (channels, _) = normalized.as_chunks::<ARGB_LEDS_PER_CHANNEL>();
@@ -163,6 +167,7 @@ impl Protocol for RazerArgbProtocol {
             );
         }
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_brightness(&self, _brightness: u8) -> Option<Vec<ProtocolCommand>> {

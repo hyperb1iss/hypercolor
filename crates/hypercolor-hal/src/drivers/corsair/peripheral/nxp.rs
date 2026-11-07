@@ -20,8 +20,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::types::{
@@ -257,10 +257,14 @@ impl Protocol for CorsairNxpProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         if !self.config.supports_direct() {
             commands.clear();
-            return;
+            return FrameBatch::from_commands(commands);
         }
 
         let normalized = self.normalize_colors(colors);
@@ -280,6 +284,7 @@ impl Protocol for CorsairNxpProtocol {
             NxpLightingKind::NoLights => {}
         }
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

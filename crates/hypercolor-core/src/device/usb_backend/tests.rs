@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use hypercolor_driver_api::{DeliveryResult, FrameObserver, IoStage, Receipt};
 use hypercolor_hal::display::DisplayEncodeError;
 use hypercolor_hal::protocol::{
-    ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
+    FrameBatch, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 use hypercolor_hal::registry::{TransportLifecycleHints, UsbTransportFuture, UsbTransportKind};
 use hypercolor_types::device::{
@@ -3040,8 +3040,17 @@ impl Protocol for PartlyWritingProtocol {
         vec![test_command(colors.first().map_or(0x11, |color| color[0]))]
     }
 
-    fn written_frame_bytes(&self) -> Option<usize> {
-        Some(18)
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
+        commands.clear();
+        commands.extend(self.encode_frame(colors));
+        FrameBatch::Write {
+            pixel_bytes: Some(18),
+            completion: None,
+        }
     }
 
     fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {

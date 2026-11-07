@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use hypercolor_driver_api::{MailboxFrame, SkipReason};
 use hypercolor_hal::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ResponseStatus, ResponseTolerance,
+    FrameBatch, Protocol, ProtocolCommand, ProtocolError, ResponseStatus, ResponseTolerance,
 };
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceError, DeviceId, USB_OUTPUT_BACKEND_ID};
@@ -13,6 +13,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace, warn};
+
+use crate::device::held_frame_skip;
 
 use super::{
     AbortTaskOnDrop, DRAIN_REPORT_TIMEOUT, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF,
@@ -760,23 +762,29 @@ impl UsbBackend {
         let Some(attempt) = frame.claim() else {
             return Ok(());
         };
-        protocol.encode_frame_into(frame.colors(), commands);
-        if commands.is_empty() {
-            // Nothing was written: the frame changed nothing the device
-            // shows, or the protocol holds it behind unconfirmed output and
-            // will send the newest frame itself.
-            attempt.skip(SkipReason::Unchanged);
-            return Ok(());
-        }
-        // Bytes of this frame the protocol wrote: all of it, unless it
-        // wrote only the zones the frame changed.
-        let written_bytes = protocol.written_frame_bytes();
+        let (pixel_bytes, completion) = match protocol.encode_frame_into(frame.colors(), commands) {
+            FrameBatch::Write {
+                pixel_bytes,
+                completion,
+            } => (pixel_bytes, completion),
+            FrameBatch::Unchanged => {
+                attempt.skip(SkipReason::Unchanged);
+                return Ok(());
+            }
+            FrameBatch::Held => {
+                attempt.skip(held_frame_skip(protocol));
+                return Ok(());
+            }
+        };
         let transmission = attempt.start();
-        match Self::run_encoded_frame(device_id, protocol, transport, frame.colors(), commands)
-            .await
-        {
+        let written =
+            Self::run_encoded_frame(device_id, protocol, transport, frame.colors(), commands).await;
+        if let Some(token) = completion {
+            protocol.frame_write_finished(token, written.is_ok());
+        }
+        match written {
             Ok(()) => {
-                match written_bytes {
+                match pixel_bytes {
                     Some(bytes) => transmission.written_part(bytes),
                     None => transmission.written(),
                 };

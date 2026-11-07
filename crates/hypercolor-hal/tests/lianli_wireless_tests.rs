@@ -19,7 +19,9 @@ use hypercolor_hal::drivers::lianli::wireless::frame::{
     clock_sync_envelope, pwm_envelope, reverse_fan_order, rgb_transfer,
 };
 use hypercolor_hal::drivers::lianli::wireless::tinyuz;
-use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseTolerance, TransferType};
+use hypercolor_hal::protocol::{
+    FrameBatch, Protocol, ProtocolCommand, ResponseTolerance, TransferType,
+};
 use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::DeviceTopologyHint;
 
@@ -776,6 +778,19 @@ fn without_tag(data: &[u8]) -> Vec<u8> {
 }
 
 /// Send a frame and have the fans confirm it.
+fn encode_batch(protocol: &Clocked, colors: &[[u8; 3]]) -> (Vec<ProtocolCommand>, FrameBatch) {
+    let mut commands = Vec::new();
+    let batch = protocol.encode_frame_into(colors, &mut commands);
+    (commands, batch)
+}
+
+fn pixel_bytes(batch: FrameBatch) -> Option<usize> {
+    match batch {
+        FrameBatch::Write { pixel_bytes, .. } => pixel_bytes,
+        other => panic!("expected a written frame, got {other:?}"),
+    }
+}
+
 fn confirmed_frame(protocol: &Clocked, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
     let commands = protocol.encode_frame(colors);
     protocol.echo(&commands);
@@ -839,10 +854,9 @@ fn a_frame_goes_to_each_cluster_with_room() {
     let first = protocol.encode_frame(&[[1, 1, 1]; 5 * 26]);
     let second = protocol.encode_frame(&[[2, 2, 2]; 5 * 26]);
     assert_eq!(header_tags(&first).len() + header_tags(&second).len(), 4);
-    assert!(
-        protocol.encode_frame(&[[3, 3, 3]; 5 * 26]).is_empty(),
-        "both windows of two are full"
-    );
+    let (held, batch) = encode_batch(&protocol, &[[3, 3, 3]; 5 * 26]);
+    assert!(held.is_empty(), "both windows of two are full");
+    assert_eq!(batch, FrameBatch::Held, "the pump sends it when it can");
 
     // Only the first cluster confirms.
     let tags = header_tags(&second);
@@ -856,7 +870,7 @@ fn a_frame_goes_to_each_cluster_with_room() {
         .parse_response(&table_with(&[confirmed, record([0x22; 6], 0x00, 2, 27)]))
         .expect("table parses");
 
-    let fourth = protocol.encode_frame(&[[4, 4, 4]; 5 * 26]);
+    let (fourth, batch) = encode_batch(&protocol, &[[4, 4, 4]; 5 * 26]);
     assert_eq!(
         header_tags(&fourth)
             .iter()
@@ -866,9 +880,9 @@ fn a_frame_goes_to_each_cluster_with_room() {
         "the cluster with room gets the frame; the full one waits"
     );
     assert_eq!(
-        protocol.written_frame_bytes(),
+        pixel_bytes(batch),
         Some(3 * 26 * 3),
-        "the frame's acknowledgement counts only what was written"
+        "the frame's receipt counts only what was written"
     );
 }
 
@@ -878,9 +892,10 @@ fn a_frame_goes_to_each_cluster_with_room() {
 #[test]
 fn a_frame_reports_only_the_pixels_it_wrote() {
     let protocol = discovered_protocol();
-    let first = confirmed_frame(&protocol, &[[1, 1, 1]; 5 * 26]);
+    let (first, batch) = encode_batch(&protocol, &[[1, 1, 1]; 5 * 26]);
+    protocol.echo(&first);
     assert_eq!(
-        protocol.written_frame_bytes(),
+        pixel_bytes(batch),
         Some(5 * 26 * 3),
         "the first frame wrote every pixel"
     );
@@ -892,7 +907,7 @@ fn a_frame_reports_only_the_pixels_it_wrote() {
     for color in &mut colors[..3 * 26] {
         *color = [9, 9, 9];
     }
-    let second = protocol.encode_frame(&colors);
+    let (second, batch) = encode_batch(&protocol, &colors);
     assert_eq!(
         header_tags(&second)
             .iter()
@@ -901,7 +916,7 @@ fn a_frame_reports_only_the_pixels_it_wrote() {
         vec![[0x11; 6]],
         "only the changed cluster is written"
     );
-    assert_eq!(protocol.written_frame_bytes(), Some(3 * 26 * 3));
+    assert_eq!(pixel_bytes(batch), Some(3 * 26 * 3));
 }
 
 /// The render path returns to the frame the fans last confirmed while

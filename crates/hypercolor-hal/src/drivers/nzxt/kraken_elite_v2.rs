@@ -15,8 +15,8 @@ use tracing::debug;
 use zerocopy::FromZeros;
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::gen2::GEN2_FRAME_INTERVAL;
@@ -75,7 +75,11 @@ impl Protocol for NzxtKrakenEliteV2Protocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = self.normalize_colors(colors);
         let mut buffer = CommandBuffer::new(commands);
 
@@ -98,6 +102,7 @@ impl Protocol for NzxtKrakenEliteV2Protocol {
         );
 
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

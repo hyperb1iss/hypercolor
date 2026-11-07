@@ -17,8 +17,8 @@ use tracing::debug;
 use zerocopy::{FromZeros, IntoBytes};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::kraken_modern::{KRAKEN_EXTERNAL_LED_CAP, KrakenX3Logo, kraken_x3_logo_packet};
@@ -385,7 +385,11 @@ impl Protocol for NzxtGen2Protocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let layout = self.read_layout();
         let normalized = self.normalize_colors(colors, layout.total_leds);
         let mut buffer = CommandBuffer::new(commands);
@@ -416,6 +420,7 @@ impl Protocol for NzxtGen2Protocol {
         }
 
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

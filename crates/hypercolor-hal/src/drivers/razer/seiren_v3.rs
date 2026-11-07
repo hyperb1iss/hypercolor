@@ -11,8 +11,8 @@ use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 const SEIREN_V3_PAYLOAD_LEN: usize = 63;
@@ -139,7 +139,11 @@ impl Protocol for SeirenV3Protocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let mut ordered = [[0_u8; 3]; SEIREN_V3_LED_ORDER.len()];
 
         for (index, slot) in SEIREN_V3_LED_ORDER.iter().copied().enumerate() {
@@ -164,6 +168,7 @@ impl Protocol for SeirenV3Protocol {
             |buffer| Self::write_packet(buffer, FRAME_DATA_SIZE, 0x0F, 0x03, &args),
         );
         encoder.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_brightness(&self, _brightness: u8) -> Option<Vec<ProtocolCommand>> {

@@ -20,8 +20,8 @@ use crate::drivers::corsair::framing::{
 };
 use crate::drivers::corsair::types::cooler_pump_lcd_layout_hint;
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -265,10 +265,14 @@ impl Protocol for CorsairLcdProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         if self.ring_led_count == 0 {
             commands.clear();
-            return;
+            return FrameBatch::from_commands(commands);
         }
 
         let normalized = self.normalize_ring_colors(colors);
@@ -291,6 +295,7 @@ impl Protocol for CorsairLcdProtocol {
             },
         );
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_display_payload_into(

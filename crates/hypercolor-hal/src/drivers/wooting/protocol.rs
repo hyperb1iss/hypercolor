@@ -12,8 +12,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, IntoBytes};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 use super::packet::{
@@ -234,7 +234,11 @@ impl Protocol for WootingProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let colors = self.normalize_colors(colors);
         let mut buffer = CommandBuffer::new(commands);
         match self.interface {
@@ -245,6 +249,7 @@ impl Protocol for WootingProtocol {
             WootingInterface::V3 => self.encode_v3(&colors, &mut buffer),
         }
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

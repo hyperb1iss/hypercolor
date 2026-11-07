@@ -12,13 +12,16 @@ use hypercolor_driver_api::{
     DiscoveredDevice, Frame, OutputPolicy, SkipReason, Submission,
 };
 use hypercolor_driver_support::{DeviceSession, Session, SessionTable};
-use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
+use hypercolor_hal::protocol::{
+    FrameBatch, Protocol, ProtocolCommand, ProtocolError, ResponseStatus,
+};
 use hypercolor_hal::smbus_registry::build_smbus_protocol;
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusTransport};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceId, DeviceInfo, SMBUS_OUTPUT_BACKEND_ID};
 use tracing::{debug, trace, warn};
 
+use super::held_frame_skip;
 use super::transport_error::{DeviceTransportOperation, map_hal_transport_error};
 use hypercolor_types::device::DeviceError;
 
@@ -59,12 +62,19 @@ impl DeviceSession for SmBusSession {
 
     async fn submit(&mut self, frame: Frame) -> Submission {
         let (colors, attempt) = frame.into_parts();
-        self.protocol
+        let batch = self
+            .protocol
             .encode_frame_into(colors.as_slice(), &mut self.frame_commands);
-        if self.frame_commands.is_empty() {
-            return attempt.skip(SkipReason::Unchanged).into();
-        }
-        let written_bytes = self.protocol.written_frame_bytes();
+        let (pixel_bytes, completion) = match batch {
+            FrameBatch::Write {
+                pixel_bytes,
+                completion,
+            } => (pixel_bytes, completion),
+            FrameBatch::Unchanged => return attempt.skip(SkipReason::Unchanged).into(),
+            FrameBatch::Held => {
+                return attempt.skip(held_frame_skip(self.protocol.as_ref())).into();
+            }
+        };
         let transmission = attempt.start();
         let result = run_commands(
             self.protocol.as_ref(),
@@ -72,9 +82,11 @@ impl DeviceSession for SmBusSession {
             self.frame_commands.as_slice(),
         )
         .await;
-        self.protocol.frame_write_finished(result.is_ok());
+        if let Some(token) = completion {
+            self.protocol.frame_write_finished(token, result.is_ok());
+        }
         match result {
-            Ok(()) => match written_bytes {
+            Ok(()) => match pixel_bytes {
                 Some(bytes) => transmission.written_part(bytes).into(),
                 None => transmission.written().into(),
             },

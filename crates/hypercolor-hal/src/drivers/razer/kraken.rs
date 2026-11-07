@@ -22,8 +22,8 @@ use zerocopy::byteorder::{BigEndian, U16};
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 /// HID output report ID for Kraken memory-access requests.
@@ -236,7 +236,11 @@ impl Protocol for KrakenProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = self.normalize_colors(colors);
         let color = normalized.first().copied().unwrap_or([0, 0, 0]);
 
@@ -256,6 +260,7 @@ impl Protocol for KrakenProtocol {
             TransferType::Primary,
         );
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {

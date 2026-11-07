@@ -13,7 +13,8 @@ use hypercolor_types::device::{
 use tracing::warn;
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse,
 };
 
 use super::activation::CustomEffectActivationStyle;
@@ -693,7 +694,11 @@ impl Protocol for RazerProtocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = self.normalize_colors(colors);
         match self.matrix_type {
             RazerMatrixType::None => {
@@ -707,6 +712,7 @@ impl Protocol for RazerProtocol {
                 self.encode_matrix_into(normalized.as_ref(), commands);
             }
         }
+        FrameBatch::from_commands(commands)
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {

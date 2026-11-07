@@ -6,6 +6,57 @@ use hypercolor_types::device::{DeviceCapabilities, DisplayFramePayload, ScrollMo
 
 use crate::display::DisplayEncodeError;
 
+/// What encoding one frame produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameBatch {
+    /// The commands carry this frame. Write them.
+    Write {
+        /// Bytes of the frame the commands cover, three per LED, or `None`
+        /// when they cover all of it.
+        pixel_bytes: Option<usize>,
+        /// Hand this to [`Protocol::frame_write_finished`] once the write
+        /// ends, when the protocol wants to hear.
+        completion: Option<FrameToken>,
+    },
+    /// The device already shows this frame, so there is nothing to write.
+    Unchanged,
+    /// The frame waits behind output the device has not confirmed, and the
+    /// protocol sends the newest one itself when it can.
+    Held,
+}
+
+impl FrameBatch {
+    /// All of the frame, with no report wanted.
+    pub const WHOLE: Self = Self::Write {
+        pixel_bytes: None,
+        completion: None,
+    };
+
+    /// The frame `commands` encodes, for a protocol with no other state: all
+    /// of it, or nothing to write when it took no commands.
+    #[must_use]
+    pub const fn from_commands(commands: &[ProtocolCommand]) -> Self {
+        if commands.is_empty() {
+            Self::Unchanged
+        } else {
+            Self::WHOLE
+        }
+    }
+}
+
+/// Names one encoded frame in [`Protocol::frame_write_finished`], so a report
+/// can only ever land on the frame it is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameToken(u64);
+
+impl FrameToken {
+    /// A token for a protocol's own frame counter.
+    #[must_use]
+    pub const fn new(frame: u64) -> Self {
+        Self(frame)
+    }
+}
+
 /// Pure byte-level protocol encoder/decoder.
 ///
 /// Implementations keep wire-format logic isolated from transport I/O.
@@ -22,10 +73,16 @@ pub trait Protocol: Send + Sync {
     /// Encode a device frame into one or more wire-level commands.
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand>;
 
-    /// Encode a device frame into a reusable command buffer.
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    /// Encode a device frame into a reusable command buffer, and say what
+    /// became of it.
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         commands.clear();
         commands.extend(self.encode_frame(colors));
+        FrameBatch::from_commands(commands)
     }
 
     /// Encode a hardware brightness change, if the protocol supports it.
@@ -111,28 +168,16 @@ pub trait Protocol: Send + Sync {
         None
     }
 
-    /// Pixel bytes of the frame most recently encoded that the protocol
-    /// wrote, when that is not the whole payload.
-    ///
-    /// `None`, the default, means the whole frame. A protocol that writes
-    /// only the zones a frame changed reports what it wrote, so the frame's
-    /// delivery acknowledgement counts only bytes that reached the
-    /// transport.
-    fn written_frame_bytes(&self) -> Option<usize> {
-        None
-    }
-
-    /// Report whether the transport wrote every command of the frame most
-    /// recently encoded.
+    /// Report how the write of a frame went, for a [`FrameBatch::Write`] that
+    /// asked with a token.
     ///
     /// A protocol that writes only what changed since the last frame the
     /// device accepted uses this to keep that baseline: success adopts the
-    /// encoded frame, failure forgets the baseline so the next frame is
-    /// written in full. The default ignores the report. A protocol must not
-    /// depend on a report arriving, and should treat a frame it never hears
-    /// about as failed.
-    fn frame_write_finished(&self, succeeded: bool) {
-        let _ = succeeded;
+    /// frame, failure forgets the baseline so the next frame is written in
+    /// full. A protocol must not depend on a report arriving, and should
+    /// treat a frame it never hears about as failed.
+    fn frame_write_finished(&self, token: FrameToken, succeeded: bool) {
+        let _ = (token, succeeded);
     }
 
     /// Parse a raw device response payload.

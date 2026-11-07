@@ -48,8 +48,8 @@ use hypercolor_types::device::{
 use tracing::{debug, info, trace, warn};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 use discovery::{
@@ -178,8 +178,6 @@ struct WirelessState {
     latest_colors: Option<Vec<[u8; 3]>>,
     /// Acknowledgement-paced RGB delivery for the driven clusters.
     pacer: DeliveryPacer,
-    /// Pixel bytes the last encoded frame wrote: the clusters it changed.
-    written_frame_bytes: usize,
     /// The cluster the last RGB transfer went to, where the next batch
     /// starts so it switches clusters (and pays the air gap) once less.
     last_rgb_cluster: Option<usize>,
@@ -1010,7 +1008,11 @@ impl Protocol for WirelessControllerProtocol {
     /// switch. Each cluster whose window is open gets its RGB transfer; the
     /// rest keep this frame as their newest, which the pump sends once the
     /// transfer ahead of it is confirmed.
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let now = (self.clock)();
         let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let state = &mut *guard;
@@ -1047,10 +1049,22 @@ impl Protocol for WirelessControllerProtocol {
         }
 
         let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
-        state.written_frame_bytes =
-            Self::pace_rgb(state, now, false, Some(frame_number), &mut buffer);
+        // The clusters this frame changed; the others already show theirs.
+        let written = Self::pace_rgb(state, now, false, Some(frame_number), &mut buffer);
         buffer.finish();
         state.pacer.note_tx_packets(Self::tx_packets(commands));
+        if !commands.is_empty() {
+            return FrameBatch::Write {
+                pixel_bytes: Some(written),
+                completion: None,
+            };
+        }
+        let held = (0..state.table.clusters.len()).any(|cluster| state.pacer.held(cluster));
+        if held {
+            FrameBatch::Held
+        } else {
+            FrameBatch::Unchanged
+        }
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {
@@ -1080,17 +1094,6 @@ impl Protocol for WirelessControllerProtocol {
 
     fn frame_pump_interval(&self) -> Option<Duration> {
         Some(PUMP_INTERVAL)
-    }
-
-    /// The pixels of the clusters the last frame changed and was written
-    /// to; unchanged clusters already show theirs.
-    fn written_frame_bytes(&self) -> Option<usize> {
-        Some(
-            self.state
-                .read()
-                .unwrap_or_else(PoisonError::into_inner)
-                .written_frame_bytes,
-        )
     }
 
     /// The pacer's tick. A verdict on fans that stopped confirming comes

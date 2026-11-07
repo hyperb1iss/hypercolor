@@ -22,8 +22,8 @@ use tracing::warn;
 
 use crate::display::DisplayEncodeError;
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ResponseStatus, TransferType,
+    CommandBuffer, FrameBatch, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 const PUSH2_RGB_LED_COUNT: usize = 92;
@@ -288,7 +288,11 @@ impl Protocol for Push2Protocol {
         commands
     }
 
-    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+    fn encode_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> FrameBatch {
         let normalized = self.normalize_colors(colors);
         let normalized = normalized.as_ref();
         let now = (self.clock)();
@@ -307,6 +311,7 @@ impl Protocol for Push2Protocol {
             flow::finish_batch(&mut state, &budget, deferred, &mut buffer);
         }
         buffer.finish();
+        FrameBatch::from_commands(commands)
     }
 
     #[expect(clippy::similar_names, reason = "lsb/msb are standard acronyms")]
