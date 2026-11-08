@@ -58,14 +58,14 @@ impl BuiltinDriver {
             register,
         }
     }
+}
 
-    /// Config entry minted the first time this driver is seen.
-    fn initial_entry(&self) -> DriverConfigEntry {
-        if self.descriptor.default_enabled {
-            DriverConfigEntry::default()
-        } else {
-            DriverConfigEntry::disabled(BTreeMap::default())
-        }
+/// Config entry minted the first time a driver is seen.
+fn initial_entry(default_enabled: bool) -> DriverConfigEntry {
+    if default_enabled {
+        DriverConfigEntry::default()
+    } else {
+        DriverConfigEntry::disabled(BTreeMap::default())
     }
 }
 
@@ -198,11 +198,14 @@ pub fn normalize_driver_config_entries(config: &mut HypercolorConfig) {
         config
             .drivers
             .entry(driver.descriptor.id.to_owned())
-            .or_insert_with(|| driver.initial_entry());
+            .or_insert_with(|| initial_entry(driver.descriptor.default_enabled));
     }
 
     #[cfg(feature = "hal")]
     for descriptor in hal::hal_module_descriptors() {
-        config.drivers.entry(descriptor.id.clone()).or_default();
+        config
+            .drivers
+            .entry(descriptor.id.clone())
+            .or_insert_with(|| initial_entry(descriptor.default_enabled));
     }
 }

@@ -57,6 +57,17 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         }
     }
 
+    #[cfg(feature = "hal")]
+    {
+        let dygma = registry
+            .get("dygma")
+            .expect("Dygma HAL family should resolve");
+        assert!(!dygma.module_descriptor().default_enabled);
+        assert!(!dygma.descriptor().default_enabled);
+        assert!(!config.drivers["dygma"].enabled);
+        assert!(config.drivers["nollie"].enabled);
+    }
+
     #[cfg(feature = "openrgb")]
     {
         let openrgb = registry

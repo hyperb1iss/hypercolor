@@ -24,7 +24,7 @@ Hypercolor drives hardware through two transport layers.
 | `nzxt` | Smart Device V2, RGB & Fan Controller, Control Hub, N7 motherboards, Kraken X3/Z3/Elite V2 lighting. Experimental: built from the protocol spec and not yet run on NZXT hardware |
 | `prismrgb` | Prism S, Prism Mini, Prism 8 (the Prism 8 is a Nollie 8 v2 rebrand and shows up correctly) |
 | `push2` | Ableton Push 2 (MIDI pads + sideband display) |
-| `dygma` | Dygma Defy wired/wireless: driver present, **blocked** (see below) |
+| `dygma` | Dygma Defy wired/wireless: driver present, **blocked** and off by default (see below) |
 
 **Network devices** are discovered over your LAN (mDNS for most, a UDP multicast scan for Govee), then driven in real time over UDP or HTTP:
 
@@ -60,7 +60,7 @@ SMBus access has its own plumbing per platform. On Linux, SMBus devices need the
 
 ### Blocked devices: Dygma Defy
 
-The Dygma Defy (wired `0x0010` and wireless `0x0012`) has a complete driver implementation in `hypercolor-hal`, covering the wire protocol, zone mapping, and RGBW color support. It is blocked, not missing. The stock Defy firmware does not expose a non-persistent direct LED streaming path that Hypercolor can use. The driver probes for a `hypercolor.capabilities` command and logs once per connection that live frame writes are being dropped. Until Dygma ships firmware support for external RGB control over the Focus protocol, the Defy will appear as discovered but unresponsive to lighting.
+The Dygma Defy (wired `0x0010` and wireless `0x0012`) has a complete driver implementation in `hypercolor-hal`, covering the wire protocol, zone mapping, and RGBW color support. It is blocked, not missing. The stock Defy firmware does not expose a non-persistent direct LED streaming path that Hypercolor can use. The driver probes for a `hypercolor.capabilities` command and logs once per connection that live frame writes are being dropped. Until Dygma ships firmware support for external RGB control over the Focus protocol, the `dygma` driver ships disabled, so Hypercolor leaves the Defy and its serial port alone. Set `drivers.dygma.enabled = true` to try it anyway; the Defy then shows up as discovered but stays dark.
 
 ### Devices in "Researched" or "Known" state
 

@@ -32,6 +32,7 @@ impl HalCatalogDriverModule {
             false,
         );
         descriptor.stability = module_descriptor.stability;
+        descriptor.default_enabled = module_descriptor.default_enabled;
         let descriptor = Box::leak(Box::new(descriptor));
 
         Self {

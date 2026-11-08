@@ -107,6 +107,13 @@ fn derive_module_descriptors(descriptors: &[DeviceDescriptor]) -> Vec<DriverModu
         .collect()
 }
 
+/// HAL families a fresh install leaves off until the user turns them on.
+///
+/// A family belongs here when its devices are registered but cannot light
+/// yet. `dygma`: stock Defy firmware has no live LED path for the Focus
+/// protocol to drive, so frame writes are dropped.
+const DEFAULT_DISABLED_FAMILIES: &[&str] = &["dygma"];
+
 struct HalModuleAccumulator {
     id: String,
     display_name: String,
@@ -149,6 +156,7 @@ impl HalModuleAccumulator {
         } else {
             DriverStability::Experimental
         };
+        let default_enabled = !DEFAULT_DISABLED_FAMILIES.contains(&self.id.as_str());
 
         DriverModuleDescriptor {
             id: self.id,
@@ -169,7 +177,7 @@ impl HalModuleAccumulator {
             },
             api_schema_version: DRIVER_MODULE_API_SCHEMA_VERSION,
             config_version: 1,
-            default_enabled: true,
+            default_enabled,
             stability,
         }
     }

@@ -32,13 +32,36 @@ fn fake_descriptor(
 
 #[test]
 fn the_label_never_changes_whether_a_registered_module_runs() {
-    for module in ProtocolDatabase::module_descriptors() {
+    let experimental = ProtocolDatabase::module_descriptors()
+        .iter()
+        .filter(|module| module.stability.is_experimental())
+        .collect::<Vec<_>>();
+    assert!(
+        !experimental.is_empty(),
+        "the database registers at least one experimental family"
+    );
+    for module in experimental {
         assert!(
             module.default_enabled,
             "{} stays enabled by default",
             module.id
         );
     }
+}
+
+#[test]
+fn only_dygma_starts_disabled_among_hal_families() {
+    let disabled = ProtocolDatabase::module_descriptors()
+        .iter()
+        .filter(|module| !module.default_enabled)
+        .map(|module| module.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(disabled, vec!["dygma"]);
+
+    // Off by default still recognizes the hardware, so a user can turn it on.
+    let defy_wireless =
+        ProtocolDatabase::lookup(0x35EF, 0x0012).expect("Defy Wireless stays registered");
+    assert_eq!(defy_wireless.family.id(), "dygma");
 }
 
 const RAZER_VID: u16 = 0x1532;
