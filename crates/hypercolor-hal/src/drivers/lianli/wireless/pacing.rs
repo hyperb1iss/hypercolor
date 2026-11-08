@@ -290,6 +290,20 @@ pub struct DeliveryStats {
 }
 
 impl DeliveryStats {
+    /// Whether the radio misbehaved in this span: a window ran out, a send
+    /// went again, an echo came late or foreign, or the TX backed up. A span
+    /// with none of these delivered on the fans' own cadence.
+    #[must_use]
+    pub fn shows_trouble(&self) -> bool {
+        self.timeouts
+            + self.resends
+            + self.restores
+            + self.late_echoes
+            + self.drifts
+            + self.congestion_events
+            > 0
+    }
+
     /// Mean age of the confirmed send at each echo.
     #[must_use]
     pub fn echo_mean(&self) -> Option<Duration> {
@@ -1328,36 +1342,49 @@ impl DeliveryPacer {
             .map(|link| link.echo_gap.map_or(0, millis).to_string())
             .collect::<Vec<_>>()
             .join("/");
-        info!(
-            clusters,
-            window_s = elapsed.as_secs(),
-            offered_fps = per_second(interval.frames_offered),
-            sent_fps = per_cluster(interval.frames_sent),
-            delivered_fps = per_cluster(interval.frames_delivered),
-            coalesced = interval.frames_coalesced,
-            window = %windows,
-            status_ms = %statuses,
-            echoes_per_s = per_second(interval.echo_advances),
-            advance_mean = interval
-                .advance_mean()
-                .map_or(0.0, |mean| (mean * 10.0).round() / 10.0),
-            advance_max = interval.advance_max,
-            echo_gap_ms = interval.gap_mean().map_or(0, millis),
-            echo_ms_mean = interval.echo_mean().map_or(0, millis),
-            echo_ms_max = millis(interval.echo_max),
-            overdue_max = interval.overdue_max,
-            congestion = interval.congestion_events,
-            timeouts = interval.timeouts,
-            resends = interval.resends,
-            restores = interval.restores,
-            late_echoes = interval.late_echoes,
-            drifts = interval.drifts,
-            polls_per_s = per_second(interval.echo_polls),
-            replies_per_s = per_second(interval.table_replies),
-            tx_packets_per_s = per_second(interval.tx_packets),
-            held_clusters = self.held_clusters(),
-            "L-Wireless RGB delivery"
-        );
+        // A clean window is routine: keep it at debug so a healthy rig stays
+        // quiet, and surface only the windows where the radio struggled.
+        let held_clusters = self.held_clusters();
+        macro_rules! report {
+            ($level:expr) => {
+                tracing::event!(
+                    $level,
+                    clusters,
+                    window_s = elapsed.as_secs(),
+                    offered_fps = per_second(interval.frames_offered),
+                    sent_fps = per_cluster(interval.frames_sent),
+                    delivered_fps = per_cluster(interval.frames_delivered),
+                    coalesced = interval.frames_coalesced,
+                    window = %windows,
+                    status_ms = %statuses,
+                    echoes_per_s = per_second(interval.echo_advances),
+                    advance_mean = interval
+                        .advance_mean()
+                        .map_or(0.0, |mean| (mean * 10.0).round() / 10.0),
+                    advance_max = interval.advance_max,
+                    echo_gap_ms = interval.gap_mean().map_or(0, millis),
+                    echo_ms_mean = interval.echo_mean().map_or(0, millis),
+                    echo_ms_max = millis(interval.echo_max),
+                    overdue_max = interval.overdue_max,
+                    congestion = interval.congestion_events,
+                    timeouts = interval.timeouts,
+                    resends = interval.resends,
+                    restores = interval.restores,
+                    late_echoes = interval.late_echoes,
+                    drifts = interval.drifts,
+                    polls_per_s = per_second(interval.echo_polls),
+                    replies_per_s = per_second(interval.table_replies),
+                    tx_packets_per_s = per_second(interval.tx_packets),
+                    held_clusters,
+                    "L-Wireless RGB delivery"
+                )
+            };
+        }
+        if interval.shows_trouble() || held_clusters > 0 {
+            report!(tracing::Level::INFO);
+        } else {
+            report!(tracing::Level::DEBUG);
+        }
     }
 
     fn count(&mut self, update: impl Fn(&mut DeliveryStats)) {

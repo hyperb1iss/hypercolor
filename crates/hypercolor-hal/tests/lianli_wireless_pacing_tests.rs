@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, SessionEnd, content_of, moving_frame};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
-    ECHO_STALL, MAX_RESYNCS_WITHOUT_DELIVERY, MAX_WINDOW, resyncs_without_delivery,
+    DeliveryStats, ECHO_STALL, MAX_RESYNCS_WITHOUT_DELIVERY, MAX_WINDOW, resyncs_without_delivery,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
 
@@ -1152,4 +1152,36 @@ fn shutdown_sends_the_final_frame_the_window_held() {
         Some(black_tag),
         "black is the last frame the fans take"
     );
+}
+
+#[test]
+fn only_radio_trouble_lifts_the_delivery_report_out_of_debug() {
+    let healthy = DeliveryStats {
+        frames_offered: 287,
+        frames_sent: 287,
+        frames_delivered: 287,
+        frames_coalesced: 3,
+        echo_advances: 19,
+        advance_max: 29,
+        overdue_max: 0,
+        echo_polls: 35,
+        table_replies: 45,
+        tx_packets: 3_484,
+        ..DeliveryStats::default()
+    };
+    assert!(!healthy.shows_trouble(), "steady delivery stays at debug");
+
+    let troubled: [fn(&mut DeliveryStats); 6] = [
+        |stats| stats.timeouts = 1,
+        |stats| stats.resends = 1,
+        |stats| stats.restores = 1,
+        |stats| stats.late_echoes = 1,
+        |stats| stats.drifts = 1,
+        |stats| stats.congestion_events = 1,
+    ];
+    for mark in troubled {
+        let mut stats = healthy;
+        mark(&mut stats);
+        assert!(stats.shows_trouble(), "{stats:?} reports at info");
+    }
 }
