@@ -70,7 +70,7 @@ crates/
   hypercolor-windows-telemetry/    # Windows WMI/PawnIO sensors and board identity (stubs elsewhere)
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
   hypercolor-windows-launcher/     # Stable Windows launcher and update recovery bootstrap, the programs outside release units
-  hypercolor-windows-install-native/ # Audited Win32 process and firewall calls behind the Windows install platform
+  hypercolor-windows-install-native/ # Audited Win32 process, service-state and firewall calls behind the Windows install platform
   hypercolor-platform-fs/          # Audited platform filesystem operations
   hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd, macOS launchd and Windows machine platforms, payload validation
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
@@ -162,7 +162,7 @@ graph TD
     PFS --> INST[hypercolor-install] --> CLI
     PFS & INST --> WL[hypercolor-windows-launcher]
     MO -.->|macOS only| INST
-    INST -.->|macOS managed-update only| APP
+    INST -.->|Windows; macOS managed-update only| APP
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
     CORE & T --> APP[hypercolor-app]

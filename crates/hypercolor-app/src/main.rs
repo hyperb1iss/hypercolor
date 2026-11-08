@@ -88,6 +88,7 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::autostart::keep_on_the_launcher();
             let adoption = hypercolor_app::macos_update::prepare_adoption();
             hypercolor_app::macos_update::serve_app_control(app.handle());
+            hypercolor_app::windows_update::follow_update_service(app.handle());
             let control_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) =

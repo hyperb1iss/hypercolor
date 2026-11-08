@@ -28,3 +28,4 @@ pub mod supervisor;
 pub mod support;
 pub mod tray;
 pub mod window;
+pub mod windows_update;
