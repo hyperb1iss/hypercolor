@@ -17,7 +17,7 @@ use hypercolor_platform_fs::{
 };
 
 use super::installation::{WINDOWS_INSTALLATION_FILE, WindowsInstallation};
-use super::machine_layout::BOOTSTRAP_DIRECTORY;
+use super::machine_layout::{ACTIVATOR_DIRECTORY, BOOTSTRAP_DIRECTORY, UNITS_DIRECTORY};
 use super::ownership::{WindowsDirectoryRefusal, WindowsOwnershipPolicy};
 use super::update_pipe::{UPDATE_PIPE_RECORD, UpdatePipeName};
 use crate::model::{InstallDisposition, InstallJournalV1, InstallModelError, UnitId};
@@ -28,11 +28,8 @@ const INSTALL_JOURNAL_FILE: &str = "install-journal.json";
 const ACTIVE_POINTER_FILE: &str = "active.json";
 const MAX_ACTIVE_POINTER_BYTES: usize = 4 * 1024;
 const MAX_INSTALLATION_BYTES: usize = 4 * 1024;
-/// The activator's records, and the pipe record the service publishes.
-const ACTIVATOR_DIRECTORY: &str = "activator";
 /// The records the daemon keeps as the recorded user.
 const COORDINATOR_DIRECTORY: &str = "coordinator";
-const UNITS_DIRECTORY: &str = "units";
 /// File systems whose rename and flush give the journal and pointer one
 /// durable step.
 const DURABLE_FILE_SYSTEMS: [&str; 2] = ["NTFS", "ReFS"];

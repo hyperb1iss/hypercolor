@@ -2,7 +2,9 @@
 //! ones. What this binary does depends on the name it was copied to:
 //!
 //! - `hypercolor.exe`: an activator that appends what it was asked to the
-//!   proof log, then follows `behavior.txt`.
+//!   proof log, then follows `behavior.txt`: `serve` greets the pipe's
+//!   client, `connect` waits for a client and holds the run without asking
+//!   it anything, and `quit` asks the client to quit.
 //! - `hypercolor-app.exe`: an app that appends its arguments to the log.
 //! - `slot-a.exe` or `slot-b.exe`: a broken bootstrap, following
 //!   `broken-slot.txt`: `crash-after-start` reaches the service manager and
@@ -17,7 +19,11 @@ mod fixture {
     use std::process::ExitCode;
     use std::time::Duration;
 
-    use hypercolor_install::windows::{INHERITED_PIPE_VARIABLE, UPDATE_SERVICE_NAME};
+    use std::fs::File;
+
+    use hypercolor_install::windows::{
+        INHERITED_PIPE_VARIABLE, UPDATE_PIPE_QUIT, UPDATE_SERVICE_NAME,
+    };
     use hypercolor_platform_fs::{windows_adopt_inherited_pipe, windows_connect_pipe_client};
     use windows_service::service::{
         ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
@@ -68,17 +74,37 @@ mod fixture {
             .unwrap_or_else(|| "exit 0".to_owned())
     }
 
-    /// Prove the inherited handle reaches the client that verified it.
-    fn serve_pipe() {
+    /// The pipe the bootstrap passed down, once a client has reached it.
+    fn connected_pipe() -> File {
         let value = std::env::var(INHERITED_PIPE_VARIABLE)
             .expect("the bootstrap names the pipe")
             .parse::<usize>()
             .expect("a handle value");
         // SAFETY: The bootstrap passed down this one handle and this process
         // takes it once.
-        let mut pipe = unsafe { windows_adopt_inherited_pipe(value) }.expect("adopt the pipe");
+        let pipe = unsafe { windows_adopt_inherited_pipe(value) }.expect("adopt the pipe");
         windows_connect_pipe_client(&pipe).expect("wait for the client");
+        pipe
+    }
+
+    /// Prove the inherited handle reaches the client that verified it.
+    fn serve_pipe() {
+        let mut pipe = connected_pipe();
         pipe.write_all(b"ready").expect("greet the client");
+        let mut rest = Vec::new();
+        let _ = pipe.read_to_end(&mut rest);
+    }
+
+    /// Ask the client to quit, as an update that needs the app gone does,
+    /// and hold the pipe until the client hangs up.
+    fn ask_to_quit(mode: &str) {
+        let mut pipe = connected_pipe();
+        pipe.write_all(UPDATE_PIPE_QUIT)
+            .expect("ask the client to quit");
+        // Returns once the client has read the request, or with an error
+        // once it has read it and hung up.
+        let _ = pipe.sync_all();
+        log(&format!("heard {mode}"));
         let mut rest = Vec::new();
         let _ = pipe.read_to_end(&mut rest);
     }
@@ -93,6 +119,17 @@ mod fixture {
             Some(("exit", code)) => ExitCode::from(code.parse::<u8>().expect("exit code")),
             None if action == "serve" => {
                 serve_pipe();
+                ExitCode::SUCCESS
+            }
+            None if action == "connect" => {
+                let _pipe = connected_pipe();
+                log(&format!("client {mode}"));
+                loop {
+                    std::thread::sleep(Duration::from_secs(60));
+                }
+            }
+            None if action == "quit" => {
+                ask_to_quit(mode);
                 ExitCode::SUCCESS
             }
             None if action == "hold" => loop {
