@@ -228,6 +228,7 @@ jobs:
             windows_installer:
               - 'crates/hypercolor-app/installer*'
               - 'crates/hypercolor-app/src/autostart.rs'
+              - 'crates/hypercolor-app/src/windows_update.rs'
               - 'crates/hypercolor-app/tauri*.json'
               - 'crates/hypercolor-cli/Cargo.toml'
               - 'crates/hypercolor-cli/src/lib.rs'

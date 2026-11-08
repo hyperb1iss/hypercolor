@@ -52,6 +52,18 @@ the launcher, uninstaller, registry entries and shortcuts, and the old flat
 layout goes last of all, so a Hypercolor that starts stays on disk until
 something else can.
 
+An app that runs from a unit follows `HypercolorUpdate` for as long as it is
+registered. The service runs only while an update or a recovery does, and
+each time it starts it publishes a fresh pipe name in
+`update\activator\pipe.json`, which only the recorded user can read. The app
+waits for each start through the service control manager, connects to that
+pipe once the service's own process proves to serve it, and on `quit` closes
+its window, ends its daemon and exits, as the tray's Quit does. Otherwise it
+waits for the service's next start, which the service control manager reports
+even when it happened while the app was busy with the last run, so nothing
+polls. In a build without the service the app finds nothing registered and
+follows nothing.
+
 ## Upgrade contract
 
 Running a newer installer over an older Hypercolor upgrades it in place,

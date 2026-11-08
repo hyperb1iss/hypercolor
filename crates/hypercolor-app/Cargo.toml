@@ -56,6 +56,7 @@ image = { workspace = true, default-features = false, features = ["png"] }
 tauri-build = { version = "2", features = [] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+hypercolor-install = { workspace = true }
 win32job = "2.0.3"
 windows-registry = "0.100.0"
 windows-sys = { version = "0.61.2", features = [
