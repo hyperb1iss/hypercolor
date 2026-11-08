@@ -33,7 +33,10 @@ fn main() {
 }
 
 /// `rustc` names `msvcrt.lib` itself, which `/NODEFAULTLIB` does not reach,
-/// so a nearly empty object file takes its place on the search path.
+/// so a nearly empty object file takes its place on this package's own
+/// library path. A link-search path would also reach every crate that
+/// depends on this one, and those link with no C runtime at all, because the
+/// static runtime arguments above stay with this package.
 fn replace_msvcrt_import() {
     let machine: [u8; 2] = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("x86_64") => [0x64, 0x86],
@@ -49,5 +52,5 @@ fn replace_msvcrt_import() {
     let out = env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     let library = [machine.as_slice(), body.as_slice()].concat();
     fs::write(Path::new(&out).join("msvcrt.lib"), library).expect("write msvcrt.lib");
-    println!("cargo:rustc-link-search=native={out}");
+    println!("cargo:rustc-link-arg=/LIBPATH:{out}");
 }
