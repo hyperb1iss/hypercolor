@@ -1,6 +1,6 @@
 [package]
 name = "hypercolor-windows-install-native"
-description = "Audited Win32 process, firewall and token calls behind the Windows install platform"
+description = "Audited Win32 process, service, firewall and token calls behind the Windows install platform"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -24,6 +24,7 @@ windows = { version = "0.62", default-features = false, features = [
   "Win32_System_Com",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Ole",
+  "Win32_System_Services",
   "Win32_System_Threading",
   "Win32_System_Variant",
   "Win32_UI_WindowsAndMessaging",
