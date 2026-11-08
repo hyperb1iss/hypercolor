@@ -13,8 +13,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_TYPE_PIPE, GetFileType, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, NMPWAIT_WAIT_FOREVER,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
 };
 
 use super::directory::SddlDescriptor;
@@ -53,14 +53,7 @@ pub fn windows_named_pipe_server_process_id(pipe: &File) -> io::Result<u32> {
 /// Returns the operating-system error for an invalid name or descriptor,
 /// and when any process already serves `name`.
 pub fn windows_create_pipe_server(name: &str, sddl: &str) -> io::Result<File> {
-    let mut wide = name.encode_utf16().collect::<Vec<_>>();
-    if wide.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a pipe name holds a NUL",
-        ));
-    }
-    wide.push(0);
+    let wide = wide_pipe_name(name)?;
     let descriptor = SddlDescriptor::parse(sddl)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -86,6 +79,35 @@ pub fn windows_create_pipe_server(name: &str, sddl: &str) -> io::Result<File> {
     }
     // SAFETY: CreateNamedPipeW returned a new handle that nothing else owns.
     Ok(File::from(unsafe { OwnedHandle::from_raw_handle(raw) }))
+}
+
+/// Wait, with no time limit, until an instance of the local pipe `name`
+/// listens for a client. A client that found every instance busy waits
+/// here before it connects again.
+///
+/// # Errors
+///
+/// Returns the operating-system error when nothing serves `name`, which is
+/// also how the wait ends when the pipe's last instance closes during it.
+pub fn windows_wait_for_pipe(name: &str) -> io::Result<()> {
+    let wide = wide_pipe_name(name)?;
+    // SAFETY: The name is NUL-terminated and outlives the call.
+    if unsafe { WaitNamedPipeW(wide.as_ptr(), NMPWAIT_WAIT_FOREVER) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn wide_pipe_name(name: &str) -> io::Result<Vec<u16>> {
+    let mut wide = name.encode_utf16().collect::<Vec<_>>();
+    if wide.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a pipe name holds a NUL",
+        ));
+    }
+    wide.push(0);
+    Ok(wide)
 }
 
 /// Wait until a client reaches the server end `server`.
