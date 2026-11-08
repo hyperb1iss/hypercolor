@@ -171,6 +171,7 @@ fn stage_validated_payload(
                 source,
             }
         })?;
+        tree::finish_unit_root(&existing)?;
         tree::validate_installed(&existing, &manifest)?;
         return unit_record(store, manifest.unit_id, &existing);
     }
@@ -179,7 +180,7 @@ fn stage_validated_payload(
     if let Err(error) = tree::populate_staging(&staging, source, &manifest, mode)
         .and_then(|()| tree::validate_copy_source(source, &manifest, mode))
         .and_then(|()| tree::finalize_staging(&staging, &manifest))
-        .and_then(|()| tree::validate_installed(staging.directory(), &manifest))
+        .and_then(|()| tree::validate_staged(staging.directory(), &manifest))
     {
         return remove_failed_staging(staging, error);
     }
@@ -191,6 +192,7 @@ fn stage_validated_payload(
                 operation: "publish the digest unit without replacement",
                 source,
             })?;
+    tree::finish_unit_root(&published)?;
     tree::validate_installed(&published, &manifest)?;
     unit_record(store, manifest.unit_id, &published)
 }

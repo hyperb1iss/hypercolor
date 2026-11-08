@@ -230,6 +230,26 @@ fn retaining_a_bundle_unit_rehashes_every_member() {
 }
 
 #[test]
+fn a_unit_root_turns_read_only_only_after_publication_and_a_crash_between_is_finished() {
+    let store_root = tempfile::tempdir().expect("store root");
+    let store = InstallStore::new(store_root.path().join("releases"), 64 * 1024);
+    let source = tempfile::tempdir().expect("source");
+    let id = UnitTree::new("seed", "seed", "1.0.0").write(source.path());
+    let lock = store.acquire_lock().expect("lock");
+    stage_macos_bundle_unit(&store, &lock, source.path(), &id).expect("stage");
+    let root = store.unit_path(&id);
+    let mode = || fs::metadata(&root).expect("unit root").permissions().mode() & 0o777;
+    assert_eq!(mode(), 0o555);
+
+    // A publication that stopped after its rename leaves the root writable.
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("interrupt");
+    assert!(crate::retain_macos_bundle_unit(&store, &lock, &id).is_err());
+    stage_macos_bundle_unit(&store, &lock, source.path(), &id).expect("the next publication");
+    assert_eq!(mode(), 0o555);
+    crate::retain_macos_bundle_unit(&store, &lock, &id).expect("a finished unit");
+}
+
+#[test]
 fn a_bundle_config_refuses_a_translocated_bundle_and_an_unbounded_window() {
     let config = |installed_bundle: &str, probation| crate::macos_bundle::MacosBundleConfig {
         installed_bundle: std::path::PathBuf::from(installed_bundle),
