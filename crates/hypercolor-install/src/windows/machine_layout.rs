@@ -12,11 +12,16 @@
 //! %ProgramData%\Hypercolor\update\
 //!   install-journal.json, active.json, installation.json, activator\
 //! ```
+//!
+//! A program inside a unit finds the installation from its own path too.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use super::update_pipe::UPDATE_PIPE_RECORD;
+use crate::model::UnitId;
 
 /// The desktop app, at the root of every unit.
 pub const WINDOWS_APP_PROGRAM: &str = "hypercolor-app.exe";
@@ -31,6 +36,11 @@ pub const WINDOWS_BOOTSTRAP_PROGRAM: &str = "tools/hypercolor-update-bootstrap.e
 /// the activator.
 pub const WINDOWS_CLI_PROGRAM: &str = "hypercolor.exe";
 pub(super) const BOOTSTRAP_DIRECTORY: &str = "update";
+/// Where the units live, under the release root.
+pub(super) const UNITS_DIRECTORY: &str = "units";
+/// The activator's records, and the pipe record the service publishes,
+/// under the state root.
+pub(super) const ACTIVATOR_DIRECTORY: &str = "activator";
 
 /// One of the two fixed places a recovery bootstrap lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +134,19 @@ impl WindowsInstallLayout {
         Some((Self::new(directory.parent()?, program_data), slot))
     }
 
+    /// The installation whose unit holds `program` at its root, or `None`
+    /// for a program that does not run from a unit.
+    #[must_use]
+    pub fn of_unit_program(program: &Path, program_data: &Path) -> Option<Self> {
+        let unit = program.parent()?;
+        UnitId::new(unit.file_name()?.to_str()?).ok()?;
+        let units = unit.parent()?;
+        if !units.file_name()?.eq_ignore_ascii_case(UNITS_DIRECTORY) {
+            return None;
+        }
+        Some(Self::new(units.parent()?, program_data))
+    }
+
     /// Directory holding the launcher, the slots and the units.
     #[must_use]
     pub fn release_root(&self) -> &Path {
@@ -134,6 +157,14 @@ impl WindowsInstallLayout {
     #[must_use]
     pub fn state_root(&self) -> &Path {
         &self.state_root
+    }
+
+    /// The record the update service publishes its pipe's name in.
+    #[must_use]
+    pub fn update_pipe_record(&self) -> PathBuf {
+        self.state_root
+            .join(ACTIVATOR_DIRECTORY)
+            .join(UPDATE_PIPE_RECORD)
     }
 
     /// The directory the slots live in.
@@ -223,6 +254,42 @@ mod tests {
                 WindowsInstallLayout::of_bootstrap(Path::new(image), Path::new("/data")),
                 None,
                 "{image}"
+            );
+        }
+    }
+
+    const UNIT: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn a_unit_program_finds_its_installation_above_its_unit() {
+        let layout = WindowsInstallLayout::of_unit_program(
+            &Path::new("/programs/Hypercolor/Units")
+                .join(UNIT)
+                .join("hypercolor-app.exe"),
+            Path::new("/data"),
+        )
+        .expect("layout");
+
+        assert_eq!(layout.release_root(), Path::new("/programs/Hypercolor"));
+        assert_eq!(
+            layout.update_pipe_record(),
+            Path::new("/data/Hypercolor/update/activator/pipe.json")
+        );
+    }
+
+    #[test]
+    fn only_a_program_at_the_root_of_a_unit_runs_from_one() {
+        for program in [
+            "/programs/Hypercolor/hypercolor-app.exe".to_owned(),
+            "/target/debug/hypercolor-app.exe".to_owned(),
+            "/programs/Hypercolor/units/not-a-digest/hypercolor-app.exe".to_owned(),
+            format!("/programs/Hypercolor/releases/{UNIT}/hypercolor-app.exe"),
+            format!("/programs/Hypercolor/units/{UNIT}/tools/hypercolor-app.exe"),
+        ] {
+            assert_eq!(
+                WindowsInstallLayout::of_unit_program(Path::new(&program), Path::new("/data")),
+                None,
+                "{program}"
             );
         }
     }

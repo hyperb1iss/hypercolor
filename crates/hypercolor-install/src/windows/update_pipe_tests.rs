@@ -1,9 +1,11 @@
 use std::cell::RefCell;
-use std::io::{self, Read, Write};
+use std::collections::VecDeque;
+use std::io::{self, Cursor, Read, Write};
 use std::rc::Rc;
 
 use super::{
-    UPDATE_SERVICE_NAME, UpdatePipeError, UpdatePipeHost, UpdatePipeName, connect_update_pipe,
+    UPDATE_PIPE_QUIT, UPDATE_SERVICE_NAME, UpdatePipeError, UpdatePipeHost, UpdatePipeName,
+    UpdateServiceEnd, await_quit_request, connect_update_pipe, follow_update_service,
 };
 
 const NAME: &str = r"\\.\pipe\hypercolor-update-0123456789abcdef0123456789abcdef";
@@ -84,6 +86,14 @@ impl UpdatePipeHost for FakeHost {
     fn service_process_id(&self) -> io::Result<Option<u32>> {
         self.calls.borrow_mut().push("service");
         copy(&self.service)
+    }
+
+    fn read_record(&self) -> io::Result<Vec<u8>> {
+        unreachable!("verification reads no record")
+    }
+
+    fn wait_for_run(&self) -> io::Result<bool> {
+        unreachable!("verification waits on nothing")
     }
 }
 
@@ -233,10 +243,253 @@ fn host_failures_refuse_the_pipe() {
     assert!(!*host.pipe.touched.borrow());
 }
 
+/// One run of the fake service, as the client meets it.
+struct Run {
+    record: Vec<u8>,
+    /// Whether the pipe is gone by the time the client connects.
+    gone: bool,
+    server: u32,
+    service: u32,
+    sends: &'static [u8],
+}
+
+impl Run {
+    fn sending(sends: &'static [u8]) -> Self {
+        Self {
+            record: name().encode_record().expect("record"),
+            gone: false,
+            server: 7,
+            service: 7,
+            sends,
+        }
+    }
+}
+
+/// A service whose waits and runs each test scripts, recording what the
+/// client did in order. Each wait that answers `true` reports one run.
+#[derive(Default)]
+struct FakeService {
+    waits: RefCell<VecDeque<io::Result<bool>>>,
+    runs: RefCell<VecDeque<Run>>,
+    current: RefCell<Option<Run>>,
+    calls: RefCell<Vec<&'static str>>,
+}
+
+impl FakeService {
+    fn new(waits: impl IntoIterator<Item = bool>, runs: impl IntoIterator<Item = Run>) -> Self {
+        Self {
+            waits: RefCell::new(waits.into_iter().map(Ok).collect()),
+            runs: RefCell::new(runs.into_iter().collect()),
+            ..Self::default()
+        }
+    }
+
+    fn run<T>(&self, answer: impl FnOnce(&Run) -> T) -> T {
+        answer(self.current.borrow().as_ref().expect("a run in progress"))
+    }
+
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls.borrow().clone()
+    }
+}
+
+impl UpdatePipeHost for FakeService {
+    type Pipe = Cursor<Vec<u8>>;
+
+    fn connect(&self, _name: &UpdatePipeName) -> io::Result<Self::Pipe> {
+        self.calls.borrow_mut().push("connect");
+        if self.run(|run| run.gone) {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "no pipe"));
+        }
+        Ok(self.run(|run| Cursor::new(run.sends.to_vec())))
+    }
+
+    fn server_process_id(&self, _pipe: &Self::Pipe) -> io::Result<u32> {
+        Ok(self.run(|run| run.server))
+    }
+
+    fn service_process_id(&self) -> io::Result<Option<u32>> {
+        Ok(Some(self.run(|run| run.service)))
+    }
+
+    fn read_record(&self) -> io::Result<Vec<u8>> {
+        self.calls.borrow_mut().push("record");
+        let run = self.runs.borrow_mut().pop_front().expect("a scripted run");
+        let record = run.record.clone();
+        *self.current.borrow_mut() = Some(run);
+        Ok(record)
+    }
+
+    fn wait_for_run(&self) -> io::Result<bool> {
+        self.calls.borrow_mut().push("run");
+        self.waits
+            .borrow_mut()
+            .pop_front()
+            .expect("a scripted wait")
+    }
+}
+
+fn follow(service: &FakeService) -> (io::Result<UpdateServiceEnd>, Vec<UpdatePipeError>) {
+    let mut lost = Vec::new();
+    let end = follow_update_service(service, |error| lost.push(error));
+    (end, lost)
+}
+
+#[test]
+fn only_a_whole_quit_request_asks_the_app_to_quit() {
+    assert_eq!(UPDATE_PIPE_QUIT, b"quit\n");
+    assert!(await_quit_request(&b"quit\n"[..]).expect("a request"));
+    assert!(
+        !await_quit_request(&b""[..]).expect("a run that ended"),
+        "a run that ends unasked asks nothing"
+    );
+    for sent in [&b"qu"[..], b"QUIT\n", b"stop\n", b"quit"] {
+        assert!(
+            matches!(
+                await_quit_request(sent),
+                Err(UpdatePipeError::UnknownRequest(_))
+            ),
+            "{sent:?}"
+        );
+    }
+}
+
+#[test]
+fn a_run_that_asks_ends_the_following_at_once() {
+    let service = FakeService::new([true], [Run::sending(UPDATE_PIPE_QUIT)]);
+
+    let (end, lost) = follow(&service);
+
+    assert_eq!(end.expect("followed"), UpdateServiceEnd::Quit);
+    assert!(lost.is_empty());
+    assert_eq!(service.calls(), ["run", "record", "connect"]);
+}
+
+#[test]
+fn a_run_that_ends_unasked_leaves_the_client_waiting_for_the_next() {
+    let service = FakeService::new(
+        [true, true],
+        [Run::sending(b""), Run::sending(UPDATE_PIPE_QUIT)],
+    );
+
+    let (end, lost) = follow(&service);
+
+    assert_eq!(end.expect("followed"), UpdateServiceEnd::Quit);
+    assert!(lost.is_empty());
+    assert_eq!(
+        service.calls(),
+        ["run", "record", "connect", "run", "record", "connect"]
+    );
+}
+
+#[test]
+fn a_run_that_ends_before_the_client_arrives_asked_nothing() {
+    let ended = Run {
+        gone: true,
+        ..Run::sending(UPDATE_PIPE_QUIT)
+    };
+    let service = FakeService::new([true, true], [ended, Run::sending(UPDATE_PIPE_QUIT)]);
+
+    let (end, lost) = follow(&service);
+
+    assert_eq!(end.expect("followed"), UpdateServiceEnd::Quit);
+    assert!(lost.is_empty(), "{lost:?}");
+    assert_eq!(
+        service.calls(),
+        ["run", "record", "connect", "run", "record", "connect"]
+    );
+}
+
+#[test]
+fn every_run_that_fails_is_reported_and_left() {
+    let impostor = Run {
+        server: 31337,
+        ..Run::sending(UPDATE_PIPE_QUIT)
+    };
+    let foreign = Run {
+        record: br#"{"schema_version":1,"name":"\\\\.\\pipe\\hypercolor-smbus-v1"}"#.to_vec(),
+        ..Run::sending(UPDATE_PIPE_QUIT)
+    };
+    let service = FakeService::new(
+        [true, true, true, true],
+        [
+            impostor,
+            foreign,
+            Run::sending(b"stop\n"),
+            Run::sending(UPDATE_PIPE_QUIT),
+        ],
+    );
+
+    let (end, lost) = follow(&service);
+
+    assert_eq!(end.expect("followed"), UpdateServiceEnd::Quit);
+    assert!(
+        matches!(
+            lost.as_slice(),
+            [
+                UpdatePipeError::NotTheService {
+                    server: 31337,
+                    service: 7
+                },
+                UpdatePipeError::InvalidName(_),
+                UpdatePipeError::UnknownRequest(_),
+            ]
+        ),
+        "{lost:?}"
+    );
+    assert_eq!(
+        service.calls(),
+        [
+            "run", "record", "connect", "run", "record", "run", "record", "connect", "run",
+            "record", "connect"
+        ],
+        "a failed run is never answered again"
+    );
+}
+
+#[test]
+fn a_service_that_is_not_registered_is_never_followed() {
+    let service = FakeService::new([false], []);
+
+    let (end, lost) = follow(&service);
+
+    assert_eq!(end.expect("followed"), UpdateServiceEnd::Unregistered);
+    assert!(lost.is_empty());
+    assert_eq!(service.calls(), ["run"]);
+}
+
+#[test]
+fn a_service_deleted_between_runs_ends_the_following() {
+    let service = FakeService::new([true, false], [Run::sending(b"")]);
+
+    let (end, _) = follow(&service);
+
+    assert_eq!(end.expect("followed"), UpdateServiceEnd::Unregistered);
+    assert_eq!(service.calls(), ["run", "record", "connect", "run"]);
+}
+
+#[test]
+fn a_service_manager_that_cannot_be_asked_ends_the_following() {
+    let service = FakeService::default();
+    service.waits.borrow_mut().push_back(Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "denied",
+    )));
+
+    let (end, _) = follow(&service);
+
+    assert_eq!(
+        end.expect_err("an error").kind(),
+        io::ErrorKind::PermissionDenied
+    );
+}
+
 #[cfg(windows)]
 mod native {
     use std::io::{Read as _, Write as _};
+    use std::path::Path;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -245,6 +498,22 @@ mod native {
     use super::super::{
         UpdatePipeError, UpdatePipeHost, UpdatePipeName, WindowsUpdatePipeHost, connect_update_pipe,
     };
+    use crate::windows::WindowsInstallLayout;
+
+    /// Long enough for any wait the tests expect to end.
+    const WAIT_DEADLINE: Duration = Duration::from_secs(30);
+
+    fn layout() -> WindowsInstallLayout {
+        WindowsInstallLayout::of_launcher(
+            Path::new(r"C:\Program Files\Hypercolor\Hypercolor.exe"),
+            Path::new(r"C:\ProgramData"),
+        )
+        .expect("a layout")
+    }
+
+    fn host() -> WindowsUpdatePipeHost {
+        WindowsUpdatePipeHost::new(&layout())
+    }
 
     /// The real Win32 connect and server lookup, with the service's process
     /// chosen by the test.
@@ -254,15 +523,23 @@ mod native {
         type Pipe = std::fs::File;
 
         fn connect(&self, name: &UpdatePipeName) -> std::io::Result<std::fs::File> {
-            WindowsUpdatePipeHost::new().connect(name)
+            host().connect(name)
         }
 
         fn server_process_id(&self, pipe: &std::fs::File) -> std::io::Result<u32> {
-            WindowsUpdatePipeHost::new().server_process_id(pipe)
+            host().server_process_id(pipe)
         }
 
         fn service_process_id(&self) -> std::io::Result<Option<u32>> {
             Ok(Some(self.0))
+        }
+
+        fn read_record(&self) -> std::io::Result<Vec<u8>> {
+            unreachable!("these tests name the pipe themselves")
+        }
+
+        fn wait_for_run(&self) -> std::io::Result<bool> {
+            unreachable!("these tests serve the pipe themselves")
         }
     }
 
@@ -346,7 +623,7 @@ mod native {
 
     #[test]
     fn the_service_manager_names_a_running_service_process_and_no_other() {
-        let event_log = WindowsUpdatePipeHost::for_service("EventLog")
+        let event_log = WindowsUpdatePipeHost::for_service("EventLog", &layout())
             .service_process_id()
             .expect("ask the service control manager")
             .expect("the event log service always runs");
@@ -354,7 +631,8 @@ mod native {
 
         let name = fresh_name();
         let (refusal, _) = serve(&name, |name| {
-            match connect_update_pipe(&WindowsUpdatePipeHost::for_service("EventLog"), &name) {
+            let event_log = WindowsUpdatePipeHost::for_service("EventLog", &layout());
+            match connect_update_pipe(&event_log, &name) {
                 Err(UpdatePipeError::NotTheService { service, .. }) => service,
                 other => panic!("expected a refusal, got {other:?}"),
             }
@@ -364,15 +642,135 @@ mod native {
             "a pipe this test serves is not the service's"
         );
 
-        let missing = WindowsUpdatePipeHost::for_service("HypercolorUpdateTestMissingService");
+        let missing =
+            WindowsUpdatePipeHost::for_service("HypercolorUpdateTestMissingService", &layout());
         assert_eq!(missing.service_process_id().expect("ask"), None);
     }
 
     #[test]
     fn nothing_served_at_the_name_is_a_connect_failure() {
         assert!(matches!(
-            connect_update_pipe(&WindowsUpdatePipeHost::new(), &fresh_name()),
+            connect_update_pipe(&host(), &fresh_name()),
             Err(UpdatePipeError::Connect(_))
         ));
+    }
+
+    /// Run `wait` on a thread and give its answer, or fail once it has
+    /// taken longer than any wait the test expects to end.
+    fn within_deadline<T: Send + 'static>(wait: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, answer) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(wait());
+        });
+        answer
+            .recv_timeout(WAIT_DEADLINE)
+            .expect("the wait ended in time")
+    }
+
+    /// The event log service runs from boot to shutdown, so it started
+    /// once, before any test, and never starts again while one runs.
+    #[test]
+    fn a_running_service_is_reported_once_and_then_only_when_it_starts_again() {
+        let (reports, reported) = mpsc::channel();
+        std::thread::spawn(move || {
+            let host = WindowsUpdatePipeHost::for_service("EventLog", &layout());
+            let _ = reports.send(host.wait_for_run());
+            let _ = reports.send(host.wait_for_run());
+        });
+
+        assert!(
+            reported
+                .recv_timeout(WAIT_DEADLINE)
+                .expect("a running service is reported at once")
+                .expect("ask the service control manager"),
+            "the run is reported"
+        );
+        assert!(
+            reported.recv_timeout(Duration::from_secs(2)).is_err(),
+            "the same run is not reported twice"
+        );
+    }
+
+    #[test]
+    fn a_service_that_is_not_registered_is_never_waited_for() {
+        let reported = within_deadline(|| {
+            WindowsUpdatePipeHost::for_service("HypercolorUpdateTestMissingService", &layout())
+                .wait_for_run()
+        });
+
+        assert!(!reported.expect("ask the service control manager"));
+    }
+
+    #[test]
+    fn the_record_is_read_from_the_activator_directory_and_bounded() {
+        let root = tempfile::tempdir().expect("a temporary root");
+        let layout =
+            WindowsInstallLayout::of_launcher(&root.path().join("Hypercolor.exe"), root.path())
+                .expect("a layout");
+        let record = layout.update_pipe_record();
+        std::fs::create_dir_all(record.parent().expect("the activator directory"))
+            .expect("create the activator directory");
+        let host = WindowsUpdatePipeHost::new(&layout);
+
+        assert_eq!(
+            host.read_record().expect_err("nothing published").kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        let name = fresh_name();
+        std::fs::write(&record, name.encode_record().expect("encode")).expect("publish");
+        assert_eq!(
+            UpdatePipeName::decode_record(&host.read_record().expect("read")).expect("a name"),
+            name
+        );
+
+        std::fs::write(&record, vec![b' '; 2048]).expect("publish too much");
+        assert_eq!(
+            host.read_record().expect_err("too large").kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    /// A client that finds the one instance busy waits for it to listen
+    /// again, which is how an app the update starts reaches a run whose
+    /// last client it already let go.
+    #[test]
+    fn a_busy_pipe_is_waited_for_until_its_server_listens_again() {
+        let name = fresh_name();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .reject_remote_clients(true)
+                .create(name.as_str())
+                .expect("fake update service pipe");
+            let first = host().connect(&name).expect("the first client connects");
+            server.connect().await.expect("accept the first client");
+            server.disconnect().expect("let the first client go");
+            drop(first);
+
+            let (done, connected) = mpsc::channel();
+            let waiting = name.clone();
+            std::thread::spawn(move || {
+                let _ = done.send(host().connect(&waiting).map(|_| ()));
+            });
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(
+                connected.try_recv().is_err(),
+                "the second client waits while the instance is busy"
+            );
+
+            tokio::time::timeout(WAIT_DEADLINE, server.connect())
+                .await
+                .expect("the second client arrives in time")
+                .expect("accept the second client");
+            connected
+                .recv_timeout(WAIT_DEADLINE)
+                .expect("the wait ended")
+                .expect("the second client connected");
+        });
     }
 }

@@ -11,8 +11,8 @@
 //! compile on every host, and a unit produced or checked on another
 //! platform meets the rules the Windows store enforces. So do the decisions
 //! the programs outside a unit make: which release runs, which process may
-//! serve the update pipe, and how the service manager recovers the update
-//! service. So does every step of [`WindowsInstallPlatform`] and what an
+//! serve the update pipe, when the app answers it, and how the service
+//! manager recovers the update service. So does every step of [`WindowsInstallPlatform`] and what an
 //! installer does with its unit. Only their Win32 hosts and everything that
 //! touches the store are Windows-only.
 
@@ -70,8 +70,9 @@ pub use unit::{
     produce_windows_unit,
 };
 pub use update_pipe::{
-    UPDATE_PIPE_RECORD, UPDATE_SERVICE_NAME, UpdatePipeError, UpdatePipeHost, UpdatePipeName,
-    VerifiedUpdatePipe, connect_update_pipe,
+    MAX_UPDATE_PIPE_RECORD_BYTES, UPDATE_PIPE_QUIT, UPDATE_PIPE_RECORD, UPDATE_SERVICE_NAME,
+    UpdatePipeError, UpdatePipeHost, UpdatePipeName, UpdateServiceEnd, VerifiedUpdatePipe,
+    answer_update_run, await_quit_request, connect_update_pipe, follow_update_service,
 };
 pub use update_service::{
     BootstrapCommand, EXIT_NO_ACTIVATOR, EXIT_NO_PIPE, EXIT_NO_RELEASE, FAILURE_RESET_PERIOD,

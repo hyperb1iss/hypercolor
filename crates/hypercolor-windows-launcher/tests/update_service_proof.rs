@@ -10,18 +10,21 @@
 
 #![cfg(windows)]
 
+use std::cell::Cell;
 use std::ffi::OsStr;
-use std::fs;
-use std::io::Read as _;
+use std::fs::{self, File};
+use std::io::{self, Read as _};
 use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use hypercolor_install::windows::{
-    BootstrapSlot, FALLBACK_DELAY, REGISTER_SERVICE_FLAG, ScmUpdateService, UPDATE_PIPE_RECORD,
-    UPDATE_SERVICE_NAME, UpdatePipeName, WindowsInstallLayout, WindowsUpdatePipeHost,
-    connect_update_pipe, fallback_command, install_bootstrap, restore_bootstrap,
+    BootstrapSlot, FALLBACK_DELAY, REGISTER_SERVICE_FLAG, ScmUpdateService, UPDATE_SERVICE_NAME,
+    UpdatePipeHost, UpdatePipeName, UpdateServiceEnd, WindowsInstallLayout, WindowsUpdatePipeHost,
+    connect_update_pipe, fallback_command, follow_update_service, install_bootstrap,
+    restore_bootstrap,
 };
 use hypercolor_platform_fs::{WindowsDirectory, WindowsDirectoryAccess, WindowsSid};
 use windows_service::service::{
@@ -408,16 +411,10 @@ fn the_registered_process_owns_the_pipe_its_activator_serves(proof: &Proof) {
     let service_pid = running_pid();
     assert_ne!(service_pid, activator_pid(&line));
 
-    let record = fs::read(
-        proof
-            .layout
-            .state_root()
-            .join("activator")
-            .join(UPDATE_PIPE_RECORD),
-    )
-    .expect("the recorded user reads the pipe record");
+    let record = fs::read(proof.layout.update_pipe_record())
+        .expect("the recorded user reads the pipe record");
     let name = UpdatePipeName::decode_record(&record).expect("a pipe name");
-    let mut pipe = connect_update_pipe(&WindowsUpdatePipeHost::new(), &name)
+    let mut pipe = connect_update_pipe(&WindowsUpdatePipeHost::new(&proof.layout), &name)
         .expect("the client verifies the registered process");
     assert_eq!(pipe.server_process_id(), service_pid);
     let mut greeting = [0_u8; 5];
@@ -435,6 +432,142 @@ fn the_registered_process_owns_the_pipe_its_activator_serves(proof: &Proof) {
         seen + 1,
         "a clean run queues no recovery"
     );
+}
+
+/// The app's own host, telling the proof each time it waits for a run and
+/// which service process it found behind each pipe, and holding its second
+/// wait until the proof lets it go.
+struct Watched {
+    host: WindowsUpdatePipeHost,
+    waits: Cell<usize>,
+    waiting: mpsc::Sender<usize>,
+    release: mpsc::Receiver<()>,
+    checked: mpsc::Sender<Option<u32>>,
+}
+
+impl UpdatePipeHost for Watched {
+    type Pipe = File;
+
+    fn connect(&self, name: &UpdatePipeName) -> io::Result<File> {
+        self.host.connect(name)
+    }
+
+    fn server_process_id(&self, pipe: &File) -> io::Result<u32> {
+        self.host.server_process_id(pipe)
+    }
+
+    fn service_process_id(&self) -> io::Result<Option<u32>> {
+        let service = self.host.service_process_id()?;
+        let _ = self.checked.send(service);
+        Ok(service)
+    }
+
+    fn read_record(&self) -> io::Result<Vec<u8>> {
+        self.host.read_record()
+    }
+
+    fn wait_for_run(&self) -> io::Result<bool> {
+        let wait = self.waits.get() + 1;
+        self.waits.set(wait);
+        let _ = self.waiting.send(wait);
+        if wait == 2 {
+            let _ = self.release.recv();
+        }
+        self.host.wait_for_run()
+    }
+}
+
+/// The app follows the service from before it starts: it reaches each
+/// run's pipe as the run starts, outlasts a run that asks it nothing, and
+/// hears the run that asks it to quit, even when that run started and was
+/// running before the app was ready to wait for it.
+fn the_app_follows_the_service_until_a_run_asks_it_to_quit(proof: &Proof) {
+    proof.register();
+    proof.records("committed", CANDIDATE);
+    proof.behave("prepare connect\nactivate quit\n");
+    let seen = proof.log_lines().len();
+
+    let (waiting, waits) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let (checked, checks) = mpsc::channel();
+    let host = Watched {
+        host: WindowsUpdatePipeHost::new(&proof.layout),
+        waits: Cell::new(0),
+        waiting,
+        release: released,
+        checked,
+    };
+    let (done, followed) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut lost = Vec::new();
+        let end = follow_update_service(&host, |error| lost.push(error.to_string()));
+        let _ = done.send((end.map_err(|error| error.to_string()), lost));
+    });
+    assert_eq!(waits.recv_timeout(STEP_DEADLINE), Ok(1), "the app waits");
+
+    service().start(&["prepare"]).expect("start prepare");
+    let prepare = proof.await_log(seen + 1, "the prepare run started");
+    assert!(
+        prepare.starts_with(&format!("activator {CANDIDATE} prepare ")),
+        "{prepare}"
+    );
+    assert_eq!(
+        proof.await_log(seen + 2, "the app reached the prepare run"),
+        "client prepare"
+    );
+    let found = checks
+        .recv_timeout(STEP_DEADLINE)
+        .expect("the app checked the prepare run's pipe");
+    assert_eq!(
+        found,
+        Some(running_pid()),
+        "the app found the running service"
+    );
+
+    service().stop().expect("end the prepare run");
+    await_status("the prepare run ends", |status| {
+        status.current_state == ServiceState::Stopped
+    });
+    assert_eq!(
+        waits.recv_timeout(STEP_DEADLINE),
+        Ok(2),
+        "the app left the prepare run"
+    );
+
+    // The app is held before it waits again while the next run starts and
+    // runs: the schedule in which waiting for the service to stop first
+    // would wait through the very run that needs the app gone.
+    service().start(&["activate"]).expect("start activate");
+    let activate_service = running_pid();
+    assert!(
+        followed.try_recv().is_err(),
+        "the app has not answered a run it was held from"
+    );
+    release.send(()).expect("let the app wait again");
+
+    let (end, lost) = followed
+        .recv_timeout(STEP_DEADLINE)
+        .expect("the app heard the activate run in time");
+    assert_eq!(end, Ok(UpdateServiceEnd::Quit));
+    assert!(lost.is_empty(), "no run was refused or lost: {lost:?}");
+    assert_eq!(
+        checks.try_iter().last(),
+        Some(Some(activate_service)),
+        "the app found the activate run's service behind its pipe"
+    );
+    let activate = proof.await_log(seen + 3, "the activate run started");
+    assert!(
+        activate.starts_with(&format!("activator {CANDIDATE} activate ")),
+        "{activate}"
+    );
+    assert_eq!(
+        proof.await_log(seen + 4, "the activate run asked"),
+        "heard activate"
+    );
+    let stopped = await_status("the activate run ends", |status| {
+        status.current_state == ServiceState::Stopped
+    });
+    assert_eq!(stopped.exit_code, ServiceExitCode::NO_ERROR);
 }
 
 /// A killed service process takes its activator with it, the service
@@ -724,6 +857,7 @@ fn the_service_manager_recovers_the_update_service() {
 
     launcher_reads_the_journal_before_the_pointer(&proof);
     the_registered_process_owns_the_pipe_its_activator_serves(&proof);
+    the_app_follows_the_service_until_a_run_asks_it_to_quit(&proof);
     killed_activator_is_recovered(&proof);
     failed_activator_is_recovered(&proof);
     killed_service_restarts_then_falls_back(&proof);
