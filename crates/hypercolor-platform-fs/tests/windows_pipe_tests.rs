@@ -1,19 +1,27 @@
 #![cfg(windows)]
 
-use std::fs::OpenOptions;
-use std::io::{Read as _, Write as _};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read as _, Write as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hypercolor_platform_fs::{
     WindowsSid, windows_adopt_inherited_pipe, windows_connect_pipe_client,
-    windows_create_pipe_server, windows_named_pipe_server_process_id,
+    windows_create_pipe_server, windows_named_pipe_server_process_id, windows_wait_for_pipe,
 };
-use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::{ERROR_PIPE_BUSY, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
-    CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_WAIT,
 };
+
+/// Long enough for any wait the tests expect to end; a wait that outlives
+/// it never would have.
+const WAIT_DEADLINE: Duration = Duration::from_secs(30);
+/// How long a wait that must not end yet is watched.
+const STILL_WAITING: Duration = Duration::from_millis(300);
 
 #[test]
 fn the_server_process_of_a_pipe_is_the_process_that_created_it() {
@@ -134,4 +142,83 @@ fn only_a_pipe_can_be_adopted() {
 
     assert!(refused.is_err());
     drop(file);
+}
+
+fn open_client(name: &str) -> io::Result<File> {
+    OpenOptions::new().read(true).write(true).open(name)
+}
+
+/// A server whose one instance a client reached and then lost: the
+/// instance is disconnected and listens for nobody until the server
+/// connects again.
+fn disconnected_server(name: &str) -> File {
+    let server = windows_create_pipe_server(name, &own_pipe_sddl()).expect("create");
+    let first = open_client(name).expect("the first client connects");
+    windows_connect_pipe_client(&server).expect("accept the first client");
+    // SAFETY: The handle is live for the call.
+    let disconnected = unsafe { DisconnectNamedPipe(server.as_raw_handle()) };
+    assert_ne!(disconnected, 0, "disconnect the first client");
+    drop(first);
+    server
+}
+
+fn wait_in_background(name: &str) -> Receiver<io::Result<()>> {
+    let (done, result) = mpsc::channel();
+    let name = name.to_owned();
+    std::thread::spawn(move || {
+        let _ = done.send(windows_wait_for_pipe(&name));
+    });
+    result
+}
+
+#[test]
+fn a_disconnected_instance_is_busy_until_it_listens_again() {
+    let name = unique_pipe_name();
+    let server = disconnected_server(&name);
+
+    let busy = open_client(&name).expect_err("nobody listens");
+    assert_eq!(busy.raw_os_error(), Some(ERROR_PIPE_BUSY as i32), "{busy}");
+
+    let waited = wait_in_background(&name);
+    assert!(
+        waited.recv_timeout(STILL_WAITING).is_err(),
+        "the wait lasts while the instance is busy"
+    );
+    let listening = server.try_clone().expect("a second server handle");
+    let accepted = std::thread::spawn(move || windows_connect_pipe_client(&listening));
+    waited
+        .recv_timeout(WAIT_DEADLINE)
+        .expect("the wait ends once the instance listens")
+        .expect("an instance listens");
+
+    let _client = open_client(&name).expect("the instance takes a client again");
+    accepted
+        .join()
+        .expect("the server thread")
+        .expect("the server accepts the client");
+}
+
+#[test]
+fn a_wait_for_a_busy_pipe_ends_when_the_pipe_closes() {
+    let name = unique_pipe_name();
+    let server = disconnected_server(&name);
+
+    let waited = wait_in_background(&name);
+    assert!(
+        waited.recv_timeout(STILL_WAITING).is_err(),
+        "the wait lasts while the instance is busy"
+    );
+    drop(server);
+    let error = waited
+        .recv_timeout(WAIT_DEADLINE)
+        .expect("the wait ends once the pipe is gone")
+        .expect_err("nothing serves the name any more");
+    assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+}
+
+#[test]
+fn a_wait_for_a_pipe_nobody_serves_ends_at_once() {
+    let error = windows_wait_for_pipe(&unique_pipe_name()).expect_err("nothing serves it");
+
+    assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
 }

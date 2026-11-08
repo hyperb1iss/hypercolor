@@ -29,7 +29,7 @@ pub use directory::{
 };
 pub use pipe::{
     windows_adopt_inherited_pipe, windows_connect_pipe_client, windows_create_pipe_server,
-    windows_named_pipe_server_process_id,
+    windows_named_pipe_server_process_id, windows_wait_for_pipe,
 };
 
 const REPLACE_FLAGS: u32 = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
